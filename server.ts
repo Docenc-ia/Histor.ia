@@ -943,7 +943,7 @@ async function startServer() {
   });
 
   // Workspace configuration readiness & Scopes metadata
-  const WORKSPACE_INTEGRATION = {
+ const WORKSPACE_INTEGRATION = {
     authMode: "prepared",
     status: "Ready for Google Workspace OAuth",
     services: {
@@ -968,7 +968,8 @@ async function startServer() {
       classroom: {
         name: "Google Classroom",
         enabled: true,
-        scope: "https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.students",
+        // Se agregaron los permisos rosters.readonly y announcements
+        scope: "https://www.googleapis.com/auth/classroom.courses.readonly https://www.googleapis.com/auth/classroom.coursework.students https://www.googleapis.com/auth/classroom.rosters.readonly https://www.googleapis.com/auth/classroom.announcements",
         purpose: "Importación de nóminas de estudiantes, publicación de tareas y novedades.",
       },
     },
@@ -978,6 +979,8 @@ async function startServer() {
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/classroom.courses.readonly",
       "https://www.googleapis.com/auth/classroom.coursework.students",
+      "https://www.googleapis.com/auth/classroom.rosters.readonly",
+      "https://www.googleapis.com/auth/classroom.announcements"
     ],
   };
 
@@ -1078,7 +1081,6 @@ async function startServer() {
 
   // Courses API
   app.get("/api/courses", (_req, res) => {
-    // Sanitize any course that had "Ciencias Sociales" by mistake
     courses.forEach((c) => {
       if (c.id === "c-104" || c.name.includes("Ciencias Sociales") || c.subject === "Ciencias Sociales") {
         c.name = c.name.replace(/Ciencias Sociales/g, "Historia");
@@ -1086,7 +1088,6 @@ async function startServer() {
       }
     });
 
-    // Deduplicate courses by classroomCourseId and id so no duplicate courses are served
     const seenClassroomIds = new Set<string>();
     const seenCourseIds = new Set<string>();
     const uniqueCourses: Course[] = [];
@@ -1102,9 +1103,9 @@ async function startServer() {
       }
       uniqueCourses.push(c);
     }
-    courses = uniqueCourses;
 
-    res.json({ courses });
+    // Se corrige el error enviando uniqueCourses sin sobrescribir la variable global 'courses'
+    res.json({ courses: uniqueCourses });
   });
 
   app.post("/api/courses", (req, res) => {
@@ -1237,7 +1238,7 @@ async function startServer() {
         classroomSynced: true,
         classroomCourseId: incomingClassroomId || `gc-${Math.random().toString(36).substring(2, 7)}`,
         code: item.code || Math.random().toString(36).substring(2, 8),
-        section: item.section || "1°",
+        section: item.section || "1",
         orientation: item.orientation || undefined,
         division: item.division || undefined,
         schoolYear: item.schoolYear || "2026",

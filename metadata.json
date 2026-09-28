@@ -1,0 +1,6 @@
+{
+  "name": "Docenc.IA",
+  "description": "Gestor inteligente de estudiantes para docentes: registro de asistencia, seguimiento de disposición y conducta, vinculación con Google Classroom, publicaciones en el tablón y avisos por Gmail.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

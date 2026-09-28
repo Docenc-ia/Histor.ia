@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@layer utilities {
+  .font-caslon {
+    font-family: 'Libre Caslon Text', 'Big Caslon', 'Libre Caslon Display', 'Georgia', serif;
+  }
+  .font-dancing {
+    font-family: 'Dancing Script', cursive, sans-serif;
+  }
+  .font-space {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #printable-trajectory-report,
+  #printable-trajectory-report * {
+    visibility: visible !important;
+  }
+  #printable-trajectory-report {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 16px !important;
+    background: white !important;
+    color: black !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+}

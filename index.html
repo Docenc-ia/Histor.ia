@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      (function() {
+        // Prevent browser extension conflicts (e.g. Zerion / Web3 wallet redefinition errors)
+        try {
+          var origDefineProperty = Object.defineProperty;
+          Object.defineProperty = function(target, prop, descriptor) {
+            if (descriptor && typeof descriptor === 'object' && descriptor.configurable === false) {
+              descriptor.configurable = true;
+            }
+            try {
+              return origDefineProperty.call(this, target, prop, descriptor);
+            } catch (err) {
+              if (
+                err instanceof TypeError &&
+                (prop === 'isZerion' || (err.message && err.message.indexOf('Cannot redefine property') !== -1))
+              ) {
+                try {
+                  if (descriptor && 'value' in descriptor) {
+                    target[prop] = descriptor.value;
+                  }
+                } catch (_) {}
+                return target;
+              }
+              throw err;
+            }
+          };
+
+          var origDefineProperties = Object.defineProperties;
+          Object.defineProperties = function(target, props) {
+            try {
+              return origDefineProperties.call(this, target, props);
+            } catch (err) {
+              if (err instanceof TypeError && err.message && err.message.indexOf('Cannot redefine property') !== -1) {
+                return target;
+              }
+              throw err;
+            }
+          };
+
+          window.addEventListener('error', function(event) {
+            if (
+              event.message &&
+              (event.message.indexOf('isZerion') !== -1 || event.message.indexOf('Cannot redefine property') !== -1)
+            ) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return true;
+            }
+          }, true);
+
+          window.addEventListener('unhandledrejection', function(event) {
+            if (
+              event.reason &&
+              event.reason.message &&
+              (event.reason.message.indexOf('isZerion') !== -1 || event.reason.message.indexOf('Cannot redefine property') !== -1)
+            ) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          }, true);
+        } catch (_) {}
+      })();
+    </script>
+    <title>Docenc.IA - Asistencia y Disposición de Estudiantes</title>
+    <meta name="description" content="Gestor inteligente de estudiantes para docentes: registro de asistencia, seguimiento de disposición y conducta, vinculación con Google Classroom, publicaciones en el tablón y avisos por Gmail." />
+    <meta property="og:title" content="Docenc.IA - Asistencia y Disposición de Estudiantes" />
+    <meta property="og:description" content="Gestor inteligente de estudiantes para docentes: registro de asistencia, seguimiento de disposición y conducta, vinculación con Google Classroom, publicaciones en el tablón y avisos por Gmail." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&family=Libre+Caslon+Display&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
+  </head>
+  <body class="bg-[#f8fafd] text-[#1f1f1f] antialiased selection:bg-blue-100 selection:text-blue-900 font-['Roboto',sans-serif]">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

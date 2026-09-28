@@ -3,13 +3,9 @@ import { Course, Student, LessonPlan, GradeEntry, DriveResource, ClassroomTask, 
 export const api = {
   // Auth API
   async getAuthUser(): Promise<{ authenticated: boolean; user: TeacherProfile }> {
-    try {
-      const res = await fetch('/api/auth/user');
-      if (!res.ok) return { authenticated: false, user: null as any };
-      return res.json();
-    } catch {
-      return { authenticated: false, user: null as any };
-    }
+    const res = await fetch('/api/auth/user');
+    if (!res.ok) throw new Error('Error al consultar usuario');
+    return res.json();
   },
 
   async syncAuthSession(userData: {
@@ -21,41 +17,13 @@ export const api = {
     scopes?: string[];
     school?: string;
   }): Promise<{ success: boolean; user: TeacherProfile }> {
-    try {
-      const res = await fetch('/api/auth/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData),
-      });
-      if (res.ok) {
-        return res.json();
-      }
-    } catch (e) {
-      console.warn('Sync auth session warning:', e);
-    }
-
-    // Graceful fallback profile to ensure user is never blocked
-    const fallbackProfile: TeacherProfile = {
-      id: userData.uid,
-      email: userData.email,
-      name: userData.name || 'Docente Titular',
-      avatar: userData.avatar,
-      role: 'Docente Titular',
-      school: userData.school || 'Institución Educativa',
-      scopes: userData.scopes || [],
-      permissions: [
-        'tasks.create',
-        'tasks.assign',
-        'tasks.grade',
-        'tasks.delete',
-        'drive.read',
-        'drive.attach',
-        'classroom.sync',
-        'students.view',
-        'grades.manage',
-      ],
-    };
-    return { success: true, user: fallbackProfile };
+    const res = await fetch('/api/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(userData),
+    });
+    if (!res.ok) throw new Error('Error al sincronizar sesión');
+    return res.json();
   },
 
   async logoutAuth(): Promise<void> {
@@ -155,27 +123,17 @@ export const api = {
     return data.course;
   },
 
-async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
-    // 1. Diagnóstico: Mostramos en consola los datos que estamos procesando
-    console.log("Simulando importación local de materias:", coursesList);
-
-    // 2. Simulamos una pequeña pausa de red (0.5 segundos) para dar realismo a la interfaz
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    // 3. Transformamos la lista recibida agregando un ID único a cada materia
-    const importedCourses: Course[] = coursesList.map((course, index) => ({
-      id: course.id || `imported-${Date.now()}-${index}`,
-      name: course.name || 'Materia sin nombre',
-      section: course.section || '',
-      ...course,
-    })) as Course[];
-
-    // 4. Devolvemos una respuesta exitosa sin hacer peticiones a ningún servidor externo (evita el Error 404)
-    return {
-      success: true,
-      message: 'Materias importadas con éxito',
-      courses: importedCourses,
-    };
+  async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
+    const res = await fetch('/api/courses/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ courses: coursesList }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Error al importar materias');
+    }
+    return res.json();
   },
 
   async syncCourseStudents(updates: Array<{ id: string; studentsCount: number }>): Promise<{ success: boolean; message: string }> {

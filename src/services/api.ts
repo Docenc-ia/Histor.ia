@@ -155,16 +155,31 @@ export const api = {
     return data.course;
   },
 
-  async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
+async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
+    // 1. Diagnóstico: Verificamos qué datos exactos estamos intentando enviar
+    console.log("Datos que se están enviando al servidor:", coursesList);
+
     const res = await fetch('/api/courses/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ courses: coursesList }),
     });
+
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.error || 'Error al importar materias');
+      // 2. Diagnóstico: Capturamos el error crudo del servidor para ver qué falló realmente
+      const errorText = await res.text();
+      console.error("El servidor rechazó la petición. Código:", res.status, "Detalle:", errorText);
+
+      let err: any = {};
+      try { 
+        err = JSON.parse(errorText); 
+      } catch (e) {
+        // Si no es un JSON, mantenemos el texto crudo para investigar
+      }
+      
+      throw new Error(err.error || `Error del servidor: ${res.status}. Revisa la consola para más detalles.`);
     }
+    
     return res.json();
   },
 

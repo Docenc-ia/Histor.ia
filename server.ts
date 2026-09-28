@@ -995,6 +995,87 @@ async function startServer() {
     res.json(WORKSPACE_INTEGRATION);
   });
 
+  // Authentication & Session endpoints
+  app.get("/api/auth/user", (_req, res) => {
+    res.json({
+      authenticated: !!activeUser,
+      user: activeUser,
+    });
+  });
+
+  app.post("/api/auth/session", (req, res) => {
+    try {
+      const { uid, email, name, avatar, scopes, school } = req.body || {};
+      const cleanEmail = (email || "").trim().toLowerCase();
+      const cleanName = name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
+      const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
+
+      activeUser = {
+        id: uid || `user-${Date.now()}`,
+        email: cleanEmail,
+        name: displayName,
+        avatar: avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
+        role: "Docente Titular",
+        school: school || (cleanEmail.includes("@") ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}` : "Institución Educativa"),
+        scopes: Array.isArray(scopes) ? scopes : [
+          "https://www.googleapis.com/auth/classroom.courses.readonly",
+          "https://www.googleapis.com/auth/classroom.rosters.readonly",
+          "https://www.googleapis.com/auth/classroom.coursework.students",
+          "https://www.googleapis.com/auth/classroom.announcements",
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/userinfo.email",
+          "https://www.googleapis.com/auth/userinfo.profile",
+        ],
+        permissions: [
+          "tasks.create",
+          "tasks.assign",
+          "tasks.grade",
+          "tasks.delete",
+          "drive.read",
+          "drive.attach",
+          "classroom.sync",
+          "students.view",
+          "grades.manage",
+        ],
+        lastLogin: new Date().toISOString(),
+      };
+
+      res.json({
+        success: true,
+        user: activeUser,
+      });
+    } catch (err: any) {
+      console.error("Error in /api/auth/session:", err);
+      res.status(500).json({ success: false, error: err.message || "Error al sincronizar sesión" });
+    }
+  });
+
+  app.post("/api/auth/logout", (_req, res) => {
+    activeUser = null;
+    res.json({ success: true, message: "Sesión cerrada correctamente" });
+  });
+
+  app.get("/api/auth/permissions", (_req, res) => {
+    res.json({
+      role: activeUser?.role || "Docente Titular",
+      permissions: activeUser?.permissions || [
+        "tasks.create",
+        "tasks.assign",
+        "tasks.grade",
+        "tasks.delete",
+        "drive.read",
+        "drive.attach",
+        "classroom.sync",
+        "students.view",
+        "grades.manage",
+      ],
+      scopes: activeUser?.scopes || [],
+    });
+  });
+
   // Courses API
   app.get("/api/courses", (_req, res) => {
     // Sanitize any course that had "Ciencias Sociales" by mistake
@@ -1156,7 +1237,7 @@ async function startServer() {
         classroomSynced: true,
         classroomCourseId: incomingClassroomId || `gc-${Math.random().toString(36).substring(2, 7)}`,
         code: item.code || Math.random().toString(36).substring(2, 8),
-        section: item.section || "1°",
+        section: item.section || "1",
         orientation: item.orientation || undefined,
         division: item.division || undefined,
         schoolYear: item.schoolYear || "2026",

@@ -195,26 +195,35 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
               useVideo={true}
               className="w-11 h-11 rounded-xl shadow-md ring-2 ring-blue-500/40"
             />
-            <div className="flex items-center">
-              {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
-              <div
-                className={`px-3.5 py-1 rounded-xl border shadow-xs flex items-baseline transition-colors ${
-                  isDarkMode
-                    ? 'bg-blue-950/40 border-blue-400/30 shadow-blue-950/40'
-                    : 'bg-[#EFF6FF] border-[#BFDBFE] shadow-blue-100/50'
-                }`}
-              >
-                <span className="font-dancing text-2xl font-bold tracking-normal text-[#2563EB] leading-none inline-block">
-                  Docenc.
-                </span>
-                <span
-                  className={`font-space text-lg font-bold tracking-tight lowercase leading-none -ml-0.5 ${
-                    isDarkMode ? 'text-slate-100' : 'text-slate-900'
+            <div className="flex flex-col justify-center">
+              <div className="flex items-center">
+                {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
+                <div
+                  className={`px-3 py-0.5 rounded-xl border shadow-xs flex items-baseline transition-colors ${
+                    isDarkMode
+                      ? 'bg-blue-950/40 border-blue-400/30 shadow-blue-950/40'
+                      : 'bg-[#EFF6FF] border-[#BFDBFE] shadow-blue-100/50'
                   }`}
                 >
-                  ia
-                </span>
+                  <span className="font-dancing text-2xl font-bold tracking-normal text-[#2563EB] leading-none inline-block">
+                    Docenc.
+                  </span>
+                  <span
+                    className={`font-space text-lg font-bold tracking-tight lowercase leading-none -ml-0.5 ${
+                      isDarkMode ? 'text-slate-100' : 'text-slate-900'
+                    }`}
+                  >
+                    ia
+                  </span>
+                </div>
               </div>
+              <span
+                className={`text-[10px] tracking-wide font-medium mt-0.5 leading-none ${
+                  isDarkMode ? 'text-slate-400' : 'text-slate-500'
+                }`}
+              >
+                Gestor de Clase
+              </span>
             </div>
           </div>
 
@@ -319,7 +328,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
           </div>
 
           {/* 2. Nombre de la app: Docenc. e ia en recuadro con paleta pastel */}
-          <div className="my-2">
+          <div className="my-2 flex flex-col items-center">
             <div
               className={`inline-block px-8 sm:px-11 py-3 sm:py-4 rounded-2xl sm:rounded-3xl border shadow-xl transition-all ${
                 isDarkMode
@@ -339,6 +348,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                   ia
                 </span>
               </h1>
+            </div>
+
+            {/* Debajo de Docenc.ia: Gestor de Clase */}
+            <div className="mt-3">
+              <span
+                className={`inline-flex items-center gap-1.5 px-4 py-1 rounded-full text-xs sm:text-sm font-semibold tracking-wider uppercase border shadow-xs ${
+                  isDarkMode
+                    ? 'bg-slate-800/90 text-blue-300 border-blue-500/30'
+                    : 'bg-white text-blue-700 border-blue-200'
+                }`}
+              >
+                Gestor de Clase
+              </span>
             </div>
           </div>
 

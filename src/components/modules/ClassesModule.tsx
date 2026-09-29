@@ -57,6 +57,7 @@ import { gmailService } from '../../services/workspace/gmailService';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { calendarService } from '../../services/workspace/calendarService';
+import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -71,25 +72,24 @@ interface ClassesModuleProps {
 const LOCAL_DISPOSITION_KEY = 'fds_disposition_data_v2';
 const LOCAL_HISTORY_KEY = 'fds_disposition_history_v2';
 
-// Helper function to deduplicate history entries (removes duplicate records created with different timestamps)
+// Helper function to deduplicate history entries (only filters identical IDs or accidental double-clicks < 800ms, preserving repeated teacher actions)
 function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
   const result: StudentHistoryItem[] = [];
   const seenIds = new Set<string>();
 
   for (const item of list) {
-    if (seenIds.has(item.id)) continue;
+    if (!item.id || seenIds.has(item.id)) continue;
 
-    // A duplicate is an entry with the same studentId, category, action, and timestamp within 30s or same date within 90s
-    const isDuplicate = result.some(
+    // Filter only accidental rapid double-tap on the exact same button within 800ms
+    const isDoubleTap = result.some(
       (existing) =>
         existing.studentId === item.studentId &&
         existing.category === item.category &&
         existing.action === item.action &&
-        (Math.abs(existing.timestamp - item.timestamp) < 30000 ||
-          (existing.date === item.date && existing.action === item.action && Math.abs(existing.timestamp - item.timestamp) < 90000))
+        Math.abs(existing.timestamp - item.timestamp) < 800
     );
 
-    if (!isDuplicate) {
+    if (!isDoubleTap) {
       seenIds.add(item.id);
       result.push(item);
     }
@@ -806,9 +806,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // Permanent history controls (always visible in roster tab & history tab)
   const [permHistorySearch, setPermHistorySearch] = useState('');
-  const [permHistoryCategory, setPermHistoryCategory] = useState<'all' | 'Ausencia' | 'Llegada tarde' | 'Disposición'>('all');
+  const [permHistoryCategory, setPermHistoryCategory] = useState<'all' | 'Ausencia' | 'Llegada tarde' | 'Disposición' | 'Calificación' | 'Sistema'>('all');
   const [permHistoryDate, setPermHistoryDate] = useState<string>('all');
   const [isPermHistoryCollapsed, setIsPermHistoryCollapsed] = useState(false);
+
+  // Google Drive course folder structure state
+  const [isSettingUpDriveFolder, setIsSettingUpDriveFolder] = useState<boolean>(false);
+  const [driveFolderModalOpen, setDriveFolderModalOpen] = useState<boolean>(false);
+  const [courseDriveStructure, setCourseDriveStructure] = useState<{
+    mainFolder: { id: string; name: string; url: string };
+    attendanceFolder: { id: string; name: string; url: string };
+    gradesFolder: { id: string; name: string; url: string };
+    attendanceSheetUrl?: string;
+    gradesSheetUrl?: string;
+  } | null>(null);
 
   // Guaranteed two-way synchronization on startup to ensure long-term durability across days & months
   useEffect(() => {
@@ -1142,10 +1153,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       return {
         totalAbsences: Math.max(fromMap?.totalAbsences ?? 0, absences),
         totalLates: Math.max(fromMap?.totalLates ?? 0, lates),
-        totalDisposition:
-          fromMap?.totalDisposition !== undefined
-            ? Math.min(fromMap.totalDisposition, calculatedDisp)
-            : calculatedDisp,
+        totalDisposition: calculatedDisp,
       };
     }
     return fromMap || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
@@ -1740,12 +1748,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setPulsingStudentId(`disp-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = dispositionMap[student.id] || { totalAbsences: 0, totalDisposition: 10 };
+    const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const currentDisp = current.totalDisposition !== undefined ? current.totalDisposition : 10;
+    const newDisposition = Math.max(0, currentDisp - 1);
+
     const updatedMap: Record<string, StudentDispositionData> = {
       ...dispositionMap,
       [student.id]: {
         ...current,
-        totalDisposition: Math.max(0, current.totalDisposition - 1),
+        totalDisposition: newDisposition,
       },
     };
 
@@ -1761,6 +1772,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       action: finalAction,
       category: 'Disposición',
       pointsChange: -1,
+      previousDisposition: currentDisp,
+      resultingDisposition: newDisposition,
       timestamp,
       messageSent: false,
       messageText: '',
@@ -1770,7 +1783,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
     setHistoryList(updatedHistory);
 
-    setToastMessage(`Conducta registrada para ${student.lastName}, ${student.firstName}: ${finalAction} (-1 pto)`);
+    setToastMessage(`Conducta registrada para ${student.lastName}, ${student.firstName}: ${finalAction} (${currentDisp} → ${newDisposition} pts)`);
     setTimeout(() => setToastMessage(null), 3500);
 
     // Sync immediately in real time to Google Sheets
@@ -1791,14 +1804,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         timestamp,
       })
       .then((res) => {
-        if (res?.summary) {
-          setDispositionMap((prev) => ({ ...prev, [student.id]: res.summary }));
+        if (res?.summary && res.summary.totalDisposition !== undefined) {
+          setDispositionMap((prev) => ({
+            ...prev,
+            [student.id]: {
+              ...(prev[student.id] || current),
+              ...res.summary,
+              totalDisposition: res.summary.totalDisposition,
+            },
+          }));
         }
       })
       .catch(() => {});
 
     // Flujo de notificación al alumno cuando se baja 1 punto de disposición
-    const newDisposition = Math.max(0, current.totalDisposition - 1);
     const specificReasonTemplate = getTemplateForReason(finalAction);
     const activeConductPreset =
       savedPresets.find((p) => p.category === 'Disposición' && p.isDefault) ||
@@ -2146,7 +2165,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     if (!activeCourse) return;
     const updated: Record<string, StudentDispositionData> = { ...dispositionMap };
     courseStudents.forEach((st) => {
-      const current = updated[st.id] || { totalAbsences: 0, totalDisposition: 10 };
+      const current = updated[st.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
       updated[st.id] = {
         ...current,
         totalDisposition: 10,
@@ -2155,11 +2174,34 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     setDispositionMap(updated);
 
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const timestamp = Date.now();
+    const resetEntry: StudentHistoryItem = {
+      id: `rec-reset-${timestamp}`,
+      studentId: 'all',
+      studentName: 'Toda la clase',
+      courseId: activeCourse.id,
+      date,
+      time,
+      action: 'Reinicio general de puntaje de disposición a 10 puntos (Nuevo ciclo/período)',
+      category: 'Sistema',
+      pointsChange: 0,
+      timestamp,
+      messageSent: false,
+      messageText: '',
+      notificationMethod: 'none',
+    };
+    const updatedHistory = deduplicateHistory([resetEntry, ...historyList]);
+    setHistoryList(updatedHistory);
+
     setIsResetConfirmOpen(false);
     setToastMessage('Puntaje de disposición reiniciado a 10 para todos los estudiantes del curso.');
     setTimeout(() => setToastMessage(null), 3500);
 
-    triggerSheetsSync(updated, historyList);
+    triggerSheetsSync(updated, updatedHistory);
     api.resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition' }).catch(() => {});
   };
 
@@ -2317,6 +2359,29 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     const termLabel = term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const timestamp = Date.now();
+    const gradesEntry: StudentHistoryItem = {
+      id: `rec-grades-${timestamp}`,
+      studentId: 'all',
+      studentName: 'Toda la clase',
+      courseId: activeCourse.id,
+      date,
+      time,
+      action: `Notas de disposición enviadas a Calificaciones (${termLabel})`,
+      category: 'Calificación',
+      pointsChange: 0,
+      timestamp,
+      messageSent: false,
+      messageText: '',
+      notificationMethod: 'none',
+    };
+    const updatedHistory = deduplicateHistory([gradesEntry, ...historyList]);
+    setHistoryList(updatedHistory);
+
     setToastMessage(
       `✓ ¡Notas de disposición vinculadas con éxito en Calificaciones (${termLabel}) para ${transferredCount} estudiantes!`
     );
@@ -2326,6 +2391,91 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     if (shouldNavigateToGrades) {
       setActiveTab('grades');
+    }
+  };
+
+  // Google Drive Folder Structure Handler:
+  // Creates or finds:
+  // [Nombre de la Materia]
+  //   ├── Asistencia y Disposición (con hoja de Asistencia y Disposición)
+  //   └── Calificaciones (con hoja de Calificaciones)
+  const handleOpenCourseDriveFolder = async () => {
+    if (!activeCourse) return;
+    setIsSettingUpDriveFolder(true);
+    try {
+      // 1. Ensure course folder and subfolders exist in Google Drive
+      const structure = await driveService.setupCourseFolderStructure(
+        activeCourse.name,
+        activeCourse.driveFolderId
+      );
+
+      // 2. Synchronize sheets into their respective subfolders
+      let dispSheetUrl: string | undefined = activeCourse.dispositionSheetUrl;
+      let gradesSheetUrl: string | undefined = activeCourse.gradesSheetUrl;
+
+      // Sync disposition sheet to "Asistencia y Disposición" subfolder
+      try {
+        const dispRes = await sheetsService.syncDispositionSheet(
+          activeCourse,
+          courseStudents,
+          dispositionMap,
+          historyList,
+          activeCourse.dispositionSheetId,
+          structure.attendanceFolder.id
+        );
+        if (dispRes.url) dispSheetUrl = dispRes.url;
+      } catch (err) {
+        console.warn('Could not auto-sync disposition sheet to Drive folder:', err);
+      }
+
+      // Sync gradebook sheet to "Calificaciones" subfolder
+      try {
+        const evaluations = ['Diagnóstica', 'Trabajo Práctico 1', 'Evaluación Escrita', 'Desempeño'];
+        const gradesRes = await sheetsService.syncGradebookToSheet(
+          activeCourse.name,
+          courseStudents,
+          evaluations,
+          [],
+          structure.gradesFolder.id
+        );
+        if (gradesRes.url) gradesSheetUrl = gradesRes.url;
+      } catch (err) {
+        console.warn('Could not auto-sync gradebook sheet to Drive folder:', err);
+      }
+
+      // 3. Update course with drive folder metadata
+      const updatedCourseData: Partial<Course> = {
+        driveFolderId: structure.mainFolder.id,
+        driveFolderUrl: structure.mainFolder.url,
+        attendanceFolderId: structure.attendanceFolder.id,
+        attendanceFolderUrl: structure.attendanceFolder.url,
+        gradesFolderId: structure.gradesFolder.id,
+        gradesFolderUrl: structure.gradesFolder.url,
+        dispositionSheetUrl: dispSheetUrl,
+        gradesSheetUrl: gradesSheetUrl,
+      };
+
+      api.updateCourse(activeCourse.id, updatedCourseData).catch(() => {});
+      Object.assign(activeCourse, updatedCourseData);
+
+      setCourseDriveStructure({
+        ...structure,
+        attendanceSheetUrl: dispSheetUrl,
+        gradesSheetUrl: gradesSheetUrl,
+      });
+
+      // 4. Open the main folder in a new tab
+      window.open(structure.mainFolder.url, '_blank');
+
+      // 5. Also show confirmation modal with direct links to both subfolders and sheets
+      setDriveFolderModalOpen(true);
+      setToastMessage(`Carpeta de Drive "${activeCourse.name}" creada/abierta con sus 2 subcarpetas.`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } catch (err: any) {
+      console.error('Error creating Google Drive folders:', err);
+      setToastMessage('Aviso: Se intentó abrir Drive. Si no estás conectado, inicia sesión con Google.');
+    } finally {
+      setIsSettingUpDriveFolder(false);
     }
   };
 
@@ -2519,17 +2669,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 <span>{isSyncingClassroomRoster ? 'Sincronizando...' : 'Sincronizar Estudiantes'}</span>
               </button>
               <button
-                onClick={() => onNavigate('grades', activeCourse.id)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-emerald-950/40 hover:bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
-                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
-                }`}
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                Planilla Sheets
-              </button>
-              <button
                 onClick={() => onNavigate('classroom', activeCourse.id)}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
                   isDarkMode
@@ -2541,15 +2680,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 Classroom
               </button>
               <button
-                onClick={() => onNavigate('drive', activeCourse.id)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                type="button"
+                onClick={handleOpenCourseDriveFolder}
+                disabled={isSettingUpDriveFolder}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
                   isDarkMode
                     ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
-                    : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
                 }`}
+                title={`Crear y abrir carpeta en Google Drive ("${activeCourse.name}") con subcarpetas Asistencia y Disposición y Calificaciones`}
               >
-                <FolderClosed className="w-3.5 h-3.5 text-amber-400" />
-                Carpeta Drive
+                {isSettingUpDriveFolder ? (
+                  <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                ) : (
+                  <FolderClosed className="w-3.5 h-3.5 text-amber-500" />
+                )}
+                <span>{isSettingUpDriveFolder ? 'Abriendo Drive...' : 'Carpeta Drive'}</span>
               </button>
             </div>
           </div>
@@ -3489,6 +3635,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       >
                         Conducta ({courseHistory.filter((h) => h.category === 'Disposición').length})
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setPermHistoryCategory('Calificación')}
+                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                          permHistoryCategory === 'Calificación'
+                            ? 'bg-blue-600 text-white shadow-2xs'
+                            : isDarkMode
+                            ? 'bg-slate-800 text-blue-300 hover:bg-slate-700'
+                            : 'bg-white border border-neutral-200 text-blue-700 hover:bg-blue-50'
+                        }`}
+                      >
+                        Notas y Sistema ({courseHistory.filter((h) => h.category === 'Calificación' || h.category === 'Sistema').length})
+                      </button>
                     </div>
 
                     {/* Selector de Fecha y Buscador */}
@@ -3649,6 +3808,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                       <Clock className="w-3 h-3 text-amber-500" />
                                       Llegada tarde
                                     </span>
+                                  ) : item.category === 'Calificación' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/60">
+                                      <Award className="w-3 h-3 text-blue-500" />
+                                      Calificación
+                                    </span>
+                                  ) : item.category === 'Sistema' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60">
+                                      <RotateCcw className="w-3 h-3 text-indigo-500" />
+                                      Sistema
+                                    </span>
+                                  ) : item.category === 'Asistencia' ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
+                                      Presente
+                                    </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/60">
                                       Disposición
@@ -3661,12 +3835,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </td>
 
                                 <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                                  {isAbsence ? (
-                                    <span className="font-mono font-bold text-red-600 dark:text-red-400">+1 falta (0 ptos)</span>
+                                  {item.previousDisposition !== undefined && item.resultingDisposition !== undefined ? (
+                                    <span className="font-mono font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800/60">
+                                      {item.previousDisposition} → {item.resultingDisposition} pts
+                                    </span>
+                                  ) : isAbsence ? (
+                                    <span className="font-mono font-bold text-red-600 dark:text-red-400">+1 falta</span>
                                   ) : isLate ? (
-                                    <span className="font-mono font-bold text-amber-600 dark:text-amber-400">0 ptos</span>
+                                    <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Tardanza</span>
+                                  ) : item.pointsChange !== undefined && item.pointsChange !== 0 ? (
+                                    <span className="font-mono font-bold text-neutral-700 dark:text-slate-300">
+                                      {item.pointsChange > 0 ? `+${item.pointsChange}` : item.pointsChange} pto
+                                    </span>
                                   ) : (
-                                    <span className="font-mono font-bold text-neutral-700 dark:text-slate-300">-1 pto</span>
+                                    <span className="text-neutral-400 font-mono text-[11px]">-</span>
                                   )}
                                 </td>
 
@@ -7337,6 +7519,171 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               >
                 Guardar Configuración
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de confirmación y accesos directos a la Carpeta de Google Drive y sus 2 Subcarpetas */}
+      {driveFolderModalOpen && courseDriveStructure && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+              isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            {/* Header */}
+            <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-neutral-50 border-neutral-200'}`}>
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-amber-500/10 text-amber-500 border border-amber-500/20">
+                  <FolderClosed className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Carpeta de Google Drive</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">{activeCourse.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDriveFolderModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-neutral-200 dark:hover:bg-slate-800 text-neutral-400 hover:text-neutral-700 dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-4 text-xs">
+              <p className="text-neutral-600 dark:text-slate-300">
+                Se ha sincronizado la estructura oficial de la materia en tu <strong>Google Drive institucional</strong> con sus dos subcarpetas didácticas:
+              </p>
+
+              {/* Carpeta Principal */}
+              <div className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 ${
+                isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-amber-50/60 border-amber-200'
+              }`}>
+                <div className="flex items-center gap-2.5">
+                  <FolderClosed className="w-5 h-5 text-amber-500 shrink-0" />
+                  <div>
+                    <span className="font-bold text-neutral-900 dark:text-white text-xs block">
+                      📁 {courseDriveStructure.mainFolder.name}
+                    </span>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400">Carpeta principal de la cátedra</span>
+                  </div>
+                </div>
+                <a
+                  href={courseDriveStructure.mainFolder.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-colors shadow-2xs"
+                >
+                  <span>Abrir</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+
+              {/* Subcarpetas */}
+              <div className="space-y-2.5 pl-3 border-l-2 border-amber-300 dark:border-amber-700">
+                {/* 1. Asistencia y Disposición */}
+                <div className={`p-3 rounded-xl border ${
+                  isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-white border-neutral-200 shadow-2xs'
+                }`}>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <FolderClosed className="w-4 h-4 text-purple-500" />
+                      <span className="font-bold text-neutral-900 dark:text-white">
+                        1. {courseDriveStructure.attendanceFolder.name}
+                      </span>
+                    </div>
+                    <a
+                      href={courseDriveStructure.attendanceFolder.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-600 dark:text-purple-400 hover:underline"
+                    >
+                      <span>Abrir subcarpeta</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800 text-[11px]">
+                    <span className="text-neutral-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                      Hoja de Asistencia, Disposición e Historial
+                    </span>
+                    {courseDriveStructure.attendanceSheetUrl && (
+                      <a
+                        href={courseDriveStructure.attendanceSheetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+                      >
+                        Ver Sheet ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Calificaciones */}
+                <div className={`p-3 rounded-xl border ${
+                  isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-white border-neutral-200 shadow-2xs'
+                }`}>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2">
+                      <FolderClosed className="w-4 h-4 text-blue-500" />
+                      <span className="font-bold text-neutral-900 dark:text-white">
+                        2. {courseDriveStructure.gradesFolder.name}
+                      </span>
+                    </div>
+                    <a
+                      href={courseDriveStructure.gradesFolder.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      <span>Abrir subcarpeta</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800 text-[11px]">
+                    <span className="text-neutral-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500" />
+                      Planilla Matriz de Calificaciones y Notas
+                    </span>
+                    {courseDriveStructure.gradesSheetUrl && (
+                      <a
+                        href={courseDriveStructure.gradesSheetUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Ver Sheet ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className={`p-4 border-t flex justify-end gap-2 ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
+              <button
+                type="button"
+                onClick={() => setDriveFolderModalOpen(false)}
+                className={`px-4 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                  isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                }`}
+              >
+                Cerrar
+              </button>
+              <a
+                href={courseDriveStructure.mainFolder.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs cursor-pointer"
+              >
+                <span>Ir a Google Drive</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
 import { Course, Student, LessonPlan, GradeEntry, DriveResource, ClassroomTask, TeacherTask, StudentSubmission, TeacherProfile, CustomGem } from '../types';
+import { firestoreSync, getActiveUserId } from './firestoreSync';
 
 // LocalStorage keys for client-side persistence (Vercel & static deployment support)
 const STORAGE_KEYS = {
@@ -10,10 +11,19 @@ const STORAGE_KEYS = {
   DISPOSITION_HISTORY: 'docencia_disposition_history',
 };
 
+function getUserStorageKey(baseKey: string): string {
+  const userId = getActiveUserId();
+  return userId ? `${baseKey}_${userId}` : baseKey;
+}
+
 function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.COURSES);
+    const key = getUserStorageKey(STORAGE_KEYS.COURSES);
+    let raw = localStorage.getItem(key);
+    if (!raw && key !== STORAGE_KEYS.COURSES) {
+      raw = localStorage.getItem(STORAGE_KEYS.COURSES);
+    }
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) return parsed;
@@ -25,14 +35,19 @@ function getLocalCourses(): Course[] {
 function saveLocalCourses(coursesList: Course[]): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_KEYS.COURSES, JSON.stringify(coursesList));
+    const key = getUserStorageKey(STORAGE_KEYS.COURSES);
+    localStorage.setItem(key, JSON.stringify(coursesList));
   } catch (_) {}
 }
 
 function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
+    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
+    let raw = localStorage.getItem(key);
+    if (!raw && key !== STORAGE_KEYS.STUDENTS) {
+      raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
+    }
     if (raw) {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -46,10 +61,11 @@ function getLocalStudents(courseId?: string): Student[] {
 function saveLocalStudents(courseId: string, studentsList: Student[]): void {
   if (typeof window === 'undefined') return;
   try {
+    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     const all = getLocalStudents();
     const rest = all.filter((s) => s.courseId !== courseId);
     const updated = [...rest, ...studentsList];
-    localStorage.setItem(STORAGE_KEYS.STUDENTS, JSON.stringify(updated));
+    localStorage.setItem(key, JSON.stringify(updated));
   } catch (_) {}
 }
 
@@ -191,6 +207,19 @@ export const api = {
 
   // Courses
   async getCourses(): Promise<Course[]> {
+    const userId = getActiveUserId();
+    if (userId) {
+      try {
+        const cloudCourses = await firestoreSync.loadCourses(userId);
+        if (cloudCourses && cloudCourses.length > 0) {
+          saveLocalCourses(cloudCourses);
+          return cloudCourses;
+        }
+      } catch (err) {
+        console.warn('Firestore loadCourses failed, trying other sources:', err);
+      }
+    }
+
     try {
       const res = await fetch('/api/courses');
       if (res.ok) {
@@ -198,6 +227,9 @@ export const api = {
         if (Array.isArray(data.courses)) {
           if (data.courses.length > 0) {
             saveLocalCourses(data.courses);
+            if (userId) {
+              firestoreSync.saveCourses(userId, data.courses).catch(() => {});
+            }
             return data.courses;
           }
           const local = getLocalCourses();
@@ -224,6 +256,8 @@ export const api = {
           const list = getLocalCourses().filter((c) => c.id !== data.course.id);
           list.push(data.course);
           saveLocalCourses(list);
+          const userId = getActiveUserId();
+          if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
           return data.course;
         }
       }
@@ -251,6 +285,10 @@ export const api = {
     const list = getLocalCourses();
     list.push(newCourse);
     saveLocalCourses(list);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveCourses(userId, list).catch(() => {});
+    }
     return newCourse;
   },
 
@@ -265,6 +303,8 @@ export const api = {
         const data = await res.json();
         if (data && Array.isArray(data.courses)) {
           saveLocalCourses(data.courses);
+          const uId = getActiveUserId();
+          if (uId) firestoreSync.saveCourses(uId, data.courses).catch(() => {});
         }
         return data;
       }
@@ -326,6 +366,10 @@ export const api = {
     }
 
     saveLocalCourses(processed);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveCourses(userId, processed).catch((err) => console.warn('Firestore bulk import sync warning:', err));
+    }
 
     return {
       success: true,
@@ -352,6 +396,10 @@ export const api = {
       if (found) found.studentsCount = u.studentsCount;
     });
     saveLocalCourses(courses);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveCourses(userId, courses).catch(() => {});
+    }
     return { success: true, message: 'Alumnos sincronizados correctamente' };
   },
 
@@ -367,6 +415,8 @@ export const api = {
         if (data && data.course) {
           const list = getLocalCourses().map((c) => (c.id === id ? data.course : c));
           saveLocalCourses(list);
+          const userId = getActiveUserId();
+          if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
           return data;
         }
       }
@@ -375,6 +425,10 @@ export const api = {
     const list = getLocalCourses().map((c) => (c.id === id ? { ...c, ...patch } : c));
     saveLocalCourses(list);
     const updated = list.find((c) => c.id === id) || (patch as Course);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveCourses(userId, list).catch(() => {});
+    }
     return { success: true, course: updated };
   },
 
@@ -386,12 +440,18 @@ export const api = {
       if (res.ok) {
         const list = getLocalCourses().filter((c) => c.id !== id);
         saveLocalCourses(list);
+        const userId = getActiveUserId();
+        if (userId) firestoreSync.deleteCourse(userId, id).catch(() => {});
         return res.json();
       }
     } catch (_) {}
 
     const list = getLocalCourses().filter((c) => c.id !== id);
     saveLocalCourses(list);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.deleteCourse(userId, id).catch(() => {});
+    }
     return { success: true, message: 'Materia eliminada correctamente', courseId: id };
   },
 
@@ -430,6 +490,21 @@ export const api = {
 
   // Students
   async getStudents(courseId?: string): Promise<Student[]> {
+    const userId = getActiveUserId();
+    if (userId) {
+      try {
+        const cloudStudents = await firestoreSync.loadStudents(userId, courseId);
+        if (cloudStudents && cloudStudents.length > 0) {
+          if (courseId) {
+            saveLocalStudents(courseId, cloudStudents);
+          }
+          return cloudStudents;
+        }
+      } catch (err) {
+        console.warn('Firestore loadStudents error:', err);
+      }
+    }
+
     try {
       const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
       const res = await fetch(url);
@@ -439,6 +514,9 @@ export const api = {
           if (data.students.length > 0) {
             if (courseId) {
               saveLocalStudents(courseId, data.students);
+            }
+            if (userId && courseId) {
+              firestoreSync.saveStudents(userId, courseId, data.students).catch(() => {});
             }
             return data.students;
           }
@@ -465,6 +543,10 @@ export const api = {
         if (data && data.student) {
           const current = getLocalStudents(studentData.courseId);
           saveLocalStudents(studentData.courseId, [...current, data.student]);
+          const userId = getActiveUserId();
+          if (userId) {
+            firestoreSync.saveStudents(userId, studentData.courseId, [...current, data.student]).catch(() => {});
+          }
           return data.student;
         }
       }
@@ -483,33 +565,20 @@ export const api = {
     };
     const current = getLocalStudents(studentData.courseId);
     saveLocalStudents(studentData.courseId, [...current, newStudent]);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveStudents(userId, studentData.courseId, [...current, newStudent]).catch(() => {});
+    }
     return newStudent;
   },
 
   async syncCourseStudentsRoster(courseId: string, students: Partial<Student>[]): Promise<{ success: boolean; count: number; students: Student[] }> {
-    try {
-      const res = await fetch('/api/students/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courseId, students }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.students)) {
-          saveLocalStudents(courseId, data.students);
-        }
-        return data;
-      }
-    } catch (e) {
-      console.warn('Backend /api/students/sync unavailable, syncing to local storage:', e);
-    }
-
     const formattedStudents: Student[] = students.map((st, i) => {
       const firstName = st.firstName || 'Estudiante';
       const lastName = st.lastName || '';
       const fullName = `${firstName} ${lastName}`.trim();
       return {
-        id: st.id || st.userId || `st-${courseId}-${i + 1}`,
+        id: st.id || (st as any).userId || `st-${courseId}-${i + 1}`,
         courseId,
         firstName,
         lastName,
@@ -532,6 +601,26 @@ export const api = {
       saveLocalCourses(courses);
     }
 
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveStudents(userId, courseId, formattedStudents).catch((e) => console.warn('Firestore sync students warning:', e));
+      if (courseIndex >= 0) {
+        firestoreSync.saveCourses(userId, courses).catch(() => {});
+      }
+    }
+
+    try {
+      const res = await fetch('/api/students/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ courseId, students }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return data;
+      }
+    } catch (_) {}
+
     return {
       success: true,
       count: formattedStudents.length,
@@ -549,6 +638,22 @@ export const api = {
 
   // Attendance
   async saveAttendance(courseId: string, date: string, records: { studentId: string; status: string }[]): Promise<{ message: string }> {
+    if (typeof window !== 'undefined') {
+      try {
+        const key = getUserStorageKey(STORAGE_KEYS.ATTENDANCE);
+        const raw = localStorage.getItem(key) || (key !== STORAGE_KEYS.ATTENDANCE ? localStorage.getItem(STORAGE_KEYS.ATTENDANCE) : null) || '{}';
+        const parsed = JSON.parse(raw);
+        if (!parsed[courseId]) parsed[courseId] = {};
+        parsed[courseId][date] = records;
+        localStorage.setItem(key, JSON.stringify(parsed));
+      } catch (_) {}
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveAttendance(userId, courseId, date, records).catch((e) => console.warn('Firestore saveAttendance warning:', e));
+    }
+
     try {
       const res = await fetch('/api/attendance', {
         method: 'POST',
@@ -557,18 +662,9 @@ export const api = {
       });
       if (res.ok) return res.json();
     } catch (e) {
-      console.warn('Backend /api/attendance unavailable, saving locally:', e);
+      console.warn('Backend /api/attendance unavailable:', e);
     }
 
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEYS.ATTENDANCE) || '{}';
-        const parsed = JSON.parse(raw);
-        if (!parsed[courseId]) parsed[courseId] = {};
-        parsed[courseId][date] = records;
-        localStorage.setItem(STORAGE_KEYS.ATTENDANCE, JSON.stringify(parsed));
-      } catch (_) {}
-    }
     return { message: 'Asistencia registrada con éxito' };
   },
 
@@ -577,6 +673,18 @@ export const api = {
     disposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
     history: any[];
   }> {
+    const userId = getActiveUserId();
+    if (userId) {
+      try {
+        const cloud = await firestoreSync.loadDisposition(userId);
+        if (cloud.history.length > 0 || Object.keys(cloud.disposition).length > 0) {
+          return cloud;
+        }
+      } catch (err) {
+        console.warn('Firestore loadDisposition warning:', err);
+      }
+    }
+
     try {
       const params = new URLSearchParams();
       if (courseId) params.append('courseId', courseId);
@@ -589,9 +697,11 @@ export const api = {
     let history: any[] = [];
     if (typeof window !== 'undefined') {
       try {
-        const rawDisp = localStorage.getItem(STORAGE_KEYS.DISPOSITION);
+        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
+        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
+        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
         if (rawDisp) disposition = JSON.parse(rawDisp);
-        const rawHist = localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY);
+        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
         if (rawHist) history = JSON.parse(rawHist);
       } catch (_) {}
     }
@@ -604,7 +714,7 @@ export const api = {
     studentName: string;
     courseId: string;
     action: string;
-    category: 'Ausencia' | 'Disposición' | 'Llegada tarde';
+    category: 'Ausencia' | 'Disposición' | 'Llegada tarde' | 'Asistencia' | 'Calificación' | 'Sistema';
     detail?: string;
     date?: string;
     time?: string;
@@ -619,6 +729,61 @@ export const api = {
     summary: { totalAbsences: number; totalDisposition: number };
     allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
   }> {
+    let allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }> = {};
+    let history: any[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
+        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
+        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
+        if (rawDisp) allDisposition = JSON.parse(rawDisp);
+        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
+        if (rawHist) history = JSON.parse(rawHist);
+      } catch (_) {}
+    }
+
+    const current = (allDisposition[data.studentId] as any) || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    if (current.totalDisposition === undefined) current.totalDisposition = 10;
+    if (current.totalLates === undefined) current.totalLates = 0;
+    if (current.totalAbsences === undefined) current.totalAbsences = 0;
+
+    if (data.category === 'Ausencia') {
+      current.totalAbsences += 1;
+    } else if (data.category === 'Llegada tarde') {
+      current.totalLates = (current.totalLates || 0) + 1;
+    } else if (data.category === 'Disposición') {
+      current.totalDisposition = Math.max(0, current.totalDisposition - 1);
+    }
+    allDisposition[data.studentId] = current;
+
+    const newRecord = {
+      id: data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      ...data,
+      date: data.date || new Date().toISOString().split('T')[0],
+      timestamp: data.timestamp || Date.now(),
+    };
+    // Ensure repeated actions are preserved, only skip if identical ID already exists
+    const existingIndex = history.findIndex((h) => h.id === newRecord.id);
+    if (existingIndex === -1) {
+      history.unshift(newRecord);
+    } else {
+      history[existingIndex] = newRecord;
+    }
+
+    if (typeof window !== 'undefined') {
+      try {
+        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
+        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
+        localStorage.setItem(dKey, JSON.stringify(allDisposition));
+        localStorage.setItem(hKey, JSON.stringify(history));
+      } catch (_) {}
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
+    }
+
     try {
       const res = await fetch('/api/disposition/record', {
         method: 'POST',
@@ -627,42 +792,6 @@ export const api = {
       });
       if (res.ok) return res.json();
     } catch (_) {}
-
-    let allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }> = {};
-    let history: any[] = [];
-    if (typeof window !== 'undefined') {
-      try {
-        const rawDisp = localStorage.getItem(STORAGE_KEYS.DISPOSITION);
-        if (rawDisp) allDisposition = JSON.parse(rawDisp);
-        const rawHist = localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY);
-        if (rawHist) history = JSON.parse(rawHist);
-      } catch (_) {}
-    }
-
-    const current = allDisposition[data.studentId] || { totalAbsences: 0, totalDisposition: 0 };
-    if (data.category === 'Ausencia') {
-      current.totalAbsences += 1;
-    } else if (data.category === 'Llegada tarde') {
-      current.totalAbsences += 0.5;
-    } else if (data.category === 'Disposición') {
-      current.totalDisposition += 1;
-    }
-    allDisposition[data.studentId] = current;
-
-    const newRecord = {
-      id: data.id || `disp-${Date.now()}`,
-      ...data,
-      date: data.date || new Date().toISOString().split('T')[0],
-      timestamp: data.timestamp || Date.now(),
-    };
-    history.unshift(newRecord);
-
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(STORAGE_KEYS.DISPOSITION, JSON.stringify(allDisposition));
-        localStorage.setItem(STORAGE_KEYS.DISPOSITION_HISTORY, JSON.stringify(history));
-      } catch (_) {}
-    }
 
     return {
       success: true,

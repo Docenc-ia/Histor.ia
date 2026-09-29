@@ -1,0 +1,113 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Teacher profile in the platform",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "avatar": { "type": "string" },
+        "role": { "type": "string" },
+        "school": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Course": {
+      "title": "Course",
+      "description": "Academic course or subject assigned to the teacher",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "subject": { "type": "string" },
+        "grade": { "type": "string" },
+        "section": { "type": "string" },
+        "room": { "type": "string" },
+        "schedule": { "type": "string" },
+        "color": { "type": "string" },
+        "studentsCount": { "type": "number" },
+        "classroomSynced": { "type": "boolean" },
+        "classroomCourseId": { "type": "string" },
+        "code": { "type": "string" },
+        "schoolYear": { "type": "string" },
+        "driveFolderId": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Student enrolled in a course",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "courseId": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "email": { "type": "string" },
+        "avatar": { "type": "string" },
+        "attendanceRate": { "type": "number" },
+        "averageGrade": { "type": "number" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "courseId", "firstName"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily attendance record for a course",
+      "type": "object",
+      "properties": {
+        "courseId": { "type": "string" },
+        "date": { "type": "string" },
+        "records": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["courseId", "date"]
+    },
+    "DispositionRecord": {
+      "title": "DispositionRecord",
+      "description": "Student behavior, absence or tardiness record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "courseId": { "type": "string" },
+        "action": { "type": "string" },
+        "category": { "type": "string" },
+        "detail": { "type": "string" },
+        "date": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "messageSent": { "type": "boolean" },
+        "messageText": { "type": "string" },
+        "notificationMethod": { "type": "string" }
+      },
+      "required": ["id", "studentId", "category"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Teacher profile document"
+    },
+    "/users/{userId}/courses/{courseId}": {
+      "schema": "Course",
+      "description": "Courses belonging to the teacher"
+    },
+    "/users/{userId}/students/{studentId}": {
+      "schema": "Student",
+      "description": "Students belonging to the teacher courses"
+    },
+    "/users/{userId}/attendance/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Attendance history belonging to the teacher"
+    },
+    "/users/{userId}/disposition/{dispositionId}": {
+      "schema": "DispositionRecord",
+      "description": "Disposition records for the teacher's students"
+    }
+  }
+}

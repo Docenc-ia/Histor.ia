@@ -12,6 +12,15 @@ export interface Course {
   classroomCourseId?: string;
   classroomSynced?: boolean;
   driveFolderId?: string;
+  driveFolderUrl?: string;
+  attendanceFolderId?: string;
+  attendanceFolderUrl?: string;
+  gradesFolderId?: string;
+  gradesFolderUrl?: string;
+  dispositionSheetId?: string;
+  dispositionSheetUrl?: string;
+  gradesSheetId?: string;
+  gradesSheetUrl?: string;
   code?: string;
   gradeLevel?: string;
   studentCount?: number;
@@ -42,8 +51,10 @@ export interface StudentHistoryItem {
   date: string; // dd/MM/yyyy
   time: string; // HH:mm:ss
   action: string; // e.g. "Ausencia", "Llegada tarde", "Uso indebido de celular", "Otros: ..."
-  category: 'Ausencia' | 'Disposición' | 'Llegada tarde';
+  category: 'Ausencia' | 'Disposición' | 'Llegada tarde' | 'Asistencia' | 'Calificación' | 'Sistema';
   pointsChange?: number;
+  resultingDisposition?: number;
+  previousDisposition?: number;
   timestamp: number;
   messageSent?: boolean;
   messageText?: string;

@@ -1668,14 +1668,14 @@ async function startServer() {
 
     const targetTimestamp = clientTimestamp || Date.now();
 
-    // Check if duplicate entry already exists (by ID or same student + action within 20s)
+    // Check if duplicate entry already exists (strictly by same ID or accidental double click < 1s)
     const existing = studentHistoryList.find(
       (h) =>
         (clientRecordId && h.id === clientRecordId) ||
         (h.studentId === studentId &&
           h.category === category &&
           h.action === finalAction &&
-          Math.abs(h.timestamp - targetTimestamp) < 20000)
+          Math.abs(h.timestamp - targetTimestamp) < 1000)
     );
 
     if (existing) {

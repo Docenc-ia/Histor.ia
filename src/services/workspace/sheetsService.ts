@@ -6,6 +6,7 @@
 
 import { getCachedAccessToken } from './googleAuth';
 import { Student, GradeEntry, StudentHistoryItem, StudentDispositionData } from '../../types';
+import { driveService } from './driveService';
 
 export interface DispositionSheetResult {
   spreadsheetId: string;
@@ -24,7 +25,8 @@ export const sheetsService = {
     courseName: string,
     students: Student[],
     evaluations: string[],
-    grades: GradeEntry[]
+    grades: GradeEntry[],
+    folderId?: string
   ): Promise<{ spreadsheetId: string; url: string }> {
     const token = getCachedAccessToken();
     const sheetTitle = `📊 Planilla de Calificaciones - ${courseName}`;
@@ -82,6 +84,9 @@ export const sheetsService = {
 
         if (createRes.ok) {
           const sheetData = await createRes.json();
+          if (folderId) {
+            await driveService.moveFileToFolder(sheetData.spreadsheetId, folderId);
+          }
           return {
             spreadsheetId: sheetData.spreadsheetId,
             url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
@@ -146,7 +151,8 @@ export const sheetsService = {
     students: Student[],
     dispositionMap: Record<string, StudentDispositionData>,
     historyList: StudentHistoryItem[],
-    existingSpreadsheetId?: string
+    existingSpreadsheetId?: string,
+    folderId?: string
   ): Promise<DispositionSheetResult> {
     const token = getCachedAccessToken();
     const sheetTitle = `📋 Registro de Clase, Ausencias y Disposición - ${course.name}`;
@@ -376,6 +382,9 @@ export const sheetsService = {
 
         if (createRes.ok) {
           const sheetData = await createRes.json();
+          if (folderId) {
+            await driveService.moveFileToFolder(sheetData.spreadsheetId, folderId);
+          }
           return {
             spreadsheetId: sheetData.spreadsheetId,
             url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,

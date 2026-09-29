@@ -84,34 +84,34 @@ export const Header: React.FC<HeaderProps> = ({
             usePhoto={false}
             className="w-10 h-10 rounded-xl shadow-md ring-2 ring-blue-500/40"
           />
-          <div className="flex items-center gap-2">
-            {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
-            <div
-              className={`px-3 py-1 rounded-xl border shadow-xs flex items-baseline transition-colors ${
-                isDarkMode
-                  ? 'bg-blue-950/40 border-blue-500/30'
-                  : 'bg-[#EFF6FF] border-[#BFDBFE]'
-              }`}
-            >
-              <span className="font-dancing text-2xl font-bold tracking-normal text-[#3b82f6] leading-none inline-block">
-                Docenc.
-              </span>
-              <span
-                className={`font-space text-lg font-bold tracking-tight lowercase leading-none -ml-0.5 ${
-                  isDarkMode ? 'text-white' : 'text-slate-900'
+          <div className="flex flex-col justify-center">
+            <div className="flex items-center gap-2">
+              {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
+              <div
+                className={`px-2.5 py-0.5 rounded-lg border shadow-xs flex items-baseline transition-colors ${
+                  isDarkMode
+                    ? 'bg-blue-950/40 border-blue-500/30'
+                    : 'bg-[#EFF6FF] border-[#BFDBFE]'
                 }`}
               >
-                ia
-              </span>
+                <span className="font-dancing text-xl font-bold tracking-normal text-[#3b82f6] leading-none inline-block">
+                  Docenc.
+                </span>
+                <span
+                  className={`font-space text-base font-bold tracking-tight lowercase leading-none -ml-0.5 ${
+                    isDarkMode ? 'text-white' : 'text-slate-900'
+                  }`}
+                >
+                  ia
+                </span>
+              </div>
             </div>
             <span
-              className={`hidden lg:inline-block text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-lg border ${
-                isDarkMode
-                  ? 'bg-blue-900/30 text-blue-300 border-blue-800/60'
-                  : 'bg-blue-50 text-blue-700 border-blue-200/60'
+              className={`text-[10px] tracking-wide font-medium mt-0.5 leading-none ${
+                isDarkMode ? 'text-slate-400' : 'text-slate-500'
               }`}
             >
-              Workspace
+              Gestor de Clase
             </span>
           </div>
         </div>

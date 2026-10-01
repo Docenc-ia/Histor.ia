@@ -18,6 +18,7 @@ import {
   Award,
   Copy,
   ClipboardCheck,
+  ExternalLink,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
@@ -26,6 +27,10 @@ import {
   PreliminaryValuationModal,
   PreliminaryValuationRecord,
 } from './PreliminaryValuationModal';
+import { sheetsService } from '../../services/workspace/sheetsService';
+import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
+import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { copyTableToClipboard } from '../../utils/sheetsUtils';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -202,6 +207,61 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const categories = is2c ? categories2c : categories1c;
   const gradesMap = is2c ? gradesMap2c : gradesMap1c;
   const overallCalculation = is2c ? overallCalc2c : overallCalc1c;
+
+  const { token } = useWorkspaceAuth();
+  const [isSavingSheets, setIsSavingSheets] = useState(false);
+  const [sheetsSavedInfo, setSheetsSavedInfo] = useState<{
+    url?: string;
+    tabName: string;
+    isLiveGoogle: boolean;
+  } | null>(null);
+
+  const handleSaveCuatrimestreToSheets = async () => {
+    if (currentTerm === 'annual') return;
+    setIsSavingSheets(true);
+    setSheetsSavedInfo(null);
+    const termToSave = currentTerm as '1c' | '2c';
+    const catsToSave = is2c ? categories2c : categories1c;
+    const gradesToSave = is2c ? gradesMap2c : gradesMap1c;
+
+    try {
+      const res = await sheetsService.syncGradebookMatrixToSheet(
+        { id: courseId, name: courseName },
+        termToSave,
+        students,
+        catsToSave,
+        gradesToSave,
+        undefined,
+        undefined,
+        token || undefined
+      );
+
+      // Save term snapshot to Firestore for durable storage across sessions
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync
+          .saveTermSnapshot(userId, courseId, termToSave, {
+            courseId,
+            term: termToSave,
+            termLabel: termToSave === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+            categories: catsToSave,
+            gradesMap: gradesToSave,
+            updatedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+
+      setSheetsSavedInfo({
+        url: res.url,
+        tabName: res.tabName,
+        isLiveGoogle: res.isLiveGoogle,
+      });
+    } catch (err) {
+      console.warn('Error saving grades to sheets:', err);
+    } finally {
+      setIsSavingSheets(false);
+    }
+  };
 
   // Save changes to localStorage for active term
   const saveCategories = (newCategories: GradeCategory[]) => {
@@ -899,6 +959,49 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
                 <span>Descargar CSV</span>
               </button>
+
+              {/* Guardar Notas del Cuatrimestre en Google Sheets */}
+              <button
+                type="button"
+                onClick={handleSaveCuatrimestreToSheets}
+                disabled={isSavingSheets}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+                title="Guardar y registrar permanentemente las notas de este cuatrimestre en Google Sheets"
+              >
+                {isSavingSheets ? (
+                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-white" />
+                )}
+                <span>
+                  {isSavingSheets
+                    ? 'Guardando...'
+                    : `Guardar Notas en Sheets (${currentTerm === '2c' ? '2° C' : '1° C'})`}
+                </span>
+              </button>
+
+              {sheetsSavedInfo && (
+                sheetsSavedInfo.isLiveGoogle && sheetsSavedInfo.url ? (
+                  <a
+                    href={sheetsSavedInfo.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:underline"
+                    title="Abrir la pestaña con las notas guardadas en Google Sheets"
+                  >
+                    <ExternalLink className="w-3 h-3" />
+                    <span>Ver {sheetsSavedInfo.tabName}</span>
+                  </a>
+                ) : (
+                  <span
+                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800"
+                    title="Notas guardadas en la base de datos y preparadas para Sheets"
+                  >
+                    <Check className="w-3 h-3 text-blue-600 dark:text-blue-400" />
+                    <span>Guardado ({sheetsSavedInfo.tabName})</span>
+                  </span>
+                )
+              )}
             </div>
           </div>
 

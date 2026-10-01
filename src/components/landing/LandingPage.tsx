@@ -195,11 +195,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
               useVideo={true}
               className="w-11 h-11 rounded-xl shadow-md ring-2 ring-blue-500/40"
             />
-            <div className="flex flex-col justify-center">
-              <div className="flex items-center">
+            <div className="flex flex-col items-center justify-center text-center">
+              <div className="flex items-center justify-center">
                 {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
                 <div
-                  className={`px-3 py-0.5 rounded-xl border shadow-xs flex items-baseline transition-colors ${
+                  className={`px-3 py-0.5 rounded-xl border shadow-xs flex items-baseline justify-center transition-colors ${
                     isDarkMode
                       ? 'bg-blue-950/40 border-blue-400/30 shadow-blue-950/40'
                       : 'bg-[#EFF6FF] border-[#BFDBFE] shadow-blue-100/50'
@@ -218,7 +218,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                 </div>
               </div>
               <span
-                className={`text-[10px] tracking-wide font-medium mt-0.5 leading-none ${
+                className={`text-[10px] tracking-wide font-medium mt-1 leading-none text-center w-full ${
                   isDarkMode ? 'text-slate-400' : 'text-slate-500'
                 }`}
               >
@@ -351,9 +351,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
             </div>
 
             {/* Debajo de Docenc.ia: Gestor de Clase */}
-            <div className="mt-3">
+            <div className="mt-3 flex items-center justify-center text-center">
               <span
-                className={`inline-flex items-center gap-1.5 px-4 py-1 rounded-full text-xs sm:text-sm font-semibold tracking-wider uppercase border shadow-xs ${
+                className={`inline-flex items-center justify-center gap-1.5 px-4 py-1 rounded-full text-xs sm:text-sm font-semibold tracking-wider uppercase border shadow-xs ${
                   isDarkMode
                     ? 'bg-slate-800/90 text-blue-300 border-blue-500/30'
                     : 'bg-white text-blue-700 border-blue-200'

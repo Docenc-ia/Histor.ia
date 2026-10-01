@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Course, FormActivity, GradebookConsolidatedReport } from '../../types';
 import { api } from '../../services/api';
+import { isRealGoogleSpreadsheetId, copyTableToClipboard } from '../../utils/sheetsUtils';
 
 interface ActivitiesFormsFeedbackModuleProps {
   courses: Course[];
@@ -173,6 +174,27 @@ export const ActivitiesFormsFeedbackModule: React.FC<ActivitiesFormsFeedbackModu
       console.error('Error al exportar planilla Sheets:', err);
       setIsExportingSheets(false);
     }
+  };
+
+  const handleOpenReportSheets = async (report: GradebookConsolidatedReport) => {
+    const urlParts = (report.googleSheetsUrl || '').split('/d/');
+    const possibleId = urlParts?.[1]?.split('/')?.[0];
+    if (possibleId && isRealGoogleSpreadsheetId(possibleId)) {
+      window.open(report.googleSheetsUrl, '_blank');
+      return;
+    }
+
+    // Otherwise copy table to clipboard and open sheets.new
+    const headers = ['Estudiante', 'Promedio TPs', 'Promedio Exámenes', 'Nota Final', 'Condición'];
+    const rows = (report.records || []).map((st) => [
+      st.studentName,
+      st.tpAverage ?? '-',
+      st.examAverage ?? '-',
+      st.finalAverage ?? '-',
+      st.academicStatus ?? 'Regular',
+    ]);
+    await copyTableToClipboard(headers, rows);
+    window.open('https://sheets.new', '_blank');
   };
 
   return (
@@ -563,15 +585,15 @@ export const ActivitiesFormsFeedbackModule: React.FC<ActivitiesFormsFeedbackModu
                   </span>
                   <h4 className="text-base font-bold text-neutral-900">{activeReport.courseName}</h4>
                 </div>
-                <a
-                  href={activeReport.googleSheetsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm"
+                <button
+                  type="button"
+                  onClick={() => handleOpenReportSheets(activeReport)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-sm cursor-pointer"
+                  title="Abrir o exportar en Google Sheets"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   Abrir en Google Sheets
-                </a>
+                </button>
               </div>
 
               <div className="overflow-x-auto">

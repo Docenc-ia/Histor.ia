@@ -19,6 +19,7 @@ import { Course, FormActivity, GradebookConsolidatedReport } from '../../types';
 import { api } from '../../services/api';
 import { NotebookLmToolbar } from '../common/NotebookLmToolbar';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { isRealGoogleSpreadsheetId, copyTableToClipboard } from '../../utils/sheetsUtils';
 
 interface EvaluationsModuleProps {
   courseId: string;
@@ -140,6 +141,31 @@ export const EvaluationsModule: React.FC<EvaluationsModuleProps> = ({
       console.error('Error al exportar planilla Sheets:', err);
       setIsExportingSheets(false);
     }
+  };
+
+  const handleOpenReportSheets = async (report: GradebookConsolidatedReport) => {
+    // If the URL has a genuine spreadsheet ID
+    const urlParts = (report.googleSheetsUrl || '').split('/d/');
+    const possibleId = urlParts?.[1]?.split('/')?.[0];
+    if (possibleId && isRealGoogleSpreadsheetId(possibleId)) {
+      window.open(report.googleSheetsUrl, '_blank');
+      return;
+    }
+
+    // Otherwise, copy consolidated rows to clipboard and open sheets.new
+    const headers = ['Estudiante', 'TPs (40%)', 'Examen (50%)', 'Recup. (10%)', 'Final', 'Estado'];
+    const rows = (report.records || []).map((st) => [
+      st.studentName,
+      st.tpAverage ?? '-',
+      st.examAverage ?? '-',
+      st.retakeGrade ?? '-',
+      st.finalAverage ?? '-',
+      st.academicStatus ?? 'Regular',
+    ]);
+    await copyTableToClipboard(headers, rows);
+    window.open('https://sheets.new', '_blank');
+    setStatusMessage('¡Planilla copiada al portapapeles! Se abrió Google Sheets en una nueva pestaña. Presiona Ctrl+V para pegar tus datos.');
+    setTimeout(() => setStatusMessage(null), 6000);
   };
 
   const studentRecords = activeReport?.records || (activeReport as any)?.students || [];
@@ -562,19 +588,19 @@ export const EvaluationsModule: React.FC<EvaluationsModuleProps> = ({
                   </p>
                 </div>
 
-                <a
-                  href={activeReport.googleSheetsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={`px-3 py-1.5 border text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors ${
+                <button
+                  type="button"
+                  onClick={() => handleOpenReportSheets(activeReport)}
+                  className={`px-3 py-1.5 border text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer ${
                     isDarkMode
                       ? 'bg-emerald-950/40 hover:bg-emerald-950/60 border-emerald-800/60 text-emerald-300'
                       : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-800'
                   }`}
+                  title="Abrir o exportar en Google Sheets"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   Abrir en Google Sheets
-                </a>
+                </button>
               </div>
 
               <div className="overflow-x-auto">

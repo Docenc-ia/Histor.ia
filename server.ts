@@ -1708,13 +1708,22 @@ async function startServer() {
       // 1. Una asistencia / falta no cambia el puntaje de disposición
       pointsChange = 0;
     } else if (category === "Llegada tarde") {
-      // 2. Si el mismo día cambia a tarde, borrar automáticamente la falta previa de hoy
-      const todayAbsenceIdx = studentHistoryList.findIndex(
-        (h) => h.studentId === studentId && h.category === "Ausencia" && (h.date === date || h.courseId === courseId)
-      );
-      if (todayAbsenceIdx !== -1) {
-        studentHistoryList.splice(todayAbsenceIdx, 1);
-        current.totalAbsences = Math.max(0, current.totalAbsences - 1);
+      // 2. Si el mismo día cambia a tarde, borrar automáticamente las faltas previas de hoy
+      const toRemove: number[] = [];
+      studentHistoryList.forEach((h, idx) => {
+        if (
+          h.studentId === studentId &&
+          h.category === "Ausencia" &&
+          (h.date === date || (h.timestamp && new Date(h.timestamp).toDateString() === now.toDateString()))
+        ) {
+          toRemove.push(idx);
+        }
+      });
+      if (toRemove.length > 0) {
+        for (let i = toRemove.length - 1; i >= 0; i--) {
+          studentHistoryList.splice(toRemove[i], 1);
+        }
+        current.totalAbsences = Math.max(0, current.totalAbsences - toRemove.length);
       }
       current.totalLates = (current.totalLates || 0) + 1;
       pointsChange = 0;
@@ -1874,7 +1883,15 @@ async function startServer() {
         const raw = fs.readFileSync(SHEETS_CONFIG_FILE, "utf-8");
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") {
-          Object.assign(courseDispositionSheets, parsed);
+          for (const [cId, item] of Object.entries(parsed as any)) {
+            const spId = (item as any)?.spreadsheetId || "";
+            const isReal = spId && !spId.startsWith("sheet-") && !spId.startsWith("libreta-") && !spId.startsWith("mock-") && spId.length >= 25;
+            courseDispositionSheets[cId] = {
+              spreadsheetId: spId,
+              url: isReal ? ((item as any)?.url || `https://docs.google.com/spreadsheets/d/${spId}/edit`) : "",
+              lastSyncedAt: (item as any)?.lastSyncedAt || "",
+            };
+          }
         }
       }
     } catch (e) {
@@ -1906,9 +1923,10 @@ async function startServer() {
     if (!spreadsheetId) {
       return res.status(400).json({ error: "Falta spreadsheetId" });
     }
+    const isReal = spreadsheetId && !spreadsheetId.startsWith("sheet-") && !spreadsheetId.startsWith("libreta-") && !spreadsheetId.startsWith("mock-") && spreadsheetId.length >= 25;
     courseDispositionSheets[courseId] = {
       spreadsheetId,
-      url: url || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+      url: isReal ? (url || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`) : "",
       lastSyncedAt: lastSyncedAt || new Date().toISOString(),
     };
     saveSheetsConfigToDisk();

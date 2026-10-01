@@ -58,6 +58,9 @@ import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { calendarService } from '../../services/workspace/calendarService';
 import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
+import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
+import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
+import { isRealGoogleSpreadsheetId, copyTableToClipboard } from '../../utils/sheetsUtils';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -802,6 +805,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     lastSyncedAt?: string;
   } | null>(null);
   const [isSyncingSheet, setIsSyncingSheet] = useState(false);
+  const [isOpeningSheet, setIsOpeningSheet] = useState(false);
+  const [showSheetsConnectModal, setShowSheetsConnectModal] = useState(false);
+  const [sheetsModalFeedback, setSheetsModalFeedback] = useState<string | null>(null);
   const [historySubTab, setHistorySubTab] = useState<'incidents' | 'summary'>('incidents');
 
   // Permanent history controls (always visible in roster tab & history tab)
@@ -871,19 +877,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         .getCourseDispositionSheet(activeCourse.id)
         .then((data) => {
           if (!isMounted) return;
-          if (data?.spreadsheetId) {
+          if (data?.spreadsheetId && isRealGoogleSpreadsheetId(data.spreadsheetId)) {
             setSheetConfig({
               spreadsheetId: data.spreadsheetId,
               url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
-              isLiveGoogle: !data.spreadsheetId.startsWith('sheet-disp-'),
+              isLiveGoogle: true,
               lastSyncedAt: data.lastSyncedAt,
             });
           } else {
             const fallbackId = `sheet-disp-${activeCourse.id}`;
             setSheetConfig({
               spreadsheetId: fallbackId,
-              url: `https://docs.google.com/spreadsheets/d/${fallbackId}/edit`,
+              url: '',
               isLiveGoogle: false,
+              lastSyncedAt: data?.lastSyncedAt,
             });
           }
         })
@@ -905,34 +912,184 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const mapToUse = customMap || dispositionMap;
       const historyToUse = customHistory || historyList.filter((h) => h.courseId === activeCourse.id);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+      const realExistingId = isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId)
+        ? sheetConfig?.spreadsheetId
+        : undefined;
 
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
         mapToUse,
         historyToUse,
-        sheetConfig?.spreadsheetId
+        realExistingId,
+        undefined,
+        token || getCachedAccessToken() || undefined
       );
+
+      const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
 
       setSheetConfig({
         spreadsheetId: res.spreadsheetId,
-        url: res.url,
-        isLiveGoogle: res.isLiveGoogle,
+        url: isLive ? res.url : '',
+        isLiveGoogle: isLive,
         lastSyncedAt: res.updatedAt,
       });
 
-      api
-        .saveCourseDispositionSheet(activeCourse.id, {
-          spreadsheetId: res.spreadsheetId,
-          url: res.url,
-          lastSyncedAt: res.updatedAt,
-        })
-        .catch(() => {});
+      if (isLive) {
+        api
+          .saveCourseDispositionSheet(activeCourse.id, {
+            spreadsheetId: res.spreadsheetId,
+            url: res.url,
+            lastSyncedAt: res.updatedAt,
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       console.warn('Sync to Google Sheets error:', err);
     } finally {
       setIsSyncingSheet(false);
     }
+  };
+
+  // Safely open or initialize live Google Sheet without 404 dead links
+  const handleOpenGoogleSheet = async () => {
+    if (!activeCourse) return;
+
+    // 1. If we already have a confirmed live Google Sheet URL
+    if (sheetConfig?.isLiveGoogle && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) && sheetConfig.url) {
+      window.open(sheetConfig.url, '_blank');
+      return;
+    }
+
+    // 2. Check if we have an active Google OAuth token to create the live Sheet now
+    const activeToken = token || getCachedAccessToken();
+    const isAuthenticToken =
+      activeToken &&
+      activeToken.length > 20 &&
+      !activeToken.startsWith('google_workspace_token_') &&
+      !activeToken.startsWith('token_');
+
+    if (isAuthenticToken) {
+      setIsOpeningSheet(true);
+      try {
+        const mapToUse = dispositionMap;
+        const historyToUse = historyList.filter((h) => h.courseId === activeCourse.id);
+        const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+
+        const res = await sheetsService.syncDispositionSheet(
+          activeCourse,
+          currentStudents,
+          mapToUse,
+          historyToUse,
+          undefined,
+          activeCourse.attendanceFolderId,
+          activeToken
+        );
+
+        if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && res.url) {
+          setSheetConfig({
+            spreadsheetId: res.spreadsheetId,
+            url: res.url,
+            isLiveGoogle: true,
+            lastSyncedAt: res.updatedAt,
+          });
+
+          await api.saveCourseDispositionSheet(activeCourse.id, {
+            spreadsheetId: res.spreadsheetId,
+            url: res.url,
+            lastSyncedAt: res.updatedAt,
+          });
+
+          window.open(res.url, '_blank');
+          return;
+        }
+      } catch (err) {
+        console.warn('Could not auto-create live Google Sheet:', err);
+      } finally {
+        setIsOpeningSheet(false);
+      }
+    }
+
+    // 3. Otherwise show modal offering Google connection, sheets.new with copied data, or CSV download
+    setSheetsModalFeedback(null);
+    setShowSheetsConnectModal(true);
+  };
+
+  const handleConnectGoogleForSheets = async () => {
+    if (!activeCourse) return;
+    try {
+      setIsOpeningSheet(true);
+      setSheetsModalFeedback('Abriendo autenticación con Google...');
+      await loginWithGoogle();
+      setSheetsModalFeedback('Cuenta de Google conectada. Creando tu hoja de cálculo en Drive...');
+
+      const activeToken = token || getCachedAccessToken();
+      const mapToUse = dispositionMap;
+      const historyToUse = historyList.filter((h) => h.courseId === activeCourse.id);
+      const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+
+      const res = await sheetsService.syncDispositionSheet(
+        activeCourse,
+        currentStudents,
+        mapToUse,
+        historyToUse,
+        undefined,
+        activeCourse.attendanceFolderId,
+        activeToken || undefined
+      );
+
+      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && res.url) {
+        setSheetConfig({
+          spreadsheetId: res.spreadsheetId,
+          url: res.url,
+          isLiveGoogle: true,
+          lastSyncedAt: res.updatedAt,
+        });
+
+        await api.saveCourseDispositionSheet(activeCourse.id, {
+          spreadsheetId: res.spreadsheetId,
+          url: res.url,
+          lastSyncedAt: res.updatedAt,
+        });
+
+        setShowSheetsConnectModal(false);
+        window.open(res.url, '_blank');
+      }
+    } catch (err: any) {
+      setSheetsModalFeedback('Aviso: ' + (err?.message || 'No se pudo conectar'));
+    } finally {
+      setIsOpeningSheet(false);
+    }
+  };
+
+  const handleOpenInSheetsNew = async () => {
+    if (!activeCourse) return;
+    const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+    const headers = ['Estudiante', 'Email', 'Disposición', 'Faltas', 'Tardanzas', 'Estado'];
+    const rows = currentStudents.map((st) => {
+      const disp = dispositionMap[st.id];
+      const fullName = `${st.lastName || ''} ${st.firstName || ''}`.trim() || st.email;
+      const score = disp?.totalDisposition ?? 10;
+      return [
+        fullName,
+        st.email,
+        score,
+        disp?.totalAbsences ?? 0,
+        disp?.totalLates ?? 0,
+        score >= 7 ? 'Regular' : 'En observación',
+      ];
+    });
+    await copyTableToClipboard(headers, rows);
+    window.open('https://sheets.new', '_blank');
+    setSheetsModalFeedback('¡Datos copiados al portapapeles! Se abrió Google Sheets en una nueva pestaña. Presiona Ctrl+V para pegar.');
+  };
+
+  const handleDownloadCourseCsv = () => {
+    if (!activeCourse) return;
+    const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+    const currentHistory = historyList.filter((h) => h.courseId === activeCourse.id);
+    sheetsService.exportDispositionCsv(activeCourse.name, currentStudents, dispositionMap, currentHistory);
+    setSheetsModalFeedback('Archivo CSV descargado con éxito.');
   };
 
   // Sync to localStorage and guarantee server disk persistence
@@ -1151,8 +1308,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const calculatedDisp = Math.max(0, 10 - conductDrops);
 
       return {
-        totalAbsences: Math.max(fromMap?.totalAbsences ?? 0, absences),
-        totalLates: Math.max(fromMap?.totalLates ?? 0, lates),
+        totalAbsences: absences,
+        totalLates: lates,
         totalDisposition: calculatedDisp,
       };
     }
@@ -1957,9 +2114,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const handleRecordLateArrival = async (student: Student) => {
     const studentFullName = `${student.lastName}, ${student.firstName}`;
     const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const date = formatLocalDateDMY(now);
+    const time = formatLocalTimeHMS(now);
     const timestamp = Date.now();
     const id = `rec-late-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
 
@@ -1970,42 +2126,39 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
 
     // 2. Si el mismo día cambio a tarde automáticamente se borra la falta de hoy
-    let cleanHistory = [...historyList];
-    const todayAbsenceIndices: number[] = [];
-    cleanHistory.forEach((h, idx) => {
-      if (
+    const todayAbsencesToRemove: StudentHistoryItem[] = [];
+    const cleanHistory = historyList.filter((h) => {
+      const isToday =
         h.studentId === student.id &&
         h.category === 'Ausencia' &&
-        (h.date === date || (h.timestamp && new Date(h.timestamp).toDateString() === now.toDateString()))
-      ) {
-        todayAbsenceIndices.push(idx);
+        isSameCalendarDay(h.date, h.timestamp, now);
+      if (isToday) {
+        todayAbsencesToRemove.push(h);
+        return false;
       }
+      return true;
     });
 
-    let hadAbsenceToday = todayAbsenceIndices.length > 0;
-    if (hadAbsenceToday) {
-      for (let i = todayAbsenceIndices.length - 1; i >= 0; i--) {
-        const removedItem = cleanHistory[todayAbsenceIndices[i]];
-        cleanHistory.splice(todayAbsenceIndices[i], 1);
-        api.deleteDispositionHistory(removedItem.id).catch(() => {});
-      }
-    }
+    const hadAbsenceToday = todayAbsencesToRemove.length > 0;
 
-    const newAbsences = hadAbsenceToday
-      ? Math.max(0, current.totalAbsences - todayAbsenceIndices.length)
-      : current.totalAbsences;
-    
+    // Conteo exacto de ausencias restantes tras eliminar las de hoy
+    const remainingStudentAbsences = cleanHistory.filter(
+      (h) => h.studentId === student.id && h.category === 'Ausencia'
+    ).length;
+
+    const remainingStudentLates = cleanHistory.filter(
+      (h) => h.studentId === student.id && h.category === 'Llegada tarde'
+    ).length + 1;
+
     // Una asistencia no cambia el puntaje de disposición
-    const newDisposition = current.totalDisposition;
-
-    const newLates = (current.totalLates || 0) + 1;
+    const newDisposition = current.totalDisposition ?? 10;
 
     const updatedMap: Record<string, StudentDispositionData> = {
       ...dispositionMap,
       [student.id]: {
         ...current,
-        totalAbsences: newAbsences,
-        totalLates: newLates,
+        totalAbsences: remainingStudentAbsences,
+        totalLates: remainingStudentLates,
         totalDisposition: newDisposition,
       },
     };
@@ -2042,7 +2195,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     // Sync immediately in real time to Google Sheets
     triggerSheetsSync(updatedMap, updatedHistory);
 
-    // Persist to server
+    // Eliminar del backend, Firestore (Vercel) y localStorage
+    if (todayAbsencesToRemove.length > 0) {
+      for (const item of todayAbsencesToRemove) {
+        api.deleteDispositionHistory(item.id).catch(() => {});
+      }
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.deleteTodayAbsencesForStudent(userId, student.id, now).catch(() => {});
+    }
+
+    // Persist to server / Firestore / localStorage
     api
       .recordDisposition({
         id,
@@ -2057,7 +2222,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       })
       .then((res) => {
         if (res?.summary) {
-          setDispositionMap((prev) => ({ ...prev, [student.id]: res.summary }));
+          setDispositionMap((prev) => ({
+            ...prev,
+            [student.id]: {
+              ...prev[student.id],
+              totalAbsences: remainingStudentAbsences,
+              totalLates: remainingStudentLates,
+              totalDisposition: res.summary.totalDisposition ?? newDisposition,
+            },
+          }));
         }
       })
       .catch(() => {});
@@ -2382,8 +2555,60 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const updatedHistory = deduplicateHistory([gradesEntry, ...historyList]);
     setHistoryList(updatedHistory);
 
+    // 1. Registrar inmediatamente el evento en el Historial de Google Sheets
+    triggerSheetsSync(dispositionMap, updatedHistory);
+
+    // 2. Guardar y sincronizar la matriz completa de Calificaciones del cuatrimestre en Google Sheets
+    sheetsService
+      .syncGradebookMatrixToSheet(
+        activeCourse,
+        term,
+        courseStudents,
+        categories,
+        gradesMap,
+        sheetConfig?.spreadsheetId || activeCourse.gradesSheetId,
+        activeCourse.gradesFolderId,
+        token || getCachedAccessToken() || undefined
+      )
+      .catch((err) => {
+        console.warn('Could not auto-sync gradebook matrix to Google Sheets:', err);
+      });
+
+    // 3. Guardar snapshot del cierre de cuatrimestre en Firestore para respaldo permanente
+    const currentUserId = getActiveUserId();
+    if (currentUserId) {
+      firestoreSync
+        .saveTermSnapshot(currentUserId, courseId, term, {
+          courseId,
+          term,
+          termLabel,
+          categories,
+          gradesMap,
+          dispositionMap,
+          transferredCount,
+          date,
+          time,
+        })
+        .catch(() => {});
+    }
+
+    // 4. Persistir registro en backend / Firestore / localStorage
+    api
+      .recordDisposition({
+        id: gradesEntry.id,
+        studentId: 'all',
+        studentName: 'Toda la clase',
+        courseId: activeCourse.id,
+        action: gradesEntry.action,
+        category: 'Calificación',
+        date,
+        time,
+        timestamp,
+      })
+      .catch(() => {});
+
     setToastMessage(
-      `✓ ¡Notas de disposición vinculadas con éxito en Calificaciones (${termLabel}) para ${transferredCount} estudiantes!`
+      `✓ ¡Notas de disposición vinculadas en Calificaciones (${termLabel}) y guardadas en el historial de Google Sheets!`
     );
     setTimeout(() => setToastMessage(null), 5000);
 
@@ -2934,18 +3159,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               ) : (
                 /* History Tab Buttons */
                 <>
-                  {sheetConfig?.url && (
-                    <a
-                      href={sheetConfig.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
-                      title="Abrir hoja de cálculo oficial en Google Sheets"
-                    >
+                  <button
+                    type="button"
+                    onClick={handleOpenGoogleSheet}
+                    disabled={isOpeningSheet}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
+                    title="Abrir o crear hoja oficial en Google Sheets"
+                  >
+                    {isOpeningSheet ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Abrir en Google Sheets</span>
-                    </a>
-                  )}
+                    )}
+                    <span>Abrir en Google Sheets</span>
+                  </button>
 
                   <button
                     type="button"
@@ -3759,8 +3986,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           </tr>
                         ) : (
                           filteredPermHistory.map((item) => {
-                            const isAbsence = item.category === 'Ausencia';
-                            const isLate = item.category === 'Llegada tarde';
+                            const isAbsence =
+                              item.category === 'Ausencia' ||
+                              item.action === 'Ausencia' ||
+                              item.action?.toLowerCase().includes('ausencia') ||
+                              item.action?.toLowerCase().includes('falta');
+                            const isLate =
+                              item.category === 'Llegada tarde' ||
+                              item.action === 'Llegada tarde' ||
+                              item.action?.toLowerCase().includes('llegada tarde') ||
+                              item.action?.toLowerCase().includes('tarde') ||
+                              item.action?.toLowerCase().includes('tardanza');
 
                             return (
                               <tr
@@ -3835,15 +4071,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </td>
 
                                 <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                                  {item.previousDisposition !== undefined && item.resultingDisposition !== undefined ? (
+                                  {isAbsence ? (
+                                    <span className="font-mono font-bold text-red-600 dark:text-red-400">Ausencia</span>
+                                  ) : isLate ? (
+                                    <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Tardanza</span>
+                                  ) : item.previousDisposition !== undefined && item.resultingDisposition !== undefined ? (
                                     <span className="font-mono font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800/60">
                                       {item.previousDisposition} → {item.resultingDisposition} pts
                                     </span>
-                                  ) : isAbsence ? (
-                                    <span className="font-mono font-bold text-red-600 dark:text-red-400">+1 falta</span>
-                                  ) : isLate ? (
-                                    <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Tardanza</span>
-                                  ) : item.pointsChange !== undefined && item.pointsChange !== 0 ? (
+                                  ) : item.pointsChange !== undefined && item.pointsChange !== 0 && !isAbsence && !isLate ? (
                                     <span className="font-mono font-bold text-neutral-700 dark:text-slate-300">
                                       {item.pointsChange > 0 ? `+${item.pointsChange}` : item.pointsChange} pto
                                     </span>
@@ -4007,10 +4243,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           <Loader2 className="w-3 h-3 animate-spin" />
                           Sincronizando...
                         </span>
-                      ) : (
+                      ) : sheetConfig?.isLiveGoogle ? (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          {sheetConfig?.isLiveGoogle ? 'En vivo en Google Drive' : 'Sincronizado'}
+                          En vivo en Google Drive
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
+                          Guardado local
                         </span>
                       )}
                     </div>
@@ -4022,17 +4263,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 self-start md:self-center">
-                  {sheetConfig?.url && (
-                    <a
-                      href={sheetConfig.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs transition-all"
-                    >
+                  <button
+                    type="button"
+                    onClick={handleOpenGoogleSheet}
+                    disabled={isOpeningSheet}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold shadow-xs transition-all cursor-pointer"
+                    title="Abrir o sincronizar en Google Sheets"
+                  >
+                    {isOpeningSheet ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Abrir Google Sheet</span>
-                    </a>
-                  )}
+                    )}
+                    <span>Abrir Google Sheet</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => triggerSheetsSync()}
@@ -4237,25 +4481,56 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 {item.time}
                               </td>
                               <td className="py-3 px-4">
-                                <span
-                                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                                    item.category === 'Ausencia'
-                                      ? 'bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300 border border-red-200 dark:border-red-800'
-                                      : item.category === 'Llegada tarde'
-                                      ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
-                                      : 'bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
-                                  }`}
-                                >
-                                  {item.action}
-                                </span>
+                                {(() => {
+                                  const isItemAbsence =
+                                    item.category === 'Ausencia' ||
+                                    item.action === 'Ausencia' ||
+                                    item.action?.toLowerCase().includes('ausencia') ||
+                                    item.action?.toLowerCase().includes('falta');
+                                  const isItemLate =
+                                    item.category === 'Llegada tarde' ||
+                                    item.action === 'Llegada tarde' ||
+                                    item.action?.toLowerCase().includes('llegada tarde') ||
+                                    item.action?.toLowerCase().includes('tarde') ||
+                                    item.action?.toLowerCase().includes('tardanza');
+
+                                  return (
+                                    <span
+                                      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                                        isItemAbsence
+                                          ? 'bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300 border border-red-200 dark:border-red-800'
+                                          : isItemLate
+                                          ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+                                          : 'bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 border border-purple-200 dark:border-purple-800'
+                                      }`}
+                                    >
+                                      {item.action}
+                                    </span>
+                                  );
+                                })()}
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <span className="text-[11px] font-semibold opacity-80">
-                                  {item.category === 'Ausencia'
-                                    ? '+1 Ausencia (0 disp)'
-                                    : item.category === 'Llegada tarde'
-                                    ? 'Tardanza (0 ptos)'
-                                    : '-1 pto disposición'}
+                                  {(() => {
+                                    const isItemAbsence =
+                                      item.category === 'Ausencia' ||
+                                      item.action === 'Ausencia' ||
+                                      item.action?.toLowerCase().includes('ausencia') ||
+                                      item.action?.toLowerCase().includes('falta');
+                                    const isItemLate =
+                                      item.category === 'Llegada tarde' ||
+                                      item.action === 'Llegada tarde' ||
+                                      item.action?.toLowerCase().includes('llegada tarde') ||
+                                      item.action?.toLowerCase().includes('tarde') ||
+                                      item.action?.toLowerCase().includes('tardanza');
+
+                                    if (isItemAbsence) return 'Ausencia';
+                                    if (isItemLate) return 'Tardanza';
+                                    if (item.pointsChange !== undefined && item.pointsChange !== 0) {
+                                      return `${item.pointsChange > 0 ? '+' : ''}${item.pointsChange} pto`;
+                                    }
+                                    return '-';
+                                  })()}
                                 </span>
                               </td>
 
@@ -4976,15 +5251,39 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       </div>
 
                       <div className="flex items-center gap-2 self-end sm:self-center">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            item.category === 'Ausencia'
-                              ? 'bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300'
-                              : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
-                          }`}
-                        >
-                          {item.category === 'Ausencia' ? '+1 Ausencia (-1 disp)' : '-1 pto'}
-                        </span>
+                        {(() => {
+                          const isItemAbsence =
+                            item.category === 'Ausencia' ||
+                            item.action === 'Ausencia' ||
+                            item.action?.toLowerCase().includes('ausencia') ||
+                            item.action?.toLowerCase().includes('falta');
+                          const isItemLate =
+                            item.category === 'Llegada tarde' ||
+                            item.action === 'Llegada tarde' ||
+                            item.action?.toLowerCase().includes('llegada tarde') ||
+                            item.action?.toLowerCase().includes('tarde') ||
+                            item.action?.toLowerCase().includes('tardanza');
+
+                          return (
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                isItemAbsence
+                                  ? 'bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300'
+                                  : isItemLate
+                                  ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                                  : 'bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300'
+                              }`}
+                            >
+                              {isItemAbsence
+                                ? 'Ausencia'
+                                : isItemLate
+                                ? 'Tardanza'
+                                : item.pointsChange !== undefined && item.pointsChange !== 0
+                                ? `${item.pointsChange > 0 ? '+' : ''}${item.pointsChange} pto`
+                                : '-'}
+                            </span>
+                          );
+                        })()}
                         <button
                           type="button"
                           onClick={() => handleDeleteHistoryEntry(item)}
@@ -5632,7 +5931,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold">
-                    {isDisposition ? 'Notificar Observación de Conducta al Estudiante' : 'Notificar Ausencia y Descuento de Disposición'}
+                    {isDisposition ? 'Notificar Observación de Conducta al Estudiante' : 'Notificar Ausencia al Estudiante'}
                   </h3>
                   <p className="text-[11px] text-neutral-500 dark:text-slate-400">
                     {absenceNotifModal.student
@@ -7684,6 +7983,176 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 <span>Ir a Google Drive</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para Vincular / Abrir en Google Sheets */}
+      {showSheetsConnectModal && activeCourse && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+              isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            {/* Header */}
+            <div
+              className={`p-4 border-b flex items-center justify-between ${
+                isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-emerald-50/70 border-emerald-100'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Abrir en Google Sheets</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">{activeCourse.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSheetsConnectModal(false)}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-neutral-100 text-neutral-500'
+                }`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-5 space-y-4 text-xs">
+              <div
+                className={`p-3.5 rounded-xl border flex items-start gap-3 ${
+                  isDarkMode
+                    ? 'bg-slate-850/80 border-slate-750 text-slate-300'
+                    : 'bg-neutral-50 border-neutral-200 text-neutral-600'
+                }`}
+              >
+                <Info className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-neutral-900 dark:text-white mb-0.5">
+                    ¿Cómo deseas acceder a tu planilla?
+                  </p>
+                  <p className="leading-relaxed">
+                    Para crear y sincronizar la hoja oficial en tiempo real dentro de tu Google Drive, conecta tu cuenta de Google Institucional. También puedes abrir una hoja nueva con tus datos ya copiados o descargar el archivo CSV.
+                  </p>
+                </div>
+              </div>
+
+              {sheetsModalFeedback && (
+                <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2">
+                  <Check className="w-4 h-4 shrink-0 text-emerald-600" />
+                  <span>{sheetsModalFeedback}</span>
+                </div>
+              )}
+
+              <div className="space-y-2.5 pt-1">
+                {/* Option 1: Connect Google */}
+                <button
+                  type="button"
+                  onClick={handleConnectGoogleForSheets}
+                  disabled={isOpeningSheet}
+                  className="w-full p-3 rounded-xl border flex items-center justify-between text-left transition-all cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white font-semibold shadow-xs disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-2.5">
+                    {isOpeningSheet ? (
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    ) : (
+                      <svg className="w-4 h-4" viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                        />
+                        <path
+                          fill="currentColor"
+                          d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                        />
+                        <path
+                          fill="currentColor"
+                          d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                        />
+                        <path
+                          fill="currentColor"
+                          d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                        />
+                      </svg>
+                    )}
+                    <div>
+                      <span className="block text-xs font-bold">Vincular con Cuenta de Google</span>
+                      <span className="block text-[10px] text-emerald-100 font-normal">
+                        Crea la hoja oficial en tu Drive con sincronización en vivo
+                      </span>
+                    </div>
+                  </div>
+                  <ExternalLink className="w-4 h-4 text-emerald-100" />
+                </button>
+
+                {/* Option 2: sheets.new with copied data */}
+                <button
+                  type="button"
+                  onClick={handleOpenInSheetsNew}
+                  className={`w-full p-3 rounded-xl border flex items-center justify-between text-left transition-all cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-200'
+                      : 'bg-white hover:bg-neutral-50 border-neutral-200 text-neutral-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+                    <div>
+                      <span className="block text-xs font-bold">Abrir Hoja Nueva con Datos Copiados</span>
+                      <span className="block text-[10px] text-neutral-500 dark:text-slate-400 font-normal">
+                        Abre sheets.new y copia los datos al portapapeles (pegar con Ctrl+V)
+                      </span>
+                    </div>
+                  </div>
+                  <Copy className="w-4 h-4 text-neutral-400" />
+                </button>
+
+                {/* Option 3: Download CSV */}
+                <button
+                  type="button"
+                  onClick={handleDownloadCourseCsv}
+                  className={`w-full p-3 rounded-xl border flex items-center justify-between text-left transition-all cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800/80 hover:bg-slate-800 border-slate-700 text-slate-200'
+                      : 'bg-white hover:bg-neutral-50 border-neutral-200 text-neutral-800'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Download className="w-4 h-4 text-blue-500" />
+                    <div>
+                      <span className="block text-xs font-bold">Descargar archivo CSV</span>
+                      <span className="block text-[10px] text-neutral-500 dark:text-slate-400 font-normal">
+                        Descarga toda la nómina y el historial listo para Excel
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-neutral-400" />
+                </button>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div
+              className={`p-3.5 border-t flex justify-end ${
+                isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setShowSheetsConnectModal(false)}
+                className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
+                  isDarkMode
+                    ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                }`}
+              >
+                Cerrar
+              </button>
             </div>
           </div>
         </div>

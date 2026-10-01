@@ -84,11 +84,11 @@ export const Header: React.FC<HeaderProps> = ({
             usePhoto={false}
             className="w-10 h-10 rounded-xl shadow-md ring-2 ring-blue-500/40"
           />
-          <div className="flex flex-col justify-center">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-col items-center justify-center text-center">
+            <div className="flex items-center justify-center">
               {/* Pastel badge holding Docenc. in Dancing Script Bold and ia in Space Grotesk Bold */}
               <div
-                className={`px-2.5 py-0.5 rounded-lg border shadow-xs flex items-baseline transition-colors ${
+                className={`px-2.5 py-0.5 rounded-lg border shadow-xs flex items-baseline justify-center transition-colors ${
                   isDarkMode
                     ? 'bg-blue-950/40 border-blue-500/30'
                     : 'bg-[#EFF6FF] border-[#BFDBFE]'
@@ -107,7 +107,7 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             </div>
             <span
-              className={`text-[10px] tracking-wide font-medium mt-0.5 leading-none ${
+              className={`text-[10px] tracking-wide font-medium mt-1 leading-none text-center w-full ${
                 isDarkMode ? 'text-slate-400' : 'text-slate-500'
               }`}
             >

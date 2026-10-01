@@ -18,6 +18,7 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Course, Student } from '../types';
 import { auth } from './workspace/googleAuth';
+import { isSameCalendarDay } from '../utils/dateUtils';
 
 // Initialize Firebase App
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -194,6 +195,52 @@ export const firestoreSync = {
   },
 
   /**
+   * Delete a student disposition / absence incident from Firestore
+   */
+  async deleteDisposition(userId: string, recordId: string): Promise<void> {
+    if (!userId || !recordId) return;
+    try {
+      const ref = doc(db, 'users', userId, 'disposition', recordId);
+      await deleteDoc(ref);
+    } catch (err) {
+      console.warn('Error deleting disposition from Firestore:', err);
+    }
+  },
+
+  /**
+   * Delete any absence records for a student recorded today in Firestore
+   */
+  async deleteTodayAbsencesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
+    if (!userId || !studentId) return [];
+    try {
+      const col = collection(db, 'users', userId, 'disposition');
+      const snap = await getDocs(col);
+      const deletedIds: string[] = [];
+      const deletePromises: Promise<void>[] = [];
+
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (
+          data.studentId === studentId &&
+          data.category === 'Ausencia' &&
+          isSameCalendarDay(data.date, data.timestamp, targetDate)
+        ) {
+          deletedIds.push(docSnap.id);
+          deletePromises.push(deleteDoc(docSnap.ref));
+        }
+      });
+
+      if (deletePromises.length > 0) {
+        await Promise.all(deletePromises);
+      }
+      return deletedIds;
+    } catch (err) {
+      console.warn('Error deleting today absences from Firestore:', err);
+      return [];
+    }
+  },
+
+  /**
    * Load disposition history from Firestore
    */
   async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
@@ -206,7 +253,11 @@ export const firestoreSync = {
 
       snap.forEach((docSnap) => {
         const data = docSnap.data();
-        history.push(data);
+        const item: any = { id: docSnap.id, ...data };
+        if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
+          item.pointsChange = 0;
+        }
+        history.push(item);
 
         const studentId = data.studentId;
         if (studentId) {
@@ -229,6 +280,55 @@ export const firestoreSync = {
     } catch (err) {
       console.warn('Error loading disposition from Firestore:', err);
       return { disposition: {}, history: [] };
+    }
+  },
+
+  /**
+   * Save a cuatrimestre closure snapshot (final grades, absences, lates, history)
+   */
+  async saveTermSnapshot(
+    userId: string,
+    courseId: string,
+    term: string,
+    snapshotData: any
+  ): Promise<void> {
+    if (!userId || !courseId || !term) return;
+    try {
+      const docId = `${courseId}_${term}`;
+      const ref = doc(db, 'users', userId, 'snapshots', docId);
+      await setDoc(ref, {
+        ...snapshotData,
+        courseId,
+        term,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Error saving term snapshot to Firestore:', err);
+    }
+  },
+
+  /**
+   * Load cuatrimestre closure snapshots for a course
+   */
+  async loadTermSnapshots(
+    userId: string,
+    courseId: string
+  ): Promise<Record<string, any>> {
+    if (!userId || !courseId) return {};
+    try {
+      const col = collection(db, 'users', userId, 'snapshots');
+      const snap = await getDocs(col);
+      const snapshots: Record<string, any> = {};
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.courseId === courseId && data.term) {
+          snapshots[data.term] = data;
+        }
+      });
+      return snapshots;
+    } catch (err) {
+      console.warn('Error loading term snapshots from Firestore:', err);
+      return {};
     }
   },
 };

@@ -1,5 +1,7 @@
 import { Course, Student, LessonPlan, GradeEntry, DriveResource, ClassroomTask, TeacherTask, StudentSubmission, TeacherProfile, CustomGem } from '../types';
 import { firestoreSync, getActiveUserId } from './firestoreSync';
+import { isSameCalendarDay } from '../utils/dateUtils';
+import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 
 // LocalStorage keys for client-side persistence (Vercel & static deployment support)
 const STORAGE_KEYS = {
@@ -690,7 +692,10 @@ export const api = {
       if (courseId) params.append('courseId', courseId);
       if (studentId) params.append('studentId', studentId);
       const res = await fetch(`/api/disposition?${params.toString()}`);
-      if (res.ok) return res.json();
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
     } catch (_) {}
 
     let disposition: Record<string, { totalAbsences: number; totalDisposition: number }> = {};
@@ -747,10 +752,33 @@ export const api = {
     if (current.totalLates === undefined) current.totalLates = 0;
     if (current.totalAbsences === undefined) current.totalAbsences = 0;
 
+    const userId = getActiveUserId();
+
     if (data.category === 'Ausencia') {
       current.totalAbsences += 1;
     } else if (data.category === 'Llegada tarde') {
       current.totalLates = (current.totalLates || 0) + 1;
+
+      // Si el mismo día tenía una falta previa registrada, eliminarla automáticamente (el alumno llegó a clase)
+      const now = new Date();
+      const isTodayAbsence = (h: any) => {
+        if (h.studentId !== data.studentId || h.category !== 'Ausencia') return false;
+        return isSameCalendarDay(h.date, h.timestamp, now);
+      };
+
+      const todayAbsences = history.filter(isTodayAbsence);
+      if (todayAbsences.length > 0) {
+        history = history.filter((h) => !isTodayAbsence(h));
+        current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - todayAbsences.length);
+        if (userId) {
+          todayAbsences.forEach((a) => {
+            firestoreSync.deleteDisposition(userId, a.id).catch(() => {});
+          });
+        }
+      }
+      if (userId) {
+        firestoreSync.deleteTodayAbsencesForStudent(userId, data.studentId, now).catch(() => {});
+      }
     } else if (data.category === 'Disposición') {
       current.totalDisposition = Math.max(0, current.totalDisposition - 1);
     }
@@ -759,6 +787,12 @@ export const api = {
     const newRecord = {
       id: data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       ...data,
+      pointsChange:
+        data.category === 'Ausencia' || data.category === 'Llegada tarde'
+          ? 0
+          : data.category === 'Disposición'
+          ? -1
+          : 0,
       date: data.date || new Date().toISOString().split('T')[0],
       timestamp: data.timestamp || Date.now(),
     };
@@ -779,7 +813,6 @@ export const api = {
       } catch (_) {}
     }
 
-    const userId = getActiveUserId();
     if (userId) {
       firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
     }
@@ -790,7 +823,10 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      if (res.ok) return res.json();
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
     } catch (_) {}
 
     return {
@@ -819,12 +855,64 @@ export const api = {
     return res.json();
   },
 
-  async deleteDispositionHistory(id: string): Promise<{ success: boolean; summary: any }> {
-    const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) throw new Error('Error al revertir registro de historial');
-    return res.json();
+  async deleteDispositionHistory(id: string): Promise<{ success: boolean; summary?: any }> {
+    let currentSummary: any = null;
+    let studentIdToDelete: string | null = null;
+
+    if (typeof window !== 'undefined') {
+      try {
+        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
+        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
+        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
+        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
+
+        let allDisposition = rawDisp ? JSON.parse(rawDisp) : {};
+        let history = rawHist ? JSON.parse(rawHist) : [];
+
+        const targetItem = history.find((h: any) => h.id === id);
+        if (targetItem) {
+          studentIdToDelete = targetItem.studentId;
+          // Remove from history
+          history = history.filter((h: any) => h.id !== id);
+
+          // Revert impact in allDisposition
+          if (studentIdToDelete && allDisposition[studentIdToDelete]) {
+            const current = allDisposition[studentIdToDelete];
+            if (targetItem.category === 'Ausencia') {
+              current.totalAbsences = Math.max(0, (current.totalAbsences || 1) - 1);
+            } else if (targetItem.category === 'Llegada tarde') {
+              current.totalLates = Math.max(0, (current.totalLates || 1) - 1);
+            } else if (targetItem.category === 'Disposición') {
+              current.totalDisposition = Math.min(10, (current.totalDisposition ?? 9) + 1);
+            }
+            allDisposition[studentIdToDelete] = current;
+            currentSummary = current;
+          }
+
+          localStorage.setItem(dKey, JSON.stringify(allDisposition));
+          localStorage.setItem(hKey, JSON.stringify(history));
+        }
+      } catch (err) {
+        console.warn('Error deleting disposition history locally:', err);
+      }
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.deleteDisposition(userId, id).catch((e) => console.warn('Firestore deleteDisposition error:', e));
+    }
+
+    try {
+      const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
+    } catch (_) {}
+
+    return { success: true, summary: currentSummary };
   },
 
   async resetDisposition(data: {
@@ -862,29 +950,74 @@ export const api = {
     url?: string;
     lastSyncedAt?: string;
   }> {
+    const localKey = `fds_course_disposition_sheet_${courseId}`;
+    let cached: any = null;
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(localKey);
+        if (raw) cached = JSON.parse(raw);
+      } catch (_) {}
+    }
     try {
       const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`);
-      if (!res.ok) return {};
-      return await res.json();
-    } catch {
-      return {};
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data?.spreadsheetId) {
+          const isReal = isRealGoogleSpreadsheetId(data.spreadsheetId);
+          const sanitized = {
+            ...data,
+            isLiveGoogle: isReal,
+            url: isReal ? (data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`) : '',
+          };
+          if (typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(localKey, JSON.stringify(sanitized));
+            } catch (_) {}
+          }
+          return sanitized;
+        }
+      }
+    } catch (_) {}
+    if (cached?.spreadsheetId) {
+      const isReal = isRealGoogleSpreadsheetId(cached.spreadsheetId);
+      return {
+        ...cached,
+        isLiveGoogle: isReal,
+        url: isReal ? cached.url : '',
+      };
     }
+    return {};
   },
 
   async saveCourseDispositionSheet(
     courseId: string,
-    data: { spreadsheetId: string; url: string; lastSyncedAt?: string }
+    data: { spreadsheetId: string; url?: string; lastSyncedAt?: string }
   ): Promise<{ success: boolean }> {
+    const localKey = `fds_course_disposition_sheet_${courseId}`;
+    const isReal = isRealGoogleSpreadsheetId(data.spreadsheetId);
+    const sanitizedData = {
+      ...data,
+      url: isReal ? (data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`) : '',
+    };
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(localKey, JSON.stringify(sanitizedData));
+      } catch (_) {}
+    }
     try {
       const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(sanitizedData),
       });
-      if (!res.ok) return { success: false };
-      return await res.json();
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
+      return { success: true };
     } catch {
-      return { success: false };
+      return { success: true };
     }
   },
 

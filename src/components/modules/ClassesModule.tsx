@@ -767,6 +767,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // Confirmation modal for resetting points
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
+  const [resetModalStudentId, setResetModalStudentId] = useState<string>('all');
+  const [resetModalClearHistory, setResetModalClearHistory] = useState<boolean>(false);
+
+  // Single student reset confirmation modal
+  const [studentForSingleReset, setStudentForSingleReset] = useState<Student | null>(null);
+  const [singleResetClearHistory, setSingleResetClearHistory] = useState<boolean>(false);
 
   // Modal y cuatrimestre seleccionado para mandar nota de disposición a Calificaciones
   const [isSendDispositionModalOpen, setIsSendDispositionModalOpen] = useState(false);
@@ -2028,57 +2034,131 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setConductRecordModal({ isOpen: false, student: null, customReason: '', saveToOptions: false });
   };
 
-  // 4. Eliminar entrada errónea del historial (revierte el punto o ausencia)
+  // 4. Eliminar entrada errónea del historial (revierte el punto sacado, o quita la ausencia o tardanza)
   const handleDeleteHistoryEntry = async (item: StudentHistoryItem) => {
-    // Rollback locally
-    let updatedMap = { ...dispositionMap };
-    const current = updatedMap[item.studentId];
-    if (current) {
-      if (item.category === 'Ausencia') {
-        // La asistencia no modifica la disposición
-        updatedMap[item.studentId] = {
-          ...current,
-          totalAbsences: Math.max(0, current.totalAbsences - 1),
-        };
-      } else if (item.category === 'Disposición') {
-        updatedMap[item.studentId] = {
-          ...current,
-          totalDisposition: Math.min(10, current.totalDisposition + 1),
-        };
-      } else if (item.category === 'Llegada tarde') {
-        updatedMap[item.studentId] = {
-          ...current,
-          totalLates: Math.max(0, (current.totalLates || 1) - 1),
-        };
-      }
+    const isAbsence =
+      item.category === 'Ausencia' ||
+      item.action === 'Ausencia' ||
+      item.action?.toLowerCase().includes('ausencia') ||
+      item.action?.toLowerCase().includes('falta');
+
+    const isLate =
+      item.category === 'Llegada tarde' ||
+      item.action === 'Llegada tarde' ||
+      item.action?.toLowerCase().includes('llegada tarde') ||
+      item.action?.toLowerCase().includes('tardanza') ||
+      item.action?.toLowerCase().includes('tarde');
+
+    let pointsToReturn = 0;
+    if (item.pointsChange !== undefined && item.pointsChange < 0) {
+      pointsToReturn = Math.abs(item.pointsChange);
+    } else if (
+      item.previousDisposition !== undefined &&
+      item.resultingDisposition !== undefined &&
+      item.previousDisposition > item.resultingDisposition
+    ) {
+      pointsToReturn = item.previousDisposition - item.resultingDisposition;
+    } else if (
+      item.category === 'Disposición' ||
+      (!isAbsence && !isLate && item.category !== 'Sistema' && item.category !== 'Calificación')
+    ) {
+      pointsToReturn = 1;
     }
+
+    let updatedMap = { ...dispositionMap };
+    const current = updatedMap[item.studentId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+
+    let newAbsences = current.totalAbsences;
+    let newLates = current.totalLates || 0;
+    let newDisposition = current.totalDisposition !== undefined ? current.totalDisposition : 10;
+    const actionsTaken: string[] = [];
+
+    if (isAbsence) {
+      newAbsences = Math.max(0, current.totalAbsences - 1);
+      actionsTaken.push('se restó la ausencia');
+    }
+
+    if (isLate) {
+      newLates = Math.max(0, (current.totalLates || 0) - 1);
+      actionsTaken.push('se quitó la tardanza');
+    }
+
+    if (pointsToReturn > 0) {
+      newDisposition = Math.min(10, newDisposition + pointsToReturn);
+      actionsTaken.push(`se devolvió el punto sacado (+${pointsToReturn} pto: ahora ${newDisposition}/10)`);
+    } else if (item.pointsChange !== undefined && item.pointsChange > 0) {
+      newDisposition = Math.max(0, newDisposition - item.pointsChange);
+    }
+
+    updatedMap[item.studentId] = {
+      ...current,
+      totalAbsences: newAbsences,
+      totalLates: newLates,
+      totalDisposition: newDisposition,
+    };
 
     setDispositionMap(updatedMap);
 
     const updatedHistory = historyList.filter((h) => h.id !== item.id);
     setHistoryList(updatedHistory);
 
-    setToastMessage('Registro eliminado correctamente.');
-    setTimeout(() => setToastMessage(null), 3000);
+    try {
+      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updatedMap));
+      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistory));
+      localStorage.setItem('docencia_disposition_data', JSON.stringify(updatedMap));
+      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistory));
+    } catch (_) {}
+
+    const actionSummary = actionsTaken.length > 0 ? actionsTaken.join(' y ') : 'Registro eliminado';
+    setToastMessage(`Historial actualizado para ${item.studentName || 'el alumno'}: ${actionSummary}.`);
+    setTimeout(() => setToastMessage(null), 3500);
 
     // Sync immediately in real time to Google Sheets (deleted record is removed from Sheets)
     triggerSheetsSync(updatedMap, updatedHistory);
 
-    // Call server to delete
-    api.deleteDispositionHistory(item.id).catch(() => {});
+    // Call server to delete and update backend + Firestore
+    api
+      .deleteDispositionHistory(item.id, {
+        studentId: item.studentId,
+        isAbsence,
+        isLate,
+        pointsToReturn,
+        newAbsences,
+        newLates,
+        newDisposition,
+      })
+      .catch(() => {});
+
+    api
+      .syncFullDisposition({
+        disposition: updatedMap,
+        history: updatedHistory,
+        replaceHistory: true,
+      })
+      .catch(() => {});
   };
 
   // 4b. Borrar última falta del estudiante (por ejemplo, si llegó más tarde o fue un error)
   const handleDeleteLatestAbsence = async (student: Student) => {
     // Buscar la última falta registrada para este alumno en este curso
     const latestAbsence = historyList.find(
-      (h) => h.studentId === student.id && h.category === 'Ausencia' && h.courseId === activeCourse.id
+      (h) =>
+        h.studentId === student.id &&
+        (h.category === 'Ausencia' ||
+          h.action === 'Ausencia' ||
+          h.action?.toLowerCase().includes('ausencia') ||
+          h.action?.toLowerCase().includes('falta')) &&
+        h.courseId === activeCourse.id
     );
 
     if (!latestAbsence) {
-      // Si no hay con ese courseId exacto, buscar cualquier falta de este alumno
       const fallbackAbsence = historyList.find(
-        (h) => h.studentId === student.id && h.category === 'Ausencia'
+        (h) =>
+          h.studentId === student.id &&
+          (h.category === 'Ausencia' ||
+            h.action === 'Ausencia' ||
+            h.action?.toLowerCase().includes('ausencia') ||
+            h.action?.toLowerCase().includes('falta'))
       );
       if (fallbackAbsence) {
         await handleDeleteHistoryEntry(fallbackAbsence);
@@ -2106,8 +2186,54 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     await handleDeleteHistoryEntry(latestAbsence);
-    setToastMessage(`Falta eliminada para ${student.lastName}, ${student.firstName}.`);
-    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // 4b2. Borrar última llegada tarde del estudiante
+  const handleDeleteLatestLate = async (student: Student) => {
+    const latestLate = historyList.find(
+      (h) =>
+        h.studentId === student.id &&
+        (h.category === 'Llegada tarde' ||
+          h.action === 'Llegada tarde' ||
+          h.action?.toLowerCase().includes('llegada tarde') ||
+          h.action?.toLowerCase().includes('tardanza') ||
+          h.action?.toLowerCase().includes('tarde')) &&
+        h.courseId === activeCourse.id
+    );
+
+    if (!latestLate) {
+      const fallbackLate = historyList.find(
+        (h) =>
+          h.studentId === student.id &&
+          (h.category === 'Llegada tarde' ||
+            h.action?.toLowerCase().includes('tardanza') ||
+            h.action?.toLowerCase().includes('tarde'))
+      );
+      if (fallbackLate) {
+        await handleDeleteHistoryEntry(fallbackLate);
+        return;
+      }
+      const current = dispositionMap[student.id];
+      if (current && (current.totalLates || 0) > 0) {
+        const updatedMap = {
+          ...dispositionMap,
+          [student.id]: {
+            ...current,
+            totalLates: Math.max(0, (current.totalLates || 0) - 1),
+          },
+        };
+        setDispositionMap(updatedMap);
+        triggerSheetsSync(updatedMap, historyList);
+        setToastMessage(`Llegada tarde eliminada para ${student.lastName}, ${student.firstName}.`);
+        setTimeout(() => setToastMessage(null), 3000);
+      } else {
+        setToastMessage(`${student.firstName} ${student.lastName} no registra tardanzas para borrar.`);
+        setTimeout(() => setToastMessage(null), 3000);
+      }
+      return;
+    }
+
+    await handleDeleteHistoryEntry(latestLate);
   };
 
   // 4c. LÓGICA PARA LLEGADA TARDE (Registra en historial sin descontar puntos, y si tenía falta hoy, la cancela/borra)
@@ -2333,8 +2459,93 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // 7. Reiniciar puntajes (Inicio de nuevo trimestre)
-  const handleResetCourseDisposition = () => {
+  // 7a. Reiniciar / Borrar disposición por alumno individual
+  const handleResetSingleStudentDisposition = async (student: Student, clearHistory: boolean = false) => {
+    if (!activeCourse || !student) return;
+    const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const updatedMap: Record<string, StudentDispositionData> = {
+      ...dispositionMap,
+      [student.id]: {
+        ...current,
+        totalDisposition: 10,
+      },
+    };
+
+    setDispositionMap(updatedMap);
+
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const timestamp = Date.now();
+    const studentFullName = `${student.lastName}, ${student.firstName}`;
+
+    let updatedHistory = [...historyList];
+    if (clearHistory) {
+      updatedHistory = updatedHistory.filter(
+        (h) => !(h.studentId === student.id && (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0)))
+      );
+    }
+
+    const resetEntry: StudentHistoryItem = {
+      id: `rec-reset-${student.id}-${timestamp}`,
+      studentId: student.id,
+      studentName: studentFullName,
+      courseId: activeCourse.id,
+      date,
+      time,
+      action: clearHistory
+        ? `Disposición borrada y restablecida a 10 puntos (Historial de conducta limpiado)`
+        : `Puntaje de disposición restablecido a 10 puntos`,
+      category: 'Sistema',
+      pointsChange: 0,
+      timestamp,
+      messageSent: false,
+      messageText: '',
+      notificationMethod: 'none',
+    };
+
+    updatedHistory = deduplicateHistory([resetEntry, ...updatedHistory]);
+    setHistoryList(updatedHistory);
+
+    try {
+      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updatedMap));
+      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistory));
+      localStorage.setItem('docencia_disposition_data', JSON.stringify(updatedMap));
+      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistory));
+    } catch (_) {}
+
+    triggerSheetsSync(updatedMap, updatedHistory);
+
+    api
+      .resetDisposition({
+        studentId: student.id,
+        courseId: activeCourse.id,
+        resetWhat: 'disposition',
+        clearHistory,
+      })
+      .catch(() => {});
+
+    api
+      .syncFullDisposition({
+        disposition: updatedMap,
+        history: updatedHistory,
+        replaceHistory: true,
+      })
+      .catch(() => {});
+
+    setToastMessage(
+      clearHistory
+        ? `Disposición borrada y restablecida a 10 para ${student.lastName}, ${student.firstName}. Anotaciones de conducta eliminadas.`
+        : `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName}.`
+    );
+    setTimeout(() => setToastMessage(null), 3500);
+
+    setStudentForSingleReset(null);
+  };
+
+  // 7b. Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
+  const handleResetCourseDisposition = (clearHistory: boolean = false) => {
     if (!activeCourse) return;
     const updated: Record<string, StudentDispositionData> = { ...dispositionMap };
     courseStudents.forEach((st) => {
@@ -2352,6 +2563,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     const timestamp = Date.now();
+
+    let updatedHistory = [...historyList];
+    if (clearHistory) {
+      updatedHistory = updatedHistory.filter(
+        (h) => !(h.courseId === activeCourse.id && (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0)))
+      );
+    }
+
     const resetEntry: StudentHistoryItem = {
       id: `rec-reset-${timestamp}`,
       studentId: 'all',
@@ -2359,7 +2578,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
-      action: 'Reinicio general de puntaje de disposición a 10 puntos (Nuevo ciclo/período)',
+      action: clearHistory
+        ? 'Reinicio general de disposición a 10 puntos (Historial de conducta limpiado)'
+        : 'Reinicio general de puntaje de disposición a 10 puntos (Nuevo ciclo/período)',
       category: 'Sistema',
       pointsChange: 0,
       timestamp,
@@ -2367,15 +2588,33 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       messageText: '',
       notificationMethod: 'none',
     };
-    const updatedHistory = deduplicateHistory([resetEntry, ...historyList]);
-    setHistoryList(updatedHistory);
+    const updatedHistoryDedup = deduplicateHistory([resetEntry, ...updatedHistory]);
+    setHistoryList(updatedHistoryDedup);
+
+    try {
+      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updated));
+      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistoryDedup));
+      localStorage.setItem('docencia_disposition_data', JSON.stringify(updated));
+      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistoryDedup));
+    } catch (_) {}
 
     setIsResetConfirmOpen(false);
-    setToastMessage('Puntaje de disposición reiniciado a 10 para todos los estudiantes del curso.');
+    setToastMessage(
+      clearHistory
+        ? 'Disposición restablecida a 10 para todos los estudiantes y conductas limpiadas.'
+        : 'Puntaje de disposición reiniciado a 10 para todos los estudiantes del curso.'
+    );
     setTimeout(() => setToastMessage(null), 3500);
 
-    triggerSheetsSync(updated, updatedHistory);
-    api.resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition' }).catch(() => {});
+    triggerSheetsSync(updated, updatedHistoryDedup);
+    api.resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition', clearHistory }).catch(() => {});
+    api
+      .syncFullDisposition({
+        disposition: updated,
+        history: updatedHistoryDedup,
+        replaceHistory: true,
+      })
+      .catch(() => {});
   };
 
   // Cambiar y persistir el cuatrimestre seleccionado para mandar disposición
@@ -3609,10 +3848,23 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                       type="button"
                                       onClick={() => handleDeleteLatestAbsence(student)}
                                       className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-red-600 hover:border-red-200 dark:hover:border-red-800/60 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-                                      title="Borrar falta: elimina la última inasistencia registrada"
+                                      title="Borrar falta: elimina la última inasistencia registrada y actualiza el contador"
                                     >
                                       <RotateCcw className="w-3 h-3 text-red-500" />
                                       <span className="text-[11px]">Borrar falta</span>
+                                    </button>
+                                  )}
+
+                                  {/* Botón: Borrar tardanza */}
+                                  {(metrics.totalLates || 0) > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteLatestLate(student)}
+                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-amber-600 hover:border-amber-200 dark:hover:border-amber-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
+                                      title="Borrar tardanza: elimina la última llegada tarde registrada y actualiza el contador"
+                                    >
+                                      <RotateCcw className="w-3 h-3 text-amber-500" />
+                                      <span className="text-[11px]">Borrar tarde</span>
                                     </button>
                                   )}
                                 </div>
@@ -3641,6 +3893,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     style={{ width: `${Math.min(100, Math.max(0, metrics.totalDisposition * 10))}%` }}
                                   />
                                 </div>
+
+                                {/* Botón: Borrar / Restablecer disposición individual a 10 */}
+                                <button
+                                  type="button"
+                                  onClick={() => setStudentForSingleReset(student)}
+                                  className={`mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
+                                    metrics.totalDisposition < 10
+                                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700 hover:bg-amber-100 hover:scale-102 shadow-2xs'
+                                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-slate-300 border-transparent hover:border-neutral-200'
+                                  }`}
+                                  title={`Borrar o restablecer disposición a 10 para ${student.lastName}, ${student.firstName}`}
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5" />
+                                  <span>{metrics.totalDisposition < 10 ? 'Restablecer a 10' : 'Reiniciar'}</span>
+                                </button>
                               </div>
                             </td>
 
@@ -5184,18 +5451,70 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             </div>
 
             {/* Summary badges */}
-            <div className={`p-4 border-b grid grid-cols-2 gap-2 text-center text-xs ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-200 bg-white'}`}>
-              <div className="p-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900">
-                <span className="text-[11px] text-red-600 dark:text-red-400 block font-medium">Ausencias</span>
-                <span className="text-base font-bold text-red-700 dark:text-red-300">
-                  {getStudentMetrics(selectedStudentForHistory.id).totalAbsences}
-                </span>
+            <div className={`p-4 border-b grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-center text-xs ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-200 bg-white'}`}>
+              <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 flex flex-col items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-red-600 dark:text-red-400 block font-medium">Ausencias</span>
+                  <span className="text-base font-bold text-red-700 dark:text-red-300">
+                    {getStudentMetrics(selectedStudentForHistory.id).totalAbsences}
+                  </span>
+                </div>
+                {getStudentMetrics(selectedStudentForHistory.id).totalAbsences > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteLatestAbsence(selectedStudentForHistory)}
+                    className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors"
+                    title="Eliminar la última falta registrada de este estudiante y actualizar total"
+                  >
+                    Borrar última falta
+                  </button>
+                )}
               </div>
-              <div className="p-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900">
-                <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">Puntaje Disposición</span>
-                <span className="text-base font-bold text-emerald-700 dark:text-emerald-300">
-                  {getStudentMetrics(selectedStudentForHistory.id).totalDisposition} / 10
-                </span>
+
+              <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 flex flex-col items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-amber-600 dark:text-amber-400 block font-medium">Llegadas Tarde</span>
+                  <span className="text-base font-bold text-amber-700 dark:text-amber-300">
+                    {getStudentMetrics(selectedStudentForHistory.id).totalLates || 0}
+                  </span>
+                </div>
+                {(getStudentMetrics(selectedStudentForHistory.id).totalLates || 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteLatestLate(selectedStudentForHistory)}
+                    className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/50 border border-amber-200 dark:border-amber-800 cursor-pointer shadow-2xs transition-colors"
+                    title="Eliminar la última llegada tarde de este estudiante y actualizar total"
+                  >
+                    Borrar tardanza
+                  </button>
+                )}
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 flex flex-col items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">Puntaje Disposición</span>
+                  <span className="text-base font-bold text-emerald-700 dark:text-emerald-300">
+                    {getStudentMetrics(selectedStudentForHistory.id).totalDisposition} / 10
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-1 flex-wrap justify-center">
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleStudentDisposition(selectedStudentForHistory, false)}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900/50 border border-emerald-300 dark:border-emerald-800 cursor-pointer shadow-2xs transition-colors"
+                    title="Restablece la disposición a 10 puntos para este alumno"
+                  >
+                    Restablecer a 10
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleResetSingleStudentDisposition(selectedStudentForHistory, true)}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-rose-700 hover:bg-rose-100 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-800 cursor-pointer shadow-2xs transition-colors"
+                    title="Borra la disposición y elimina las anotaciones de conducta de este alumno"
+                  >
+                    Borrar historial
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -5489,7 +5808,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* MODAL: CONFIRMACIÓN PARA REINICIAR PUNTUACIÓN DE DISPOSICIÓN  */}
+      {/* MODAL: CONFIRMACIÓN PARA REINICIAR / BORRAR DISPOSICIÓN       */}
       {/* ------------------------------------------------------------- */}
       {isResetConfirmOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
@@ -5499,25 +5818,93 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             }`}
           >
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
                 <RotateCcw className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-sm font-bold">¿Reiniciar Disposición a 10?</h3>
+                <h3 className="text-sm font-bold">Borrar / Reiniciar Disposición a 10</h3>
                 <p className="text-xs text-neutral-500 dark:text-slate-400">
-                  Para el curso: {activeCourse.name}
+                  Materia: {activeCourse.name}
                 </p>
               </div>
             </div>
 
-            <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-              Esta acción restablecerá el puntaje de todos los estudiantes de este curso a <strong>10 puntos</strong> (ideal para iniciar un nuevo trimestre o período). Los registros anteriores en el Historial se mantendrán guardados para consultas futuras.
-            </p>
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block font-semibold mb-1 text-neutral-700 dark:text-slate-200">
+                  ¿A quién querés aplicarle el reinicio?
+                </label>
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="resetScope"
+                      checked={resetModalStudentId === 'all'}
+                      onChange={() => setResetModalStudentId('all')}
+                      className="text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Toda la clase ({courseStudents.length} estudiantes)</span>
+                  </label>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="resetScope"
+                      checked={resetModalStudentId !== 'all'}
+                      onChange={() => setResetModalStudentId(courseStudents[0]?.id || '')}
+                      className="text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Un alumno en específico</span>
+                  </label>
+                </div>
+
+                {resetModalStudentId !== 'all' && (
+                  <div className="mt-2 pl-6">
+                    <select
+                      value={resetModalStudentId}
+                      onChange={(e) => setResetModalStudentId(e.target.value)}
+                      className={`w-full px-3 py-1.5 rounded-lg border text-xs outline-none ${
+                        isDarkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+                      }`}
+                    >
+                      {courseStudents.map((st) => (
+                        <option key={st.id} value={st.id}>
+                          {st.lastName}, {st.firstName} ({getStudentMetrics(st.id).totalDisposition}/10 pts)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={resetModalClearHistory}
+                    onChange={(e) => setResetModalClearHistory(e.target.checked)}
+                    className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+                  />
+                  <div>
+                    <span className="font-semibold block text-neutral-800 dark:text-slate-100">
+                      Borrar también las incidencias de conducta del historial
+                    </span>
+                    <span className="text-[11px] text-neutral-600 dark:text-slate-400 block mt-0.5">
+                      Si lo marcas, se eliminarán las anotaciones de conducta de la bitácora y Google Sheets. Si no, solo se reinicia el puntaje a 10 manteniendo los registros de consulta.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
               <button
                 type="button"
-                onClick={() => setIsResetConfirmOpen(false)}
+                onClick={() => {
+                  setIsResetConfirmOpen(false);
+                  setResetModalStudentId('all');
+                  setResetModalClearHistory(false);
+                }}
                 className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
                   isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
                 }`}
@@ -5526,10 +5913,105 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               </button>
               <button
                 type="button"
-                onClick={handleResetCourseDisposition}
+                onClick={() => {
+                  if (resetModalStudentId === 'all') {
+                    handleResetCourseDisposition(resetModalClearHistory);
+                  } else {
+                    const targetSt = courseStudents.find((s) => s.id === resetModalStudentId);
+                    if (targetSt) {
+                      handleResetSingleStudentDisposition(targetSt, resetModalClearHistory);
+                    }
+                    setIsResetConfirmOpen(false);
+                  }
+                  setResetModalStudentId('all');
+                  setResetModalClearHistory(false);
+                }}
                 className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs cursor-pointer"
               >
-                Sí, reiniciar a 10
+                {resetModalStudentId === 'all' ? 'Reiniciar toda la clase a 10' : 'Reiniciar este alumno a 10'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: REINICIAR / BORRAR DISPOSICIÓN DE UN ALUMNO INDIVIDUAL */}
+      {/* ------------------------------------------------------------- */}
+      {studentForSingleReset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 space-y-4 ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold">
+                  Borrar / Restablecer Disposición
+                </h3>
+                <p className="text-xs text-neutral-500 dark:text-slate-400">
+                  Estudiante: <strong className="text-neutral-800 dark:text-slate-200">{studentForSingleReset.lastName}, {studentForSingleReset.firstName}</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-neutral-50 dark:bg-slate-800/60 border border-neutral-200 dark:border-slate-700 flex items-center justify-between text-xs">
+              <span className="text-neutral-600 dark:text-slate-300">Puntaje actual:</span>
+              <span className="font-bold text-amber-600 dark:text-amber-400 text-sm">
+                {getStudentMetrics(studentForSingleReset.id).totalDisposition} / 10 pts
+              </span>
+            </div>
+
+            <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
+              El puntaje de conducta y disposición de <strong>{studentForSingleReset.firstName}</strong> volverá a <strong>10 puntos</strong>.
+            </p>
+
+            <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 text-xs">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={singleResetClearHistory}
+                  onChange={(e) => setSingleResetClearHistory(e.target.checked)}
+                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+                />
+                <div>
+                  <span className="font-semibold block text-neutral-800 dark:text-slate-100">
+                    Limpiar también las incidencias de conducta registradas
+                  </span>
+                  <span className="text-[11px] text-neutral-600 dark:text-slate-400 block mt-0.5">
+                    Eliminará las anotaciones de conducta de este estudiante en el historial y Google Sheets.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setStudentForSingleReset(null);
+                  setSingleResetClearHistory(false);
+                }}
+                className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                  isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  handleResetSingleStudentDisposition(studentForSingleReset, singleResetClearHistory);
+                  setStudentForSingleReset(null);
+                  setSingleResetClearHistory(false);
+                }}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs cursor-pointer"
+              >
+                Sí, restablecer a 10
               </button>
             </div>
           </div>

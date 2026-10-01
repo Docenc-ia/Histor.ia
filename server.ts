@@ -1498,8 +1498,10 @@ async function startServer() {
     date: string; // dd/MM/yyyy
     time: string; // HH:mm:ss
     action: string;
-    category: "Ausencia" | "Disposición" | "Llegada tarde";
+    category: "Ausencia" | "Disposición" | "Llegada tarde" | "Sistema" | "Calificación" | string;
     pointsChange?: number;
+    previousDisposition?: number;
+    resultingDisposition?: number;
     timestamp: number;
     messageSent?: boolean;
     messageText?: string;
@@ -1785,50 +1787,88 @@ async function startServer() {
 
   app.delete("/api/disposition/history/:id", (req, res) => {
     const { id } = req.params;
+    const { pointsToReturn, isAbsence: clientIsAbsence, isLate: clientIsLate } = req.body || {};
     const index = studentHistoryList.findIndex((h) => h.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: "Registro no encontrado." });
+    const item = index !== -1 ? studentHistoryList[index] : null;
+
+    if (index !== -1) {
+      studentHistoryList.splice(index, 1);
     }
 
-    const item = studentHistoryList[index];
-    // Rollback changes
-    if (studentDispositionMap[item.studentId]) {
-      if (item.category === "Ausencia") {
-        studentDispositionMap[item.studentId].totalAbsences = Math.max(
-          0,
-          studentDispositionMap[item.studentId].totalAbsences - 1
-        );
-      } else if (item.category === "Llegada tarde") {
-        studentDispositionMap[item.studentId].totalLates = Math.max(
-          0,
-          (studentDispositionMap[item.studentId].totalLates || 1) - 1
-        );
-      } else if (item.category === "Disposición") {
-        studentDispositionMap[item.studentId].totalDisposition = Math.min(
-          10,
-          studentDispositionMap[item.studentId].totalDisposition + 1
-        );
+    const studentId = item?.studentId || req.body?.studentId || (req.query?.studentId as string);
+
+    if (studentId) {
+      if (!studentDispositionMap[studentId]) {
+        studentDispositionMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+      }
+      const current = studentDispositionMap[studentId];
+
+      const isAbsence =
+        clientIsAbsence ??
+        (item?.category === "Ausencia" ||
+          item?.action === "Ausencia" ||
+          item?.action?.toLowerCase().includes("ausencia") ||
+          item?.action?.toLowerCase().includes("falta"));
+
+      const isLate =
+        clientIsLate ??
+        (item?.category === "Llegada tarde" ||
+          item?.action === "Llegada tarde" ||
+          item?.action?.toLowerCase().includes("llegada tarde") ||
+          item?.action?.toLowerCase().includes("tardanza") ||
+          item?.action?.toLowerCase().includes("tarde"));
+
+      let pts = pointsToReturn;
+      if (pts === undefined && item) {
+        if (item.pointsChange && item.pointsChange < 0) {
+          pts = Math.abs(item.pointsChange);
+        } else if (
+          item.previousDisposition !== undefined &&
+          item.resultingDisposition !== undefined &&
+          item.previousDisposition > item.resultingDisposition
+        ) {
+          pts = item.previousDisposition - item.resultingDisposition;
+        } else if (
+          item.category === "Disposición" ||
+          (!isAbsence && !isLate && item.category !== "Sistema" && item.category !== "Calificación")
+        ) {
+          pts = 1;
+        }
+      }
+
+      if (isAbsence) {
+        current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - 1);
+      }
+      if (isLate) {
+        current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
+      }
+      if (pts && pts > 0) {
+        current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + pts);
       }
     }
 
-    studentHistoryList.splice(index, 1);
     saveDispositionDataToDisk();
 
     res.json({
       success: true,
       removed: item,
-      summary: studentDispositionMap[item.studentId],
+      summary: studentId ? studentDispositionMap[studentId] : undefined,
+      disposition: studentDispositionMap,
     });
   });
 
   // Bulk sync to permanently ensure all client records are stored on server
   app.post("/api/disposition/sync-full", (req, res) => {
-    const { disposition, history } = req.body;
+    const { disposition, history, replaceHistory } = req.body;
     if (disposition && typeof disposition === "object") {
       studentDispositionMap = { ...studentDispositionMap, ...disposition };
     }
     if (Array.isArray(history)) {
-      studentHistoryList = deduplicateHistoryList([...history, ...studentHistoryList]);
+      if (replaceHistory) {
+        studentHistoryList = deduplicateHistoryList(history);
+      } else {
+        studentHistoryList = deduplicateHistoryList([...history, ...studentHistoryList]);
+      }
     }
     saveDispositionDataToDisk();
     res.json({
@@ -1840,16 +1880,26 @@ async function startServer() {
   });
 
   app.post("/api/disposition/reset", (req, res) => {
-    const { studentId, courseId, resetWhat } = req.body;
+    const { studentId, courseId, resetWhat, clearHistory } = req.body;
     // resetWhat: 'disposition' | 'absences' | 'all'
     if (studentId) {
-      if (studentDispositionMap[studentId]) {
-        if (resetWhat === "disposition" || resetWhat === "all") {
-          studentDispositionMap[studentId].totalDisposition = 10;
-        }
-        if (resetWhat === "absences" || resetWhat === "all") {
-          studentDispositionMap[studentId].totalAbsences = 0;
-        }
+      if (!studentDispositionMap[studentId]) {
+        studentDispositionMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+      }
+      const current = studentDispositionMap[studentId];
+      if (resetWhat === "disposition" || resetWhat === "all" || !resetWhat) {
+        current.totalDisposition = 10;
+      }
+      if (resetWhat === "absences" || resetWhat === "all") {
+        current.totalAbsences = 0;
+      }
+      if (resetWhat === "lates" || resetWhat === "all") {
+        current.totalLates = 0;
+      }
+      if (clearHistory) {
+        studentHistoryList = studentHistoryList.filter(
+          (h) => !(h.studentId === studentId && (resetWhat === "absences" ? h.category === "Ausencia" : h.category === "Disposición"))
+        );
       }
     } else if (courseId) {
       // reset for students of this course
@@ -1857,20 +1907,29 @@ async function startServer() {
         .filter((s) => s.courseId === courseId)
         .forEach((s) => {
           if (!studentDispositionMap[s.id]) {
-            studentDispositionMap[s.id] = { totalAbsences: 0, totalDisposition: 10 };
+            studentDispositionMap[s.id] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
           } else {
-            if (resetWhat === "disposition" || resetWhat === "all") {
-              studentDispositionMap[s.id].totalDisposition = 10;
+            const current = studentDispositionMap[s.id];
+            if (resetWhat === "disposition" || resetWhat === "all" || !resetWhat) {
+              current.totalDisposition = 10;
             }
             if (resetWhat === "absences" || resetWhat === "all") {
-              studentDispositionMap[s.id].totalAbsences = 0;
+              current.totalAbsences = 0;
+            }
+            if (resetWhat === "lates" || resetWhat === "all") {
+              current.totalLates = 0;
             }
           }
         });
+      if (clearHistory) {
+        studentHistoryList = studentHistoryList.filter(
+          (h) => !(h.courseId === courseId && (resetWhat === "absences" ? h.category === "Ausencia" : h.category === "Disposición"))
+        );
+      }
     }
 
     saveDispositionDataToDisk();
-    res.json({ success: true, disposition: studentDispositionMap });
+    res.json({ success: true, disposition: studentDispositionMap, history: studentHistoryList });
   });
 
   // Course Google Sheets Disposition mapping (persisted to disk)

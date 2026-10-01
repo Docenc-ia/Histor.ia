@@ -241,6 +241,70 @@ export const firestoreSync = {
   },
 
   /**
+   * Delete disposition documents for a single student from Firestore (when resetting / clearing disposition)
+   */
+  async deleteStudentDispositionDocs(userId: string, studentId: string, clearAll: boolean = false): Promise<string[]> {
+    if (!userId || !studentId) return [];
+    try {
+      const col = collection(db, 'users', userId, 'disposition');
+      const snap = await getDocs(col);
+      const deletedIds: string[] = [];
+      const deletePromises: Promise<void>[] = [];
+
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.studentId === studentId) {
+          const isDisp = data.category === 'Disposición' || (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
+          if (clearAll || isDisp) {
+            deletedIds.push(docSnap.id);
+            deletePromises.push(deleteDoc(docSnap.ref));
+          }
+        }
+      });
+
+      if (deletePromises.length > 0) {
+        await Promise.all(deletePromises);
+      }
+      return deletedIds;
+    } catch (err) {
+      console.warn('Error deleting student disposition docs from Firestore:', err);
+      return [];
+    }
+  },
+
+  /**
+   * Delete disposition documents for an entire course from Firestore
+   */
+  async deleteCourseDispositionDocs(userId: string, courseId: string, clearAll: boolean = false): Promise<string[]> {
+    if (!userId || !courseId) return [];
+    try {
+      const col = collection(db, 'users', userId, 'disposition');
+      const snap = await getDocs(col);
+      const deletedIds: string[] = [];
+      const deletePromises: Promise<void>[] = [];
+
+      snap.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.courseId === courseId) {
+          const isDisp = data.category === 'Disposición' || (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
+          if (clearAll || isDisp) {
+            deletedIds.push(docSnap.id);
+            deletePromises.push(deleteDoc(docSnap.ref));
+          }
+        }
+      });
+
+      if (deletePromises.length > 0) {
+        await Promise.all(deletePromises);
+      }
+      return deletedIds;
+    } catch (err) {
+      console.warn('Error deleting course disposition docs from Firestore:', err);
+      return [];
+    }
+  },
+
+  /**
    * Load disposition history from Firestore
    */
   async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
@@ -260,16 +324,33 @@ export const firestoreSync = {
         history.push(item);
 
         const studentId = data.studentId;
-        if (studentId) {
+        if (studentId && studentId !== 'all') {
           if (!disposition[studentId]) {
             disposition[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
           }
-          if (data.category === 'Ausencia') {
+          const isAbsence =
+            data.category === 'Ausencia' ||
+            data.action === 'Ausencia' ||
+            data.action?.toLowerCase().includes('ausencia') ||
+            data.action?.toLowerCase().includes('falta');
+
+          const isLate =
+            data.category === 'Llegada tarde' ||
+            data.action === 'Llegada tarde' ||
+            data.action?.toLowerCase().includes('llegada tarde') ||
+            data.action?.toLowerCase().includes('tardanza') ||
+            data.action?.toLowerCase().includes('tarde');
+
+          if (isAbsence) {
             disposition[studentId].totalAbsences += 1;
-          } else if (data.category === 'Llegada tarde') {
+          } else if (isLate) {
             disposition[studentId].totalLates = (disposition[studentId].totalLates || 0) + 1;
-          } else if (data.category === 'Disposición') {
-            disposition[studentId].totalDisposition = Math.max(0, disposition[studentId].totalDisposition - 1);
+          } else if (
+            data.category === 'Disposición' ||
+            (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
+          ) {
+            const pts = data.pointsChange && data.pointsChange < 0 ? Math.abs(data.pointsChange) : 1;
+            disposition[studentId].totalDisposition = Math.max(0, disposition[studentId].totalDisposition - pts);
           }
         }
       });

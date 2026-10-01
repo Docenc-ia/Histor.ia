@@ -855,42 +855,109 @@ export const api = {
     return res.json();
   },
 
-  async deleteDispositionHistory(id: string): Promise<{ success: boolean; summary?: any }> {
+  async deleteDispositionHistory(
+    id: string,
+    extra?: {
+      studentId?: string;
+      isAbsence?: boolean;
+      isLate?: boolean;
+      pointsToReturn?: number;
+      newAbsences?: number;
+      newLates?: number;
+      newDisposition?: number;
+    }
+  ): Promise<{ success: boolean; summary?: any; disposition?: Record<string, any> }> {
     let currentSummary: any = null;
-    let studentIdToDelete: string | null = null;
+    let studentIdToDelete: string | null = extra?.studentId || null;
 
     if (typeof window !== 'undefined') {
       try {
         const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
         const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
-        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
+        const keysToUpdateDisp = ['fds_disposition_data_v2', dKey, STORAGE_KEYS.DISPOSITION];
+        const keysToUpdateHist = ['fds_disposition_history_v2', hKey, STORAGE_KEYS.DISPOSITION_HISTORY];
 
-        let allDisposition = rawDisp ? JSON.parse(rawDisp) : {};
-        let history = rawHist ? JSON.parse(rawHist) : [];
+        let allDisposition: Record<string, any> = {};
+        for (const k of keysToUpdateDisp) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              allDisposition = { ...allDisposition, ...JSON.parse(raw) };
+            } catch (_) {}
+          }
+        }
+
+        let history: any[] = [];
+        for (const k of keysToUpdateHist) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              const list = JSON.parse(raw);
+              if (Array.isArray(list) && list.length > history.length) {
+                history = list;
+              }
+            } catch (_) {}
+          }
+        }
 
         const targetItem = history.find((h: any) => h.id === id);
-        if (targetItem) {
+        if (targetItem && !studentIdToDelete) {
           studentIdToDelete = targetItem.studentId;
-          // Remove from history
-          history = history.filter((h: any) => h.id !== id);
+        }
 
-          // Revert impact in allDisposition
-          if (studentIdToDelete && allDisposition[studentIdToDelete]) {
-            const current = allDisposition[studentIdToDelete];
-            if (targetItem.category === 'Ausencia') {
-              current.totalAbsences = Math.max(0, (current.totalAbsences || 1) - 1);
-            } else if (targetItem.category === 'Llegada tarde') {
-              current.totalLates = Math.max(0, (current.totalLates || 1) - 1);
-            } else if (targetItem.category === 'Disposición') {
-              current.totalDisposition = Math.min(10, (current.totalDisposition ?? 9) + 1);
-            }
-            allDisposition[studentIdToDelete] = current;
-            currentSummary = current;
+        // Remove from history
+        history = history.filter((h: any) => h.id !== id);
+
+        // Revert impact in allDisposition
+        if (studentIdToDelete) {
+          const current = allDisposition[studentIdToDelete] || {
+            totalAbsences: 0,
+            totalLates: 0,
+            totalDisposition: 10,
+          };
+
+          if (extra?.newDisposition !== undefined) {
+            current.totalDisposition = extra.newDisposition;
+          } else if (extra?.pointsToReturn !== undefined && extra.pointsToReturn > 0) {
+            current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + extra.pointsToReturn);
+          } else if (
+            targetItem?.category === 'Disposición' ||
+            (targetItem?.pointsChange && targetItem.pointsChange < 0)
+          ) {
+            const pts = targetItem?.pointsChange ? Math.abs(targetItem.pointsChange) : 1;
+            current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + pts);
           }
 
-          localStorage.setItem(dKey, JSON.stringify(allDisposition));
-          localStorage.setItem(hKey, JSON.stringify(history));
+          if (extra?.newAbsences !== undefined) {
+            current.totalAbsences = extra.newAbsences;
+          } else if (
+            targetItem?.category === 'Ausencia' ||
+            targetItem?.action === 'Ausencia' ||
+            targetItem?.action?.toLowerCase().includes('ausencia') ||
+            targetItem?.action?.toLowerCase().includes('falta')
+          ) {
+            current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - 1);
+          }
+
+          if (extra?.newLates !== undefined) {
+            current.totalLates = extra.newLates;
+          } else if (
+            targetItem?.category === 'Llegada tarde' ||
+            targetItem?.action?.toLowerCase().includes('tarde') ||
+            targetItem?.action?.toLowerCase().includes('tardanza')
+          ) {
+            current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
+          }
+
+          allDisposition[studentIdToDelete] = current;
+          currentSummary = current;
+        }
+
+        for (const k of keysToUpdateDisp) {
+          localStorage.setItem(k, JSON.stringify(allDisposition));
+        }
+        for (const k of keysToUpdateHist) {
+          localStorage.setItem(k, JSON.stringify(history));
         }
       } catch (err) {
         console.warn('Error deleting disposition history locally:', err);
@@ -905,6 +972,8 @@ export const api = {
     try {
       const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
         method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(extra || {}),
       });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
@@ -919,7 +988,65 @@ export const api = {
     studentId?: string;
     courseId?: string;
     resetWhat: 'disposition' | 'absences' | 'all';
-  }): Promise<{ success: boolean; disposition: Record<string, any> }> {
+    clearHistory?: boolean;
+  }): Promise<{ success: boolean; disposition: Record<string, any>; history?: any[] }> {
+    if (typeof window !== 'undefined') {
+      try {
+        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
+        const keysToUpdateDisp = ['fds_disposition_data_v2', dKey, STORAGE_KEYS.DISPOSITION];
+        for (const k of keysToUpdateDisp) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            const map = JSON.parse(raw);
+            if (data.studentId && map[data.studentId]) {
+              if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
+                map[data.studentId].totalDisposition = 10;
+              }
+              if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
+                map[data.studentId].totalAbsences = 0;
+              }
+              if (data.resetWhat === 'all') {
+                map[data.studentId].totalLates = 0;
+              }
+            }
+            localStorage.setItem(k, JSON.stringify(map));
+          }
+        }
+
+        if (data.clearHistory) {
+          const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
+          const keysToUpdateHist = ['fds_disposition_history_v2', hKey, STORAGE_KEYS.DISPOSITION_HISTORY];
+          for (const k of keysToUpdateHist) {
+            const raw = localStorage.getItem(k);
+            if (raw) {
+              const list = JSON.parse(raw);
+              if (Array.isArray(list)) {
+                const filtered = list.filter((h: any) => {
+                  if (data.studentId && h.studentId === data.studentId) {
+                    return data.resetWhat === 'absences' ? h.category !== 'Ausencia' : h.category !== 'Disposición';
+                  }
+                  if (data.courseId && h.courseId === data.courseId) {
+                    return data.resetWhat === 'absences' ? h.category !== 'Ausencia' : h.category !== 'Disposición';
+                  }
+                  return true;
+                });
+                localStorage.setItem(k, JSON.stringify(filtered));
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      if (data.studentId) {
+        firestoreSync.deleteStudentDispositionDocs(userId, data.studentId, data.clearHistory).catch(() => {});
+      } else if (data.courseId) {
+        firestoreSync.deleteCourseDispositionDocs(userId, data.courseId, data.clearHistory).catch(() => {});
+      }
+    }
+
     const res = await fetch('/api/disposition/reset', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -932,6 +1059,7 @@ export const api = {
   async syncFullDisposition(data: {
     disposition: Record<string, any>;
     history: any[];
+    replaceHistory?: boolean;
   }): Promise<{ success: boolean; count: number; disposition?: Record<string, any>; history?: any[] }> {
     try {
       const res = await fetch('/api/disposition/sync-full', {

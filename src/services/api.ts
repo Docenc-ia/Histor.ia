@@ -71,6 +71,142 @@ function saveLocalStudents(courseId: string, studentsList: Student[]): void {
   } catch (_) {}
 }
 
+export const PRIMARY_DISPOSITION_KEY = 'fds_disposition_data_v2';
+export const PRIMARY_HISTORY_KEY = 'fds_disposition_history_v2';
+export const DELETED_HISTORY_IDS_KEY = 'docencia_deleted_history_ids';
+
+export function getDeletedHistoryIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DELETED_HISTORY_IDS_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (_) {}
+  return new Set();
+}
+
+export function markHistoryIdDeleted(id: string): void {
+  if (typeof window === 'undefined' || !id) return;
+  try {
+    const set = getDeletedHistoryIds();
+    set.add(id);
+    localStorage.setItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
+  } catch (_) {}
+}
+
+export function deduplicateHistoryItems(list: any[]): any[] {
+  const result: any[] = [];
+  const seenIds = new Set<string>();
+  const deleted = getDeletedHistoryIds();
+  for (const item of list) {
+    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
+    seenIds.add(item.id);
+    result.push(item);
+  }
+  return result;
+}
+
+export function saveAllDispositionStorage(disposition: Record<string, any>, history: any[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const deleted = getDeletedHistoryIds();
+    const cleanHistory = (history || []).filter((h) => h?.id && !deleted.has(h.id));
+    const dispJson = JSON.stringify(disposition || {});
+    const histJson = JSON.stringify(cleanHistory);
+
+    const userId = getActiveUserId();
+    const keysDisp = [
+      PRIMARY_DISPOSITION_KEY,
+      'docencia_disposition_data',
+      STORAGE_KEYS.DISPOSITION,
+    ];
+    const keysHist = [
+      PRIMARY_HISTORY_KEY,
+      'docencia_disposition_history',
+      STORAGE_KEYS.DISPOSITION_HISTORY,
+    ];
+    if (userId) {
+      keysDisp.push(`docencia_disposition_data_${userId}`);
+      keysHist.push(`docencia_disposition_history_${userId}`);
+    }
+
+    const uniqueDispKeys = Array.from(new Set(keysDisp));
+    const uniqueHistKeys = Array.from(new Set(keysHist));
+
+    for (const k of uniqueDispKeys) {
+      localStorage.setItem(k, dispJson);
+    }
+    for (const k of uniqueHistKeys) {
+      localStorage.setItem(k, histJson);
+    }
+
+    // Dispatch custom event so all active components/modules update instantly
+    window.dispatchEvent(
+      new CustomEvent('docencia_disposition_storage_change', {
+        detail: { disposition, history: cleanHistory },
+      })
+    );
+  } catch (err) {
+    console.warn('Error saving disposition to storage:', err);
+  }
+}
+
+export function getAllDispositionStorage(): { disposition: Record<string, any>; history: any[] } {
+  if (typeof window === 'undefined') return { disposition: {}, history: [] };
+  const deleted = getDeletedHistoryIds();
+  let disposition: Record<string, any> = {};
+  let history: any[] = [];
+
+  const userId = getActiveUserId();
+  const keysDisp = [
+    PRIMARY_DISPOSITION_KEY,
+    userId ? `docencia_disposition_data_${userId}` : null,
+    'docencia_disposition_data',
+    STORAGE_KEYS.DISPOSITION,
+  ].filter(Boolean) as string[];
+
+  const keysHist = [
+    PRIMARY_HISTORY_KEY,
+    userId ? `docencia_disposition_history_${userId}` : null,
+    'docencia_disposition_history',
+    STORAGE_KEYS.DISPOSITION_HISTORY,
+  ].filter(Boolean) as string[];
+
+  // 1. Load disposition map - PRIMARY has priority, fallback to user/legacy
+  for (const k of keysDisp) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          disposition = { ...disposition, ...parsed };
+          if (k === PRIMARY_DISPOSITION_KEY) break;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 2. Load history list - PRIMARY has priority so deletions are immediately respected
+  for (const k of keysHist) {
+    try {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          const clean = list.filter((item: any) => item?.id && !deleted.has(item.id));
+          if (k === PRIMARY_HISTORY_KEY) {
+            history = clean;
+            break;
+          } else if (history.length === 0 && clean.length > 0) {
+            history = clean;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  return { disposition, history };
+}
+
 export const api = {
   // Auth API
   async getAuthUser(): Promise<{ authenticated: boolean; user: TeacherProfile }> {
@@ -675,12 +811,28 @@ export const api = {
     disposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
     history: any[];
   }> {
+    const local = getAllDispositionStorage();
     const userId = getActiveUserId();
+    const deleted = getDeletedHistoryIds();
+
     if (userId) {
       try {
         const cloud = await firestoreSync.loadDisposition(userId);
-        if (cloud.history.length > 0 || Object.keys(cloud.disposition).length > 0) {
-          return cloud;
+        const cleanCloudHistory = (cloud.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
+
+        // Purge any resurrected tombstones from Firestore in background
+        const resurrected = (cloud.history || []).filter((h: any) => h?.id && deleted.has(h.id));
+        if (resurrected.length > 0) {
+          resurrected.forEach((r: any) => {
+            firestoreSync.deleteDisposition(userId, r.id).catch(() => {});
+          });
+        }
+
+        if (cleanCloudHistory.length > 0 || Object.keys(cloud.disposition || {}).length > 0) {
+          const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanCloudHistory]).filter((h) => !deleted.has(h.id));
+          const mergedDisp = { ...(cloud.disposition || {}), ...local.disposition };
+          saveAllDispositionStorage(mergedDisp, mergedHistory);
+          return { disposition: mergedDisp, history: mergedHistory };
         }
       } catch (err) {
         console.warn('Firestore loadDisposition warning:', err);
@@ -694,23 +846,18 @@ export const api = {
       const res = await fetch(`/api/disposition?${params.toString()}`);
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
+        const serverData = await res.json();
+        if (serverData?.history || serverData?.disposition) {
+          const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
+          const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter((h) => !deleted.has(h.id));
+          const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
+          saveAllDispositionStorage(mergedDisp, mergedHistory);
+          return { disposition: mergedDisp, history: mergedHistory };
+        }
       }
     } catch (_) {}
 
-    let disposition: Record<string, { totalAbsences: number; totalDisposition: number }> = {};
-    let history: any[] = [];
-    if (typeof window !== 'undefined') {
-      try {
-        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
-        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
-        if (rawDisp) disposition = JSON.parse(rawDisp);
-        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
-        if (rawHist) history = JSON.parse(rawHist);
-      } catch (_) {}
-    }
-    return { disposition, history };
+    return local as any;
   },
 
   async recordDisposition(data: {
@@ -728,24 +875,16 @@ export const api = {
     messageText?: string;
     notificationMethod?: 'classroom' | 'gmail' | 'none';
     notifiedAt?: string;
+    expectedSummary?: { totalAbsences: number; totalLates?: number; totalDisposition: number };
   }): Promise<{
     success: boolean;
     record: any;
     summary: { totalAbsences: number; totalDisposition: number };
     allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
   }> {
-    let allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }> = {};
-    let history: any[] = [];
-    if (typeof window !== 'undefined') {
-      try {
-        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
-        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-        const rawDisp = localStorage.getItem(dKey) || (dKey !== STORAGE_KEYS.DISPOSITION ? localStorage.getItem(STORAGE_KEYS.DISPOSITION) : null);
-        if (rawDisp) allDisposition = JSON.parse(rawDisp);
-        const rawHist = localStorage.getItem(hKey) || (hKey !== STORAGE_KEYS.DISPOSITION_HISTORY ? localStorage.getItem(STORAGE_KEYS.DISPOSITION_HISTORY) : null);
-        if (rawHist) history = JSON.parse(rawHist);
-      } catch (_) {}
-    }
+    const local = getAllDispositionStorage();
+    const allDisposition: Record<string, any> = { ...local.disposition };
+    let history: any[] = [...local.history];
 
     const current = (allDisposition[data.studentId] as any) || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
     if (current.totalDisposition === undefined) current.totalDisposition = 10;
@@ -753,39 +892,49 @@ export const api = {
     if (current.totalAbsences === undefined) current.totalAbsences = 0;
 
     const userId = getActiveUserId();
+    const recordId = data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    const existingIndex = history.findIndex((h) => h.id === recordId);
 
-    if (data.category === 'Ausencia') {
-      current.totalAbsences += 1;
-    } else if (data.category === 'Llegada tarde') {
-      current.totalLates = (current.totalLates || 0) + 1;
+    if (data.expectedSummary) {
+      current.totalAbsences = data.expectedSummary.totalAbsences;
+      if (data.expectedSummary.totalLates !== undefined) current.totalLates = data.expectedSummary.totalLates;
+      current.totalDisposition = data.expectedSummary.totalDisposition;
+    } else if (existingIndex === -1) {
+      // Only apply delta if not already pre-applied
+      if (data.category === 'Ausencia') {
+        current.totalAbsences += 1;
+      } else if (data.category === 'Llegada tarde') {
+        current.totalLates = (current.totalLates || 0) + 1;
 
-      // Si el mismo día tenía una falta previa registrada, eliminarla automáticamente (el alumno llegó a clase)
-      const now = new Date();
-      const isTodayAbsence = (h: any) => {
-        if (h.studentId !== data.studentId || h.category !== 'Ausencia') return false;
-        return isSameCalendarDay(h.date, h.timestamp, now);
-      };
+        // Si el mismo día tenía una falta previa registrada, eliminarla automáticamente (el alumno llegó a clase)
+        const now = new Date();
+        const isTodayAbsence = (h: any) => {
+          if (h.studentId !== data.studentId || h.category !== 'Ausencia') return false;
+          return isSameCalendarDay(h.date, h.timestamp, now);
+        };
 
-      const todayAbsences = history.filter(isTodayAbsence);
-      if (todayAbsences.length > 0) {
-        history = history.filter((h) => !isTodayAbsence(h));
-        current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - todayAbsences.length);
-        if (userId) {
-          todayAbsences.forEach((a) => {
-            firestoreSync.deleteDisposition(userId, a.id).catch(() => {});
-          });
+        const todayAbsences = history.filter(isTodayAbsence);
+        if (todayAbsences.length > 0) {
+          todayAbsences.forEach((a) => markHistoryIdDeleted(a.id));
+          history = history.filter((h) => !isTodayAbsence(h));
+          current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - todayAbsences.length);
+          if (userId) {
+            todayAbsences.forEach((a) => {
+              firestoreSync.deleteDisposition(userId, a.id).catch(() => {});
+            });
+          }
         }
+        if (userId) {
+          firestoreSync.deleteTodayAbsencesForStudent(userId, data.studentId, now).catch(() => {});
+        }
+      } else if (data.category === 'Disposición') {
+        current.totalDisposition = Math.max(0, current.totalDisposition - 1);
       }
-      if (userId) {
-        firestoreSync.deleteTodayAbsencesForStudent(userId, data.studentId, now).catch(() => {});
-      }
-    } else if (data.category === 'Disposición') {
-      current.totalDisposition = Math.max(0, current.totalDisposition - 1);
     }
     allDisposition[data.studentId] = current;
 
     const newRecord = {
-      id: data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      id: recordId,
       ...data,
       pointsChange:
         data.category === 'Ausencia' || data.category === 'Llegada tarde'
@@ -796,22 +945,15 @@ export const api = {
       date: data.date || new Date().toISOString().split('T')[0],
       timestamp: data.timestamp || Date.now(),
     };
-    // Ensure repeated actions are preserved, only skip if identical ID already exists
-    const existingIndex = history.findIndex((h) => h.id === newRecord.id);
+
     if (existingIndex === -1) {
       history.unshift(newRecord);
     } else {
-      history[existingIndex] = newRecord;
+      history[existingIndex] = { ...history[existingIndex], ...newRecord };
     }
 
-    if (typeof window !== 'undefined') {
-      try {
-        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
-        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-        localStorage.setItem(dKey, JSON.stringify(allDisposition));
-        localStorage.setItem(hKey, JSON.stringify(history));
-      } catch (_) {}
-    }
+    // Persist immediately across all local storage keys
+    saveAllDispositionStorage(allDisposition, history);
 
     if (userId) {
       firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
@@ -825,7 +967,8 @@ export const api = {
       });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
+        const serverRes = await res.json();
+        return serverRes;
       }
     } catch (_) {}
 
@@ -846,13 +989,38 @@ export const api = {
       notifiedAt?: string;
     }
   ): Promise<{ success: boolean; record: any }> {
-    const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}/notification`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(notificationData),
+    const local = getAllDispositionStorage();
+    const updatedHistory = local.history.map((item: any) => {
+      if (item.id === id) {
+        return {
+          ...item,
+          ...notificationData,
+        };
+      }
+      return item;
     });
-    if (!res.ok) throw new Error('Error al actualizar notificación del historial');
-    return res.json();
+
+    saveAllDispositionStorage(local.disposition, updatedHistory);
+
+    const userId = getActiveUserId();
+    const targetItem = updatedHistory.find((h: any) => h.id === id);
+    if (userId && targetItem) {
+      firestoreSync.saveDisposition(userId, targetItem).catch(() => {});
+    }
+
+    try {
+      const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}/notification`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(notificationData),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
+    } catch (_) {}
+
+    return { success: true, record: targetItem };
   },
 
   async deleteDispositionHistory(
@@ -867,108 +1035,75 @@ export const api = {
       newDisposition?: number;
     }
   ): Promise<{ success: boolean; summary?: any; disposition?: Record<string, any> }> {
-    let currentSummary: any = null;
+    // 1. Mark permanently in tombstone so it can never reappear
+    markHistoryIdDeleted(id);
+
+    // 2. Load unified storage
+    const local = getAllDispositionStorage();
+    const allDisposition: Record<string, any> = { ...local.disposition };
+    const history = local.history.filter((h: any) => h.id !== id);
+
     let studentIdToDelete: string | null = extra?.studentId || null;
-
-    if (typeof window !== 'undefined') {
-      try {
-        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
-        const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-        const keysToUpdateDisp = ['fds_disposition_data_v2', dKey, STORAGE_KEYS.DISPOSITION];
-        const keysToUpdateHist = ['fds_disposition_history_v2', hKey, STORAGE_KEYS.DISPOSITION_HISTORY];
-
-        let allDisposition: Record<string, any> = {};
-        for (const k of keysToUpdateDisp) {
-          const raw = localStorage.getItem(k);
-          if (raw) {
-            try {
-              allDisposition = { ...allDisposition, ...JSON.parse(raw) };
-            } catch (_) {}
-          }
-        }
-
-        let history: any[] = [];
-        for (const k of keysToUpdateHist) {
-          const raw = localStorage.getItem(k);
-          if (raw) {
-            try {
-              const list = JSON.parse(raw);
-              if (Array.isArray(list) && list.length > history.length) {
-                history = list;
-              }
-            } catch (_) {}
-          }
-        }
-
-        const targetItem = history.find((h: any) => h.id === id);
-        if (targetItem && !studentIdToDelete) {
-          studentIdToDelete = targetItem.studentId;
-        }
-
-        // Remove from history
-        history = history.filter((h: any) => h.id !== id);
-
-        // Revert impact in allDisposition
-        if (studentIdToDelete) {
-          const current = allDisposition[studentIdToDelete] || {
-            totalAbsences: 0,
-            totalLates: 0,
-            totalDisposition: 10,
-          };
-
-          if (extra?.newDisposition !== undefined) {
-            current.totalDisposition = extra.newDisposition;
-          } else if (extra?.pointsToReturn !== undefined && extra.pointsToReturn > 0) {
-            current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + extra.pointsToReturn);
-          } else if (
-            targetItem?.category === 'Disposición' ||
-            (targetItem?.pointsChange && targetItem.pointsChange < 0)
-          ) {
-            const pts = targetItem?.pointsChange ? Math.abs(targetItem.pointsChange) : 1;
-            current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + pts);
-          }
-
-          if (extra?.newAbsences !== undefined) {
-            current.totalAbsences = extra.newAbsences;
-          } else if (
-            targetItem?.category === 'Ausencia' ||
-            targetItem?.action === 'Ausencia' ||
-            targetItem?.action?.toLowerCase().includes('ausencia') ||
-            targetItem?.action?.toLowerCase().includes('falta')
-          ) {
-            current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - 1);
-          }
-
-          if (extra?.newLates !== undefined) {
-            current.totalLates = extra.newLates;
-          } else if (
-            targetItem?.category === 'Llegada tarde' ||
-            targetItem?.action?.toLowerCase().includes('tarde') ||
-            targetItem?.action?.toLowerCase().includes('tardanza')
-          ) {
-            current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
-          }
-
-          allDisposition[studentIdToDelete] = current;
-          currentSummary = current;
-        }
-
-        for (const k of keysToUpdateDisp) {
-          localStorage.setItem(k, JSON.stringify(allDisposition));
-        }
-        for (const k of keysToUpdateHist) {
-          localStorage.setItem(k, JSON.stringify(history));
-        }
-      } catch (err) {
-        console.warn('Error deleting disposition history locally:', err);
-      }
+    const targetItem = local.history.find((h: any) => h.id === id);
+    if (targetItem && !studentIdToDelete) {
+      studentIdToDelete = targetItem.studentId;
     }
 
+    let currentSummary: any = null;
+    if (studentIdToDelete) {
+      const current = allDisposition[studentIdToDelete] || {
+        totalAbsences: 0,
+        totalLates: 0,
+        totalDisposition: 10,
+      };
+
+      if (extra?.newDisposition !== undefined) {
+        current.totalDisposition = extra.newDisposition;
+      } else if (extra?.pointsToReturn !== undefined && extra.pointsToReturn > 0) {
+        current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + extra.pointsToReturn);
+      } else if (
+        targetItem?.category === 'Disposición' ||
+        (targetItem?.pointsChange && targetItem.pointsChange < 0)
+      ) {
+        const pts = targetItem?.pointsChange ? Math.abs(targetItem.pointsChange) : 1;
+        current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + pts);
+      }
+
+      if (extra?.newAbsences !== undefined) {
+        current.totalAbsences = extra.newAbsences;
+      } else if (
+        targetItem?.category === 'Ausencia' ||
+        targetItem?.action === 'Ausencia' ||
+        targetItem?.action?.toLowerCase().includes('ausencia') ||
+        targetItem?.action?.toLowerCase().includes('falta')
+      ) {
+        current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - 1);
+      }
+
+      if (extra?.newLates !== undefined) {
+        current.totalLates = extra.newLates;
+      } else if (
+        targetItem?.category === 'Llegada tarde' ||
+        targetItem?.action?.toLowerCase().includes('tarde') ||
+        targetItem?.action?.toLowerCase().includes('tardanza')
+      ) {
+        current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
+      }
+
+      allDisposition[studentIdToDelete] = current;
+      currentSummary = current;
+    }
+
+    // 3. Save across all client storage keys
+    saveAllDispositionStorage(allDisposition, history);
+
+    // 4. Delete from Firestore
     const userId = getActiveUserId();
     if (userId) {
       firestoreSync.deleteDisposition(userId, id).catch((e) => console.warn('Firestore deleteDisposition error:', e));
     }
 
+    // 5. Delete on backend if available
     try {
       const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
         method: 'DELETE',
@@ -981,7 +1116,7 @@ export const api = {
       }
     } catch (_) {}
 
-    return { success: true, summary: currentSummary };
+    return { success: true, summary: currentSummary, disposition: allDisposition };
   },
 
   async resetDisposition(data: {
@@ -990,53 +1125,68 @@ export const api = {
     resetWhat: 'disposition' | 'absences' | 'all';
     clearHistory?: boolean;
   }): Promise<{ success: boolean; disposition: Record<string, any>; history?: any[] }> {
-    if (typeof window !== 'undefined') {
-      try {
-        const dKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION);
-        const keysToUpdateDisp = ['fds_disposition_data_v2', dKey, STORAGE_KEYS.DISPOSITION];
-        for (const k of keysToUpdateDisp) {
-          const raw = localStorage.getItem(k);
-          if (raw) {
-            const map = JSON.parse(raw);
-            if (data.studentId && map[data.studentId]) {
-              if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
-                map[data.studentId].totalDisposition = 10;
-              }
-              if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
-                map[data.studentId].totalAbsences = 0;
-              }
-              if (data.resetWhat === 'all') {
-                map[data.studentId].totalLates = 0;
-              }
-            }
-            localStorage.setItem(k, JSON.stringify(map));
-          }
-        }
+    const local = getAllDispositionStorage();
+    const map = { ...local.disposition };
+    let history = [...local.history];
 
-        if (data.clearHistory) {
-          const hKey = getUserStorageKey(STORAGE_KEYS.DISPOSITION_HISTORY);
-          const keysToUpdateHist = ['fds_disposition_history_v2', hKey, STORAGE_KEYS.DISPOSITION_HISTORY];
-          for (const k of keysToUpdateHist) {
-            const raw = localStorage.getItem(k);
-            if (raw) {
-              const list = JSON.parse(raw);
-              if (Array.isArray(list)) {
-                const filtered = list.filter((h: any) => {
-                  if (data.studentId && h.studentId === data.studentId) {
-                    return data.resetWhat === 'absences' ? h.category !== 'Ausencia' : h.category !== 'Disposición';
-                  }
-                  if (data.courseId && h.courseId === data.courseId) {
-                    return data.resetWhat === 'absences' ? h.category !== 'Ausencia' : h.category !== 'Disposición';
-                  }
-                  return true;
-                });
-                localStorage.setItem(k, JSON.stringify(filtered));
-              }
-            }
+    if (data.studentId) {
+      if (!map[data.studentId]) {
+        map[data.studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+      }
+      if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
+        map[data.studentId].totalDisposition = 10;
+      }
+      if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
+        map[data.studentId].totalAbsences = 0;
+      }
+      if (data.resetWhat === 'all') {
+        map[data.studentId].totalLates = 0;
+      }
+    } else if (data.courseId) {
+      Object.keys(map).forEach((sId) => {
+        if (!map[sId]) map[sId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+        if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
+          map[sId].totalDisposition = 10;
+        }
+        if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
+          map[sId].totalAbsences = 0;
+        }
+        if (data.resetWhat === 'all') {
+          map[sId].totalLates = 0;
+        }
+      });
+    }
+
+    if (data.clearHistory) {
+      const removedIds: string[] = [];
+      history = history.filter((h: any) => {
+        const matchesStudent = data.studentId ? h.studentId === data.studentId : true;
+        const matchesCourse = data.courseId ? h.courseId === data.courseId : true;
+        if (matchesStudent && matchesCourse) {
+          const isDisp =
+            h.category === 'Disposición' ||
+            (!h.category && h.action !== 'Ausencia' && h.action !== 'Llegada tarde') ||
+            (h.pointsChange !== undefined && h.pointsChange < 0);
+          const isAbs = h.category === 'Ausencia' || h.action === 'Ausencia';
+          if (data.resetWhat === 'absences' && isAbs) {
+            removedIds.push(h.id);
+            return false;
+          }
+          if ((data.resetWhat === 'disposition' || !data.resetWhat) && isDisp) {
+            removedIds.push(h.id);
+            return false;
+          }
+          if (data.resetWhat === 'all') {
+            removedIds.push(h.id);
+            return false;
           }
         }
-      } catch (_) {}
+        return true;
+      });
+      removedIds.forEach((id) => markHistoryIdDeleted(id));
     }
+
+    saveAllDispositionStorage(map, history);
 
     const userId = getActiveUserId();
     if (userId) {
@@ -1047,13 +1197,23 @@ export const api = {
       }
     }
 
-    const res = await fetch('/api/disposition/reset', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Error al reiniciar valores');
-    return res.json();
+    try {
+      const res = await fetch('/api/disposition/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
+    } catch (_) {}
+
+    return {
+      success: true,
+      disposition: map,
+      history,
+    };
   },
 
   async syncFullDisposition(data: {
@@ -1061,16 +1221,37 @@ export const api = {
     history: any[];
     replaceHistory?: boolean;
   }): Promise<{ success: boolean; count: number; disposition?: Record<string, any>; history?: any[] }> {
+    if (data?.disposition || data?.history) {
+      const deleted = getDeletedHistoryIds();
+      const cleanHistory = (data.history || []).filter((h) => h?.id && !deleted.has(h.id));
+      saveAllDispositionStorage(data.disposition || {}, cleanHistory);
+    }
+
+    const userId = getActiveUserId();
+    if (userId && data.history && data.history.length > 0) {
+      for (const item of data.history.slice(0, 15)) {
+        firestoreSync.saveDisposition(userId, item).catch(() => {});
+      }
+    }
+
     try {
       const res = await fetch('/api/disposition/sync-full', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       });
-      return await res.json();
-    } catch {
-      return { success: false, count: 0 };
-    }
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        return await res.json();
+      }
+    } catch (_) {}
+
+    return {
+      success: true,
+      count: data.history?.length || 0,
+      disposition: data.disposition,
+      history: data.history,
+    };
   },
 
   async getCourseDispositionSheet(courseId: string): Promise<{

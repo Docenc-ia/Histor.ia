@@ -50,7 +50,13 @@ import {
 import { GradebookMatrix, DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
 import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate } from '../../types';
-import { api } from '../../services/api';
+import {
+  api,
+  saveAllDispositionStorage,
+  getAllDispositionStorage,
+  getDeletedHistoryIds,
+  markHistoryIdDeleted,
+} from '../../services/api';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { classroomService } from '../../services/workspace/classroomService';
 import { gmailService } from '../../services/workspace/gmailService';
@@ -75,13 +81,14 @@ interface ClassesModuleProps {
 const LOCAL_DISPOSITION_KEY = 'fds_disposition_data_v2';
 const LOCAL_HISTORY_KEY = 'fds_disposition_history_v2';
 
-// Helper function to deduplicate history entries (only filters identical IDs or accidental double-clicks < 800ms, preserving repeated teacher actions)
+// Helper function to deduplicate history entries (only filters identical IDs, tombstones, or accidental double-clicks < 800ms)
 function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
   const result: StudentHistoryItem[] = [];
   const seenIds = new Set<string>();
+  const deleted = getDeletedHistoryIds();
 
   for (const item of list) {
-    if (!item.id || seenIds.has(item.id)) continue;
+    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
 
     // Filter only accidental rapid double-tap on the exact same button within 800ms
     const isDoubleTap = result.some(
@@ -171,8 +178,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [dispositionMap, setDispositionMap] = useState<Record<string, StudentDispositionData>>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(LOCAL_DISPOSITION_KEY);
-        if (saved) return JSON.parse(saved);
+        const stored = getAllDispositionStorage();
+        if (stored.disposition && Object.keys(stored.disposition).length > 0) {
+          return stored.disposition as Record<string, StudentDispositionData>;
+        }
       } catch (_) {}
     }
     return {};
@@ -182,10 +191,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(LOCAL_HISTORY_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return deduplicateHistory(parsed);
+        const stored = getAllDispositionStorage();
+        if (Array.isArray(stored.history) && stored.history.length > 0) {
+          return deduplicateHistory(stored.history);
         }
       } catch (_) {}
     }
@@ -836,19 +844,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // Guaranteed two-way synchronization on startup to ensure long-term durability across days & months
   useEffect(() => {
     try {
-      const savedMap = localStorage.getItem(LOCAL_DISPOSITION_KEY);
-      const savedHist = localStorage.getItem(LOCAL_HISTORY_KEY);
-      const parsedMap = savedMap ? JSON.parse(savedMap) : {};
-      const parsedHist = savedHist ? JSON.parse(savedHist) : [];
-      if (Array.isArray(parsedHist) && (parsedHist.length > 0 || Object.keys(parsedMap).length > 0)) {
+      const stored = getAllDispositionStorage();
+      if (Array.isArray(stored.history) && (stored.history.length > 0 || Object.keys(stored.disposition).length > 0)) {
         api
-          .syncFullDisposition({ disposition: parsedMap, history: parsedHist })
+          .syncFullDisposition({ disposition: stored.disposition, history: stored.history })
           .then((res) => {
             if (res.disposition && Object.keys(res.disposition).length > 0) {
               setDispositionMap((prev) => ({ ...prev, ...res.disposition }));
-            }
-            if (Array.isArray(res.history) && res.history.length > 0) {
-              setHistoryList((prev) => deduplicateHistory([...res.history, ...prev]));
             }
           })
           .catch(() => {});
@@ -856,11 +858,28 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     } catch (_) {}
   }, []);
 
-  // Load from backend API if available, keeping localStorage synced and deduplicated
+  // Listen for storage changes across tabs / modules to update instantly
+  useEffect(() => {
+    const handleStorageChange = (e: any) => {
+      if (e?.detail) {
+        const { disposition, history } = e.detail;
+        if (disposition && Object.keys(disposition).length > 0) {
+          setDispositionMap((prev) => ({ ...prev, ...disposition }));
+        }
+        if (Array.isArray(history)) {
+          setHistoryList(deduplicateHistory(history));
+        }
+      }
+    };
+    window.addEventListener('docencia_disposition_storage_change', handleStorageChange);
+    return () => window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
+  }, []);
+
+  // Load from backend API / Firestore, keeping localStorage synced and deduplicated without resurrecting deleted items
   useEffect(() => {
     let isMounted = true;
     if (activeCourse?.id) {
-      // First ensure local state is synced to server disk
+      // First ensure local state is synced
       if (historyList.length > 0 || Object.keys(dispositionMap).length > 0) {
         api.syncFullDisposition({ disposition: dispositionMap, history: historyList }).catch(() => {});
       }
@@ -870,10 +889,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         .then((res) => {
           if (!isMounted) return;
           if (res.disposition && Object.keys(res.disposition).length > 0) {
-            setDispositionMap((prev) => ({ ...prev, ...res.disposition }));
+            setDispositionMap((prev) => ({ ...res.disposition, ...prev }));
           }
           if (Array.isArray(res.history)) {
-            setHistoryList((prev) => deduplicateHistory([...res.history, ...prev]));
+            const deleted = getDeletedHistoryIds();
+            const cleanIncoming = res.history.filter((h) => h?.id && !deleted.has(h.id));
+            setHistoryList((prev) => {
+              const cleanPrev = prev.filter((h) => h?.id && !deleted.has(h.id));
+              const prevIds = new Set(cleanPrev.map((p) => p.id));
+              const genuinelyNewFromCloud = cleanIncoming.filter((ci) => !prevIds.has(ci.id));
+              if (genuinelyNewFromCloud.length > 0) {
+                return deduplicateHistory([...cleanPrev, ...genuinelyNewFromCloud]);
+              }
+              return cleanPrev.length > 0 ? cleanPrev : deduplicateHistory(cleanIncoming);
+            });
           }
         })
         .catch(() => {});
@@ -1098,16 +1127,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setSheetsModalFeedback('Archivo CSV descargado con éxito.');
   };
 
-  // Sync to localStorage and guarantee server disk persistence
+  // Sync to all localStorage keys and guarantee server/Firestore persistence
   useEffect(() => {
     try {
-      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(dispositionMap));
-    } catch (_) {}
-  }, [dispositionMap]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(historyList));
+      saveAllDispositionStorage(dispositionMap, historyList);
     } catch (_) {}
 
     // Debounced sync to server disk so that all changes permanently survive
@@ -1302,24 +1325,57 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     `${s.firstName} ${s.lastName} ${s.email}`.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Helper to get student disposition data (reconciled with historyList as definitive source of truth)
+  // Helper to get student disposition data (reconciled with historyList and dispositionMap)
   const getStudentMetrics = (studentId: string): StudentDispositionData => {
     const fromMap = dispositionMap[studentId];
-    // Reconcile with historyList so points drops, absences and lates NEVER get lost
     const studentHistory = historyList.filter((h) => h.studentId === studentId);
-    if (studentHistory.length > 0) {
-      const absences = studentHistory.filter((h) => h.category === 'Ausencia').length;
-      const lates = studentHistory.filter((h) => h.category === 'Llegada tarde').length;
-      const conductDrops = studentHistory.filter((h) => h.category === 'Disposición').length;
-      const calculatedDisp = Math.max(0, 10 - conductDrops);
 
-      return {
-        totalAbsences: absences,
-        totalLates: lates,
-        totalDisposition: calculatedDisp,
-      };
+    const historyAbsences = studentHistory.filter(
+      (h) =>
+        h.category === 'Ausencia' ||
+        h.action === 'Ausencia' ||
+        h.action?.toLowerCase().includes('ausencia') ||
+        h.action?.toLowerCase().includes('falta')
+    ).length;
+
+    const historyLates = studentHistory.filter(
+      (h) =>
+        h.category === 'Llegada tarde' ||
+        h.action === 'Llegada tarde' ||
+        h.action?.toLowerCase().includes('llegada tarde') ||
+        h.action?.toLowerCase().includes('tarde') ||
+        h.action?.toLowerCase().includes('tardanza')
+    ).length;
+
+    let calculatedDisp = 10;
+    const sortedStudentEvents = [...studentHistory].sort((a, b) => a.timestamp - b.timestamp);
+    for (const ev of sortedStudentEvents) {
+      const isReset =
+        ev.category === 'Sistema' ||
+        ev.action?.toLowerCase().includes('restablecid') ||
+        ev.action?.toLowerCase().includes('reinicio');
+      if (isReset) {
+        calculatedDisp = 10;
+        continue;
+      }
+      const isDisp =
+        ev.category === 'Disposición' ||
+        (ev.pointsChange !== undefined && ev.pointsChange < 0);
+      if (isDisp) {
+        const pts = ev.pointsChange !== undefined ? Math.abs(ev.pointsChange) : 1;
+        calculatedDisp = Math.max(0, calculatedDisp - pts);
+      }
     }
-    return fromMap || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+
+    const totalAbsences = studentHistory.length > 0 ? historyAbsences : (fromMap?.totalAbsences !== undefined ? fromMap.totalAbsences : 0);
+    const totalLates = studentHistory.length > 0 ? historyLates : (fromMap?.totalLates !== undefined ? fromMap.totalLates : 0);
+    const totalDisposition = studentHistory.length > 0 ? calculatedDisp : (fromMap?.totalDisposition !== undefined ? fromMap.totalDisposition : 10);
+
+    return {
+      totalAbsences,
+      totalLates,
+      totalDisposition,
+    };
   };
 
   // -------------------------------------------------------------
@@ -1340,13 +1396,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setPulsingStudentId(`abs-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = dispositionMap[student.id] || { totalAbsences: 0, totalDisposition: 10 };
+    const current = getStudentMetrics(student.id);
+    const newAbsences = current.totalAbsences + 1;
     const newDisposition = current.totalDisposition;
     const updatedMap: Record<string, StudentDispositionData> = {
       ...dispositionMap,
       [student.id]: {
         ...current,
-        totalAbsences: current.totalAbsences + 1,
+        totalAbsences: newAbsences,
         totalDisposition: newDisposition,
       },
     };
@@ -1372,6 +1429,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
     setHistoryList(updatedHistory);
+    saveAllDispositionStorage(updatedMap, updatedHistory);
 
     setToastMessage(`Ausencia registrada para ${student.firstName} ${student.lastName} (+1 Falta)`);
     setTimeout(() => setToastMessage(null), 3500);
@@ -1379,7 +1437,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     // Sync immediately in real time to Google Sheets
     triggerSheetsSync(updatedMap, updatedHistory);
 
-    // Persist to server with exact ID, date, time and timestamp
+    // Persist to server with exact ID, date, time, timestamp and expected summary
     api
       .recordDisposition({
         id,
@@ -1394,11 +1452,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         messageSent: false,
         messageText: '',
         notificationMethod: 'none',
-      })
-      .then((res) => {
-        if (res?.summary) {
-          setDispositionMap((prev) => ({ ...prev, [student.id]: res.summary }));
-        }
+        expectedSummary: {
+          totalAbsences: newAbsences,
+          totalLates: current.totalLates || 0,
+          totalDisposition: newDisposition,
+        },
       })
       .catch(() => {});
 
@@ -1945,6 +2003,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
     setHistoryList(updatedHistory);
+    saveAllDispositionStorage(updatedMap, updatedHistory);
 
     setToastMessage(`Conducta registrada para ${student.lastName}, ${student.firstName}: ${finalAction} (${currentDisp} → ${newDisposition} pts)`);
     setTimeout(() => setToastMessage(null), 3500);
@@ -1952,7 +2011,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     // Sync immediately in real time to Google Sheets
     triggerSheetsSync(updatedMap, updatedHistory);
 
-    // Persist to server with exact ID, date, time and timestamp
+    // Persist to server with exact ID, date, time, timestamp and expectedSummary
     api
       .recordDisposition({
         id,
@@ -1965,18 +2024,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         date,
         time,
         timestamp,
-      })
-      .then((res) => {
-        if (res?.summary && res.summary.totalDisposition !== undefined) {
-          setDispositionMap((prev) => ({
-            ...prev,
-            [student.id]: {
-              ...(prev[student.id] || current),
-              ...res.summary,
-              totalDisposition: res.summary.totalDisposition,
-            },
-          }));
-        }
+        expectedSummary: {
+          totalAbsences: current.totalAbsences,
+          totalLates: current.totalLates || 0,
+          totalDisposition: newDisposition,
+        },
       })
       .catch(() => {});
 
@@ -2036,6 +2088,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 4. Eliminar entrada errónea del historial (revierte el punto sacado, o quita la ausencia o tardanza)
   const handleDeleteHistoryEntry = async (item: StudentHistoryItem) => {
+    // 1. Mark permanently deleted in tombstone immediately
+    markHistoryIdDeleted(item.id);
+
     const isAbsence =
       item.category === 'Ausencia' ||
       item.action === 'Ausencia' ||
@@ -2066,7 +2121,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     let updatedMap = { ...dispositionMap };
-    const current = updatedMap[item.studentId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const current = updatedMap[item.studentId] || getStudentMetrics(item.studentId);
 
     let newAbsences = current.totalAbsences;
     let newLates = current.totalLates || 0;
@@ -2102,12 +2157,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const updatedHistory = historyList.filter((h) => h.id !== item.id);
     setHistoryList(updatedHistory);
 
-    try {
-      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updatedMap));
-      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistory));
-      localStorage.setItem('docencia_disposition_data', JSON.stringify(updatedMap));
-      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistory));
-    } catch (_) {}
+    // Save across all storage keys immediately
+    saveAllDispositionStorage(updatedMap, updatedHistory);
 
     const actionSummary = actionsTaken.length > 0 ? actionsTaken.join(' y ') : 'Registro eliminado';
     setToastMessage(`Historial actualizado para ${item.studentName || 'el alumno'}: ${actionSummary}.`);
@@ -2126,14 +2177,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         newAbsences,
         newLates,
         newDisposition,
-      })
-      .catch(() => {});
-
-    api
-      .syncFullDisposition({
-        disposition: updatedMap,
-        history: updatedHistory,
-        replaceHistory: true,
       })
       .catch(() => {});
   };
@@ -2165,7 +2208,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         return;
       }
       // Si no hay en el historial pero el contador tiene ausencias, descontamos manualmente
-      const current = dispositionMap[student.id];
+      const current = dispositionMap[student.id] || getStudentMetrics(student.id);
       if (current && current.totalAbsences > 0) {
         const updatedMap = {
           ...dispositionMap,
@@ -2175,6 +2218,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           },
         };
         setDispositionMap(updatedMap);
+        saveAllDispositionStorage(updatedMap, historyList);
         triggerSheetsSync(updatedMap, historyList);
         setToastMessage(`Falta eliminada para ${student.lastName}, ${student.firstName}.`);
         setTimeout(() => setToastMessage(null), 3000);
@@ -2213,7 +2257,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         await handleDeleteHistoryEntry(fallbackLate);
         return;
       }
-      const current = dispositionMap[student.id];
+      const current = dispositionMap[student.id] || getStudentMetrics(student.id);
       if (current && (current.totalLates || 0) > 0) {
         const updatedMap = {
           ...dispositionMap,
@@ -2223,6 +2267,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           },
         };
         setDispositionMap(updatedMap);
+        saveAllDispositionStorage(updatedMap, historyList);
         triggerSheetsSync(updatedMap, historyList);
         setToastMessage(`Llegada tarde eliminada para ${student.lastName}, ${student.firstName}.`);
         setTimeout(() => setToastMessage(null), 3000);
@@ -2249,7 +2294,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setPulsingStudentId(`late-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const current = getStudentMetrics(student.id);
 
     // 2. Si el mismo día cambio a tarde automáticamente se borra la falta de hoy
     const todayAbsencesToRemove: StudentHistoryItem[] = [];
@@ -2266,6 +2311,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     });
 
     const hadAbsenceToday = todayAbsencesToRemove.length > 0;
+    if (hadAbsenceToday) {
+      todayAbsencesToRemove.forEach((a) => markHistoryIdDeleted(a.id));
+    }
 
     // Conteo exacto de ausencias restantes tras eliminar las de hoy
     const remainingStudentAbsences = cleanHistory.filter(
@@ -2310,6 +2358,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
     setHistoryList(updatedHistory);
+    saveAllDispositionStorage(updatedMap, updatedHistory);
 
     if (hadAbsenceToday) {
       setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName}. Se eliminó automáticamente la falta que tenía hoy.`);
@@ -2333,7 +2382,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       firestoreSync.deleteTodayAbsencesForStudent(userId, student.id, now).catch(() => {});
     }
 
-    // Persist to server / Firestore / localStorage
+    // Persist to server / Firestore / localStorage with expectedSummary
     api
       .recordDisposition({
         id,
@@ -2345,19 +2394,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         date,
         time,
         timestamp,
-      })
-      .then((res) => {
-        if (res?.summary) {
-          setDispositionMap((prev) => ({
-            ...prev,
-            [student.id]: {
-              ...prev[student.id],
-              totalAbsences: remainingStudentAbsences,
-              totalLates: remainingStudentLates,
-              totalDisposition: res.summary.totalDisposition ?? newDisposition,
-            },
-          }));
-        }
+        expectedSummary: {
+          totalAbsences: remainingStudentAbsences,
+          totalLates: remainingStudentLates,
+          totalDisposition: newDisposition,
+        },
       })
       .catch(() => {});
   };

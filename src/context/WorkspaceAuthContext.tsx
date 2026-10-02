@@ -216,6 +216,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
+        localStorage.setItem('docencia_session_active', 'true');
+        localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
+        localStorage.setItem('docencia_teacher_email', result.profile.email);
       }
       return result.profile;
     } catch (err: any) {
@@ -239,6 +242,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
+        localStorage.setItem('docencia_session_active', 'true');
+        localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
+        localStorage.setItem('docencia_teacher_email', result.profile.email);
       }
     } catch (err: any) {
       if (err?.code === 'auth/unauthorized-domain-needs-email' || err?.message?.includes('UNAUTHORIZED_DOMAIN_NEEDS_EMAIL')) {

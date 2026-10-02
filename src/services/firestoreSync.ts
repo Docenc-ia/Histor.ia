@@ -42,20 +42,20 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 
 // Helper to get active user ID
-export function getActiveUserId(): string | null {
+export function getActiveUserId(): string {
   if (auth.currentUser?.uid) return auth.currentUser.uid;
   if (typeof window !== 'undefined') {
     try {
-      const saved = sessionStorage.getItem('docencia_user_profile');
+      const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed?.id) return parsed.id;
       }
-      const email = sessionStorage.getItem('docencia_teacher_email');
+      const email = sessionStorage.getItem('docencia_teacher_email') || localStorage.getItem('docencia_teacher_email');
       if (email) return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
     } catch (_) {}
   }
-  return null;
+  return 'default_teacher';
 }
 
 export const firestoreSync = {

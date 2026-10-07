@@ -439,9 +439,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   // Measure and keep tableWidth updated for the top scrollbar dummy spacer
   useEffect(() => {
+    let rafId: number | null = null;
     const updateWidth = () => {
       if (tableRef.current) {
-        setTableWidth(tableRef.current.scrollWidth);
+        const sw = tableRef.current.scrollWidth;
+        if (sw > 0) {
+          setTableWidth((prev) => (Math.abs(prev - sw) > 2 ? sw : prev));
+        }
       }
     };
     updateWidth();
@@ -449,10 +453,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     // Use ResizeObserver for responsive table width changes (e.g. columns added/removed)
     if (tableRef.current && typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => {
-        updateWidth();
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(updateWidth);
       });
       ro.observe(tableRef.current);
-      return () => ro.disconnect();
+      return () => {
+        if (rafId) cancelAnimationFrame(rafId);
+        ro.disconnect();
+      };
     }
   }, [categories, students]);
 

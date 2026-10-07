@@ -9,7 +9,7 @@ import mammoth from "mammoth";
 
 dotenv.config();
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // In-memory persistent data store for the teacher session
 interface Course {
@@ -1078,6 +1078,9 @@ async function startServer() {
 
   // Courses API
   app.get("/api/courses", (_req, res) => {
+    if (!courses || courses.length === 0) {
+      loadCoursesFromDisk();
+    }
     // Sanitize any course that had "Ciencias Sociales" by mistake
     courses.forEach((c) => {
       if (c.id === "c-104" || c.name.includes("Ciencias Sociales") || c.subject === "Ciencias Sociales") {
@@ -1256,7 +1259,8 @@ async function startServer() {
       message: addedCount > 0
         ? `Se agregaron ${addedCount} materias nuevas (y se actualizaron ${updatedCount} existentes sin duplicar).`
         : `Las materias ya estaban cargadas previamente. No se duplicó ninguna materia.`,
-      courses: processedCourses,
+      courses: courses,
+      processedCourses: processedCourses,
       addedCount,
       updatedCount,
     });
@@ -1384,6 +1388,9 @@ async function startServer() {
 
   // Students API
   app.get("/api/students", (req, res) => {
+    if (!students || students.length === 0) {
+      loadStudentsFromDisk();
+    }
     const { courseId } = req.query;
     // Sanitize any legacy mock students that may have been in memory
     const mockNames = ["Valentina Rossi", "Mateo Gómez", "Camila Navarro", "Ignacio Pérez", "Sofía Martínez", "Lucas Benítez", "Agustina Ríos", "Santiago Silva", "Martina López", "Joaquín Fernández", "Lucía Romero", "Benjamín Alvarez", "Sofía Díaz"];
@@ -1755,11 +1762,20 @@ async function startServer() {
     studentHistoryList = deduplicateHistoryList(studentHistoryList);
     saveDispositionDataToDisk();
 
+    // Cascaded update of corresponding student status on backend
+    const targetStudent = students.find((s) => s.id === studentId);
+    if (targetStudent) {
+      targetStudent.attendanceRate = Math.max(0, Math.round(100 - (current.totalAbsences * 5)));
+      saveStudentsToDisk();
+    }
+
     res.json({
       success: true,
       record: newRecord,
       summary: current,
       allDisposition: studentDispositionMap,
+      student: targetStudent,
+      students,
     });
   });
 
@@ -1787,7 +1803,14 @@ async function startServer() {
 
   app.delete("/api/disposition/history/:id", (req, res) => {
     const { id } = req.params;
-    const { pointsToReturn, isAbsence: clientIsAbsence, isLate: clientIsLate } = req.body || {};
+    const {
+      pointsToReturn,
+      isAbsence: clientIsAbsence,
+      isLate: clientIsLate,
+      newAbsences,
+      newLates,
+      newDisposition,
+    } = req.body || {};
     const index = studentHistoryList.findIndex((h) => h.id === id);
     const item = index !== -1 ? studentHistoryList[index] : null;
 
@@ -1796,6 +1819,7 @@ async function startServer() {
     }
 
     const studentId = item?.studentId || req.body?.studentId || (req.query?.studentId as string);
+    let updatedStudent: any = null;
 
     if (studentId) {
       if (!studentDispositionMap[studentId]) {
@@ -1836,14 +1860,30 @@ async function startServer() {
         }
       }
 
-      if (isAbsence) {
+      if (newAbsences !== undefined) {
+        current.totalAbsences = Math.max(0, newAbsences);
+      } else if (isAbsence) {
         current.totalAbsences = Math.max(0, (current.totalAbsences || 0) - 1);
       }
-      if (isLate) {
+
+      if (newLates !== undefined) {
+        current.totalLates = Math.max(0, newLates);
+      } else if (isLate) {
         current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
       }
-      if (pts && pts > 0) {
+
+      if (newDisposition !== undefined) {
+        current.totalDisposition = Math.max(0, Math.min(10, newDisposition));
+      } else if (pts && pts > 0) {
         current.totalDisposition = Math.min(10, (current.totalDisposition ?? 10) + pts);
+      }
+
+      // Cascaded update of corresponding student status on backend
+      const targetStudent = students.find((s) => s.id === studentId);
+      if (targetStudent) {
+        targetStudent.attendanceRate = Math.max(0, Math.round(100 - (current.totalAbsences * 5)));
+        updatedStudent = targetStudent;
+        saveStudentsToDisk();
       }
     }
 
@@ -1854,6 +1894,8 @@ async function startServer() {
       removed: item,
       summary: studentId ? studentDispositionMap[studentId] : undefined,
       disposition: studentDispositionMap,
+      student: updatedStudent,
+      students,
     });
   });
 
@@ -1972,7 +2014,18 @@ async function startServer() {
 
   app.get("/api/courses/:courseId/disposition-sheet", (req, res) => {
     const { courseId } = req.params;
-    const data = courseDispositionSheets[courseId] || null;
+    loadSheetsConfigFromDisk();
+    let data = courseDispositionSheets[courseId] || null;
+    if (!data || !data.spreadsheetId || data.spreadsheetId.startsWith("sheet-")) {
+      // Smart fallback: check if any real spreadsheet was configured on disk for another course key
+      const entries = Object.entries(courseDispositionSheets);
+      const realEntry = entries.find(([_, v]) => v?.spreadsheetId && !v.spreadsheetId.startsWith("sheet-") && v.spreadsheetId.length >= 25);
+      if (realEntry) {
+        data = realEntry[1];
+        courseDispositionSheets[courseId] = data;
+        saveSheetsConfigToDisk();
+      }
+    }
     res.json(data || {});
   });
 

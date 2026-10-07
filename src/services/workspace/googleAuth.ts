@@ -195,7 +195,7 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
     const google = (window as any).google;
     const clientId = firebaseConfig.oAuthClientId;
     if (!google?.accounts?.oauth2 || !clientId) {
-      return reject(new Error('Google Identity Services no está listo'));
+      return reject(new Error('Google Identity Services no está listo. Verifica tu conexión.'));
     }
 
     try {
@@ -209,6 +209,9 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
           }
           try {
             const accessToken = tokenResponse.access_token;
+            if (!accessToken) {
+              return reject(new Error('No se recibió el token de acceso de Google'));
+            }
             cachedAccessToken = accessToken;
             const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
               headers: { Authorization: `Bearer ${accessToken}` },
@@ -257,81 +260,81 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
   });
 };
 
+// Requests or returns a valid, authentic Google OAuth access token for Workspace APIs (Sheets, Drive, etc.)
+export const requestGoogleAccessToken = async (): Promise<string> => {
+  if (
+    cachedAccessToken &&
+    cachedAccessToken.length > 20 &&
+    !cachedAccessToken.startsWith('google_workspace_token_') &&
+    !cachedAccessToken.startsWith('token_')
+  ) {
+    return cachedAccessToken;
+  }
+
+  // 1. Prioritize Google Identity Services (GSI) OAuth 2.0 flow
+  if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+    const gsiRes = await signInWithGoogleIdentityServices();
+    if (gsiRes?.accessToken) {
+      return gsiRes.accessToken;
+    }
+  }
+
+  // 2. Fallback to Firebase popup
+  const fbRes = await googleSignIn();
+  return fbRes.accessToken;
+};
+
 // Sign in with Google OAuth popup (prompting ANY user to select/log in to their Google account)
 export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;
   try {
-    // Authenticate via Firebase Auth Popup with Google Provider (uses project authDomain, avoiding origin_mismatch)
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-
-    const token =
-      credential?.accessToken ||
-      (result as any)._tokenResponse?.oauthAccessToken ||
-      (await result.user.getIdToken()) ||
-      'token_authenticated';
-
-    cachedAccessToken = token;
-
-    const userEmail = (result.user.email || preferredEmail || '').trim().toLowerCase();
-    const rawName = result.user.displayName || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Docente Titular');
-    const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-    const derivedSchool = deriveSchoolFromEmail(userEmail);
-
-    const teacherProfile: TeacherProfile = {
-      id: result.user.uid,
-      name: displayName,
-      email: userEmail,
-      avatar: result.user.photoURL || getTeacherAvatar(displayName, userEmail),
-      role: 'Docente Titular',
-      school: derivedSchool,
-      permissions: DEFAULT_TEACHER.permissions,
-      scopes: WORKSPACE_SCOPES,
-    };
-
-    // Synchronize authenticated session securely with the backend Express server
-    await api.syncAuthSession({
-      uid: result.user.uid,
-      email: teacherProfile.email,
-      name: teacherProfile.name,
-      avatar: teacherProfile.avatar,
-      token: cachedAccessToken,
-      scopes: WORKSPACE_SCOPES,
-      school: teacherProfile.school,
-    });
-
-    return { user: result.user, accessToken: cachedAccessToken, profile: teacherProfile };
-  } catch (error: any) {
-    if (error?.code === 'auth/unauthorized-domain' || error?.message?.includes('unauthorized-domain')) {
-      // If user typed an email into the form, we can authenticate them with their email
-      const userEmail = (preferredEmail || (typeof window !== 'undefined' ? sessionStorage.getItem('docencia_teacher_email') : null) || '').trim().toLowerCase();
-      
-      if (!userEmail) {
-        throw new Error('El dominio de la vista previa no está en los dominios autorizados de Google OAuth. Por favor escribe tu correo electrónico abajo para iniciar sesión directamente.');
+    // 1. Try Google Identity Services (GSI) first if available in window (avoids Firebase domain restrictions)
+    if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+      try {
+        const gsiResult = await signInWithGoogleIdentityServices();
+        if (gsiResult?.accessToken) {
+          cachedAccessToken = gsiResult.accessToken;
+          return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
+        }
+      } catch (gsiErr: any) {
+        console.warn('GSI login attempted, checking fallback:', gsiErr);
+        if (gsiErr?.message?.includes('closed') || gsiErr?.message?.includes('cancelled')) {
+          throw gsiErr;
+        }
       }
+    }
 
-      const formattedName = userEmail.split('@')[0]
-        .split(/[._-]/)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ') || 'Docente';
-      const teacherName = formattedName.startsWith('Prof.') ? formattedName : `Prof. ${formattedName}`;
+    // 2. Firebase Auth Popup fallback
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+
+      const token =
+        credential?.accessToken ||
+        (result as any)._tokenResponse?.oauthAccessToken ||
+        (await result.user.getIdToken()) ||
+        'token_authenticated';
+
+      cachedAccessToken = token;
+
+      const userEmail = (result.user.email || preferredEmail || '').trim().toLowerCase();
+      const rawName = result.user.displayName || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Docente Titular');
+      const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
       const derivedSchool = deriveSchoolFromEmail(userEmail);
 
       const teacherProfile: TeacherProfile = {
-        id: 'teacher-gauth-' + userEmail.replace(/[^a-zA-Z0-9]/g, '_'),
-        name: teacherName,
+        id: result.user.uid,
+        name: displayName,
         email: userEmail,
-        avatar: getTeacherAvatar(teacherName, userEmail),
+        avatar: result.user.photoURL || getTeacherAvatar(displayName, userEmail),
         role: 'Docente Titular',
         school: derivedSchool,
         permissions: DEFAULT_TEACHER.permissions,
         scopes: WORKSPACE_SCOPES,
       };
 
-      cachedAccessToken = 'google_workspace_token_' + Date.now();
-
       await api.syncAuthSession({
-        uid: teacherProfile.id,
+        uid: result.user.uid,
         email: teacherProfile.email,
         name: teacherProfile.name,
         avatar: teacherProfile.avatar,
@@ -340,10 +343,57 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
         school: teacherProfile.school,
       });
 
-      return { accessToken: cachedAccessToken, profile: teacherProfile };
+      return { user: result.user, accessToken: cachedAccessToken, profile: teacherProfile };
+    } catch (popupErr: any) {
+      // If Firebase Auth popup failed with unauthorized-domain, try GSI if available
+      if (popupErr?.code === 'auth/unauthorized-domain' || popupErr?.message?.includes('unauthorized-domain')) {
+        if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+          const gsiResult = await signInWithGoogleIdentityServices();
+          if (gsiResult?.accessToken) {
+            cachedAccessToken = gsiResult.accessToken;
+            return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
+          }
+        }
+
+        const userEmail = (preferredEmail || (typeof window !== 'undefined' ? sessionStorage.getItem('docencia_teacher_email') : null) || '').trim().toLowerCase();
+        if (!userEmail) {
+          throw new Error('El dominio de la vista previa requiere autenticar vía Google Identity. Por favor permite la ventana emergente de Google.');
+        }
+
+        const formattedName = userEmail.split('@')[0]
+          .split(/[._-]/)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(' ') || 'Docente';
+        const teacherName = formattedName.startsWith('Prof.') ? formattedName : `Prof. ${formattedName}`;
+        const derivedSchool = deriveSchoolFromEmail(userEmail);
+
+        const teacherProfile: TeacherProfile = {
+          id: 'teacher-gauth-' + userEmail.replace(/[^a-zA-Z0-9]/g, '_'),
+          name: teacherName,
+          email: userEmail,
+          avatar: getTeacherAvatar(teacherName, userEmail),
+          role: 'Docente Titular',
+          school: derivedSchool,
+          permissions: DEFAULT_TEACHER.permissions,
+          scopes: WORKSPACE_SCOPES,
+        };
+
+        cachedAccessToken = 'google_workspace_token_' + Date.now();
+
+        await api.syncAuthSession({
+          uid: teacherProfile.id,
+          email: teacherProfile.email,
+          name: teacherProfile.name,
+          avatar: teacherProfile.avatar,
+          token: cachedAccessToken,
+          scopes: WORKSPACE_SCOPES,
+          school: teacherProfile.school,
+        });
+
+        return { accessToken: cachedAccessToken, profile: teacherProfile };
+      }
+      throw popupErr;
     }
-    console.warn('Aviso en Google Sign-In:', error);
-    throw error;
   } finally {
     isSigningIn = false;
   }

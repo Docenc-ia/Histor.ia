@@ -41,6 +41,16 @@ export interface Student {
   notes: string;
 }
 
+export interface StudentObservation {
+  id: string;
+  studentId: string;
+  courseId: string;
+  text: string;
+  reportUrl?: string; // Enlace a informe psicopedagógico o documento de Drive
+  date: string;
+  timestamp: number;
+}
+
 export type AttendanceStatus = 'present' | 'absent' | 'late' | 'excused';
 
 export interface StudentHistoryItem {
@@ -52,6 +62,7 @@ export interface StudentHistoryItem {
   time: string; // HH:mm:ss
   action: string; // e.g. "Ausencia", "Llegada tarde", "Uso indebido de celular", "Otros: ..."
   category: 'Ausencia' | 'Disposición' | 'Llegada tarde' | 'Asistencia' | 'Calificación' | 'Sistema';
+  term?: '1c' | '2c';
   pointsChange?: number;
   resultingDisposition?: number;
   previousDisposition?: number;

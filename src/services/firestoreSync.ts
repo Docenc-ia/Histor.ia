@@ -24,8 +24,8 @@ import { isSameCalendarDay } from '../utils/dateUtils';
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
 // Initialize Firestore with specific database ID if configured
-export const db = firebaseConfig.firestoreDatabaseId
-  ? getFirestore(app, firebaseConfig.firestoreDatabaseId)
+export const db = (firebaseConfig as any).firestoreDatabaseId
+  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
   : getFirestore(app);
 
 // Test connection on boot as recommended by Firebase guidelines
@@ -39,6 +39,16 @@ export async function testFirestoreConnection(): Promise<boolean> {
     }
     return false;
   }
+}
+
+// Helper to get deleted history IDs from localStorage tombstones
+function getDeletedHistoryIdsSet(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem('docencia_deleted_history_ids');
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (_) {}
+  return new Set();
 }
 
 // Helper to get active user ID
@@ -314,10 +324,20 @@ export const firestoreSync = {
       const snap = await getDocs(col);
       const history: any[] = [];
       const disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
+      const deleted = getDeletedHistoryIdsSet();
 
       snap.forEach((docSnap) => {
+        const docId = docSnap.id;
         const data = docSnap.data();
-        const item: any = { id: docSnap.id, ...data };
+        const recordId = data.id || docId;
+
+        // Permanently purge and skip if deleted by tombstone
+        if (deleted.has(docId) || deleted.has(recordId)) {
+          deleteDoc(docSnap.ref).catch(() => {});
+          return;
+        }
+
+        const item: any = { id: recordId, ...data };
         if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
           item.pointsChange = 0;
         }

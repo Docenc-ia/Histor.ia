@@ -26,9 +26,27 @@ function getLocalCourses(): Course[] {
     if (!raw && key !== STORAGE_KEYS.COURSES) {
       raw = localStorage.getItem(STORAGE_KEYS.COURSES);
     }
+    if (!raw) {
+      raw = localStorage.getItem('docencia_persisted_courses');
+    }
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+    // Deep fallback: scan all keys in localStorage for any saved courses list
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
+        try {
+          const item = localStorage.getItem(k);
+          if (item) {
+            const p = JSON.parse(item);
+            if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
+              return p;
+            }
+          }
+        } catch (_) {}
+      }
     }
   } catch (_) {}
   return [];
@@ -38,7 +56,10 @@ function saveLocalCourses(coursesList: Course[]): void {
   if (typeof window === 'undefined') return;
   try {
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    localStorage.setItem(key, JSON.stringify(coursesList));
+    const dataStr = JSON.stringify(coursesList);
+    localStorage.setItem(key, dataStr);
+    localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
+    localStorage.setItem('docencia_persisted_courses', dataStr);
   } catch (_) {}
 }
 
@@ -50,10 +71,28 @@ function getLocalStudents(courseId?: string): Student[] {
     if (!raw && key !== STORAGE_KEYS.STUDENTS) {
       raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
     }
+    if (!raw) {
+      raw = localStorage.getItem('docencia_persisted_students');
+    }
     if (raw) {
       const parsed: Student[] = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         return courseId ? parsed.filter((s) => s.courseId === courseId) : parsed;
+      }
+    }
+    // Deep fallback: scan localStorage keys
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('docencia_students') || k.includes('students'))) {
+        try {
+          const item = localStorage.getItem(k);
+          if (item) {
+            const p = JSON.parse(item);
+            if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
+              return courseId ? p.filter((s: Student) => s.courseId === courseId) : p;
+            }
+          }
+        } catch (_) {}
       }
     }
   } catch (_) {}
@@ -67,7 +106,10 @@ function saveLocalStudents(courseId: string, studentsList: Student[]): void {
     const all = getLocalStudents();
     const rest = all.filter((s) => s.courseId !== courseId);
     const updated = [...rest, ...studentsList];
-    localStorage.setItem(key, JSON.stringify(updated));
+    const dataStr = JSON.stringify(updated);
+    localStorage.setItem(key, dataStr);
+    localStorage.setItem(STORAGE_KEYS.STUDENTS, dataStr);
+    localStorage.setItem('docencia_persisted_students', dataStr);
   } catch (_) {}
 }
 
@@ -105,7 +147,7 @@ export function deduplicateHistoryItems(list: any[]): any[] {
   return result;
 }
 
-export function saveAllDispositionStorage(disposition: Record<string, any>, history: any[]): void {
+export function saveAllDispositionStorage(disposition: Record<string, any>, history: any[], options?: { silent?: boolean }): void {
   if (typeof window === 'undefined') return;
   try {
     const deleted = getDeletedHistoryIds();
@@ -139,12 +181,14 @@ export function saveAllDispositionStorage(disposition: Record<string, any>, hist
       localStorage.setItem(k, histJson);
     }
 
-    // Dispatch custom event so all active components/modules update instantly
-    window.dispatchEvent(
-      new CustomEvent('docencia_disposition_storage_change', {
-        detail: { disposition, history: cleanHistory },
-      })
-    );
+    // Only dispatch when not silenced (e.g. during mutations, not during read/fetch)
+    if (!options?.silent) {
+      window.dispatchEvent(
+        new CustomEvent('docencia_disposition_storage_change', {
+          detail: { disposition, history: cleanHistory },
+        })
+      );
+    }
   } catch (err) {
     console.warn('Error saving disposition to storage:', err);
   }
@@ -346,39 +390,60 @@ export const api = {
   // Courses
   async getCourses(): Promise<Course[]> {
     const userId = getActiveUserId();
-    if (userId) {
-      try {
-        const cloudCourses = await firestoreSync.loadCourses(userId);
-        if (cloudCourses && cloudCourses.length > 0) {
-          saveLocalCourses(cloudCourses);
-          return cloudCourses;
-        }
-      } catch (err) {
-        console.warn('Firestore loadCourses failed, trying other sources:', err);
-      }
-    }
+    const mergedMap = new Map<string, Course>();
 
+    // 1. Load local courses
+    const local = getLocalCourses();
+    local.forEach((c) => {
+      if (c && c.id) mergedMap.set(c.id, c);
+    });
+
+    // 2. Fetch server courses
     try {
       const res = await fetch('/api/courses');
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.courses)) {
-          if (data.courses.length > 0) {
-            saveLocalCourses(data.courses);
-            if (userId) {
-              firestoreSync.saveCourses(userId, data.courses).catch(() => {});
+          data.courses.forEach((c: Course) => {
+            if (c && c.id) {
+              const existing = mergedMap.get(c.id);
+              mergedMap.set(c.id, { ...existing, ...c });
             }
-            return data.courses;
-          }
-          const local = getLocalCourses();
-          if (local.length > 0) return local;
-          return data.courses;
+          });
         }
       }
     } catch (e) {
-      console.warn('Backend /api/courses unavailable, using local storage:', e);
+      console.warn('Backend /api/courses unavailable:', e);
     }
-    return getLocalCourses();
+
+    // 3. Fetch cloud Firestore courses
+    if (userId) {
+      try {
+        const cloudCourses = await firestoreSync.loadCourses(userId);
+        if (Array.isArray(cloudCourses) && cloudCourses.length > 0) {
+          cloudCourses.forEach((c: Course) => {
+            if (c && c.id) {
+              const existing = mergedMap.get(c.id);
+              mergedMap.set(c.id, { ...existing, ...c });
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Firestore loadCourses failed:', err);
+      }
+    }
+
+    const mergedList = Array.from(mergedMap.values());
+
+    if (mergedList.length > 0) {
+      saveLocalCourses(mergedList);
+      if (userId) {
+        firestoreSync.saveCourses(userId, mergedList).catch(() => {});
+      }
+      return mergedList;
+    }
+
+    return [];
   },
 
   async createCourse(courseData: Partial<Course>): Promise<Course> {
@@ -439,12 +504,18 @@ export const api = {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data && Array.isArray(data.courses)) {
-          saveLocalCourses(data.courses);
+        const incoming = Array.isArray(data.courses) ? data.courses : [];
+        const local = getLocalCourses();
+        const mergedMap = new Map<string, Course>();
+        local.forEach((c) => mergedMap.set(c.id, c));
+        incoming.forEach((c: Course) => mergedMap.set(c.id, c));
+        const fullList = Array.from(mergedMap.values());
+        if (fullList.length > 0) {
+          saveLocalCourses(fullList);
           const uId = getActiveUserId();
-          if (uId) firestoreSync.saveCourses(uId, data.courses).catch(() => {});
+          if (uId) firestoreSync.saveCourses(uId, fullList).catch(() => {});
         }
-        return data;
+        return { ...data, courses: fullList };
       }
     } catch (e) {
       console.warn('Backend /api/courses/bulk unavailable, importing to local storage:', e);
@@ -628,45 +699,73 @@ export const api = {
 
   // Students
   async getStudents(courseId?: string): Promise<Student[]> {
-    const userId = getActiveUserId();
-    if (userId) {
-      try {
-        const cloudStudents = await firestoreSync.loadStudents(userId, courseId);
-        if (cloudStudents && cloudStudents.length > 0) {
-          if (courseId) {
-            saveLocalStudents(courseId, cloudStudents);
-          }
-          return cloudStudents;
+    const localDisp = getAllDispositionStorage().disposition || {};
+    const enrichStudents = (list: Student[]) => {
+      return list.map((st) => {
+        const d = localDisp[st.id];
+        if (d && typeof d.totalAbsences === 'number') {
+          const rate = Math.max(0, Math.round(100 - (d.totalAbsences * 5)));
+          return { ...st, attendanceRate: rate };
         }
-      } catch (err) {
-        console.warn('Firestore loadStudents error:', err);
-      }
-    }
+        return st;
+      });
+    };
 
+    const studentMap = new Map<string, Student>();
+
+    // 1. Local students
+    const local = getLocalStudents(courseId);
+    local.forEach((st) => {
+      if (st && st.id) studentMap.set(st.id, st);
+    });
+
+    // 2. Server students
     try {
       const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
       const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.students)) {
-          if (data.students.length > 0) {
-            if (courseId) {
-              saveLocalStudents(courseId, data.students);
+          data.students.forEach((st: Student) => {
+            if (st && st.id) {
+              const existing = studentMap.get(st.id);
+              studentMap.set(st.id, { ...existing, ...st });
             }
-            if (userId && courseId) {
-              firestoreSync.saveStudents(userId, courseId, data.students).catch(() => {});
-            }
-            return data.students;
-          }
-          const local = getLocalStudents(courseId);
-          if (local.length > 0) return local;
-          return data.students;
+          });
         }
       }
     } catch (e) {
-      console.warn('Backend /api/students unavailable, reading from local storage:', e);
+      console.warn('Backend /api/students unavailable:', e);
     }
-    return getLocalStudents(courseId);
+
+    // 3. Cloud Firestore students
+    const userId = getActiveUserId();
+    if (userId) {
+      try {
+        const cloudStudents = await firestoreSync.loadStudents(userId, courseId);
+        if (Array.isArray(cloudStudents) && cloudStudents.length > 0) {
+          cloudStudents.forEach((st: Student) => {
+            if (st && st.id) {
+              const existing = studentMap.get(st.id);
+              studentMap.set(st.id, { ...existing, ...st });
+            }
+          });
+        }
+      } catch (err) {
+        console.warn('Firestore loadStudents error:', err);
+      }
+    }
+
+    const mergedStudents = enrichStudents(Array.from(studentMap.values()));
+
+    if (courseId && mergedStudents.length > 0) {
+      saveLocalStudents(courseId, mergedStudents);
+      if (userId) {
+        firestoreSync.saveStudents(userId, courseId, mergedStudents).catch(() => {});
+      }
+    }
+
+    return mergedStudents;
   },
 
   async createStudent(studentData: { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {
@@ -808,7 +907,7 @@ export const api = {
 
   // Student Disposition & Absences System (Google Sheets script integration)
   async getDisposition(courseId?: string, studentId?: string): Promise<{
-    disposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
+    disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
     history: any[];
   }> {
     const local = getAllDispositionStorage();
@@ -831,7 +930,7 @@ export const api = {
         if (cleanCloudHistory.length > 0 || Object.keys(cloud.disposition || {}).length > 0) {
           const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanCloudHistory]).filter((h) => !deleted.has(h.id));
           const mergedDisp = { ...(cloud.disposition || {}), ...local.disposition };
-          saveAllDispositionStorage(mergedDisp, mergedHistory);
+          saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
           return { disposition: mergedDisp, history: mergedHistory };
         }
       } catch (err) {
@@ -851,7 +950,7 @@ export const api = {
           const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
           const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter((h) => !deleted.has(h.id));
           const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
-          saveAllDispositionStorage(mergedDisp, mergedHistory);
+          saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
           return { disposition: mergedDisp, history: mergedHistory };
         }
       }
@@ -867,6 +966,7 @@ export const api = {
     courseId: string;
     action: string;
     category: 'Ausencia' | 'Disposición' | 'Llegada tarde' | 'Asistencia' | 'Calificación' | 'Sistema';
+    term?: '1c' | '2c';
     detail?: string;
     date?: string;
     time?: string;
@@ -909,8 +1009,14 @@ export const api = {
         // Si el mismo día tenía una falta previa registrada, eliminarla automáticamente (el alumno llegó a clase)
         const now = new Date();
         const isTodayAbsence = (h: any) => {
-          if (h.studentId !== data.studentId || h.category !== 'Ausencia') return false;
-          return isSameCalendarDay(h.date, h.timestamp, now);
+          if (h.studentId !== data.studentId) return false;
+          const isAbs =
+            h.category === 'Ausencia' ||
+            h.action === 'Ausencia' ||
+            h.action?.toLowerCase().includes('ausencia') ||
+            h.action?.toLowerCase().includes('falta');
+          if (!isAbs) return false;
+          return isSameCalendarDay(h.date, h.timestamp, now) || !h.date;
         };
 
         const todayAbsences = history.filter(isTodayAbsence);
@@ -954,6 +1060,31 @@ export const api = {
 
     // Persist immediately across all local storage keys
     saveAllDispositionStorage(allDisposition, history);
+
+    // Cascaded update of local student record
+    try {
+      const allLocalStudents = getLocalStudents();
+      const stIdx = allLocalStudents.findIndex((s) => s.id === data.studentId);
+      if (stIdx !== -1) {
+        const studentCourseId = allLocalStudents[stIdx].courseId;
+        const newAbs = allDisposition[data.studentId]?.totalAbsences || 0;
+        const newRate = Math.max(0, Math.round(100 - (newAbs * 5)));
+        allLocalStudents[stIdx] = {
+          ...allLocalStudents[stIdx],
+          attendanceRate: newRate,
+        };
+        saveLocalStudents(studentCourseId, allLocalStudents.filter((s) => s.courseId === studentCourseId));
+      }
+      window.dispatchEvent(
+        new CustomEvent('docencia_student_status_updated', {
+          detail: {
+            studentId: data.studentId,
+            summary: current,
+            disposition: allDisposition,
+          },
+        })
+      );
+    } catch (_) {}
 
     if (userId) {
       firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
@@ -1097,6 +1228,33 @@ export const api = {
     // 3. Save across all client storage keys
     saveAllDispositionStorage(allDisposition, history);
 
+    // Cascaded update of local student record
+    if (studentIdToDelete) {
+      try {
+        const allLocalStudents = getLocalStudents();
+        const stIdx = allLocalStudents.findIndex((s) => s.id === studentIdToDelete);
+        if (stIdx !== -1) {
+          const studentCourseId = allLocalStudents[stIdx].courseId;
+          const newAbs = allDisposition[studentIdToDelete]?.totalAbsences || 0;
+          const newRate = Math.max(0, Math.round(100 - (newAbs * 5)));
+          allLocalStudents[stIdx] = {
+            ...allLocalStudents[stIdx],
+            attendanceRate: newRate,
+          };
+          saveLocalStudents(studentCourseId, allLocalStudents.filter((s) => s.courseId === studentCourseId));
+        }
+        window.dispatchEvent(
+          new CustomEvent('docencia_student_status_updated', {
+            detail: {
+              studentId: studentIdToDelete,
+              summary: currentSummary,
+              disposition: allDisposition,
+            },
+          })
+        );
+      } catch (_) {}
+    }
+
     // 4. Delete from Firestore
     const userId = getActiveUserId();
     if (userId) {
@@ -1112,7 +1270,8 @@ export const api = {
       });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
+        const serverData = await res.json();
+        return serverData;
       }
     } catch (_) {}
 

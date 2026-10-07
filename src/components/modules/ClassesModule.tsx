@@ -11,6 +11,7 @@ import {
   FolderClosed,
   Search,
   Plus,
+  Minus,
   Check,
   X,
   Download,
@@ -46,10 +47,12 @@ import {
   ChevronDown,
   ChevronUp,
   Filter,
+  FileText,
+  Link,
 } from 'lucide-react';
 import { GradebookMatrix, DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
-import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate } from '../../types';
+import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate, StudentObservation } from '../../types';
 import {
   api,
   saveAllDispositionStorage,
@@ -60,13 +63,13 @@ import {
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { classroomService } from '../../services/workspace/classroomService';
 import { gmailService } from '../../services/workspace/gmailService';
-import { getCachedAccessToken } from '../../services/workspace/googleAuth';
+import { getCachedAccessToken, setCachedAccessToken } from '../../services/workspace/googleAuth';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { calendarService } from '../../services/workspace/calendarService';
 import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
-import { isRealGoogleSpreadsheetId, copyTableToClipboard } from '../../utils/sheetsUtils';
+import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -81,7 +84,7 @@ interface ClassesModuleProps {
 const LOCAL_DISPOSITION_KEY = 'fds_disposition_data_v2';
 const LOCAL_HISTORY_KEY = 'fds_disposition_history_v2';
 
-// Helper function to deduplicate history entries (only filters identical IDs, tombstones, or accidental double-clicks < 800ms)
+// Helper function to deduplicate history entries (only filters identical IDs or deleted tombstones)
 function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
   const result: StudentHistoryItem[] = [];
   const seenIds = new Set<string>();
@@ -89,20 +92,8 @@ function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
 
   for (const item of list) {
     if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
-
-    // Filter only accidental rapid double-tap on the exact same button within 800ms
-    const isDoubleTap = result.some(
-      (existing) =>
-        existing.studentId === item.studentId &&
-        existing.category === item.category &&
-        existing.action === item.action &&
-        Math.abs(existing.timestamp - item.timestamp) < 800
-    );
-
-    if (!isDoubleTap) {
-      seenIds.add(item.id);
-      result.push(item);
-    }
+    seenIds.add(item.id);
+    result.push(item);
   }
   return result;
 }
@@ -116,7 +107,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   onNavigate,
   onOpenNewModal,
 }) => {
-  const { isDarkMode, token, user, loginWithGoogle } = useWorkspaceAuth();
+  const { isDarkMode, token, user, loginWithGoogle, requestAccessToken } = useWorkspaceAuth();
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
 
   // Students sorted strictly alphabetically by last name (apellido), then first name
@@ -186,6 +177,38 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
     return {};
   });
+
+  // 2° Cuatrimestre disposition state map
+  const [dispositionMap2c, setDispositionMap2c] = useState<Record<string, StudentDispositionData>>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('fds_disposition_data_2c');
+        if (stored) return JSON.parse(stored);
+      } catch (_) {}
+    }
+    return {};
+  });
+
+  // Academic term for Attendance & Disposition: '1c' | '2c' | 'annual'
+  const [attendanceTerm, setAttendanceTerm] = useState<'1c' | '2c' | 'annual'>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('fds_attendance_active_term');
+        if (saved === '1c' || saved === '2c' || saved === 'annual') return saved;
+      } catch (_) {}
+    }
+    return '1c';
+  });
+
+  const setAttendanceTermHandler = (term: '1c' | '2c' | 'annual') => {
+    setAttendanceTerm(term);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('fds_attendance_active_term', term);
+      if (activeCourse?.id) {
+        localStorage.setItem(`fds_attendance_active_term_${activeCourse.id}`, term);
+      }
+    }
+  };
 
   // History entries list: array of StudentHistoryItem
   const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
@@ -291,6 +314,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     'Uso indebido de celular': 'Estimado/a {ESTUDIANTE}, en la clase de {MATERIA} de hoy {FECHA} se registró un llamado de atención por el uso de teléfono celular en el aula sin autorización (-1 punto de disposición, puntaje actual: {DISPOSICION}/10). Te solicitamos guardar los dispositivos durante la clase.',
     'Interrupción de clase': 'Estimado/a {ESTUDIANTE}, hoy {FECHA} en {MATERIA} se registró un llamado de atención por interrupciones reiteradas al desarrollo de la clase (-1 punto de disposición, puntaje actual: {DISPOSICION}/10). Te pedimos colaborar activamente con el orden y las consignas de convivencia.',
     'Falta de materiales': 'Hola {ESTUDIANTE}, hoy {FECHA} en {MATERIA} se registró un llamado de atención por no contar con los útiles y materiales indispensables de la clase (-1 punto de disposición, puntaje actual: {DISPOSICION}/10). Recuerda prepararlos con anticipación.',
+    'Participación destacada': 'Estimado/a {ESTUDIANTE}, ¡felicitaciones! Hoy {FECHA} sumaste 1 punto en tu nota de disposición en {MATERIA} por tu activa y valiosa participación en clase (Puntaje actual: {DISPOSICION}/10). ¡Excelente aporte!',
+    'Excelente trabajo en clase': 'Estimado/a {ESTUDIANTE}, te felicitamos por tu gran desempeño y compromiso durante la clase de {MATERIA} de hoy {FECHA} (+1 punto en disposición, puntaje actual: {DISPOSICION}/10). ¡A seguir así!',
+    'Colaboración con compañeros': 'Hola {ESTUDIANTE}, destacamos y agradecemos tu valiosa colaboración y compañerismo en la clase de {MATERIA} de hoy {FECHA} (+1 punto en disposición, puntaje actual: {DISPOSICION}/10). ¡Muy buen trabajo!',
+    'Tarea y materiales completos': 'Estimado/a {ESTUDIANTE}, felicitaciones por presentar tus actividades y materiales en forma completa e impecable hoy {FECHA} en {MATERIA} (+1 punto en disposición, puntaje actual: {DISPOSICION}/10).',
+    'Compromiso y superación': 'Estimado/a {ESTUDIANTE}, hoy {FECHA} en {MATERIA} reconocemos tu esfuerzo constante y superación personal (+1 punto en disposición, puntaje actual: {DISPOSICION}/10). ¡Felicitaciones por este logro!',
   };
 
   // Plantillas específicas para cada motivo de conducta guardadas por el profesor
@@ -380,15 +408,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     courseName: string,
     disposition: number,
     date: string,
-    motivo?: string
+    motivo?: string,
+    pointsChange?: number
   ) => {
     const studentName = student.firstName && student.lastName ? `${student.firstName} ${student.lastName}` : (student.firstName || student.lastName || 'Estudiante');
+    const pts = pointsChange !== undefined ? (pointsChange > 0 ? `+${pointsChange}` : `${pointsChange}`) : '1';
+    const cleanMotivo = motivo ? motivo.replace(/^(\+|\[\+\])\s*/, '') : 'Conducta';
     return template
       .replace(/{(?:ALUMNO|ESTUDIANTE)}/g, studentName)
       .replace(/{MATERIA}/g, courseName)
       .replace(/{DISPOSICION}/g, `${disposition}`)
       .replace(/{FECHA}/g, date)
-      .replace(/{(?:MOTIVO|ACCION|CONDUCTA)}/g, motivo || 'Llamado de atención');
+      .replace(/{(?:PUNTOS|DELTA)}/g, pts)
+      .replace(/{(?:MOTIVO|ACCION|CONDUCTA)}/g, cleanMotivo);
   };
 
   const extractGenericTemplate = (
@@ -427,10 +459,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   };
 
   // Obtener la plantilla asociada a un motivo de conducta específico
-  const getTemplateForReason = (reasonName: string): string => {
+  const getTemplateForReason = (reasonName: string, type: 'positive' | 'negative' = 'negative'): string => {
     const trimmed = (reasonName || '').trim();
     if (!trimmed) {
-      return notifSettings.templateConductClassroom || DEFAULT_CONDUCT_PRESETS[0].text;
+      return type === 'positive'
+        ? DEFAULT_REASON_TEMPLATES['Participación destacada']
+        : notifSettings.templateConductClassroom || DEFAULT_CONDUCT_PRESETS[0].text;
     }
     // 1. Coincidencia directa en mapa de plantillas personalizadas
     if (conductReasonTemplates[trimmed]) {
@@ -447,8 +481,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         return v;
       }
     }
-    // 4. Fallback dinámico con el motivo
-    return `Estimado/a {ESTUDIANTE}, te notificamos que hoy {FECHA} se registró un llamado de atención por "${trimmed}" en la materia {MATERIA}, descontándose 1 punto en tu nota de disposición (Puntaje actual: {DISPOSICION}/10). Te solicitamos mantener las pautas de trabajo y convivencia acordadas para el aula.`;
+    // 4. Si el motivo en sí suena positivo o el tipo es positivo
+    const isPositiveReason =
+      type === 'positive' ||
+      trimmed.startsWith('+') ||
+      trimmed.startsWith('[+]') ||
+      /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(trimmed);
+
+    const cleanReason = trimmed.replace(/^(\+|\[\+\])\s*/, '');
+    if (isPositiveReason) {
+      return `Estimado/a {ESTUDIANTE}, ¡felicitaciones! Hoy {FECHA} sumaste puntos a tu nota de disposición por "${cleanReason}" en la materia {MATERIA} (Puntaje actual: {DISPOSICION}/10). ¡Excelente trabajo, seguí así!`;
+    }
+
+    // 5. Fallback dinámico con el motivo (negativo / llamado de atención)
+    return `Estimado/a {ESTUDIANTE}, te notificamos que hoy {FECHA} se registró un llamado de atención por "${cleanReason}" en la materia {MATERIA}, descontándose 1 punto en tu nota de disposición (Puntaje actual: {DISPOSICION}/10). Te solicitamos mantener las pautas de trabajo y convivencia acordadas para el aula.`;
   };
 
   // Guardar plantilla específica para una cuestión/motivo
@@ -753,15 +799,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return Array.from(set).filter(Boolean);
   }, [teacherConductOptions, conductReasonTemplates]);
 
-  // Modal to record conduct for a specific student
+  // Modal to record conduct for a specific student (sumar o restar puntos)
   const [conductRecordModal, setConductRecordModal] = useState<{
     isOpen: boolean;
     student: Student | null;
+    mode: 'subtract' | 'add';
+    points: number;
     customReason: string;
     saveToOptions: boolean;
   }>({
     isOpen: false,
     student: null,
+    mode: 'subtract',
+    points: 1,
     customReason: '',
     saveToOptions: false,
   });
@@ -769,44 +819,33 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // Modal to manage teacher's custom conduct options
   const [isManageConductModalOpen, setIsManageConductModalOpen] = useState(false);
   const [newConductInput, setNewConductInput] = useState('');
+  const [newConductType, setNewConductType] = useState<'subtract' | 'add'>('subtract');
 
-  // Modal for viewing an individual student's history
+  // Modal para ver el historial individual de un alumno
   const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<Student | null>(null);
 
-  // Confirmation modal for resetting points
-  const [isResetConfirmOpen, setIsResetConfirmOpen] = useState(false);
-  const [resetModalStudentId, setResetModalStudentId] = useState<string>('all');
-  const [resetModalClearHistory, setResetModalClearHistory] = useState<boolean>(false);
+  // Modal para editar la nota de disposición de un estudiante (ingreso manual / notas en papel)
+  const [editingDispositionStudent, setEditingDispositionStudent] = useState<Student | null>(null);
+  const [editingDispositionScore, setEditingDispositionScore] = useState<string>('10');
+  const [editingDispositionTerm, setEditingDispositionTerm] = useState<'1c' | '2c'>('1c');
+  const [editingDispositionReason, setEditingDispositionReason] = useState<string>('');
 
-  // Single student reset confirmation modal
-  const [studentForSingleReset, setStudentForSingleReset] = useState<Student | null>(null);
-  const [singleResetClearHistory, setSingleResetClearHistory] = useState<boolean>(false);
-
-  // Modal y cuatrimestre seleccionado para mandar nota de disposición a Calificaciones
-  const [isSendDispositionModalOpen, setIsSendDispositionModalOpen] = useState(false);
-  const [dispositionTargetTerm, setDispositionTargetTerm] = useState<'1c' | '2c'>(() => {
-    if (typeof window !== 'undefined' && activeCourse?.id) {
+  // Ficha y observaciones del estudiante (al hacer clic en su nombre)
+  const [selectedStudentForProfile, setSelectedStudentForProfile] = useState<Student | null>(null);
+  const [newObservationText, setNewObservationText] = useState('');
+  const [newObservationUrl, setNewObservationUrl] = useState('');
+  const [studentObservations, setStudentObservations] = useState<Record<string, StudentObservation[]>>(() => {
+    if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(`fds_disposition_target_term_${activeCourse.id}`);
-        if (saved === '1c' || saved === '2c') return saved;
+        const stored = localStorage.getItem('fds_student_observations');
+        if (stored) return JSON.parse(stored);
       } catch (_) {}
     }
-    return '1c';
+    return {};
   });
 
-  // Sincronizar el cuatrimestre seleccionado al cambiar de curso
-  useEffect(() => {
-    if (activeCourse?.id && typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(`fds_disposition_target_term_${activeCourse.id}`);
-        if (saved === '1c' || saved === '2c') {
-          setDispositionTargetTerm(saved);
-        } else {
-          setDispositionTargetTerm('1c');
-        }
-      } catch (_) {}
-    }
-  }, [activeCourse?.id]);
+  // Modal para mandar nota de disposición a Calificaciones
+  const [isSendDispositionModalOpen, setIsSendDispositionModalOpen] = useState(false);
 
   // Animation tracking for instant button feedback (like unchecking in the script)
   const [pulsingStudentId, setPulsingStudentId] = useState<string | null>(null);
@@ -822,6 +861,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [isOpeningSheet, setIsOpeningSheet] = useState(false);
   const [showSheetsConnectModal, setShowSheetsConnectModal] = useState(false);
   const [sheetsModalFeedback, setSheetsModalFeedback] = useState<string | null>(null);
+  const [customSheetInput, setCustomSheetInput] = useState('');
+  const [isLinkingCustomSheet, setIsLinkingCustomSheet] = useState(false);
+  const [customFolderInput, setCustomFolderInput] = useState('');
+  const [isLinkingCustomFolder, setIsLinkingCustomFolder] = useState(false);
   const [historySubTab, setHistorySubTab] = useState<'incidents' | 'summary'>('incidents');
 
   // Permanent history controls (always visible in roster tab & history tab)
@@ -863,11 +906,38 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const handleStorageChange = (e: any) => {
       if (e?.detail) {
         const { disposition, history } = e.detail;
-        if (disposition && Object.keys(disposition).length > 0) {
-          setDispositionMap((prev) => ({ ...prev, ...disposition }));
+        if (disposition && typeof disposition === 'object') {
+          setDispositionMap((prev) => {
+            const incomingKeys = Object.keys(disposition);
+            const prevKeys = Object.keys(prev);
+            let hasChanged = incomingKeys.length !== prevKeys.length;
+            if (!hasChanged) {
+              for (const k of incomingKeys) {
+                if (
+                  !prev[k] ||
+                  prev[k].totalAbsences !== disposition[k].totalAbsences ||
+                  prev[k].totalLates !== disposition[k].totalLates ||
+                  prev[k].totalDisposition !== disposition[k].totalDisposition
+                ) {
+                  hasChanged = true;
+                  break;
+                }
+              }
+            }
+            return hasChanged ? { ...prev, ...disposition } : prev;
+          });
         }
         if (Array.isArray(history)) {
-          setHistoryList(deduplicateHistory(history));
+          setHistoryList((prev) => {
+            const incomingDedup = deduplicateHistory(history);
+            if (
+              prev.length === incomingDedup.length &&
+              prev.every((p, i) => p.id === incomingDedup[i]?.id)
+            ) {
+              return prev;
+            }
+            return incomingDedup;
+          });
         }
       }
     };
@@ -879,17 +949,28 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   useEffect(() => {
     let isMounted = true;
     if (activeCourse?.id) {
-      // First ensure local state is synced
-      if (historyList.length > 0 || Object.keys(dispositionMap).length > 0) {
-        api.syncFullDisposition({ disposition: dispositionMap, history: historyList }).catch(() => {});
-      }
-
       api
         .getDisposition(activeCourse.id)
         .then((res) => {
           if (!isMounted) return;
           if (res.disposition && Object.keys(res.disposition).length > 0) {
-            setDispositionMap((prev) => ({ ...res.disposition, ...prev }));
+            setDispositionMap((prev) => {
+              const incoming = res.disposition;
+              const incomingKeys = Object.keys(incoming);
+              let hasChanged = false;
+              for (const k of incomingKeys) {
+                if (
+                  !prev[k] ||
+                  prev[k].totalAbsences !== incoming[k]?.totalAbsences ||
+                  prev[k].totalLates !== incoming[k]?.totalLates ||
+                  prev[k].totalDisposition !== incoming[k]?.totalDisposition
+                ) {
+                  hasChanged = true;
+                  break;
+                }
+              }
+              return hasChanged ? { ...prev, ...incoming } : prev;
+            });
           }
           if (Array.isArray(res.history)) {
             const deleted = getDeletedHistoryIds();
@@ -901,7 +982,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               if (genuinelyNewFromCloud.length > 0) {
                 return deduplicateHistory([...cleanPrev, ...genuinelyNewFromCloud]);
               }
-              return cleanPrev.length > 0 ? cleanPrev : deduplicateHistory(cleanIncoming);
+              if (cleanPrev.length === 0 && cleanIncoming.length > 0) {
+                return deduplicateHistory(cleanIncoming);
+              }
+              return cleanPrev;
             });
           }
         })
@@ -936,16 +1020,31 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     };
   }, [activeCourse?.id]);
 
-  // Real-time synchronization with Google Sheets
+  // Real-time synchronization with Google Sheets (automatic background updates when marking)
   const triggerSheetsSync = async (
     customMap?: Record<string, StudentDispositionData>,
-    customHistory?: StudentHistoryItem[]
+    customHistory?: StudentHistoryItem[],
+    customMap2c?: Record<string, StudentDispositionData>
   ) => {
     if (!activeCourse) return;
+    const activeToken = token || getCachedAccessToken();
+    const isAuthenticToken =
+      activeToken &&
+      activeToken.length > 20 &&
+      !activeToken.startsWith('google_workspace_token_') &&
+      !activeToken.startsWith('token_');
+
+    if (!isAuthenticToken) {
+      return;
+    }
+
     setIsSyncingSheet(true);
     try {
-      const mapToUse = customMap || dispositionMap;
-      const historyToUse = customHistory || historyList.filter((h) => h.courseId === activeCourse.id);
+      const map1cToUse = customMap || dispositionMap;
+      const map2cToUse = customMap2c || dispositionMap2c;
+      const historyToUse = customHistory
+        ? customHistory.filter((h) => h.courseId === activeCourse.id)
+        : historyList.filter((h) => h.courseId === activeCourse.id);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
       const realExistingId = isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId)
         ? sheetConfig?.spreadsheetId
@@ -954,18 +1053,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
-        mapToUse,
+        map1cToUse,
         historyToUse,
         realExistingId,
-        undefined,
-        token || getCachedAccessToken() || undefined
+        activeCourse.attendanceFolderId,
+        activeToken,
+        map2cToUse
       );
 
       const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
 
       setSheetConfig({
         spreadsheetId: res.spreadsheetId,
-        url: isLive ? res.url : '',
+        url: isLive ? res.url : (sheetConfig?.url || ''),
         isLiveGoogle: isLive,
         lastSyncedAt: res.updatedAt,
       });
@@ -978,102 +1078,74 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             lastSyncedAt: res.updatedAt,
           })
           .catch(() => {});
+      } else if (res.errorCode === 'UNAUTHORIZED') {
+        setCachedAccessToken(null);
       }
     } catch (err) {
-      console.warn('Sync to Google Sheets error:', err);
+      console.warn('Background sync to Google Sheets error:', err);
     } finally {
       setIsSyncingSheet(false);
     }
   };
 
-  // Safely open or initialize live Google Sheet without 404 dead links
-  const handleOpenGoogleSheet = async () => {
+  // Explicit manual sync triggered by clicking "Sincronizar Sheets" / "Sincronizar Ahora"
+  const handleManualSheetsSync = async () => {
     if (!activeCourse) return;
+    setIsSyncingSheet(true);
+    setToastMessage('Verificando conexión con Google Sheets...');
+    try {
+      let activeToken = token || getCachedAccessToken();
+      let isAuthentic =
+        activeToken &&
+        activeToken.length > 20 &&
+        !activeToken.startsWith('google_workspace_token_') &&
+        !activeToken.startsWith('token_');
 
-    // 1. If we already have a confirmed live Google Sheet URL
-    if (sheetConfig?.isLiveGoogle && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) && sheetConfig.url) {
-      window.open(sheetConfig.url, '_blank');
-      return;
-    }
-
-    // 2. Check if we have an active Google OAuth token to create the live Sheet now
-    const activeToken = token || getCachedAccessToken();
-    const isAuthenticToken =
-      activeToken &&
-      activeToken.length > 20 &&
-      !activeToken.startsWith('google_workspace_token_') &&
-      !activeToken.startsWith('token_');
-
-    if (isAuthenticToken) {
-      setIsOpeningSheet(true);
-      try {
-        const mapToUse = dispositionMap;
-        const historyToUse = historyList.filter((h) => h.courseId === activeCourse.id);
-        const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-
-        const res = await sheetsService.syncDispositionSheet(
-          activeCourse,
-          currentStudents,
-          mapToUse,
-          historyToUse,
-          undefined,
-          activeCourse.attendanceFolderId,
-          activeToken
-        );
-
-        if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && res.url) {
-          setSheetConfig({
-            spreadsheetId: res.spreadsheetId,
-            url: res.url,
-            isLiveGoogle: true,
-            lastSyncedAt: res.updatedAt,
-          });
-
-          await api.saveCourseDispositionSheet(activeCourse.id, {
-            spreadsheetId: res.spreadsheetId,
-            url: res.url,
-            lastSyncedAt: res.updatedAt,
-          });
-
-          window.open(res.url, '_blank');
+      if (!isAuthentic) {
+        setToastMessage('Solicitando autorización de tu cuenta de Google...');
+        try {
+          const freshToken = await requestAccessToken();
+          if (
+            freshToken &&
+            freshToken.length > 20 &&
+            !freshToken.startsWith('google_workspace_token_') &&
+            !freshToken.startsWith('token_')
+          ) {
+            activeToken = freshToken;
+            isAuthentic = true;
+          }
+        } catch (authErr: any) {
+          console.warn('Google Sheets OAuth authorization error:', authErr);
+          setToastMessage('Se requiere autorización de Google para editar la planilla.');
+          setShowSheetsConnectModal(true);
           return;
         }
-      } catch (err) {
-        console.warn('Could not auto-create live Google Sheet:', err);
-      } finally {
-        setIsOpeningSheet(false);
       }
-    }
 
-    // 3. Otherwise show modal offering Google connection, sheets.new with copied data, or CSV download
-    setSheetsModalFeedback(null);
-    setShowSheetsConnectModal(true);
-  };
+      if (!activeToken || !isAuthentic) {
+        setToastMessage('Por favor autoriza la conexión con Google para sincronizar la hoja.');
+        setShowSheetsConnectModal(true);
+        return;
+      }
 
-  const handleConnectGoogleForSheets = async () => {
-    if (!activeCourse) return;
-    try {
-      setIsOpeningSheet(true);
-      setSheetsModalFeedback('Abriendo autenticación con Google...');
-      await loginWithGoogle();
-      setSheetsModalFeedback('Cuenta de Google conectada. Creando tu hoja de cálculo en Drive...');
-
-      const activeToken = token || getCachedAccessToken();
-      const mapToUse = dispositionMap;
-      const historyToUse = historyList.filter((h) => h.courseId === activeCourse.id);
+      setToastMessage('Sincronizando planillas de 1°C, 2°C y Resumen Anual con Google Sheets...');
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+      const realExistingId = isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId)
+        ? sheetConfig?.spreadsheetId
+        : undefined;
 
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
-        mapToUse,
-        historyToUse,
-        undefined,
+        dispositionMap,
+        historyList.filter((h) => h.courseId === activeCourse.id),
+        realExistingId,
         activeCourse.attendanceFolderId,
-        activeToken || undefined
+        activeToken,
+        dispositionMap2c
       );
 
-      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && res.url) {
+      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
         setSheetConfig({
           spreadsheetId: res.spreadsheetId,
           url: res.url,
@@ -1087,13 +1159,185 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           lastSyncedAt: res.updatedAt,
         });
 
+        setToastMessage(`✓ Google Sheets sincronizado con éxito (${res.summaryRowsCount} alumnos, ${res.historyRowsCount} incidencias)`);
+        setSheetsModalFeedback(null);
         setShowSheetsConnectModal(false);
-        window.open(res.url, '_blank');
+      } else if (res.errorCode === 'UNAUTHORIZED') {
+        setToastMessage('Tu sesión de Google expiró. Por favor vuelve a autorizar tu cuenta.');
+        setCachedAccessToken(null);
+        setShowSheetsConnectModal(true);
+      } else if (res.error) {
+        setToastMessage(`Error al sincronizar con Sheets: ${res.error}`);
+      } else {
+        setToastMessage('No se pudo verificar la actualización en Google Sheets.');
       }
     } catch (err: any) {
-      setSheetsModalFeedback('Aviso: ' + (err?.message || 'No se pudo conectar'));
+      console.warn('Manual Google Sheets sync error:', err);
+      setToastMessage(`Error de sincronización: ${err?.message || 'Error de conexión'}`);
     } finally {
-      setIsOpeningSheet(false);
+      setIsSyncingSheet(false);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
+  // Link an existing Google Sheet by URL or ID pasted by the teacher
+  const handleLinkCustomSpreadsheet = async () => {
+    if (!activeCourse || !customSheetInput.trim()) return;
+    const extractedId = extractSpreadsheetIdFromInput(customSheetInput);
+    if (!extractedId) {
+      setSheetsModalFeedback('Por favor ingresa un link válido de Google Sheets (ej: https://docs.google.com/spreadsheets/d/...) o un ID válido.');
+      return;
+    }
+
+    setIsLinkingCustomSheet(true);
+    try {
+      const url = `https://docs.google.com/spreadsheets/d/${extractedId}/edit`;
+      const updatedAt = new Date().toLocaleTimeString();
+
+      setSheetConfig({
+        spreadsheetId: extractedId,
+        url,
+        isLiveGoogle: true,
+        lastSyncedAt: updatedAt,
+      });
+
+      await api.saveCourseDispositionSheet(activeCourse.id, {
+        spreadsheetId: extractedId,
+        url,
+        lastSyncedAt: updatedAt,
+      });
+
+      setToastMessage('✓ Hoja de Google Sheets vinculada correctamente al curso');
+      setSheetsModalFeedback('✓ Hoja vinculada con éxito. Sincronizando datos...');
+
+      let activeToken = token || getCachedAccessToken();
+      const isAuthentic =
+        activeToken &&
+        activeToken.length > 20 &&
+        !activeToken.startsWith('google_workspace_token_') &&
+        !activeToken.startsWith('token_');
+
+      if (isAuthentic && activeToken) {
+        const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+        const res = await sheetsService.syncDispositionSheet(
+          activeCourse,
+          currentStudents,
+          dispositionMap,
+          historyList.filter((h) => h.courseId === activeCourse.id),
+          extractedId,
+          activeCourse.attendanceFolderId,
+          activeToken
+        );
+        if (res.isLiveGoogle) {
+          setToastMessage(`✓ Planilla vinculada y sincronizada (${res.summaryRowsCount} alumnos)`);
+        }
+      }
+
+      setCustomSheetInput('');
+      setShowSheetsConnectModal(false);
+    } catch (err: any) {
+      setSheetsModalFeedback('Error al vincular la hoja: ' + (err?.message || 'Error desconocido'));
+    } finally {
+      setIsLinkingCustomSheet(false);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
+  // Handler to configure or change the Google Drive folder where spreadsheets are stored
+  const handleSaveCustomDriveFolder = async () => {
+    if (!activeCourse || !customFolderInput.trim()) return;
+    setIsLinkingCustomFolder(true);
+    setSheetsModalFeedback(null);
+    try {
+      const input = customFolderInput.trim();
+      let targetFolderId = '';
+      let targetFolderName = input;
+      let targetFolderUrl = '';
+
+      // Check if user pasted a Google Drive folder URL (e.g. https://drive.google.com/drive/folders/1aBc...)
+      if (input.includes('/folders/')) {
+        const match = input.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+        if (match && match[1]) {
+          targetFolderId = match[1];
+        }
+      } else if (/^[a-zA-Z0-9_-]{20,}$/.test(input)) {
+        targetFolderId = input;
+      }
+
+      const activeToken = token || getCachedAccessToken();
+
+      if (targetFolderId) {
+        if (activeToken) {
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/drive/v3/files/${targetFolderId}?fields=id,name,webViewLink,trashed`,
+              {
+                headers: { Authorization: `Bearer ${activeToken}` },
+              }
+            );
+            if (res.ok) {
+              const data = await res.json();
+              targetFolderName = data.name || 'Carpeta Personalizada';
+              targetFolderUrl = data.webViewLink || `https://drive.google.com/drive/folders/${targetFolderId}`;
+            }
+          } catch (_) {}
+        }
+        if (!targetFolderUrl) {
+          targetFolderUrl = `https://drive.google.com/drive/folders/${targetFolderId}`;
+        }
+      } else {
+        // Find or create folder with this name in Google Drive
+        const created = await driveService.findOrCreateFolder(targetFolderName);
+        targetFolderId = created.id;
+        targetFolderUrl = created.url;
+      }
+
+      // If there is an existing spreadsheet, move it into this folder
+      if (sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId)) {
+        await driveService.moveFileToFolder(sheetConfig.spreadsheetId, targetFolderId);
+      }
+
+      // Update course metadata in database & local state
+      const updatedData: Partial<Course> = {
+        driveFolderId: targetFolderId,
+        driveFolderUrl: targetFolderUrl,
+        attendanceFolderId: targetFolderId,
+        attendanceFolderUrl: targetFolderUrl,
+      };
+
+      await api.updateCourse(activeCourse.id, updatedData);
+      Object.assign(activeCourse, updatedData);
+
+      setSheetsModalFeedback(`✓ Carpeta de Drive configurada: "${targetFolderName}". Las planillas se guardarán en esta ubicación.`);
+      setToastMessage(`✓ Carpeta de Drive actualizada: "${targetFolderName}"`);
+      setCustomFolderInput('');
+    } catch (err: any) {
+      setSheetsModalFeedback('Error al configurar la carpeta de Drive: ' + (err?.message || 'Error'));
+    } finally {
+      setIsLinkingCustomFolder(false);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
+  };
+
+  // Safely open or initialize live Google Sheet without 404 dead links
+  const handleOpenGoogleSheet = async () => {
+    if (!activeCourse) return;
+
+    // 1. If we already have a confirmed live Google Sheet URL or real ID
+    if (sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId)) {
+      const openUrl = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
+      window.open(openUrl, '_blank');
+      return;
+    }
+
+    // 2. Otherwise trigger manual sync to create/link and open
+    await handleManualSheetsSync();
+  };
+
+  const handleConnectGoogleForSheets = async () => {
+    await handleManualSheetsSync();
+    if (sheetConfig?.url) {
+      window.open(sheetConfig.url, '_blank');
     }
   };
 
@@ -1126,21 +1370,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     sheetsService.exportDispositionCsv(activeCourse.name, currentStudents, dispositionMap, currentHistory);
     setSheetsModalFeedback('Archivo CSV descargado con éxito.');
   };
-
-  // Sync to all localStorage keys and guarantee server/Firestore persistence
-  useEffect(() => {
-    try {
-      saveAllDispositionStorage(dispositionMap, historyList);
-    } catch (_) {}
-
-    // Debounced sync to server disk so that all changes permanently survive
-    const timer = setTimeout(() => {
-      if (historyList.length > 0 || Object.keys(dispositionMap).length > 0) {
-        api.syncFullDisposition({ disposition: dispositionMap, history: historyList }).catch(() => {});
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [historyList, dispositionMap]);
 
   // Clean any legacy mock students on startup
   useEffect(() => {
@@ -1325,10 +1554,29 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     `${s.firstName} ${s.lastName} ${s.email}`.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  // Helper to get student disposition data (reconciled with historyList and dispositionMap)
-  const getStudentMetrics = (studentId: string): StudentDispositionData => {
-    const fromMap = dispositionMap[studentId];
-    const studentHistory = historyList.filter((h) => h.studentId === studentId);
+  // Helper to get student disposition data (reconciled with historyList and dispositionMap per term)
+  const getStudentMetrics = (
+    studentId: string,
+    targetTerm: '1c' | '2c' | 'annual' = attendanceTerm
+  ): StudentDispositionData => {
+    if (targetTerm === 'annual') {
+      const m1 = getStudentMetrics(studentId, '1c');
+      const m2 = getStudentMetrics(studentId, '2c');
+      const totalAbsences = m1.totalAbsences + m2.totalAbsences;
+      const totalLates = (m1.totalLates || 0) + (m2.totalLates || 0);
+      const totalDisposition = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
+      return {
+        totalAbsences,
+        totalLates,
+        totalDisposition,
+      };
+    }
+
+    const is2c = targetTerm === '2c';
+    const fromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
+    const studentHistory = historyList.filter(
+      (h) => h.studentId === studentId && (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
+    );
 
     const historyAbsences = studentHistory.filter(
       (h) =>
@@ -1348,7 +1596,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     ).length;
 
     let calculatedDisp = 10;
-    const sortedStudentEvents = [...studentHistory].sort((a, b) => a.timestamp - b.timestamp);
+    const sortedStudentEvents = [...studentHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     for (const ev of sortedStudentEvents) {
       const isReset =
         ev.category === 'Sistema' ||
@@ -1358,24 +1606,74 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         calculatedDisp = 10;
         continue;
       }
-      const isDisp =
-        ev.category === 'Disposición' ||
-        (ev.pointsChange !== undefined && ev.pointsChange < 0);
-      if (isDisp) {
-        const pts = ev.pointsChange !== undefined ? Math.abs(ev.pointsChange) : 1;
-        calculatedDisp = Math.max(0, calculatedDisp - pts);
+      if (ev.pointsChange !== undefined) {
+        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
+      } else if (ev.category === 'Disposición') {
+        calculatedDisp = Math.max(0, calculatedDisp - 1);
       }
     }
 
-    const totalAbsences = studentHistory.length > 0 ? historyAbsences : (fromMap?.totalAbsences !== undefined ? fromMap.totalAbsences : 0);
-    const totalLates = studentHistory.length > 0 ? historyLates : (fromMap?.totalLates !== undefined ? fromMap.totalLates : 0);
-    const totalDisposition = studentHistory.length > 0 ? calculatedDisp : (fromMap?.totalDisposition !== undefined ? fromMap.totalDisposition : 10);
+    let totalAbsences = 0;
+    if (fromMap?.totalAbsences !== undefined) {
+      totalAbsences = fromMap.totalAbsences;
+    } else {
+      totalAbsences = historyAbsences;
+    }
+    if (historyAbsences > totalAbsences) {
+      totalAbsences = historyAbsences;
+    }
+    if (historyAbsences === 0 && (!fromMap || fromMap.totalAbsences === undefined)) {
+      totalAbsences = 0;
+    }
+
+    let totalLates = 0;
+    if (fromMap?.totalLates !== undefined) {
+      totalLates = fromMap.totalLates;
+    } else {
+      totalLates = historyLates;
+    }
+    if (historyLates > totalLates) {
+      totalLates = historyLates;
+    }
+    if (historyLates === 0 && (!fromMap || fromMap.totalLates === undefined)) {
+      totalLates = 0;
+    }
+
+    let totalDisposition = 10;
+    if (fromMap?.totalDisposition !== undefined) {
+      totalDisposition = fromMap.totalDisposition;
+    } else {
+      totalDisposition = calculatedDisp;
+    }
 
     return {
       totalAbsences,
       totalLates,
       totalDisposition,
     };
+  };
+
+  const saveTermDisposition = (
+    term: '1c' | '2c',
+    updatedMap: Record<string, StudentDispositionData>,
+    updatedHistory: StudentHistoryItem[]
+  ) => {
+    if (term === '2c') {
+      setDispositionMap2c(updatedMap);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('fds_disposition_data_2c', JSON.stringify(updatedMap));
+        if (activeCourse?.id) {
+          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
+        }
+      }
+      saveAllDispositionStorage(dispositionMap, updatedHistory);
+    } else {
+      setDispositionMap(updatedMap);
+      if (typeof window !== 'undefined' && activeCourse?.id) {
+        localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
+      }
+      saveAllDispositionStorage(updatedMap, updatedHistory);
+    }
   };
 
   // -------------------------------------------------------------
@@ -1391,24 +1689,24 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     const timestamp = Date.now();
     const id = `rec-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
 
     // Visual feedback
     setPulsingStudentId(`abs-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = getStudentMetrics(student.id);
+    const current = getStudentMetrics(student.id, targetTerm);
     const newAbsences = current.totalAbsences + 1;
     const newDisposition = current.totalDisposition;
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const updatedMap: Record<string, StudentDispositionData> = {
-      ...dispositionMap,
+      ...baseMap,
       [student.id]: {
         ...current,
         totalAbsences: newAbsences,
         totalDisposition: newDisposition,
       },
     };
-
-    setDispositionMap(updatedMap);
 
     // Initial history entry (message notification starts as pending)
     const newHistoryEntry: StudentHistoryItem = {
@@ -1418,6 +1716,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
+      term: targetTerm,
       action: 'Ausencia',
       category: 'Ausencia',
       pointsChange: 0,
@@ -1429,13 +1728,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(updatedMap, updatedHistory);
+    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
-    setToastMessage(`Ausencia registrada para ${student.firstName} ${student.lastName} (+1 Falta)`);
+    setToastMessage(`Ausencia registrada para ${student.firstName} ${student.lastName} (+1 Falta en ${targetTerm === '2c' ? '2°C' : '1°C'})`);
     setTimeout(() => setToastMessage(null), 3500);
 
     // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(updatedMap, updatedHistory);
+    triggerSheetsSync(
+      targetTerm === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      targetTerm === '2c' ? updatedMap : dispositionMap2c
+    );
+
+    if (onRefreshData) {
+      onRefreshData();
+    }
 
     // Persist to server with exact ID, date, time, timestamp and expected summary
     api
@@ -1457,6 +1764,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           totalLates: current.totalLates || 0,
           totalDisposition: newDisposition,
         },
+      })
+      .then(() => {
+        if (onRefreshData) onRefreshData();
       })
       .catch(() => {});
 
@@ -1944,11 +2254,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   };
 
-  // 2. LÓGICA PARA DISPOSICIÓN (Resta 1 pto del total y registra en historial)
+  // 2. LÓGICA PARA DISPOSICIÓN (Resta o suma puntos del total y registra en historial)
   const handleRecordDispositionAction = async (
     student: Student,
     actionName: string,
-    detailText?: string
+    detailText?: string,
+    explicitPointsDelta?: number
   ) => {
     const studentFullName = `${student.lastName}, ${student.firstName}`;
     const now = new Date();
@@ -1958,30 +2269,42 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const timestamp = Date.now();
     const id = `rec-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
 
-    let finalAction = actionName;
+    const isActionPositive =
+      actionName.startsWith('+') ||
+      actionName.startsWith('[+]') ||
+      actionName.includes('(+') ||
+      /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(actionName);
+
+    const delta = explicitPointsDelta !== undefined
+      ? explicitPointsDelta
+      : (isActionPositive ? 1 : -1);
+
+    const cleanAction = actionName.replace(/^(\+|\[\+\])\s*/, '');
+
+    let finalAction = cleanAction;
     if (detailText && detailText.trim()) {
       finalAction = detailText.trim();
     } else if (actionName === 'Otros' && detailText) {
-      finalAction = detailText.trim() || 'Conducta no especificada';
+      finalAction = detailText.trim() || (delta > 0 ? 'Reconocimiento destacado' : 'Conducta no especificada');
     }
 
     // Visual feedback
     setPulsingStudentId(`disp-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const current = getStudentMetrics(student.id, targetTerm);
     const currentDisp = current.totalDisposition !== undefined ? current.totalDisposition : 10;
-    const newDisposition = Math.max(0, currentDisp - 1);
+    const newDisposition = Math.min(10, Math.max(0, currentDisp + delta));
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
 
     const updatedMap: Record<string, StudentDispositionData> = {
-      ...dispositionMap,
+      ...baseMap,
       [student.id]: {
         ...current,
         totalDisposition: newDisposition,
       },
     };
-
-    setDispositionMap(updatedMap);
 
     const newHistoryEntry: StudentHistoryItem = {
       id,
@@ -1990,9 +2313,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
+      term: targetTerm,
       action: finalAction,
       category: 'Disposición',
-      pointsChange: -1,
+      pointsChange: delta,
       previousDisposition: currentDisp,
       resultingDisposition: newDisposition,
       timestamp,
@@ -2003,13 +2327,23 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(updatedMap, updatedHistory);
+    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
-    setToastMessage(`Conducta registrada para ${student.lastName}, ${student.firstName}: ${finalAction} (${currentDisp} → ${newDisposition} pts)`);
+    const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+    const typeStr = delta > 0 ? 'Reconocimiento registrado' : 'Conducta registrada';
+    setToastMessage(`${typeStr} para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}: ${finalAction} (${deltaStr} pto | ${currentDisp} → ${newDisposition} pts)`);
     setTimeout(() => setToastMessage(null), 3500);
 
     // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(updatedMap, updatedHistory);
+    triggerSheetsSync(
+      targetTerm === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      targetTerm === '2c' ? updatedMap : dispositionMap2c
+    );
+
+    if (onRefreshData) {
+      onRefreshData();
+    }
 
     // Persist to server with exact ID, date, time, timestamp and expectedSummary
     api
@@ -2030,10 +2364,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           totalDisposition: newDisposition,
         },
       })
+      .then(() => {
+        if (onRefreshData) onRefreshData();
+      })
       .catch(() => {});
 
-    // Flujo de notificación al alumno cuando se baja 1 punto de disposición
-    const specificReasonTemplate = getTemplateForReason(finalAction);
+    // Flujo de notificación al alumno cuando se suma o resta disposición
+    const specificReasonTemplate = getTemplateForReason(finalAction, delta > 0 ? 'positive' : 'negative');
     const activeConductPreset =
       savedPresets.find((p) => p.category === 'Disposición' && p.isDefault) ||
       savedPresets.find((p) => p.category === 'Disposición') ||
@@ -2046,13 +2383,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       activeCourse.name,
       newDisposition,
       date,
-      finalAction
+      finalAction,
+      delta
     );
 
     if (notifSettings.autoNotify) {
       sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
     } else if (notifSettings.dontShowPopupOnDisposition) {
-      setToastMessage(`Conducta registrada (-1 pto). Aviso para ${student.firstName} ${student.lastName} pendiente para enviar.`);
+      setToastMessage(
+        delta > 0
+          ? `Reconocimiento registrado (+${delta} pto). Aviso para ${student.firstName} ${student.lastName} pendiente para enviar.`
+          : `Conducta registrada (${delta} pto). Aviso para ${student.firstName} ${student.lastName} pendiente para enviar.`
+      );
       setTimeout(() => setToastMessage(null), 3500);
     } else {
       setAbsenceNotifModal({
@@ -2070,7 +2412,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   };
 
-  // 3. Confirmación desde modal de registrar conducta
+  // 3. Confirmación desde modal de registrar conducta (suma o resta de puntos)
   const handleConfirmConductRecord = (e: React.FormEvent) => {
     e.preventDefault();
     if (!conductRecordModal.student) return;
@@ -2078,12 +2420,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const reason = conductRecordModal.customReason.trim();
     if (!reason) return;
 
+    const isAdd = conductRecordModal.mode === 'add';
+    const pts = Math.abs(conductRecordModal.points || 1);
+    const delta = isAdd ? pts : -pts;
+
     if (conductRecordModal.saveToOptions) {
-      handleAddConductOption(reason);
+      const optionToSave = isAdd ? `+ ${reason}` : reason;
+      handleAddConductOption(optionToSave);
     }
 
-    handleRecordDispositionAction(conductRecordModal.student, reason);
-    setConductRecordModal({ isOpen: false, student: null, customReason: '', saveToOptions: false });
+    handleRecordDispositionAction(conductRecordModal.student, reason, undefined, delta);
+    setConductRecordModal({ isOpen: false, student: null, mode: 'subtract', points: 1, customReason: '', saveToOptions: false });
   };
 
   // 4. Eliminar entrada errónea del historial (revierte el punto sacado, o quita la ausencia o tardanza)
@@ -2105,12 +2452,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       item.action?.toLowerCase().includes('tarde');
 
     let pointsToReturn = 0;
-    if (item.pointsChange !== undefined && item.pointsChange < 0) {
-      pointsToReturn = Math.abs(item.pointsChange);
+    if (item.pointsChange !== undefined) {
+      pointsToReturn = -item.pointsChange;
     } else if (
       item.previousDisposition !== undefined &&
-      item.resultingDisposition !== undefined &&
-      item.previousDisposition > item.resultingDisposition
+      item.resultingDisposition !== undefined
     ) {
       pointsToReturn = item.previousDisposition - item.resultingDisposition;
     } else if (
@@ -2120,52 +2466,95 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       pointsToReturn = 1;
     }
 
-    let updatedMap = { ...dispositionMap };
-    const current = updatedMap[item.studentId] || getStudentMetrics(item.studentId);
-
-    let newAbsences = current.totalAbsences;
-    let newLates = current.totalLates || 0;
-    let newDisposition = current.totalDisposition !== undefined ? current.totalDisposition : 10;
-    const actionsTaken: string[] = [];
-
-    if (isAbsence) {
-      newAbsences = Math.max(0, current.totalAbsences - 1);
-      actionsTaken.push('se restó la ausencia');
-    }
-
-    if (isLate) {
-      newLates = Math.max(0, (current.totalLates || 0) - 1);
-      actionsTaken.push('se quitó la tardanza');
-    }
-
-    if (pointsToReturn > 0) {
-      newDisposition = Math.min(10, newDisposition + pointsToReturn);
-      actionsTaken.push(`se devolvió el punto sacado (+${pointsToReturn} pto: ahora ${newDisposition}/10)`);
-    } else if (item.pointsChange !== undefined && item.pointsChange > 0) {
-      newDisposition = Math.max(0, newDisposition - item.pointsChange);
-    }
-
-    updatedMap[item.studentId] = {
-      ...current,
-      totalAbsences: newAbsences,
-      totalLates: newLates,
-      totalDisposition: newDisposition,
-    };
-
-    setDispositionMap(updatedMap);
-
+    // Filter out of history immediately
     const updatedHistory = historyList.filter((h) => h.id !== item.id);
     setHistoryList(updatedHistory);
 
-    // Save across all storage keys immediately
-    saveAllDispositionStorage(updatedMap, updatedHistory);
+    // Calculate updated metrics for student directly from remaining history
+    const studentRemainingHistory = updatedHistory.filter((h) => h.studentId === item.studentId);
+    const newAbsences = studentRemainingHistory.filter(
+      (h) =>
+        h.category === 'Ausencia' ||
+        h.action === 'Ausencia' ||
+        h.action?.toLowerCase().includes('ausencia') ||
+        h.action?.toLowerCase().includes('falta')
+    ).length;
+
+    const newLates = studentRemainingHistory.filter(
+      (h) =>
+        h.category === 'Llegada tarde' ||
+        h.action === 'Llegada tarde' ||
+        h.action?.toLowerCase().includes('llegada tarde') ||
+        h.action?.toLowerCase().includes('tarde') ||
+        h.action?.toLowerCase().includes('tardanza')
+    ).length;
+
+    let calculatedDisp = 10;
+    const sortedStudentEvents = [...studentRemainingHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    for (const ev of sortedStudentEvents) {
+      const isReset =
+        ev.category === 'Sistema' ||
+        ev.action?.toLowerCase().includes('restablecid') ||
+        ev.action?.toLowerCase().includes('reinicio');
+      if (isReset) {
+        calculatedDisp = 10;
+        continue;
+      }
+      if (ev.pointsChange !== undefined) {
+        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
+      } else if (ev.category === 'Disposición') {
+        calculatedDisp = Math.max(0, calculatedDisp - 1);
+      }
+    }
+
+    const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : '1c';
+    const baseMap = itemTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[item.studentId] || getStudentMetrics(item.studentId, itemTerm);
+
+    const finalAbsences = isAbsence
+      ? Math.max(0, (current.totalAbsences !== undefined ? current.totalAbsences : 1) - 1)
+      : newAbsences;
+
+    const finalLates = isLate
+      ? Math.max(0, (current.totalLates !== undefined ? current.totalLates : 1) - 1)
+      : newLates;
+
+    const finalDisposition = (isAbsence || isLate)
+      ? (current.totalDisposition ?? 10)
+      : (studentRemainingHistory.length > 0 ? calculatedDisp : Math.min(10, Math.max(0, (current.totalDisposition ?? 10) + pointsToReturn)));
+
+    const updatedMap: Record<string, StudentDispositionData> = {
+      ...baseMap,
+      [item.studentId]: {
+        ...current,
+        totalAbsences: finalAbsences,
+        totalLates: finalLates,
+        totalDisposition: finalDisposition,
+      },
+    };
+
+    saveTermDisposition(itemTerm, updatedMap, updatedHistory);
+
+    const actionsTaken: string[] = [];
+    if (isAbsence) actionsTaken.push('se restó la ausencia');
+    if (isLate) actionsTaken.push('se quitó la tardanza');
+    if (pointsToReturn > 0) actionsTaken.push(`se devolvió el punto (+${pointsToReturn} pto: ahora ${finalDisposition}/10)`);
+    if (pointsToReturn < 0) actionsTaken.push(`se ajustó la nota (${pointsToReturn} pto: ahora ${finalDisposition}/10)`);
 
     const actionSummary = actionsTaken.length > 0 ? actionsTaken.join(' y ') : 'Registro eliminado';
-    setToastMessage(`Historial actualizado para ${item.studentName || 'el alumno'}: ${actionSummary}.`);
+    setToastMessage(`Historial actualizado para ${item.studentName || 'el alumno'}: ${actionSummary} (${itemTerm === '2c' ? '2°C' : '1°C'}).`);
     setTimeout(() => setToastMessage(null), 3500);
 
-    // Sync immediately in real time to Google Sheets (deleted record is removed from Sheets)
-    triggerSheetsSync(updatedMap, updatedHistory);
+    // Sync immediately in real time to Google Sheets
+    triggerSheetsSync(
+      itemTerm === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      itemTerm === '2c' ? updatedMap : dispositionMap2c
+    );
+
+    if (onRefreshData) {
+      onRefreshData();
+    }
 
     // Call server to delete and update backend + Firestore
     api
@@ -2174,111 +2563,113 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         isAbsence,
         isLate,
         pointsToReturn,
-        newAbsences,
-        newLates,
-        newDisposition,
+        newAbsences: finalAbsences,
+        newLates: finalLates,
+        newDisposition: finalDisposition,
+      })
+      .then(() => {
+        if (onRefreshData) onRefreshData();
       })
       .catch(() => {});
   };
 
   // 4b. Borrar última falta del estudiante (por ejemplo, si llegó más tarde o fue un error)
   const handleDeleteLatestAbsence = async (student: Student) => {
-    // Buscar la última falta registrada para este alumno en este curso
-    const latestAbsence = historyList.find(
-      (h) =>
-        h.studentId === student.id &&
-        (h.category === 'Ausencia' ||
-          h.action === 'Ausencia' ||
-          h.action?.toLowerCase().includes('ausencia') ||
-          h.action?.toLowerCase().includes('falta')) &&
-        h.courseId === activeCourse.id
-    );
-
-    if (!latestAbsence) {
-      const fallbackAbsence = historyList.find(
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    // Buscar la falta más reciente registrada para este alumno en este curso o en general
+    const studentAbsences = historyList
+      .filter(
         (h) =>
           h.studentId === student.id &&
+          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
           (h.category === 'Ausencia' ||
             h.action === 'Ausencia' ||
             h.action?.toLowerCase().includes('ausencia') ||
             h.action?.toLowerCase().includes('falta'))
-      );
-      if (fallbackAbsence) {
-        await handleDeleteHistoryEntry(fallbackAbsence);
-        return;
-      }
-      // Si no hay en el historial pero el contador tiene ausencias, descontamos manualmente
-      const current = dispositionMap[student.id] || getStudentMetrics(student.id);
-      if (current && current.totalAbsences > 0) {
-        const updatedMap = {
-          ...dispositionMap,
-          [student.id]: {
-            ...current,
-            totalAbsences: Math.max(0, current.totalAbsences - 1),
-          },
-        };
-        setDispositionMap(updatedMap);
-        saveAllDispositionStorage(updatedMap, historyList);
-        triggerSheetsSync(updatedMap, historyList);
-        setToastMessage(`Falta eliminada para ${student.lastName}, ${student.firstName}.`);
-        setTimeout(() => setToastMessage(null), 3000);
-      } else {
-        setToastMessage(`${student.firstName} ${student.lastName} no registra faltas para borrar.`);
-        setTimeout(() => setToastMessage(null), 3000);
-      }
+      )
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const latestAbsence = studentAbsences[0];
+
+    if (latestAbsence) {
+      await handleDeleteHistoryEntry(latestAbsence);
       return;
     }
 
-    await handleDeleteHistoryEntry(latestAbsence);
+    // Si no hay en el historial pero el contador tiene ausencias, descontamos manualmente
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
+    if (current && current.totalAbsences > 0) {
+      const finalAbsences = Math.max(0, current.totalAbsences - 1);
+      const updatedMap = {
+        ...baseMap,
+        [student.id]: {
+          ...current,
+          totalAbsences: finalAbsences,
+        },
+      };
+      saveTermDisposition(targetTerm, updatedMap, historyList);
+      triggerSheetsSync(
+        targetTerm === '1c' ? updatedMap : dispositionMap,
+        historyList,
+        targetTerm === '2c' ? updatedMap : dispositionMap2c
+      );
+      setToastMessage(`Falta eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`);
+      setTimeout(() => setToastMessage(null), 3000);
+      if (onRefreshData) onRefreshData();
+    } else {
+      setToastMessage(`${student.firstName} ${student.lastName} no registra faltas en ${targetTerm === '2c' ? '2°C' : '1°C'} para borrar.`);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
   };
 
   // 4b2. Borrar última llegada tarde del estudiante
   const handleDeleteLatestLate = async (student: Student) => {
-    const latestLate = historyList.find(
-      (h) =>
-        h.studentId === student.id &&
-        (h.category === 'Llegada tarde' ||
-          h.action === 'Llegada tarde' ||
-          h.action?.toLowerCase().includes('llegada tarde') ||
-          h.action?.toLowerCase().includes('tardanza') ||
-          h.action?.toLowerCase().includes('tarde')) &&
-        h.courseId === activeCourse.id
-    );
-
-    if (!latestLate) {
-      const fallbackLate = historyList.find(
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const studentLates = historyList
+      .filter(
         (h) =>
           h.studentId === student.id &&
+          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
           (h.category === 'Llegada tarde' ||
-            h.action?.toLowerCase().includes('tardanza') ||
-            h.action?.toLowerCase().includes('tarde'))
-      );
-      if (fallbackLate) {
-        await handleDeleteHistoryEntry(fallbackLate);
-        return;
-      }
-      const current = dispositionMap[student.id] || getStudentMetrics(student.id);
-      if (current && (current.totalLates || 0) > 0) {
-        const updatedMap = {
-          ...dispositionMap,
-          [student.id]: {
-            ...current,
-            totalLates: Math.max(0, (current.totalLates || 0) - 1),
-          },
-        };
-        setDispositionMap(updatedMap);
-        saveAllDispositionStorage(updatedMap, historyList);
-        triggerSheetsSync(updatedMap, historyList);
-        setToastMessage(`Llegada tarde eliminada para ${student.lastName}, ${student.firstName}.`);
-        setTimeout(() => setToastMessage(null), 3000);
-      } else {
-        setToastMessage(`${student.firstName} ${student.lastName} no registra tardanzas para borrar.`);
-        setTimeout(() => setToastMessage(null), 3000);
-      }
+            h.action === 'Llegada tarde' ||
+            h.action?.toLowerCase().includes('llegada tarde') ||
+            h.action?.toLowerCase().includes('tarde') ||
+            h.action?.toLowerCase().includes('tardanza'))
+      )
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+    const latestLate = studentLates[0];
+
+    if (latestLate) {
+      await handleDeleteHistoryEntry(latestLate);
       return;
     }
 
-    await handleDeleteHistoryEntry(latestLate);
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
+    if (current && (current.totalLates || 0) > 0) {
+      const finalLates = Math.max(0, (current.totalLates || 0) - 1);
+      const updatedMap = {
+        ...baseMap,
+        [student.id]: {
+          ...current,
+          totalLates: finalLates,
+        },
+      };
+      saveTermDisposition(targetTerm, updatedMap, historyList);
+      triggerSheetsSync(
+        targetTerm === '1c' ? updatedMap : dispositionMap,
+        historyList,
+        targetTerm === '2c' ? updatedMap : dispositionMap2c
+      );
+      setToastMessage(`Llegada tarde eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`);
+      setTimeout(() => setToastMessage(null), 3000);
+      if (onRefreshData) onRefreshData();
+    } else {
+      setToastMessage(`${student.firstName} ${student.lastName} no registra tardanzas en ${targetTerm === '2c' ? '2°C' : '1°C'} para borrar.`);
+      setTimeout(() => setToastMessage(null), 3000);
+    }
   };
 
   // 4c. LÓGICA PARA LLEGADA TARDE (Registra en historial sin descontar puntos, y si tenía falta hoy, la cancela/borra)
@@ -2289,46 +2680,84 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const time = formatLocalTimeHMS(now);
     const timestamp = Date.now();
     const id = `rec-late-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
 
     // Visual feedback
     setPulsingStudentId(`late-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const current = getStudentMetrics(student.id);
+    const current = getStudentMetrics(student.id, targetTerm);
 
     // 2. Si el mismo día cambio a tarde automáticamente se borra la falta de hoy
-    const todayAbsencesToRemove: StudentHistoryItem[] = [];
-    const cleanHistory = historyList.filter((h) => {
-      const isToday =
-        h.studentId === student.id &&
-        h.category === 'Ausencia' &&
-        isSameCalendarDay(h.date, h.timestamp, now);
-      if (isToday) {
+    const isTodayAbsence = (h: StudentHistoryItem) => {
+      if (h.studentId !== student.id) return false;
+      const isAbs =
+        h.category === 'Ausencia' ||
+        h.action === 'Ausencia' ||
+        h.action?.toLowerCase().includes('ausencia') ||
+        h.action?.toLowerCase().includes('falta');
+      if (!isAbs) return false;
+      return isSameCalendarDay(h.date, h.timestamp, now) || !h.date;
+    };
+
+    let todayAbsencesToRemove: StudentHistoryItem[] = [];
+    let cleanHistory = historyList.filter((h) => {
+      if (isTodayAbsence(h)) {
         todayAbsencesToRemove.push(h);
         return false;
       }
       return true;
     });
 
-    const hadAbsenceToday = todayAbsencesToRemove.length > 0;
-    if (hadAbsenceToday) {
+    // Si no encontró por fecha de hoy pero el alumno tiene faltas registradas, quitar la falta más reciente
+    if (todayAbsencesToRemove.length === 0 && current.totalAbsences > 0) {
+      const studentAbsences = cleanHistory
+        .filter(
+          (h) =>
+            h.studentId === student.id &&
+            (h.category === 'Ausencia' ||
+              h.action === 'Ausencia' ||
+              h.action?.toLowerCase().includes('ausencia') ||
+              h.action?.toLowerCase().includes('falta'))
+        )
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+      if (studentAbsences.length > 0) {
+        const latestAbs = studentAbsences[0];
+        todayAbsencesToRemove.push(latestAbs);
+        cleanHistory = cleanHistory.filter((h) => h.id !== latestAbs.id);
+      }
+    }
+
+    const hadAbsenceToCancel = todayAbsencesToRemove.length > 0 || current.totalAbsences > 0;
+    if (todayAbsencesToRemove.length > 0) {
       todayAbsencesToRemove.forEach((a) => markHistoryIdDeleted(a.id));
     }
 
-    // Conteo exacto de ausencias restantes tras eliminar las de hoy
-    const remainingStudentAbsences = cleanHistory.filter(
-      (h) => h.studentId === student.id && h.category === 'Ausencia'
-    ).length;
+    // Conteo exacto de ausencias restantes tras eliminar la falta
+    const remainingStudentAbsences = Math.max(
+      0,
+      current.totalAbsences > 0
+        ? current.totalAbsences - 1
+        : cleanHistory.filter(
+            (h) =>
+              h.studentId === student.id &&
+              (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
+              (h.category === 'Ausencia' ||
+                h.action === 'Ausencia' ||
+                h.action?.toLowerCase().includes('ausencia') ||
+                h.action?.toLowerCase().includes('falta'))
+          ).length
+    );
 
-    const remainingStudentLates = cleanHistory.filter(
-      (h) => h.studentId === student.id && h.category === 'Llegada tarde'
-    ).length + 1;
+    const remainingStudentLates = (current.totalLates || 0) + 1;
 
     // Una asistencia no cambia el puntaje de disposición
     const newDisposition = current.totalDisposition ?? 10;
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
 
     const updatedMap: Record<string, StudentDispositionData> = {
-      ...dispositionMap,
+      ...baseMap,
       [student.id]: {
         ...current,
         totalAbsences: remainingStudentAbsences,
@@ -2336,8 +2765,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         totalDisposition: newDisposition,
       },
     };
-
-    setDispositionMap(updatedMap);
 
     // Entrada en el historial para la llegada tarde
     const newHistoryEntry: StudentHistoryItem = {
@@ -2347,6 +2774,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
+      term: targetTerm,
       action: 'Llegada tarde a clase',
       category: 'Llegada tarde',
       pointsChange: 0,
@@ -2358,17 +2786,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(updatedMap, updatedHistory);
+    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
-    if (hadAbsenceToday) {
-      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName}. Se eliminó automáticamente la falta que tenía hoy.`);
+    if (hadAbsenceToCancel) {
+      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}. Se eliminó automáticamente la falta.`);
     } else {
-      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName}.`);
+      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}.`);
     }
     setTimeout(() => setToastMessage(null), 4000);
 
     // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(updatedMap, updatedHistory);
+    triggerSheetsSync(
+      targetTerm === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      targetTerm === '2c' ? updatedMap : dispositionMap2c
+    );
+
+    if (onRefreshData) {
+      onRefreshData();
+    }
 
     // Eliminar del backend, Firestore (Vercel) y localStorage
     if (todayAbsencesToRemove.length > 0) {
@@ -2399,6 +2835,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           totalLates: remainingStudentLates,
           totalDisposition: newDisposition,
         },
+      })
+      .then(() => {
+        if (onRefreshData) onRefreshData();
       })
       .catch(() => {});
   };
@@ -2500,19 +2939,248 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // 7a. Reiniciar / Borrar disposición por alumno individual
+  // 7a. Abrir modal para editar manualmente la nota de disposición (por ej. si usó papel o no trajo computadora)
+  const handleOpenEditDisposition = (student: Student, termOverride?: '1c' | '2c') => {
+    const termToUse: '1c' | '2c' = termOverride || (attendanceTerm === '2c' ? '2c' : '1c');
+    const currentMetrics = getStudentMetrics(student.id, termToUse);
+    setEditingDispositionStudent(student);
+    setEditingDispositionTerm(termToUse);
+    setEditingDispositionScore(String(currentMetrics.totalDisposition));
+    setEditingDispositionReason('');
+  };
+
+  const handleChangeEditingTerm = (newTerm: '1c' | '2c') => {
+    setEditingDispositionTerm(newTerm);
+    if (editingDispositionStudent) {
+      const metrics = getStudentMetrics(editingDispositionStudent.id, newTerm);
+      setEditingDispositionScore(String(metrics.totalDisposition));
+    }
+  };
+
+  const handleNavigateEditStudent = (direction: -1 | 1) => {
+    if (!editingDispositionStudent) return;
+    const currentIndex = filteredStudents.findIndex((s) => s.id === editingDispositionStudent.id);
+    if (currentIndex === -1) return;
+    const targetIndex = currentIndex + direction;
+    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
+      const targetStudent = filteredStudents[targetIndex];
+      const metrics = getStudentMetrics(targetStudent.id, editingDispositionTerm);
+      setEditingDispositionStudent(targetStudent);
+      setEditingDispositionScore(String(metrics.totalDisposition));
+      setEditingDispositionReason('');
+    }
+  };
+
+  const handleSaveStudentDisposition = async (moveToNext: boolean = false) => {
+    if (!activeCourse || !editingDispositionStudent) return;
+
+    const student = editingDispositionStudent;
+    const term = editingDispositionTerm;
+    const parsed = parseFloat(editingDispositionScore);
+    if (isNaN(parsed) || parsed < 0 || parsed > 10) {
+      setToastMessage('Ingresá una nota numérica válida entre 0 y 10.');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    const clampedScore = Math.min(10, Math.max(0, Math.round(parsed * 10) / 10));
+
+    const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const oldScore = current.totalDisposition ?? 10;
+
+    const updatedMap: Record<string, StudentDispositionData> = {
+      ...baseMap,
+      [student.id]: {
+        ...current,
+        totalDisposition: clampedScore,
+      },
+    };
+
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const timestamp = Date.now();
+    const studentFullName = `${student.lastName}, ${student.firstName}`;
+
+    const termLabel = term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
+    const reasonTrimmed = editingDispositionReason.trim();
+    const actionText = reasonTrimmed
+      ? `Nota de disposición ajustada a ${clampedScore}/10 (${termLabel}) - Motivo: ${reasonTrimmed}`
+      : `Nota de disposición ajustada a ${clampedScore}/10 (${termLabel})`;
+
+    const editEntry: StudentHistoryItem = {
+      id: `rec-disp-edit-${student.id}-${timestamp}`,
+      studentId: student.id,
+      studentName: studentFullName,
+      courseId: activeCourse.id,
+      date,
+      time,
+      term,
+      action: actionText,
+      category: 'Disposición',
+      pointsChange: Number((clampedScore - oldScore).toFixed(1)),
+      timestamp,
+      messageSent: false,
+      messageText: '',
+      notificationMethod: 'none',
+    };
+
+    const updatedHistory = deduplicateHistory([editEntry, ...historyList]);
+    setHistoryList(updatedHistory);
+    saveTermDisposition(term, updatedMap, updatedHistory);
+
+    triggerSheetsSync(
+      term === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      term === '2c' ? updatedMap : dispositionMap2c
+    );
+
+    api
+      .recordDisposition({
+        id: editEntry.id,
+        studentId: student.id,
+        studentName: studentFullName,
+        courseId: activeCourse.id,
+        action: actionText,
+        category: 'Disposición',
+        term,
+        date,
+        time,
+        timestamp,
+        expectedSummary: {
+          totalAbsences: current.totalAbsences ?? 0,
+          totalLates: current.totalLates ?? 0,
+          totalDisposition: clampedScore,
+        },
+      })
+      .catch(() => {});
+
+    setToastMessage(
+      `Nota de disposición guardada: ${clampedScore}/10 para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'})`
+    );
+    setTimeout(() => setToastMessage(null), 3500);
+
+    if (moveToNext) {
+      const currentIndex = filteredStudents.findIndex((s) => s.id === student.id);
+      if (currentIndex !== -1 && currentIndex < filteredStudents.length - 1) {
+        const nextStudent = filteredStudents[currentIndex + 1];
+        const nextMetrics = getStudentMetrics(nextStudent.id, term);
+        setEditingDispositionStudent(nextStudent);
+        setEditingDispositionScore(String(nextMetrics.totalDisposition));
+        setEditingDispositionReason('');
+        return;
+      }
+    }
+
+    setEditingDispositionStudent(null);
+  };
+
+  // -------------------------------------------------------------
+  // OBSERVACIONES Y FICHA DEL ESTUDIANTE (NOTAS / INFORMES)
+  // -------------------------------------------------------------
+  const handleOpenStudentProfile = (student: Student) => {
+    setSelectedStudentForProfile(student);
+    setNewObservationText('');
+    setNewObservationUrl('');
+  };
+
+  const handleNavigateProfileStudent = (direction: -1 | 1) => {
+    if (!selectedStudentForProfile) return;
+    const currentIndex = filteredStudents.findIndex((s) => s.id === selectedStudentForProfile.id);
+    if (currentIndex === -1) return;
+    const targetIndex = currentIndex + direction;
+    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
+      setSelectedStudentForProfile(filteredStudents[targetIndex]);
+      setNewObservationText('');
+      setNewObservationUrl('');
+    }
+  };
+
+  const handleSaveObservation = (student: Student) => {
+    if (!newObservationText.trim() && !newObservationUrl.trim()) {
+      setToastMessage('Escribí una observación o pegá un enlace al informe.');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+
+    let formattedUrl = newObservationUrl.trim();
+    if (formattedUrl && !formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
+      formattedUrl = `https://${formattedUrl}`;
+    }
+
+    const newObs: StudentObservation = {
+      id: `obs-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      studentId: student.id,
+      courseId: activeCourse?.id || '',
+      text: newObservationText.trim(),
+      reportUrl: formattedUrl || undefined,
+      date,
+      timestamp: Date.now(),
+    };
+
+    const currentList = studentObservations[student.id] || [];
+    const updatedList = [newObs, ...currentList];
+    const updatedMap = {
+      ...studentObservations,
+      [student.id]: updatedList,
+    };
+
+    setStudentObservations(updatedMap);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+        if (activeCourse?.id) {
+          localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+        }
+      } catch (_) {}
+    }
+
+    setNewObservationText('');
+    setNewObservationUrl('');
+    setToastMessage(`Observación guardada para ${student.lastName}, ${student.firstName}`);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleDeleteObservation = (studentId: string, obsId: string) => {
+    const currentList = studentObservations[studentId] || [];
+    const updatedList = currentList.filter((o) => o.id !== obsId);
+    const updatedMap = {
+      ...studentObservations,
+      [studentId]: updatedList,
+    };
+
+    setStudentObservations(updatedMap);
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+        if (activeCourse?.id) {
+          localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+        }
+      } catch (_) {}
+    }
+
+    setToastMessage('Observación eliminada.');
+    setTimeout(() => setToastMessage(null), 2500);
+  };
+
+  // 7b. Reiniciar / Borrar disposición por alumno individual
   const handleResetSingleStudentDisposition = async (student: Student, clearHistory: boolean = false) => {
     if (!activeCourse || !student) return;
-    const current = dispositionMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
     const updatedMap: Record<string, StudentDispositionData> = {
-      ...dispositionMap,
+      ...baseMap,
       [student.id]: {
         ...current,
         totalDisposition: 10,
       },
     };
-
-    setDispositionMap(updatedMap);
 
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -2523,9 +3191,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     let updatedHistory = [...historyList];
     if (clearHistory) {
-      updatedHistory = updatedHistory.filter(
-        (h) => !(h.studentId === student.id && (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0)))
-      );
+      const removedIds: string[] = [];
+      updatedHistory = updatedHistory.filter((h) => {
+        const isTarget =
+          h.studentId === student.id &&
+          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
+          (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
+        if (isTarget) {
+          removedIds.push(h.id);
+          return false;
+        }
+        return true;
+      });
+      removedIds.forEach((id) => markHistoryIdDeleted(id));
     }
 
     const resetEntry: StudentHistoryItem = {
@@ -2535,9 +3213,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
+      term: targetTerm,
       action: clearHistory
-        ? `Disposición borrada y restablecida a 10 puntos (Historial de conducta limpiado)`
-        : `Puntaje de disposición restablecido a 10 puntos`,
+        ? `Disposición borrada y restablecida a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
+        : `Puntaje de disposición restablecido a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
       category: 'Sistema',
       pointsChange: 0,
       timestamp,
@@ -2548,15 +3227,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     updatedHistory = deduplicateHistory([resetEntry, ...updatedHistory]);
     setHistoryList(updatedHistory);
+    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
-    try {
-      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updatedMap));
-      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistory));
-      localStorage.setItem('docencia_disposition_data', JSON.stringify(updatedMap));
-      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistory));
-    } catch (_) {}
-
-    triggerSheetsSync(updatedMap, updatedHistory);
+    triggerSheetsSync(
+      targetTerm === '1c' ? updatedMap : dispositionMap,
+      updatedHistory,
+      targetTerm === '2c' ? updatedMap : dispositionMap2c
+    );
 
     api
       .resetDisposition({
@@ -2567,28 +3244,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       })
       .catch(() => {});
 
-    api
-      .syncFullDisposition({
-        disposition: updatedMap,
-        history: updatedHistory,
-        replaceHistory: true,
-      })
-      .catch(() => {});
-
     setToastMessage(
       clearHistory
-        ? `Disposición borrada y restablecida a 10 para ${student.lastName}, ${student.firstName}. Anotaciones de conducta eliminadas.`
-        : `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName}.`
+        ? `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}). Anotaciones de conducta limpiadas.`
+        : `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
     );
     setTimeout(() => setToastMessage(null), 3500);
-
-    setStudentForSingleReset(null);
   };
 
   // 7b. Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
   const handleResetCourseDisposition = (clearHistory: boolean = false) => {
     if (!activeCourse) return;
-    const updated: Record<string, StudentDispositionData> = { ...dispositionMap };
+    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const updated: Record<string, StudentDispositionData> = { ...baseMap };
     courseStudents.forEach((st) => {
       const current = updated[st.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
       updated[st.id] = {
@@ -2596,8 +3265,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         totalDisposition: 10,
       };
     });
-
-    setDispositionMap(updated);
 
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -2607,9 +3274,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     let updatedHistory = [...historyList];
     if (clearHistory) {
-      updatedHistory = updatedHistory.filter(
-        (h) => !(h.courseId === activeCourse.id && (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0)))
-      );
+      const removedIds: string[] = [];
+      updatedHistory = updatedHistory.filter((h) => {
+        const isTarget =
+          h.courseId === activeCourse.id &&
+          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
+          (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
+        if (isTarget) {
+          removedIds.push(h.id);
+          return false;
+        }
+        return true;
+      });
+      removedIds.forEach((id) => markHistoryIdDeleted(id));
     }
 
     const resetEntry: StudentHistoryItem = {
@@ -2619,9 +3296,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       courseId: activeCourse.id,
       date,
       time,
+      term: targetTerm,
       action: clearHistory
-        ? 'Reinicio general de disposición a 10 puntos (Historial de conducta limpiado)'
-        : 'Reinicio general de puntaje de disposición a 10 puntos (Nuevo ciclo/período)',
+        ? `Reinicio general de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
+        : `Reinicio general de puntaje de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
       category: 'Sistema',
       pointsChange: 0,
       timestamp,
@@ -2631,54 +3309,32 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     };
     const updatedHistoryDedup = deduplicateHistory([resetEntry, ...updatedHistory]);
     setHistoryList(updatedHistoryDedup);
+    saveTermDisposition(targetTerm, updated, updatedHistoryDedup);
 
-    try {
-      localStorage.setItem(LOCAL_DISPOSITION_KEY, JSON.stringify(updated));
-      localStorage.setItem(LOCAL_HISTORY_KEY, JSON.stringify(updatedHistoryDedup));
-      localStorage.setItem('docencia_disposition_data', JSON.stringify(updated));
-      localStorage.setItem('docencia_disposition_history', JSON.stringify(updatedHistoryDedup));
-    } catch (_) {}
-
-    setIsResetConfirmOpen(false);
     setToastMessage(
       clearHistory
-        ? 'Disposición restablecida a 10 para todos los estudiantes y conductas limpiadas.'
-        : 'Puntaje de disposición reiniciado a 10 para todos los estudiantes del curso.'
+        ? `Disposición restablecida a 10 para todos los estudiantes en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
+        : `Puntaje de disposición reiniciado a 10 en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
     );
     setTimeout(() => setToastMessage(null), 3500);
 
-    triggerSheetsSync(updated, updatedHistoryDedup);
+    triggerSheetsSync(
+      targetTerm === '1c' ? updated : dispositionMap,
+      updatedHistoryDedup,
+      targetTerm === '2c' ? updated : dispositionMap2c
+    );
     api.resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition', clearHistory }).catch(() => {});
-    api
-      .syncFullDisposition({
-        disposition: updated,
-        history: updatedHistoryDedup,
-        replaceHistory: true,
-      })
-      .catch(() => {});
-  };
-
-  // Cambiar y persistir el cuatrimestre seleccionado para mandar disposición
-  const handleSetDispositionTargetTerm = (term: '1c' | '2c') => {
-    setDispositionTargetTerm(term);
-    if (activeCourse?.id && typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(`fds_disposition_target_term_${activeCourse.id}`, term);
-      } catch (_) {}
-    }
   };
 
   // Mandar la nota de disposición calculada (1 a 10) de todos los alumnos a Calificaciones
+  // Se envía automáticamente al cuatrimestre seleccionado en la planilla (1° Cuatrimestre o 2° Cuatrimestre)
   const handleSendDispositionToGrades = (
     targetTermOverride?: '1c' | '2c',
     shouldNavigateToGrades = false
   ) => {
     if (!activeCourse) return;
-    const term = targetTermOverride || dispositionTargetTerm;
+    const term: '1c' | '2c' = targetTermOverride || (attendanceTerm === '2c' ? '2c' : '1c');
     const courseId = activeCourse.id;
-
-    // Guardar la elección para que quede establecida
-    handleSetDispositionTargetTerm(term);
 
     const catKey = `fds_grades_categories_${courseId}_${term}`;
     const gradesKey = `fds_grades_data_${courseId}_${term}`;
@@ -2785,10 +3441,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
     } catch (_) {}
 
-    // 5. Asignar la nota de disposición de cada alumno
+    // 5. Asignar la nota de disposición de cada alumno calculada para este cuatrimestre
     let transferredCount = 0;
     courseStudents.forEach((st) => {
-      const metrics = getStudentMetrics(st.id);
+      const metrics = getStudentMetrics(st.id, term);
       const score = String(metrics.totalDisposition);
       if (!gradesMap[st.id]) {
         gradesMap[st.id] = {};
@@ -2822,6 +3478,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       studentId: 'all',
       studentName: 'Toda la clase',
       courseId: activeCourse.id,
+      term,
       date,
       time,
       action: `Notas de disposición enviadas a Calificaciones (${termLabel})`,
@@ -2836,7 +3493,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setHistoryList(updatedHistory);
 
     // 1. Registrar inmediatamente el evento en el Historial de Google Sheets
-    triggerSheetsSync(dispositionMap, updatedHistory);
+    triggerSheetsSync(
+      term === '1c' ? dispositionMap : undefined,
+      updatedHistory,
+      term === '2c' ? dispositionMap2c : undefined
+    );
 
     // 2. Guardar y sincronizar la matriz completa de Calificaciones del cuatrimestre en Google Sheets
     sheetsService
@@ -2864,7 +3525,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           termLabel,
           categories,
           gradesMap,
-          dispositionMap,
+          dispositionMap: term === '2c' ? dispositionMap2c : dispositionMap,
           transferredCount,
           date,
           time,
@@ -2879,6 +3540,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         studentId: 'all',
         studentName: 'Toda la clase',
         courseId: activeCourse.id,
+        term,
         action: gradesEntry.action,
         category: 'Calificación',
         date,
@@ -2888,7 +3550,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       .catch(() => {});
 
     setToastMessage(
-      `✓ ¡Notas de disposición vinculadas en Calificaciones (${termLabel}) y guardadas en el historial de Google Sheets!`
+      `✓ ¡Notas de disposición vinculadas en Calificaciones (${termLabel}) y sincronizadas con Google Sheets!`
     );
     setTimeout(() => setToastMessage(null), 5000);
 
@@ -3381,33 +4043,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </button>
                   )}
 
-                  {/* Botón principal: Mandar Nota de Disposición a Calificaciones con selector de cuatrimestre */}
-                  <div className="relative inline-flex items-center rounded-xl shadow-xs border border-indigo-200 dark:border-indigo-800/80 overflow-hidden bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
-                    <button
-                      type="button"
-                      onClick={() => setIsSendDispositionModalOpen(true)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold hover:brightness-110 transition-all cursor-pointer"
-                      title={`Mandar notas de disposición a Calificaciones (${dispositionTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}). Hacé clic para revisar y confirmar.`}
-                    >
-                      <Award className="w-3.5 h-3.5 text-amber-300" />
-                      <span>Mandar disposición ({dispositionTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const nextTerm = dispositionTargetTerm === '1c' ? '2c' : '1c';
-                        handleSetDispositionTargetTerm(nextTerm);
-                        setToastMessage(`✓ Cuatrimestre establecido: ${nextTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}`);
-                        setTimeout(() => setToastMessage(null), 3500);
-                      }}
-                      className="px-2.5 py-1.5 text-[11px] font-extrabold bg-black/20 hover:bg-black/35 border-l border-white/20 transition-all cursor-pointer flex items-center gap-1"
-                      title={`Cambiar cuatrimestre establecido a ${dispositionTargetTerm === '1c' ? '2° Cuatrimestre' : '1° Cuatrimestre'}`}
-                    >
-                      <span className="uppercase tracking-wider font-black">{dispositionTargetTerm === '1c' ? '1° C' : '2° C'}</span>
-                      <ChevronDown className="w-3 h-3 opacity-80" />
-                    </button>
-                  </div>
+                  {/* Botón principal: Mandar Nota de Disposición a Calificaciones según el cuatrimestre activo */}
+                  <button
+                    type="button"
+                    onClick={() => setIsSendDispositionModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
+                    title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+                  >
+                    <Award className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Mandar a Calificaciones</span>
+                  </button>
 
                   <button
                     type="button"
@@ -3423,17 +4068,46 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     <span>Mensajes Preestablecidos</span>
                   </button>
 
+                  {/* Google Sheets Sync & Open buttons on the Roster Tab */}
                   <button
-                    onClick={() => setIsResetConfirmOpen(true)}
+                    type="button"
+                    onClick={handleManualSheetsSync}
+                    disabled={isSyncingSheet}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                      sheetConfig?.isLiveGoogle
+                        ? isDarkMode
+                          ? 'bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 border-emerald-700/60'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                        : isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Sincronizar nómina, faltas y notas de conducta en vivo con Google Sheets"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin text-emerald-500' : 'text-emerald-600 dark:text-emerald-400'}`} />
+                    <span>{isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Sheets'}</span>
+                    {sheetConfig?.lastSyncedAt && !isSyncingSheet && (
+                      <span className="hidden xl:inline text-[10px] opacity-75">({sheetConfig.lastSyncedAt})</span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenGoogleSheet}
+                    disabled={isOpeningSheet}
                     className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
                       isDarkMode
-                        ? 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                        : 'border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
                     }`}
-                    title="Reiniciar disposición a 10 para todos los estudiantes del curso"
+                    title="Abrir la planilla vinculada en Google Sheets"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span className="hidden md:inline">Reiniciar Disposición a 10</span>
+                    {isOpeningSheet ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                    )}
+                    <span className="hidden sm:inline">Google Sheets</span>
                   </button>
                 </>
               ) : (
@@ -3456,7 +4130,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => triggerSheetsSync()}
+                    onClick={handleManualSheetsSync}
                     disabled={isSyncingSheet}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
                       isDarkMode
@@ -3467,6 +4141,23 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin text-blue-500' : ''}`} />
                     <span>{isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Sheets'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSheetsModalFeedback(null);
+                      setShowSheetsConnectModal(true);
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Configurar y vincular hoja existente de Google Sheets"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Vincular Sheet</span>
                   </button>
 
                   <button
@@ -3503,6 +4194,456 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* ------------------------------------------------------------- */}
           {activeTab === 'roster' && (
             <div>
+              {/* Academic Term Header & Switcher (1° Cuatrimestre / 2° Cuatrimestre / Resumen Anual) */}
+              <div
+                className={`p-3.5 rounded-xl border mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition-colors ${
+                  isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <div
+                    className={`p-2 rounded-lg ${
+                      attendanceTerm === '1c'
+                        ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                        : attendanceTerm === '2c'
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                    }`}
+                  >
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`font-semibold text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
+                        Período de Asistencia y Disposición:
+                      </span>
+                      <span
+                        className={`text-xs px-2.5 py-0.5 rounded-full font-bold border ${
+                          attendanceTerm === '1c'
+                            ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
+                            : attendanceTerm === '2c'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
+                            : 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
+                        }`}
+                      >
+                        {attendanceTerm === '1c'
+                          ? '📘 1° Cuatrimestre Activo'
+                          : attendanceTerm === '2c'
+                          ? '📗 2° Cuatrimestre Activo'
+                          : '🎓 Resumen Anual Consolidado'}
+                      </span>
+                    </div>
+                    <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                      {attendanceTerm === '1c'
+                        ? 'Registro diario de inasistencias, tardanzas, llamados de atención y notas de disposición del 1° Cuatrimestre.'
+                        : attendanceTerm === '2c'
+                        ? 'Registro diario de inasistencias, tardanzas, llamados de atención y notas de disposición del 2° Cuatrimestre (inicia con 10 pts).'
+                        : 'Planilla consolidada que compara ambos cuatrimestres, computa totales de faltas y calcula el promedio anual de disposición.'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Segmented term selector */}
+                <div
+                  className={`p-1 rounded-xl border flex items-center gap-1 shadow-2xs ${
+                    isDarkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-neutral-100 border-neutral-200'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceTermHandler('1c')}
+                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                      attendanceTerm === '1c'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'text-slate-400 hover:text-slate-200'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === '1c' ? 'bg-white' : 'bg-blue-400'}`} />
+                    <span>1° Cuatrimestre</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceTermHandler('2c')}
+                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                      attendanceTerm === '2c'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'text-slate-400 hover:text-slate-200'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === '2c' ? 'bg-white' : 'bg-emerald-400'}`} />
+                    <span>2° Cuatrimestre</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setAttendanceTermHandler('annual')}
+                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
+                      attendanceTerm === 'annual'
+                        ? 'bg-purple-600 text-white shadow-xs'
+                        : isDarkMode
+                        ? 'text-slate-400 hover:text-slate-200'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === 'annual' ? 'bg-white' : 'bg-purple-400'}`} />
+                    <span>Resumen Anual</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* ------------------------------------------------------------- */}
+              {/* ANNUAL VIEW: CONSOLIDATED ATTENDANCE & DISPOSITION MATRIX     */}
+              {/* ------------------------------------------------------------- */}
+              {attendanceTerm === 'annual' ? (
+                <div className="space-y-4">
+                  {/* Overview stat cards */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {(() => {
+                      let totalAbs = 0;
+                      let totalLats = 0;
+                      let sumDisp = 0;
+                      courseStudents.forEach((s) => {
+                        const m1 = getStudentMetrics(s.id, '1c');
+                        const m2 = getStudentMetrics(s.id, '2c');
+                        totalAbs += m1.totalAbsences + m2.totalAbsences;
+                        totalLats += (m1.totalLates || 0) + (m2.totalLates || 0);
+                        sumDisp += (m1.totalDisposition + m2.totalDisposition) / 2;
+                      });
+                      const count = Math.max(1, courseStudents.length);
+                      const avgDispGlobal = Number((sumDisp / count).toFixed(1));
+                      const avgAttendanceRate = Math.max(0, Math.min(100, Math.round(100 - (totalAbs / count * 2.5) - (totalLats / count * 0.8))));
+
+                      return (
+                        <>
+                          <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
+                            <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
+                              <span>Promedio Disposición Anual</span>
+                              <Award className="w-4 h-4 text-purple-500" />
+                            </div>
+                            <div className="text-2xl font-black mt-1 text-purple-600 dark:text-purple-400">
+                              {avgDispGlobal} <span className="text-xs font-normal text-neutral-400">/10</span>
+                            </div>
+                            <span className="text-[11px] text-neutral-400">Promedio de ambos cuatrimestres</span>
+                          </div>
+
+                          <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
+                            <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
+                              <span>Total Faltas Anuales</span>
+                              <AlertCircle className="w-4 h-4 text-red-500" />
+                            </div>
+                            <div className="text-2xl font-black mt-1 text-red-600 dark:text-red-400">
+                              {totalAbs}
+                            </div>
+                            <span className="text-[11px] text-neutral-400">Acumulado 1°C + 2°C</span>
+                          </div>
+
+                          <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
+                            <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
+                              <span>Total Llegadas Tarde</span>
+                              <Clock className="w-4 h-4 text-amber-500" />
+                            </div>
+                            <div className="text-2xl font-black mt-1 text-amber-600 dark:text-amber-400">
+                              {totalLats}
+                            </div>
+                            <span className="text-[11px] text-neutral-400">Acumulado 1°C + 2°C</span>
+                          </div>
+
+                          <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
+                            <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
+                              <span>Asistencia Promedio</span>
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                            </div>
+                            <div className="text-2xl font-black mt-1 text-emerald-600 dark:text-emerald-400">
+                              {avgAttendanceRate}%
+                            </div>
+                            <span className="text-[11px] text-neutral-400">Tasa estimada del curso</span>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Consolidated Annual Table */}
+                  <div
+                    className={`rounded-xl border overflow-hidden shadow-xs transition-colors ${
+                      isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
+                    }`}
+                  >
+                    <div className="p-3 border-b flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4 text-purple-500" />
+                        <span className="font-bold text-xs">Planilla Anual de Asistencia y Disposición ({courseStudents.length} estudiantes)</span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const headers = [
+                              'Estudiante',
+                              'Email',
+                              'Ausencias 1C',
+                              'Tardanzas 1C',
+                              'Disposición 1C',
+                              'Ausencias 2C',
+                              'Tardanzas 2C',
+                              'Disposición 2C',
+                              'Total Ausencias',
+                              'Total Tardanzas',
+                              'Promedio Disposición',
+                              '% Asistencia',
+                              'Condición',
+                            ];
+                            const rows = filteredStudents.map((s) => {
+                              const m1 = getStudentMetrics(s.id, '1c');
+                              const m2 = getStudentMetrics(s.id, '2c');
+                              const tAbs = m1.totalAbsences + m2.totalAbsences;
+                              const tLat = (m1.totalLates || 0) + (m2.totalLates || 0);
+                              const aDisp = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
+                              const est = Math.max(0, Math.min(100, Math.round(100 - (tAbs * 2.5) - (tLat * 0.8))));
+                              const cond = est < 75 || aDisp < 6 ? 'Alerta' : aDisp >= 8 && est >= 85 ? 'Excelente' : 'Regular';
+                              return [
+                                `${s.lastName}, ${s.firstName}`,
+                                s.email,
+                                m1.totalAbsences,
+                                m1.totalLates || 0,
+                                m1.totalDisposition,
+                                m2.totalAbsences,
+                                m2.totalLates || 0,
+                                m2.totalDisposition,
+                                tAbs,
+                                tLat,
+                                aDisp,
+                                `${est}%`,
+                                cond,
+                              ];
+                            });
+                            copyTableToClipboard(headers, rows);
+                            setToastMessage('¡Planilla anual copiada al portapapeles para Google Sheets!');
+                            setTimeout(() => setToastMessage(null), 3500);
+                          }}
+                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                              : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                          }`}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copiar Resumen Anual</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleManualSheetsSync}
+                          disabled={isSyncingSheet}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                          <span>Sincronizar Sheets</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead
+                          className={`border-b font-semibold uppercase tracking-wider ${
+                            isDarkMode ? 'bg-slate-850 border-slate-800 text-slate-300' : 'bg-neutral-50 border-neutral-200 text-neutral-500'
+                          }`}
+                        >
+                          <tr>
+                            <th className="py-3 px-4">Estudiante</th>
+                            <th className="py-3 px-3 text-center bg-blue-500/5 text-blue-700 dark:text-blue-300">
+                              <div className="flex flex-col items-center">
+                                <span>1° Cuatrimestre</span>
+                                <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / disp.</span>
+                              </div>
+                            </th>
+                            <th className="py-3 px-3 text-center bg-emerald-500/5 text-emerald-700 dark:text-emerald-300">
+                              <div className="flex flex-col items-center">
+                                <span>2° Cuatrimestre</span>
+                                <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / disp.</span>
+                              </div>
+                            </th>
+                            <th className="py-3 px-3 text-center bg-purple-500/5 text-purple-700 dark:text-purple-300">
+                              <div className="flex flex-col items-center">
+                                <span>Totales Anuales</span>
+                                <span className="text-[10px] font-normal lowercase opacity-70">faltas / tardanzas</span>
+                              </div>
+                            </th>
+                            <th className="py-3 px-3 text-center">
+                              <div className="flex flex-col items-center">
+                                <span>Promedio Disposición</span>
+                                <span className="text-[10px] font-normal lowercase opacity-70">escala 10</span>
+                              </div>
+                            </th>
+                            <th className="py-3 px-3 text-center">% Asistencia</th>
+                            <th className="py-3 px-3 text-center">Condición</th>
+                            <th className="py-3 px-3 text-center">Historial</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-neutral-200 dark:divide-slate-800 font-medium">
+                          {filteredStudents.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="py-8 text-center text-neutral-400">
+                                No se encontraron estudiantes en este curso.
+                              </td>
+                            </tr>
+                          ) : (
+                            filteredStudents.map((student) => {
+                              const m1 = getStudentMetrics(student.id, '1c');
+                              const m2 = getStudentMetrics(student.id, '2c');
+                              const totalAbs = m1.totalAbsences + m2.totalAbsences;
+                              const totalLat = (m1.totalLates || 0) + (m2.totalLates || 0);
+                              const avgDisp = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
+                              const estAtt = Math.max(0, Math.min(100, Math.round(100 - (totalAbs * 2.5) - (totalLat * 0.8))));
+                              const isAlert = estAtt < 75 || avgDisp < 6;
+
+                              return (
+                                <tr
+                                  key={student.id}
+                                  className={`transition-colors ${
+                                    isDarkMode ? 'hover:bg-slate-850/50' : 'hover:bg-neutral-50'
+                                  }`}
+                                >
+                                  <td className="py-3 px-4">
+                                    <div className="flex items-center gap-2.5">
+                                      <div className="w-7 h-7 rounded-full bg-purple-500/20 text-purple-600 font-bold flex items-center justify-center text-xs">
+                                        {student.firstName[0]}
+                                        {student.lastName[0]}
+                                      </div>
+                                      <div>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenStudentProfile(student)}
+                                          className="font-bold text-neutral-900 dark:text-white hover:text-indigo-600 dark:hover:text-indigo-400 hover:underline cursor-pointer text-left block"
+                                          title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
+                                        >
+                                          {student.lastName}, {student.firstName}
+                                        </button>
+                                        <div className="text-[11px] text-neutral-400">{student.email}</div>
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  {/* 1C */}
+                                  <td className="py-3 px-3 text-center bg-blue-500/5">
+                                    <div className="inline-flex items-center gap-2">
+                                      <span className="text-red-600 dark:text-red-400 font-semibold" title="Faltas 1C">
+                                        {m1.totalAbsences}F
+                                      </span>
+                                      <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Tardanzas 1C">
+                                        {m1.totalLates || 0}T
+                                      </span>
+                                      <span
+                                        className={`px-2 py-0.5 rounded font-bold ${
+                                          m1.totalDisposition >= 8
+                                            ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
+                                            : m1.totalDisposition >= 6
+                                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                                            : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                                        }`}
+                                      >
+                                        {m1.totalDisposition}
+                                      </span>
+                                    </div>
+                                  </td>
+
+                                  {/* 2C */}
+                                  <td className="py-3 px-3 text-center bg-emerald-500/5">
+                                    <div className="inline-flex items-center gap-2">
+                                      <span className="text-red-600 dark:text-red-400 font-semibold" title="Faltas 2C">
+                                        {m2.totalAbsences}F
+                                      </span>
+                                      <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Tardanzas 2C">
+                                        {m2.totalLates || 0}T
+                                      </span>
+                                      <span
+                                        className={`px-2 py-0.5 rounded font-bold ${
+                                          m2.totalDisposition >= 8
+                                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                                            : m2.totalDisposition >= 6
+                                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
+                                            : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
+                                        }`}
+                                      >
+                                        {m2.totalDisposition}
+                                      </span>
+                                    </div>
+                                  </td>
+
+                                  {/* Totales Anuales */}
+                                  <td className="py-3 px-3 text-center bg-purple-500/5">
+                                    <span className="font-bold text-red-600 dark:text-red-400">{totalAbs} faltas</span>
+                                    <span className="text-neutral-400 mx-1">•</span>
+                                    <span className="font-bold text-amber-600 dark:text-amber-400">{totalLat} tard.</span>
+                                  </td>
+
+                                  {/* Promedio Disposición */}
+                                  <td className="py-3 px-3 text-center font-bold">
+                                    <span
+                                      className={`px-2.5 py-1 rounded-full text-xs ${
+                                        avgDisp >= 8
+                                          ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/80 dark:text-purple-300 border border-purple-300 dark:border-purple-700'
+                                          : avgDisp >= 6
+                                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/80 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
+                                          : 'bg-red-100 text-red-700 dark:bg-red-950/80 dark:text-red-300 border border-red-300 dark:border-red-700'
+                                      }`}
+                                    >
+                                      {avgDisp} / 10
+                                    </span>
+                                  </td>
+
+                                  {/* % Asistencia */}
+                                  <td className="py-3 px-3 text-center font-bold">
+                                    <span className={estAtt < 75 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>
+                                      {estAtt}%
+                                    </span>
+                                  </td>
+
+                                  {/* Condición */}
+                                  <td className="py-3 px-3 text-center">
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                        isAlert
+                                          ? 'bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300 border border-red-200 dark:border-red-800'
+                                          : avgDisp >= 8 && estAtt >= 85
+                                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                                          : 'bg-neutral-100 text-neutral-700 dark:bg-slate-800 dark:text-slate-300 border border-neutral-200 dark:border-slate-700'
+                                      }`}
+                                    >
+                                      {isAlert ? 'Alerta' : avgDisp >= 8 && estAtt >= 85 ? 'Excelente' : 'Regular'}
+                                    </span>
+                                  </td>
+
+                                  {/* Acciones */}
+                                  <td className="py-3 px-3 text-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => setSelectedStudentForHistory(student)}
+                                      className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-slate-800 text-blue-600 dark:text-blue-400 cursor-pointer"
+                                      title="Ver historial completo anual del estudiante"
+                                    >
+                                      <History className="w-4 h-4" />
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Regular Roster Tab (1° Cuatrimestre or 2° Cuatrimestre) */
+                <div>
               {/* Batch actions bar when students are selected */}
               {selectedStudentIds.length > 0 && (
                 <div
@@ -3672,10 +4813,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               type="button"
                               onClick={() => setIsSendDispositionModalOpen(true)}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-950/80 dark:hover:bg-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 transition-all cursor-pointer shadow-2xs"
-                              title={`Mandar notas a Calificaciones (${dispositionTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'})`}
+                              title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
                             >
                               <Award className="w-3 h-3 text-amber-500" />
-                              <span>Mandar a Calificaciones ({dispositionTargetTerm === '1c' ? '1° C' : '2° C'})</span>
+                              <span>Mandar a Calificaciones</span>
                             </button>
                           </div>
                         </th>
@@ -3791,18 +4932,56 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               {/* Student info */}
                               <td className="py-3 px-4">
                                 <div className="flex items-center gap-3">
-                                  <img
-                                    src={student.avatar}
-                                    alt={student.firstName}
-                                    className={`w-9 h-9 rounded-full object-cover border shrink-0 ${
-                                      isDarkMode ? 'border-slate-700' : 'border-neutral-200'
-                                    }`}
-                                  />
-                                  <div>
-                                    <div className="flex items-center gap-2">
-                                      <p className={`font-semibold ${isDarkMode ? 'text-slate-100' : 'text-neutral-800'}`}>
-                                        {student.lastName}, {student.firstName}
-                                      </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenStudentProfile(student)}
+                                    className="relative shrink-0 cursor-pointer group/avatar"
+                                    title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
+                                  >
+                                    <img
+                                      src={student.avatar}
+                                      alt={student.firstName}
+                                      className={`w-9 h-9 rounded-full object-cover border shrink-0 transition-transform group-hover/avatar:scale-105 group-hover/avatar:ring-2 group-hover/avatar:ring-indigo-400 ${
+                                        isDarkMode ? 'border-slate-700' : 'border-neutral-200'
+                                      }`}
+                                    />
+                                    {studentObservations[student.id]?.length > 0 && (
+                                      <span
+                                        className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[9px] font-bold border-2 border-white dark:border-slate-900 shadow-xs"
+                                        title={`${studentObservations[student.id].length} observación(es) registrada(s)`}
+                                      >
+                                        {studentObservations[student.id].length}
+                                      </span>
+                                    )}
+                                  </button>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenStudentProfile(student)}
+                                        className={`font-semibold text-left transition-colors cursor-pointer group flex items-center gap-1.5 hover:underline ${
+                                          isDarkMode
+                                            ? 'text-slate-100 hover:text-indigo-400'
+                                            : 'text-neutral-800 hover:text-indigo-600'
+                                        }`}
+                                        title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
+                                      >
+                                        <span>{student.lastName}, {student.firstName}</span>
+                                      </button>
+
+                                      {/* Badge si tiene observaciones registradas */}
+                                      {studentObservations[student.id]?.length > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenStudentProfile(student)}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer shadow-2xs"
+                                          title={`${studentObservations[student.id].length} observación(es) registrada(s). Clic para abrir ficha.`}
+                                        >
+                                          <FileText className="w-2.5 h-2.5 text-indigo-600 dark:text-indigo-400" />
+                                          <span>{studentObservations[student.id].length}</span>
+                                        </button>
+                                      )}
+
                                       {hasPendingAbsence && (
                                         <span
                                           className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
@@ -3812,7 +4991,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         </span>
                                       )}
                                     </div>
-                                    <span className={`text-[11px] font-mono ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                                    <span className={`text-[11px] font-mono block ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
                                       {student.email}
                                     </span>
                                   </div>
@@ -3911,15 +5090,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </div>
                               </td>
 
-                            {/* Columna Disposición (Inicia en 10, resta 1 por acción) */}
+                            {/* Columna Disposición (Inicia en 10, editable o por incidencias) */}
                             <td className="py-3 px-4 text-center">
                               <div className="inline-flex flex-col items-center gap-1">
-                                <span
-                                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all ${scoreBadgeClass}`}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditDisposition(student)}
+                                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${scoreBadgeClass}`}
+                                  title={`Hacé clic para editar la nota de disposición de ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
                                 >
                                   <span>{metrics.totalDisposition}</span>
                                   <span className="text-[10px] font-normal opacity-70">/ 10</span>
-                                </span>
+                                  <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
+                                </button>
 
                                 {/* Mini Progress bar visual */}
                                 <div className="w-16 h-1 rounded-full bg-neutral-200 dark:bg-slate-700 overflow-hidden">
@@ -3935,61 +5118,100 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   />
                                 </div>
 
-                                {/* Botón: Borrar / Restablecer disposición individual a 10 */}
+                                {/* Botón: Editar nota de disposición (pasar de papel o ajustar nota) */}
                                 <button
                                   type="button"
-                                  onClick={() => setStudentForSingleReset(student)}
-                                  className={`mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border transition-all cursor-pointer ${
-                                    metrics.totalDisposition < 10
-                                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700 hover:bg-amber-100 hover:scale-102 shadow-2xs'
-                                      : 'text-neutral-400 hover:text-neutral-700 dark:hover:text-slate-300 border-transparent hover:border-neutral-200'
+                                  onClick={() => handleOpenEditDisposition(student)}
+                                  className={`mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer shadow-2xs hover:scale-102 active:scale-95 ${
+                                    isDarkMode
+                                      ? 'text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/60 border border-indigo-800/60'
+                                      : 'text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50 border border-indigo-200'
                                   }`}
-                                  title={`Borrar o restablecer disposición a 10 para ${student.lastName}, ${student.firstName}`}
+                                  title={`Editar nota de disposición para ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
                                 >
-                                  <RotateCcw className="w-2.5 h-2.5" />
-                                  <span>{metrics.totalDisposition < 10 ? 'Restablecer a 10' : 'Reiniciar'}</span>
+                                  <Pencil className="w-2.5 h-2.5" />
+                                  <span>Editar nota</span>
                                 </button>
                               </div>
                             </td>
 
-                            {/* Columna Registrar conducta */}
+                            {/* Columna Registrar conducta (sumar o restar puntos) */}
                             <td className="py-3 px-4">
                               <div className="flex flex-wrap items-center gap-1.5">
-                                {teacherConductOptions.map((opt) => (
-                                  <button
-                                    key={opt}
-                                    type="button"
-                                    onClick={() => handleRecordDispositionAction(student, opt)}
-                                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-all cursor-pointer flex items-center gap-1 active:scale-95 ${
-                                      pulsingStudentId === `disp-${student.id}`
-                                        ? 'bg-rose-600 text-white border-rose-600 scale-105'
-                                        : isDarkMode
-                                        ? 'bg-slate-800/90 hover:bg-slate-750 text-slate-200 border-slate-700 hover:border-slate-600'
-                                        : 'bg-white hover:bg-rose-50 text-neutral-800 border-neutral-200 hover:border-rose-300 shadow-2xs'
-                                    }`}
-                                    title={`Restar 1 punto por: ${opt}`}
-                                  >
-                                    <span>{opt}</span>
-                                    <span className="text-[10px] text-rose-500 font-bold">-1</span>
-                                  </button>
-                                ))}
+                                {teacherConductOptions.map((opt) => {
+                                  const isPositive =
+                                    opt.startsWith('+') ||
+                                    opt.startsWith('[+]') ||
+                                    opt.includes('(+') ||
+                                    /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(opt);
+                                  const cleanOpt = opt.replace(/^(\+|\[\+\])\s*/, '');
+                                  const delta = isPositive ? 1 : -1;
+                                  return (
+                                    <button
+                                      key={opt}
+                                      type="button"
+                                      onClick={() => handleRecordDispositionAction(student, cleanOpt, undefined, delta)}
+                                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-all cursor-pointer flex items-center gap-1 active:scale-95 ${
+                                        pulsingStudentId === `disp-${student.id}`
+                                          ? isPositive
+                                            ? 'bg-emerald-600 text-white border-emerald-600 scale-105'
+                                            : 'bg-rose-600 text-white border-rose-600 scale-105'
+                                          : isPositive
+                                          ? isDarkMode
+                                            ? 'bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border-emerald-800/60 hover:border-emerald-700'
+                                            : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 hover:border-emerald-300 shadow-2xs'
+                                          : isDarkMode
+                                          ? 'bg-slate-800/90 hover:bg-slate-750 text-slate-200 border-slate-700 hover:border-slate-600'
+                                          : 'bg-white hover:bg-rose-50 text-neutral-800 border-neutral-200 hover:border-rose-300 shadow-2xs'
+                                      }`}
+                                      title={isPositive ? `Sumar 1 punto por: ${cleanOpt}` : `Restar 1 punto por: ${cleanOpt}`}
+                                    >
+                                      <span>{cleanOpt}</span>
+                                      <span className={`text-[10px] font-bold ${isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
+                                        {isPositive ? '+1' : '-1'}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
 
-                                {/* Botón para registrar otra conducta o abrir diálogo */}
+                                {/* Botón rápido: Sumar puntos / Reconocimiento */}
                                 <button
                                   type="button"
                                   onClick={() => {
                                     setConductRecordModal({
                                       isOpen: true,
                                       student,
+                                      mode: 'add',
+                                      points: 1,
                                       customReason: '',
-                                      saveToOptions: teacherConductOptions.length === 0,
+                                      saveToOptions: false,
                                     });
                                   }}
-                                  className="px-2.5 py-1 rounded-lg border border-dashed border-blue-400/80 bg-blue-50/60 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1"
-                                  title="Registrar conducta para este alumno"
+                                  className="px-2 py-1 rounded-lg border border-dashed border-emerald-500/80 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
+                                  title={`Sumar puntos a ${student.lastName}, ${student.firstName} (participación, reconocimiento, tarea...)`}
                                 >
-                                  <Plus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                                  <span>{teacherConductOptions.length === 0 ? 'Registrar conducta (-1 pto)' : 'Otro...'}</span>
+                                  <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                                  <span>+ Sumar</span>
+                                </button>
+
+                                {/* Botón rápido: Restar puntos / Llamado de atención */}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setConductRecordModal({
+                                      isOpen: true,
+                                      student,
+                                      mode: 'subtract',
+                                      points: 1,
+                                      customReason: '',
+                                      saveToOptions: false,
+                                    });
+                                  }}
+                                  className="px-2 py-1 rounded-lg border border-dashed border-rose-400/80 bg-rose-50/60 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
+                                  title={`Restar puntos a ${student.lastName}, ${student.firstName} (falta de tarea, libro, conducta...)`}
+                                >
+                                  <Minus className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                                  <span>- Restar</span>
                                 </button>
                               </div>
                             </td>
@@ -4367,6 +5589,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                       <CheckCircle2 className="w-3 h-3 text-emerald-500" />
                                       Presente
                                     </span>
+                                  ) : item.category === 'Disposición' && item.pointsChange !== undefined && item.pointsChange > 0 ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
+                                      <Award className="w-3 h-3 text-emerald-500" />
+                                      Reconocimiento
+                                    </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/60">
                                       Disposición
@@ -4384,11 +5611,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   ) : isLate ? (
                                     <span className="font-mono font-bold text-amber-600 dark:text-amber-400">Tardanza</span>
                                   ) : item.previousDisposition !== undefined && item.resultingDisposition !== undefined ? (
-                                    <span className="font-mono font-bold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/50 px-2 py-0.5 rounded border border-purple-200 dark:border-purple-800/60">
+                                    <span className={`font-mono font-bold px-2 py-0.5 rounded border ${
+                                      item.resultingDisposition > item.previousDisposition
+                                        ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60'
+                                        : 'text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/50 border-purple-200 dark:border-purple-800/60'
+                                    }`}>
                                       {item.previousDisposition} → {item.resultingDisposition} pts
                                     </span>
                                   ) : item.pointsChange !== undefined && item.pointsChange !== 0 && !isAbsence && !isLate ? (
-                                    <span className="font-mono font-bold text-neutral-700 dark:text-slate-300">
+                                    <span className={`font-mono font-bold px-2 py-0.5 rounded border ${
+                                      item.pointsChange > 0
+                                        ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60'
+                                        : 'text-neutral-700 dark:text-slate-300 border-transparent'
+                                    }`}>
                                       {item.pointsChange > 0 ? `+${item.pointsChange}` : item.pointsChange} pto
                                     </span>
                                   ) : (
@@ -4512,7 +5747,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               )}
             </div>
           </div>
-          )}
+        )}
+      </div>
+    )}
 
           {/* ------------------------------------------------------------- */}
           {/* TAB 2: CALIFICACIONES (CATEGORÍAS Y SUBCATEGORÍAS CUSTOM)     */}
@@ -4587,7 +5824,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => triggerSheetsSync()}
+                    onClick={handleManualSheetsSync}
                     disabled={isSyncingSheet}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
                       isDarkMode
@@ -4597,6 +5834,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
                     <span>Sincronizar Ahora</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSheetsModalFeedback(null);
+                      setShowSheetsConnectModal(true);
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-300'
+                    }`}
+                    title="Configurar y vincular hoja existente de Google Sheets"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Vincular Sheet</span>
                   </button>
                 </div>
               </div>
@@ -5071,78 +6324,212 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* MODAL: REGISTRAR CONDUCTA                                     */}
+      {/* MODAL: REGISTRAR CONDUCTA / RECONOCIMIENTO (SUMAR O RESTAR)    */}
       {/* ------------------------------------------------------------- */}
-      {conductRecordModal.isOpen && conductRecordModal.student && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            {/* Modal Header */}
-            <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
-              <div className="flex items-center gap-2">
-                <ShieldAlert className="w-4 h-4 text-rose-500" />
-                <h3 className="text-sm font-bold">Registrar conducta</h3>
+      {conductRecordModal.isOpen && conductRecordModal.student && (() => {
+        const isAdd = conductRecordModal.mode === 'add';
+        const currentPoints = conductRecordModal.points || 1;
+        const currentStudent = conductRecordModal.student;
+        const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+        const metrics = getStudentMetrics(currentStudent.id, targetTerm);
+        const curDisp = metrics.totalDisposition !== undefined ? metrics.totalDisposition : 10;
+        const projectedDisp = isAdd
+          ? Math.min(10, curDisp + currentPoints)
+          : Math.max(0, curDisp - currentPoints);
+
+        const positiveSuggestions = [
+          'Participación destacada',
+          'Excelente trabajo en clase',
+          'Colaboración con compañeros',
+          'Tarea y materiales completos',
+          'Compromiso y superación',
+          ...teacherConductOptions.filter((opt) =>
+            opt.startsWith('+') ||
+            opt.startsWith('[+]') ||
+            opt.includes('(+') ||
+            /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(opt)
+          ).map((o) => o.replace(/^(\+|\[\+\])\s*/, '')),
+        ];
+
+        const negativeSuggestions = [
+          'Sin libro',
+          'Falta de tarea',
+          'Uso indebido de celular',
+          'Interrupción de clase',
+          'Falta de materiales',
+          ...teacherConductOptions.filter((opt) =>
+            !opt.startsWith('+') &&
+            !opt.startsWith('[+]') &&
+            !opt.includes('(+') &&
+            !/^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(opt)
+          ),
+        ];
+
+        const activeSuggestions = Array.from(new Set(isAdd ? positiveSuggestions : negativeSuggestions));
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div
+              className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+                isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+              }`}
+            >
+              {/* Modal Header */}
+              <div className={`p-4 border-b flex items-center justify-between ${
+                isDarkMode
+                  ? isAdd ? 'border-slate-800 bg-emerald-950/20' : 'border-slate-800 bg-rose-950/20'
+                  : isAdd ? 'border-emerald-100 bg-emerald-50/50' : 'border-rose-100 bg-rose-50/40'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {isAdd ? (
+                    <Award className="w-5 h-5 text-emerald-500" />
+                  ) : (
+                    <ShieldAlert className="w-5 h-5 text-rose-500" />
+                  )}
+                  <div>
+                    <h3 className="text-sm font-bold">
+                      {isAdd ? 'Sumar puntos de disposición' : 'Restar puntos de disposición'}
+                    </h3>
+                    <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                      {isAdd ? 'Reconocimiento / conducta positiva' : 'Llamado de atención / falta de conducta'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setConductRecordModal({ isOpen: false, student: null, mode: 'subtract', points: 1, customReason: '', saveToOptions: false })}
+                  className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+                >
+                  ✕
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setConductRecordModal({ isOpen: false, student: null, customReason: '', saveToOptions: false })}
-                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
 
-            {/* Modal Form */}
-            <form onSubmit={handleConfirmConductRecord} className="p-5 space-y-4">
-              <div>
-                <p className="text-xs text-neutral-600 dark:text-slate-300 font-medium leading-relaxed">
-                  Estudiante:{' '}
-                  <strong>
-                    {conductRecordModal.student.lastName}, {conductRecordModal.student.firstName}
-                  </strong>
-                </p>
+              {/* Modal Form */}
+              <form onSubmit={handleConfirmConductRecord} className="p-5 space-y-4">
+                {/* Selector: Sumar o Restar puntos */}
+                <div className="grid grid-cols-2 p-1 rounded-xl bg-neutral-100 dark:bg-slate-800 border border-neutral-200 dark:border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setConductRecordModal((prev) => ({ ...prev, mode: 'subtract' }))}
+                    className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      !isAdd
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'text-neutral-600 dark:text-slate-300 hover:text-neutral-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                    <span>Restar puntos (-)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConductRecordModal((prev) => ({ ...prev, mode: 'add' }))}
+                    className={`py-2 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      isAdd
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-neutral-600 dark:text-slate-300 hover:text-neutral-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Sumar puntos (+)</span>
+                  </button>
+                </div>
 
-                {teacherConductOptions.length > 0 && (
-                  <div className="mt-3">
-                    <label className="text-[11px] font-semibold text-neutral-500 dark:text-slate-400 block mb-1.5">
-                      Seleccionar de mis opciones habituales:
-                    </label>
-                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
-                      {teacherConductOptions.map((opt) => (
-                        <button
-                          key={opt}
-                          type="button"
-                          onClick={() => setConductRecordModal((prev) => ({ ...prev, customReason: opt }))}
-                          className={`px-2.5 py-1 rounded-lg border text-xs font-medium cursor-pointer transition-all ${
-                            conductRecordModal.customReason === opt
-                              ? 'bg-rose-500 text-white border-rose-600 shadow-2xs'
-                              : isDarkMode
-                              ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
-                              : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                          }`}
-                        >
-                          {opt}
-                        </button>
-                      ))}
+                {/* Info Estudiante y Vista Previa de Nota */}
+                <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                  isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-neutral-50 border-neutral-200'
+                }`}>
+                  <div>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400 block font-medium">Estudiante:</span>
+                    <strong className="text-sm font-bold">
+                      {currentStudent.lastName}, {currentStudent.firstName}
+                    </strong>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400 block font-medium">Nota proyectada:</span>
+                    <div className="inline-flex items-center gap-1 font-mono font-bold text-sm">
+                      <span className="text-neutral-500">{curDisp}</span>
+                      <span>→</span>
+                      <span className={isAdd ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>
+                        {projectedDisp}
+                      </span>
+                      <span className="text-neutral-400 text-xs font-normal">/ 10 pts</span>
                     </div>
                   </div>
-                )}
+                </div>
 
-                <div className="mt-3">
+                {/* Cantidad de puntos */}
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300">
+                    {isAdd ? 'Cantidad de puntos a sumar:' : 'Cantidad de puntos a restar:'}
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    {[1, 2, 3].map((pts) => (
+                      <button
+                        key={pts}
+                        type="button"
+                        onClick={() => setConductRecordModal((prev) => ({ ...prev, points: pts }))}
+                        className={`px-3 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                          currentPoints === pts
+                            ? isAdd
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs scale-105'
+                              : 'bg-rose-600 text-white border-rose-600 shadow-2xs scale-105'
+                            : isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {isAdd ? `+${pts}` : `-${pts}`} {pts === 1 ? 'punto' : 'puntos'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Sugerencias rápidas según modo */}
+                <div>
+                  <label className="text-[11px] font-semibold text-neutral-500 dark:text-slate-400 block mb-1.5">
+                    {isAdd ? 'Opciones sugeridas de reconocimiento:' : 'Opciones habituales de conducta:'}
+                  </label>
+                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
+                    {activeSuggestions.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setConductRecordModal((prev) => ({ ...prev, customReason: opt }))}
+                        className={`px-2.5 py-1 rounded-lg border text-xs font-medium cursor-pointer transition-all ${
+                          conductRecordModal.customReason === opt
+                            ? isAdd
+                              ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                              : 'bg-rose-600 text-white border-rose-600 shadow-2xs'
+                            : isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Motivo escrito */}
+                <div>
                   <label className="text-[11px] font-semibold text-neutral-500 dark:text-slate-400 block mb-1">
-                    Motivo de la conducta:
+                    {isAdd ? 'Motivo del reconocimiento / puntos sumados:' : 'Motivo del llamado de atención:'}
                   </label>
                   <textarea
                     value={conductRecordModal.customReason}
                     onChange={(e) => setConductRecordModal((prev) => ({ ...prev, customReason: e.target.value }))}
-                    placeholder="Escribí el motivo de la conducta (ej: Falta de tarea, no trajo materiales, uso de celular, interrupción...)"
+                    placeholder={
+                      isAdd
+                        ? 'Escribí el motivo positivo (ej: Participación destacada, excelente trabajo en equipo, compromiso...)'
+                        : 'Escribí el motivo (ej: Falta de tarea, no trajo materiales, uso de celular, interrupción...)'
+                    }
                     rows={3}
                     autoFocus
                     required
-                    className={`w-full p-3 rounded-xl border text-xs outline-none focus:ring-2 focus:ring-rose-500 resize-none ${
+                    className={`w-full p-3 rounded-xl border text-xs outline-none resize-none transition-all ${
+                      isAdd ? 'focus:ring-2 focus:ring-emerald-500' : 'focus:ring-2 focus:ring-rose-500'
+                    } ${
                       isDarkMode
                         ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
                         : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
@@ -5150,42 +6537,58 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   />
                 </div>
 
-                <div className="mt-2.5 flex items-center gap-2">
+                <div className="mt-2 flex items-center gap-2">
                   <input
                     type="checkbox"
                     id="saveToOptionsCheckbox"
                     checked={conductRecordModal.saveToOptions}
                     onChange={(e) => setConductRecordModal((prev) => ({ ...prev, saveToOptions: e.target.checked }))}
-                    className="w-4 h-4 rounded text-rose-600 focus:ring-rose-500 border-neutral-300 cursor-pointer"
+                    className={`w-4 h-4 rounded border-neutral-300 cursor-pointer ${
+                      isAdd ? 'text-emerald-600 focus:ring-emerald-500' : 'text-rose-600 focus:ring-rose-500'
+                    }`}
                   />
                   <label htmlFor="saveToOptionsCheckbox" className="text-xs text-neutral-600 dark:text-slate-300 cursor-pointer select-none">
                     Guardar este motivo en mis opciones para próximos registros
                   </label>
                 </div>
-              </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setConductRecordModal({ isOpen: false, student: null, customReason: '', saveToOptions: false })}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer ${
-                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                  }`}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={!conductRecordModal.customReason.trim()}
-                  className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-semibold shadow-xs cursor-pointer"
-                >
-                  Registrar conducta (-1 pto)
-                </button>
-              </div>
-            </form>
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-200 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setConductRecordModal({ isOpen: false, student: null, mode: 'subtract', points: 1, customReason: '', saveToOptions: false })}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer ${
+                      isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={!conductRecordModal.customReason.trim()}
+                    className={`px-4 py-1.5 rounded-lg text-white text-xs font-semibold shadow-xs cursor-pointer disabled:opacity-50 inline-flex items-center gap-1.5 transition-all active:scale-95 ${
+                      isAdd
+                        ? 'bg-emerald-600 hover:bg-emerald-700'
+                        : 'bg-rose-600 hover:bg-rose-700'
+                    }`}
+                  >
+                    {isAdd ? (
+                      <>
+                        <Award className="w-3.5 h-3.5" />
+                        <span>Sumar puntos (+{currentPoints} pto{currentPoints > 1 ? 's' : ''})</span>
+                      </>
+                    ) : (
+                      <>
+                        <ShieldAlert className="w-3.5 h-3.5" />
+                        <span>Restar puntos (-{currentPoints} pto{currentPoints > 1 ? 's' : ''})</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ------------------------------------------------------------- */}
       {/* MODAL: GESTIONAR OPCIONES DE CONDUCTA DEL PROFESOR            */}
@@ -5222,29 +6625,71 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
-                  handleAddConductOption(newConductInput);
+                  const trimmed = newConductInput.trim();
+                  if (!trimmed) return;
+                  const finalOpt = newConductType === 'add'
+                    ? (trimmed.startsWith('+') ? trimmed : `+ ${trimmed}`)
+                    : (trimmed.startsWith('+') ? trimmed.replace(/^\+\s*/, '') : trimmed);
+                  handleAddConductOption(finalOpt);
                 }}
-                className="flex items-center gap-2"
+                className="space-y-2"
               >
-                <input
-                  type="text"
-                  value={newConductInput}
-                  onChange={(e) => setNewConductInput(e.target.value)}
-                  placeholder="Ej: Falta de tarea, Sin carpeta..."
-                  className={`flex-1 px-3 py-2 rounded-xl border text-xs outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode
-                      ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
-                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
-                  }`}
-                />
-                <button
-                  type="submit"
-                  disabled={!newConductInput.trim()}
-                  className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1 shrink-0"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Agregar</span>
-                </button>
+                <div className="grid grid-cols-2 p-1 rounded-xl bg-neutral-100 dark:bg-slate-800 border border-neutral-200 dark:border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setNewConductType('subtract')}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      newConductType === 'subtract'
+                        ? 'bg-rose-600 text-white shadow-xs'
+                        : 'text-neutral-600 dark:text-slate-300 hover:text-neutral-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                    <span>Restar (-1 pto)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewConductType('add')}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      newConductType === 'add'
+                        ? 'bg-emerald-600 text-white shadow-xs'
+                        : 'text-neutral-600 dark:text-slate-300 hover:text-neutral-900 dark:hover:text-white'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Sumar (+1 pto)</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newConductInput}
+                    onChange={(e) => setNewConductInput(e.target.value)}
+                    placeholder={
+                      newConductType === 'add'
+                        ? 'Ej: Participación, Tarea completa, Buen compañerismo...'
+                        : 'Ej: Falta de tarea, Sin carpeta, Uso de celular...'
+                    }
+                    className={`flex-1 px-3 py-2 rounded-xl border text-xs outline-none focus:ring-2 ${
+                      newConductType === 'add' ? 'focus:ring-emerald-500' : 'focus:ring-rose-500'
+                    } ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                    }`}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newConductInput.trim()}
+                    className={`px-3 py-2 disabled:opacity-50 text-white text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
+                      newConductType === 'add' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Agregar</span>
+                  </button>
+                </div>
               </form>
 
               {/* List of current options */}
@@ -5296,15 +6741,32 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           </div>
                         ) : (
                           <>
-                            <div className="flex items-center gap-2">
-                              <span className="font-medium">{opt}</span>
-                              {isReasonCustomized(opt) && (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
-                                  <Sparkles className="w-2.5 h-2.5" />
-                                  Mensaje propio
-                                </span>
-                              )}
-                            </div>
+                            {(() => {
+                              const isPositive =
+                                opt.startsWith('+') ||
+                                opt.startsWith('[+]') ||
+                                opt.includes('(+') ||
+                                /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(opt);
+                              const cleanOptName = opt.replace(/^(\+|\[\+\])\s*/, '');
+                              return (
+                                <div className="flex items-center gap-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    isPositive
+                                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300'
+                                      : 'bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300'
+                                  }`}>
+                                    {isPositive ? '+1 pto' : '-1 pto'}
+                                  </span>
+                                  <span className="font-medium">{cleanOptName}</span>
+                                  {isReasonCustomized(opt) && (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-full text-[9px] font-semibold bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
+                                      <Sparkles className="w-2.5 h-2.5" />
+                                      Mensaje propio
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                             <div className="flex items-center gap-1">
                               <button
                                 type="button"
@@ -5538,19 +7000,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     {getStudentMetrics(selectedStudentForHistory.id).totalDisposition} / 10
                   </span>
                 </div>
-                <div className="mt-1 flex items-center gap-1 flex-wrap justify-center">
+                <div className="mt-1 flex items-center gap-1.5 flex-wrap justify-center">
                   <button
                     type="button"
-                    onClick={() => handleResetSingleStudentDisposition(selectedStudentForHistory, false)}
-                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900/50 border border-emerald-300 dark:border-emerald-800 cursor-pointer shadow-2xs transition-colors"
-                    title="Restablece la disposición a 10 puntos para este alumno"
+                    onClick={() => {
+                      handleOpenEditDisposition(selectedStudentForHistory);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 cursor-pointer shadow-2xs transition-all active:scale-95"
+                    title="Editar o fijar manualmente la nota de disposición de este alumno"
                   >
-                    Restablecer a 10
+                    <Pencil className="w-3 h-3" />
+                    <span>Editar nota de disposición</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => handleResetSingleStudentDisposition(selectedStudentForHistory, true)}
-                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-rose-700 hover:bg-rose-100 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-800 cursor-pointer shadow-2xs transition-colors"
+                    className="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-rose-700 hover:bg-rose-100 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-800 cursor-pointer shadow-2xs transition-colors"
                     title="Borra la disposición y elimina las anotaciones de conducta de este alumno"
                   >
                     Borrar historial
@@ -5675,386 +7140,704 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       {/* ------------------------------------------------------------- */}
       {/* MODAL: MANDAR NOTAS DE DISPOSICIÓN A CALIFICACIONES          */}
       {/* ------------------------------------------------------------- */}
-      {isSendDispositionModalOpen && (
+      {isSendDispositionModalOpen && (() => {
+        const activeTargetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+        const activeTermLabel = activeTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+            <div
+              className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 max-h-[90vh] flex flex-col ${
+                isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+              }`}
+            >
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                    <Award className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold">Mandar Notas de Disposición a Calificaciones</h3>
+                    <p className="text-xs text-neutral-500 dark:text-slate-400">
+                      Materia: <strong className="text-neutral-700 dark:text-slate-200">{activeCourse.name}</strong> • Destino: <strong className="text-blue-600 dark:text-blue-400">{activeTermLabel}</strong>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsSendDispositionModalOpen(false)}
+                  className="p-1 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Description */}
+              <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
+                Esta función transfiere la nota de conducta y disposición (escala 1 a 10) de todos los estudiantes directamente a la pestaña de <strong>Calificaciones</strong> del <strong>{activeTermLabel}</strong> (según el cuatrimestre seleccionado en la planilla de asistencia).
+              </p>
+
+              {/* Target Banner */}
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-center gap-2.5 ${
+                  activeTargetTerm === '1c'
+                    ? isDarkMode
+                      ? 'bg-blue-950/40 border-blue-800/80 text-blue-200'
+                      : 'bg-blue-50/80 border-blue-200 text-blue-900'
+                    : isDarkMode
+                    ? 'bg-emerald-950/40 border-emerald-800/80 text-emerald-200'
+                    : 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                }`}
+              >
+                <Info className="w-4 h-4 shrink-0" />
+                <span className="text-[11px] leading-relaxed">
+                  Se actualizará o creará automáticamente la columna <strong>"Nota de Disposición"</strong> dentro de <strong>Calificaciones</strong> para el <strong>{activeTermLabel}</strong>.
+                </span>
+              </div>
+
+              {/* Preview of Students */}
+              <div className="space-y-1.5 flex-1 min-h-0 flex flex-col">
+                <div className="flex items-center justify-between text-xs font-semibold px-1">
+                  <span>Vista previa ({courseStudents.length} estudiantes)</span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400">Nota a transferir ({activeTermLabel})</span>
+                </div>
+                <div
+                  className={`flex-1 overflow-y-auto max-h-48 rounded-xl border divide-y p-1 ${
+                    isDarkMode ? 'bg-slate-950/60 border-slate-800 divide-slate-800/60' : 'bg-neutral-50 border-neutral-200 divide-neutral-100'
+                  }`}
+                >
+                  {courseStudents.length === 0 ? (
+                    <div className="py-6 text-center text-xs text-neutral-500 dark:text-slate-400">
+                      No hay estudiantes registrados en este curso.
+                    </div>
+                  ) : (
+                    courseStudents.map((st) => {
+                      const metrics = getStudentMetrics(st.id, activeTargetTerm);
+                      return (
+                        <div key={st.id} className="flex items-center justify-between py-1.5 px-2.5 text-xs">
+                          <span className="font-medium truncate mr-2">
+                            {st.lastName}, {st.firstName}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-full font-bold text-[11px] ${
+                              metrics.totalDisposition >= 8
+                                ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                                : metrics.totalDisposition >= 6
+                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                                : 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
+                            }`}
+                          >
+                            {metrics.totalDisposition} / 10
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Footer Buttons */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsSendDispositionModalOpen(false)}
+                  className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                  }`}
+                >
+                  Cancelar
+                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSendDispositionToGrades(activeTargetTerm, false)}
+                    className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs cursor-pointer transition-all"
+                  >
+                    Mandar a Calificaciones ({activeTermLabel})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSendDispositionToGrades(activeTargetTerm, true)}
+                    className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs cursor-pointer transition-all flex items-center gap-1.5"
+                    title="Mandar notas y abrir inmediatamente la pestaña Calificaciones"
+                  >
+                    <span>Mandar e Ir a Calificaciones</span>
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: EDITAR NOTA DE DISPOSICIÓN DE UN ALUMNO (MANUAL/PAPEL) */}
+      {/* ------------------------------------------------------------- */}
+      {editingDispositionStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
-            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 max-h-[90vh] flex flex-col ${
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 animate-in zoom-in-95 duration-150 ${
               isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
             }`}
           >
-            {/* Modal Header */}
+            {/* Header */}
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
-                  <Award className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                  <Pencil className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold">Mandar Notas de Disposición a Calificaciones</h3>
+                  <h3 className="text-base font-bold">Editar Nota de Disposición</h3>
                   <p className="text-xs text-neutral-500 dark:text-slate-400">
-                    Materia: <strong className="text-neutral-700 dark:text-slate-200">{activeCourse.name}</strong>
+                    Estudiante: <strong className="text-neutral-900 dark:text-slate-100">{editingDispositionStudent.lastName}, {editingDispositionStudent.firstName}</strong>
+                    {activeCourse && ` • ${activeCourse.name}`}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsSendDispositionModalOpen(false)}
-                className="p-1 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 cursor-pointer"
+                onClick={() => setEditingDispositionStudent(null)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar modal"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            {/* Description */}
-            <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-              Esta función transfiere la nota de conducta y disposición (escala 1 a 10) de todos los estudiantes directamente a la pestaña de <strong>Calificaciones</strong>, vinculando de forma oficial el comportamiento y la asistencia con la libreta de calificaciones.
-            </p>
+            {/* Banner explicativo para notas en papel */}
+            <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/60 text-xs flex items-start gap-2.5">
+              <span className="text-base leading-none">📝</span>
+              <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
+                <strong>Carga manual o notas en papel:</strong> Podés definir directamente la nota de disposición de este estudiante. Es ideal si ese día no usaste computadora en clase o tomaste apuntes en papel y querés pasarlo al sistema.
+              </p>
+            </div>
 
-            {/* Cuatrimestre Selector */}
-            <div className="space-y-2">
-              <label className="text-xs font-bold block text-neutral-700 dark:text-slate-200">
-                Elegí el cuatrimestre de destino (queda guardado y establecido):
+            {/* Selector de Cuatrimestre */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Cuatrimestre a modificar:
               </label>
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  onClick={() => handleSetDispositionTargetTerm('1c')}
-                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1 ${
-                    dispositionTargetTerm === '1c'
-                      ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-500 ring-2 ring-blue-500/20 text-blue-950 dark:text-blue-100 shadow-xs'
+                  onClick={() => handleChangeEditingTerm('1c')}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex items-center justify-between transition-all cursor-pointer ${
+                    editingDispositionTerm === '1c'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
                       : isDarkMode
-                      ? 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-600'
-                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                      ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-xs">1° Cuatrimestre</span>
-                    {dispositionTargetTerm === '1c' ? (
-                      <CheckCircle2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    ) : (
-                      <span className="w-3.5 h-3.5 rounded-full border border-neutral-400 dark:border-slate-600" />
-                    )}
-                  </div>
-                  <span className="text-[11px] opacity-75">Primer cuatrimestre del año</span>
+                  <span>1° Cuatrimestre</span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                      editingDispositionTerm === '1c'
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-200 dark:bg-slate-700 text-neutral-700 dark:text-slate-300'
+                    }`}
+                  >
+                    Actual: {getStudentMetrics(editingDispositionStudent.id, '1c').totalDisposition}
+                  </span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => handleSetDispositionTargetTerm('2c')}
-                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1 ${
-                    dispositionTargetTerm === '2c'
-                      ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-500 ring-2 ring-emerald-500/20 text-emerald-950 dark:text-emerald-100 shadow-xs'
+                  onClick={() => handleChangeEditingTerm('2c')}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex items-center justify-between transition-all cursor-pointer ${
+                    editingDispositionTerm === '2c'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
                       : isDarkMode
-                      ? 'bg-slate-800/80 border-slate-700 text-slate-300 hover:border-slate-600'
-                      : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:border-neutral-300'
+                      ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-xs">2° Cuatrimestre</span>
-                    {dispositionTargetTerm === '2c' ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                    ) : (
-                      <span className="w-3.5 h-3.5 rounded-full border border-neutral-400 dark:border-slate-600" />
-                    )}
-                  </div>
-                  <span className="text-[11px] opacity-75">Segundo cuatrimestre del año</span>
+                  <span>2° Cuatrimestre</span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                      editingDispositionTerm === '2c'
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-200 dark:bg-slate-700 text-neutral-700 dark:text-slate-300'
+                    }`}
+                  >
+                    Actual: {getStudentMetrics(editingDispositionStudent.id, '2c').totalDisposition}
+                  </span>
                 </button>
               </div>
             </div>
 
-            {/* Column Target Note */}
-            <div
-              className={`p-3 rounded-xl border text-xs flex items-center gap-2.5 ${
-                isDarkMode ? 'bg-slate-800/50 border-slate-700 text-slate-300' : 'bg-blue-50/60 border-blue-200 text-blue-900'
-              }`}
-            >
-              <Info className="w-4 h-4 text-blue-500 shrink-0" />
-              <span className="text-[11px] leading-relaxed">
-                Se actualizará o creará automáticamente la columna <strong>"Nota de Disposición"</strong> dentro de la categoría <strong>Desempeño y Tareas</strong> para el <strong>{dispositionTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}</strong>.
-              </span>
-            </div>
-
-            {/* Preview of Students */}
-            <div className="space-y-1.5 flex-1 min-h-0 flex flex-col">
-              <div className="flex items-center justify-between text-xs font-semibold px-1">
-                <span>Vista previa ({courseStudents.length} estudiantes)</span>
-                <span className="text-[11px] text-neutral-500 dark:text-slate-400">Nota de disposición actual</span>
-              </div>
-              <div
-                className={`flex-1 overflow-y-auto max-h-44 rounded-xl border divide-y p-1 ${
-                  isDarkMode ? 'bg-slate-950/60 border-slate-800 divide-slate-800/60' : 'bg-neutral-50 border-neutral-200 divide-neutral-100'
-                }`}
-              >
-                {courseStudents.length === 0 ? (
-                  <div className="py-6 text-center text-xs text-neutral-500 dark:text-slate-400">
-                    No hay estudiantes registrados en este curso.
-                  </div>
-                ) : (
-                  courseStudents.map((st) => {
-                    const metrics = getStudentMetrics(st.id);
-                    return (
-                      <div key={st.id} className="flex items-center justify-between py-1.5 px-2.5 text-xs">
-                        <span className="font-medium truncate mr-2">
-                          {st.lastName}, {st.firstName}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-full font-bold text-[11px] ${
-                            metrics.totalDisposition >= 8
-                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
-                              : metrics.totalDisposition >= 6
-                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
-                              : 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-300'
-                          }`}
-                        >
-                          {metrics.totalDisposition} / 10
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* Footer Buttons */}
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setIsSendDispositionModalOpen(false)}
-                className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
-                  isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                }`}
-              >
-                Cancelar
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleSendDispositionToGrades(dispositionTargetTerm, false)}
-                  className="px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs cursor-pointer transition-all"
-                >
-                  Mandar a {dispositionTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleSendDispositionToGrades(dispositionTargetTerm, true)}
-                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs cursor-pointer transition-all flex items-center gap-1.5"
-                  title="Mandar notas y abrir inmediatamente la pestaña Calificaciones"
-                >
-                  <span>Mandar e Ir a Calificaciones</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ------------------------------------------------------------- */}
-      {/* MODAL: CONFIRMACIÓN PARA REINICIAR / BORRAR DISPOSICIÓN       */}
-      {/* ------------------------------------------------------------- */}
-      {isResetConfirmOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-          <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 space-y-4 ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                <RotateCcw className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold">Borrar / Reiniciar Disposición a 10</h3>
-                <p className="text-xs text-neutral-500 dark:text-slate-400">
-                  Materia: {activeCourse.name}
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-semibold mb-1 text-neutral-700 dark:text-slate-200">
-                  ¿A quién querés aplicarle el reinicio?
+            {/* Input de la Nota de Disposición */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                  Nueva Nota de Disposición (0 a 10 puntos):
                 </label>
-                <div className="space-y-1.5">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="resetScope"
-                      checked={resetModalStudentId === 'all'}
-                      onChange={() => setResetModalStudentId('all')}
-                      className="text-amber-600 focus:ring-amber-500"
-                    />
-                    <span>Toda la clase ({courseStudents.length} estudiantes)</span>
-                  </label>
+                <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                  Inicia en 10
+                </span>
+              </div>
 
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="resetScope"
-                      checked={resetModalStudentId !== 'all'}
-                      onChange={() => setResetModalStudentId(courseStudents[0]?.id || '')}
-                      className="text-amber-600 focus:ring-amber-500"
-                    />
-                    <span>Un alumno en específico</span>
-                  </label>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    min="0"
+                    max="10"
+                    step="0.5"
+                    value={editingDispositionScore}
+                    onChange={(e) => setEditingDispositionScore(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const currentIndex = filteredStudents.findIndex((s) => s.id === editingDispositionStudent.id);
+                        handleSaveStudentDisposition(currentIndex < filteredStudents.length - 1);
+                      }
+                    }}
+                    autoFocus
+                    placeholder="10"
+                    className={`w-full px-4 py-2.5 rounded-xl border text-lg font-bold text-center outline-hidden transition-all focus:ring-2 focus:ring-indigo-500 ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white focus:border-indigo-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 focus:border-indigo-500 shadow-inner'
+                    }`}
+                  />
+                  <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-neutral-400 dark:text-slate-500">
+                    / 10 pts
+                  </span>
                 </div>
+              </div>
 
-                {resetModalStudentId !== 'all' && (
-                  <div className="mt-2 pl-6">
-                    <select
-                      value={resetModalStudentId}
-                      onChange={(e) => setResetModalStudentId(e.target.value)}
-                      className={`w-full px-3 py-1.5 rounded-lg border text-xs outline-none ${
-                        isDarkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+              {/* Botones rápidos de selección (10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0) */}
+              <div>
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-neutral-500 dark:text-slate-400 block mb-1">
+                  Selección rápida:
+                </span>
+                <div className="flex flex-wrap items-center gap-1">
+                  {[10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0].map((num) => {
+                    const isSelected = String(num) === editingDispositionScore;
+                    return (
+                      <button
+                        key={num}
+                        type="button"
+                        onClick={() => setEditingDispositionScore(String(num))}
+                        className={`h-7 min-w-7 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                          isSelected
+                            ? 'bg-indigo-600 text-white border-indigo-600 scale-105 shadow-2xs'
+                            : num >= 8
+                            ? isDarkMode
+                              ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/60 hover:bg-emerald-900/60'
+                              : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                            : num >= 6
+                            ? isDarkMode
+                              ? 'bg-amber-950/40 text-amber-300 border-amber-800/60 hover:bg-amber-900/60'
+                              : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                            : isDarkMode
+                            ? 'bg-red-950/40 text-red-300 border-red-800/60 hover:bg-red-900/60'
+                            : 'bg-red-50 text-red-800 border-red-200 hover:bg-red-100'
+                        }`}
+                      >
+                        {num}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Motivo u observación opcional */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Observación / Motivo (opcional):
+              </label>
+              <input
+                type="text"
+                value={editingDispositionReason}
+                onChange={(e) => setEditingDispositionReason(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const currentIndex = filteredStudents.findIndex((s) => s.id === editingDispositionStudent.id);
+                    handleSaveStudentDisposition(currentIndex < filteredStudents.length - 1);
+                  }
+                }}
+                placeholder="Ej: Registro en papel, trabajo en clase, compromiso, etc."
+                className={`w-full px-3 py-2 rounded-xl border text-xs outline-hidden transition-all focus:ring-2 focus:ring-indigo-500 ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                    : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                }`}
+              />
+              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                {[
+                  'Pasado de papel',
+                  'Participación en clase',
+                  'Trabajo práctico',
+                  'Comportamiento',
+                  'Restablecer a 10',
+                ].map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setEditingDispositionReason(tag)}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${
+                      editingDispositionReason === tag
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : isDarkMode
+                        ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-750'
+                        : 'bg-neutral-100 text-neutral-600 border-neutral-200 hover:bg-neutral-200'
+                    }`}
+                  >
+                    + {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer con Navegación y Acciones */}
+            {(() => {
+              const currentIndex = filteredStudents.findIndex((s) => s.id === editingDispositionStudent.id);
+              const hasPrev = currentIndex > 0;
+              const hasNext = currentIndex !== -1 && currentIndex < filteredStudents.length - 1;
+
+              return (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 pt-3 border-t border-neutral-100 dark:border-slate-800">
+                  {/* Navegación entre alumnos */}
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto justify-between sm:justify-start">
+                    <button
+                      type="button"
+                      disabled={!hasPrev}
+                      onClick={() => handleNavigateEditStudent(-1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ir al alumno anterior"
+                    >
+                      ← Anterior
+                    </button>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400 font-medium">
+                      {currentIndex !== -1 ? `${currentIndex + 1} de ${filteredStudents.length}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!hasNext}
+                      onClick={() => handleNavigateEditStudent(1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ir al alumno siguiente"
+                    >
+                      Siguiente →
+                    </button>
+                  </div>
+
+                  {/* Botones de acción */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setEditingDispositionStudent(null)}
+                      className={`px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
                       }`}
                     >
-                      {courseStudents.map((st) => (
-                        <option key={st.id} value={st.id}>
-                          {st.lastName}, {st.firstName} ({getStudentMetrics(st.id).totalDisposition}/10 pts)
-                        </option>
-                      ))}
-                    </select>
+                      Cancelar
+                    </button>
+                    {hasNext && (
+                      <button
+                        type="button"
+                        onClick={() => handleSaveStudentDisposition(true)}
+                        className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95 transition-all"
+                        title="Guardar la nota de este alumno y pasar al siguiente en la lista"
+                      >
+                        <span>Guardar y siguiente</span>
+                        <span>→</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleSaveStudentDisposition(false)}
+                      className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95 transition-all"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Guardar nota</span>
+                    </button>
                   </div>
-                )}
-              </div>
-
-              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60">
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={resetModalClearHistory}
-                    onChange={(e) => setResetModalClearHistory(e.target.checked)}
-                    className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
-                  />
-                  <div>
-                    <span className="font-semibold block text-neutral-800 dark:text-slate-100">
-                      Borrar también las incidencias de conducta del historial
-                    </span>
-                    <span className="text-[11px] text-neutral-600 dark:text-slate-400 block mt-0.5">
-                      Si lo marcas, se eliminarán las anotaciones de conducta de la bitácora y Google Sheets. Si no, solo se reinicia el puntaje a 10 manteniendo los registros de consulta.
-                    </span>
-                  </div>
-                </label>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsResetConfirmOpen(false);
-                  setResetModalStudentId('all');
-                  setResetModalClearHistory(false);
-                }}
-                className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
-                  isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                }`}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (resetModalStudentId === 'all') {
-                    handleResetCourseDisposition(resetModalClearHistory);
-                  } else {
-                    const targetSt = courseStudents.find((s) => s.id === resetModalStudentId);
-                    if (targetSt) {
-                      handleResetSingleStudentDisposition(targetSt, resetModalClearHistory);
-                    }
-                    setIsResetConfirmOpen(false);
-                  }
-                  setResetModalStudentId('all');
-                  setResetModalClearHistory(false);
-                }}
-                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs cursor-pointer"
-              >
-                {resetModalStudentId === 'all' ? 'Reiniciar toda la clase a 10' : 'Reiniciar este alumno a 10'}
-              </button>
-            </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* MODAL: REINICIAR / BORRAR DISPOSICIÓN DE UN ALUMNO INDIVIDUAL */}
+      {/* MODAL: FICHA DEL ESTUDIANTE Y OBSERVACIONES DOCENTE (INFORMES) */}
       {/* ------------------------------------------------------------- */}
-      {studentForSingleReset && (
+      {selectedStudentForProfile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 space-y-4 ${
+            className={`w-full max-w-xl max-h-[90vh] flex flex-col rounded-2xl border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-150 ${
               isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
             }`}
           >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-                <RotateCcw className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold">
-                  Borrar / Restablecer Disposición
-                </h3>
-                <p className="text-xs text-neutral-500 dark:text-slate-400">
-                  Estudiante: <strong className="text-neutral-800 dark:text-slate-200">{studentForSingleReset.lastName}, {studentForSingleReset.firstName}</strong>
-                </p>
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-neutral-50 dark:bg-slate-800/60 border border-neutral-200 dark:border-slate-700 flex items-center justify-between text-xs">
-              <span className="text-neutral-600 dark:text-slate-300">Puntaje actual:</span>
-              <span className="font-bold text-amber-600 dark:text-amber-400 text-sm">
-                {getStudentMetrics(studentForSingleReset.id).totalDisposition} / 10 pts
-              </span>
-            </div>
-
-            <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-              El puntaje de conducta y disposición de <strong>{studentForSingleReset.firstName}</strong> volverá a <strong>10 puntos</strong>.
-            </p>
-
-            <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/60 text-xs">
-              <label className="flex items-start gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={singleResetClearHistory}
-                  onChange={(e) => setSingleResetClearHistory(e.target.checked)}
-                  className="mt-0.5 rounded text-amber-600 focus:ring-amber-500"
+            {/* Header: Datos del alumno */}
+            <div className={`p-5 border-b flex items-start justify-between gap-4 ${isDarkMode ? 'border-slate-800 bg-slate-900/80' : 'border-neutral-200 bg-neutral-50/70'}`}>
+              <div className="flex items-center gap-3.5">
+                <img
+                  src={selectedStudentForProfile.avatar}
+                  alt={selectedStudentForProfile.firstName}
+                  className={`w-14 h-14 rounded-2xl object-cover border-2 shadow-xs shrink-0 ${
+                    isDarkMode ? 'border-indigo-500/40' : 'border-indigo-200'
+                  }`}
                 />
                 <div>
-                  <span className="font-semibold block text-neutral-800 dark:text-slate-100">
-                    Limpiar también las incidencias de conducta registradas
-                  </span>
-                  <span className="text-[11px] text-neutral-600 dark:text-slate-400 block mt-0.5">
-                    Eliminará las anotaciones de conducta de este estudiante en el historial y Google Sheets.
-                  </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-lg font-bold">
+                      {selectedStudentForProfile.lastName}, {selectedStudentForProfile.firstName}
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                      Ficha del Alumno
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400 font-mono mt-0.5">
+                    {selectedStudentForProfile.email}
+                  </p>
+                  {activeCourse && (
+                    <p className="text-xs text-neutral-600 dark:text-slate-300 mt-1 font-medium">
+                      Materia: <span className="font-semibold">{activeCourse.name}</span>
+                    </p>
+                  )}
                 </div>
-              </label>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedStudentForProfile(null)}
+                className="p-1.5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-200/60 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar ficha"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  setStudentForSingleReset(null);
-                  setSingleResetClearHistory(false);
-                }}
-                className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
-                  isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                }`}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  handleResetSingleStudentDisposition(studentForSingleReset, singleResetClearHistory);
-                  setStudentForSingleReset(null);
-                  setSingleResetClearHistory(false);
-                }}
-                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold shadow-xs cursor-pointer"
-              >
-                Sí, restablecer a 10
-              </button>
+            {/* Resumen rápido de asistencia y conducta */}
+            {(() => {
+              const metrics1c = getStudentMetrics(selectedStudentForProfile.id, '1c');
+              const metrics2c = getStudentMetrics(selectedStudentForProfile.id, '2c');
+              const currentDisp = getStudentMetrics(selectedStudentForProfile.id, attendanceTerm).totalDisposition;
+
+              return (
+                <div className={`px-5 py-3 border-b grid grid-cols-3 gap-2 text-center text-xs ${
+                  isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-100 bg-white'
+                }`}>
+                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
+                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Inasistencias</span>
+                    <span className="text-sm font-bold text-red-600 dark:text-red-400">
+                      {metrics1c.totalAbsences + metrics2c.totalAbsences}
+                    </span>
+                    <span className="text-[10px] text-neutral-400 block">
+                      (1°C: {metrics1c.totalAbsences} • 2°C: {metrics2c.totalAbsences})
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
+                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Llegadas Tarde</span>
+                    <span className="text-sm font-bold text-amber-600 dark:text-amber-400">
+                      {(metrics1c.totalLates || 0) + (metrics2c.totalLates || 0)}
+                    </span>
+                    <span className="text-[10px] text-neutral-400 block">
+                      (1°C: {metrics1c.totalLates || 0} • 2°C: {metrics2c.totalLates || 0})
+                    </span>
+                  </div>
+
+                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
+                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Disposición ({attendanceTerm === '2c' ? '2°C' : attendanceTerm === '1c' ? '1°C' : 'Anual'})</span>
+                    <span className={`text-sm font-bold ${
+                      currentDisp >= 8 ? 'text-emerald-600 dark:text-emerald-400' : currentDisp >= 6 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
+                    }`}>
+                      {currentDisp} / 10
+                    </span>
+                    <span className="text-[10px] text-neutral-400 block">
+                      (1°C: {metrics1c.totalDisposition} • 2°C: {metrics2c.totalDisposition})
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Scrollable Content: Observaciones e Informes */}
+            <div className="p-5 overflow-y-auto space-y-4 flex-1 text-xs">
+              {/* Formulario Agregar Observación */}
+              <div className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-indigo-50/40 border-indigo-100'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <span className="font-bold text-neutral-900 dark:text-slate-100">
+                    Agregar Observación o Informe
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  <textarea
+                    rows={2}
+                    value={newObservationText}
+                    onChange={(e) => setNewObservationText(e.target.value)}
+                    placeholder="Escribí una observación (ej: Presentó informe psicopedagógico con adecuaciones, observación de conducta, acuerdo con la familia)..."
+                    className={`w-full px-3 py-2 rounded-xl border text-xs outline-hidden resize-none transition-all focus:ring-2 focus:ring-indigo-500 ${
+                      isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400 shadow-2xs'
+                    }`}
+                  />
+
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Link className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="url"
+                        value={newObservationUrl}
+                        onChange={(e) => setNewObservationUrl(e.target.value)}
+                        placeholder="Pegar enlace al informe (ej: Google Drive, Docs, PDF) - opcional"
+                        className={`w-full pl-8 pr-3 py-1.5 rounded-xl border text-xs outline-hidden transition-all focus:ring-2 focus:ring-indigo-500 ${
+                          isDarkMode
+                            ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
+                            : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400 shadow-2xs'
+                        }`}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!newObservationText.trim() && !newObservationUrl.trim()}
+                      onClick={() => handleSaveObservation(selectedStudentForProfile)}
+                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer inline-flex items-center gap-1 active:scale-95 shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Guardar</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Lista de Observaciones Guardadas */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="font-bold text-neutral-800 dark:text-slate-200 flex items-center gap-1.5">
+                    <span>Observaciones registradas</span>
+                    <span className="text-[11px] font-normal text-neutral-400">
+                      ({studentObservations[selectedStudentForProfile.id]?.length || 0})
+                    </span>
+                  </h4>
+                </div>
+
+                {(!studentObservations[selectedStudentForProfile.id] || studentObservations[selectedStudentForProfile.id].length === 0) ? (
+                  <div className="py-6 text-center text-neutral-400 dark:text-slate-500 border border-dashed rounded-xl p-4">
+                    <p className="text-xs">No hay observaciones registradas para este estudiante.</p>
+                    <p className="text-[11px] opacity-75 mt-0.5">
+                      Podés escribir anotaciones de conducta o pegar el enlace a su informe psicopedagógico arriba.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {studentObservations[selectedStudentForProfile.id].map((obs) => (
+                      <div
+                        key={obs.id}
+                        className={`p-3 rounded-xl border transition-all ${
+                          isDarkMode
+                            ? 'bg-slate-800/40 border-slate-700/80 hover:bg-slate-800/60'
+                            : 'bg-white border-neutral-200 hover:border-neutral-300 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <span className="text-[10px] text-neutral-400 dark:text-slate-500 font-medium">
+                            📅 {obs.date}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteObservation(selectedStudentForProfile.id, obs.id)}
+                            className="text-neutral-400 hover:text-red-500 p-1 rounded-lg transition-colors cursor-pointer"
+                            title="Eliminar observación"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {obs.text && (
+                          <p className="text-xs text-neutral-800 dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+                            {obs.text}
+                          </p>
+                        )}
+
+                        {obs.reportUrl && (
+                          <div className="mt-2 pt-2 border-t border-neutral-100 dark:border-slate-700/60 flex items-center justify-between gap-2">
+                            <a
+                              href={obs.reportUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/80 transition-colors shadow-2xs"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                              <span>Abrir informe / documento</span>
+                            </a>
+                            <span className="text-[10px] text-neutral-400 truncate max-w-[200px]" title={obs.reportUrl}>
+                              {obs.reportUrl}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* Footer con Navegación entre alumnos */}
+            {(() => {
+              const currentIndex = filteredStudents.findIndex((s) => s.id === selectedStudentForProfile.id);
+              const hasPrev = currentIndex > 0;
+              const hasNext = currentIndex !== -1 && currentIndex < filteredStudents.length - 1;
+
+              return (
+                <div className={`p-4 border-t flex items-center justify-between gap-2 ${
+                  isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-200 bg-neutral-50/60'
+                }`}>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={!hasPrev}
+                      onClick={() => handleNavigateProfileStudent(-1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ver ficha del alumno anterior"
+                    >
+                      ← Anterior
+                    </button>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400 font-medium px-1">
+                      {currentIndex !== -1 ? `${currentIndex + 1} de ${filteredStudents.length}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!hasNext}
+                      onClick={() => handleNavigateProfileStudent(1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ver ficha del alumno siguiente"
+                    >
+                      Siguiente →
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStudentForProfile(null)}
+                    className="px-4 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white dark:bg-slate-700 dark:hover:bg-slate-600 text-xs font-semibold shadow-xs cursor-pointer transition-colors"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -6439,6 +8222,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       {/* ------------------------------------------------------------- */}
       {absenceNotifModal.isOpen && (() => {
         const isDisposition = absenceNotifModal.historyItem?.category === 'Disposición';
+        const pointsChange = absenceNotifModal.historyItem?.pointsChange;
+        const isAdd = pointsChange !== undefined ? pointsChange > 0 : false;
+        const pointsBadgeText = pointsChange !== undefined
+          ? (pointsChange > 0 ? `+${pointsChange} pto` : `${pointsChange} pto`)
+          : '-1 pto';
+
         return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
           <div
@@ -6449,20 +8238,34 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             {/* Header */}
             <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
               <div className="flex items-center gap-2.5">
-                <div className={`p-2 rounded-xl ${isDisposition ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400' : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'}`}>
-                  {isDisposition ? <ShieldAlert className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
+                <div className={`p-2 rounded-xl ${
+                  isDisposition
+                    ? isAdd
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                      : 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                    : 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                }`}>
+                  {isDisposition ? (
+                    isAdd ? <Award className="w-5 h-5 text-emerald-500" /> : <ShieldAlert className="w-5 h-5" />
+                  ) : (
+                    <Bell className="w-5 h-5" />
+                  )}
                 </div>
                 <div>
                   <h3 className="text-sm font-bold">
-                    {isDisposition ? 'Notificar Observación de Conducta al Estudiante' : 'Notificar Ausencia al Estudiante'}
+                    {isDisposition
+                      ? (isAdd ? 'Notificar Reconocimiento al Estudiante' : 'Notificar Observación de Conducta al Estudiante')
+                      : 'Notificar Ausencia al Estudiante'}
                   </h3>
                   <p className="text-[11px] text-neutral-500 dark:text-slate-400">
                     {absenceNotifModal.student
                       ? `${absenceNotifModal.student.lastName}, ${absenceNotifModal.student.firstName}`
                       : 'Estudiante'} • {activeCourse.name}
                     {isDisposition && absenceNotifModal.historyItem?.action && (
-                      <span className="font-semibold text-purple-600 dark:text-purple-400 ml-1.5">
-                        • {absenceNotifModal.historyItem.action} (-1 pto)
+                      <span className={`font-semibold ml-1.5 ${
+                        isAdd ? 'text-emerald-600 dark:text-emerald-400' : 'text-purple-600 dark:text-purple-400'
+                      }`}>
+                        • {absenceNotifModal.historyItem.action} ({pointsBadgeText})
                       </span>
                     )}
                   </p>
@@ -6500,15 +8303,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     const presetId = e.target.value;
                     if (presetId.startsWith('reason-')) {
                       const reasonKey = presetId.replace('reason-', '');
-                      const reasonTpl = getTemplateForReason(reasonKey);
-                      const curDisp = dispositionMap[absenceNotifModal.student?.id || '']?.totalDisposition ?? 9;
+                      const reasonTpl = getTemplateForReason(reasonKey, isAdd ? 'positive' : 'negative');
+                      const curDisp = dispositionMap[absenceNotifModal.student?.id || '']?.totalDisposition ?? 10;
                       const formatted = formatTemplateForStudent(
                         reasonTpl,
                         absenceNotifModal.student || { firstName: '', lastName: '', id: '' },
                         activeCourse.name,
                         curDisp,
                         absenceNotifModal.historyItem?.date || '',
-                        reasonKey
+                        reasonKey,
+                        pointsChange
                       );
                       setAbsenceNotifModal((prev) => ({
                         ...prev,
@@ -6519,14 +8323,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     }
                     const found = savedPresets.find((p) => p.id === presetId);
                     if (found && absenceNotifModal.student) {
-                      const curDisp = dispositionMap[absenceNotifModal.student.id]?.totalDisposition ?? (isDisposition ? 9 : 10);
+                      const curDisp = dispositionMap[absenceNotifModal.student.id]?.totalDisposition ?? (isDisposition ? 10 : 10);
                       const formatted = formatTemplateForStudent(
                         found.text,
                         absenceNotifModal.student,
                         activeCourse.name,
                         curDisp,
                         absenceNotifModal.historyItem?.date || '',
-                        absenceNotifModal.historyItem?.action || ''
+                        absenceNotifModal.historyItem?.action || '',
+                        pointsChange
                       );
                       const channelToUse = found.channel !== 'any' ? found.channel : absenceNotifModal.channel;
                       setAbsenceNotifModal((prev) => ({
@@ -8557,11 +10362,149 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 <Info className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <div>
                   <p className="font-semibold text-neutral-900 dark:text-white mb-0.5">
-                    ¿Cómo deseas acceder a tu planilla?
+                    Planilla de Google Sheets para {activeCourse.name}
                   </p>
                   <p className="leading-relaxed">
-                    Para crear y sincronizar la hoja oficial en tiempo real dentro de tu Google Drive, conecta tu cuenta de Google Institucional. También puedes abrir una hoja nueva con tus datos ya copiados o descargar el archivo CSV.
+                    Sincroniza en vivo la nómina de estudiantes, ausencias, tardanzas y notas de conducta con Google Sheets en tu Google Drive.
                   </p>
+                </div>
+              </div>
+
+              {/* Status of Currently Linked Sheet */}
+              {sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) && (
+                <div
+                  className={`p-3.5 rounded-xl border flex flex-col gap-2.5 ${
+                    isDarkMode
+                      ? 'bg-emerald-950/20 border-emerald-800/40 text-emerald-300'
+                      : 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span className="font-bold text-xs">Hoja vinculada al curso</span>
+                    </div>
+                    {sheetConfig.lastSyncedAt && (
+                      <span className="text-[10px] opacity-80">Última sync: {sheetConfig.lastSyncedAt}</span>
+                    )}
+                  </div>
+                  <p className="font-mono text-[11px] truncate opacity-90 select-all">
+                    {sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`}
+                  </p>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
+                        window.open(url, '_blank');
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs transition-colors cursor-pointer"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>Abrir Planilla</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleManualSheetsSync}
+                      disabled={isSyncingSheet}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                        isDarkMode
+                          ? 'border-emerald-700/60 hover:bg-emerald-900/40 text-emerald-200'
+                          : 'border-emerald-300 hover:bg-emerald-100 text-emerald-800'
+                      }`}
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Ahora'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Google Drive Folder Location & Configuration */}
+              <div
+                className={`p-3.5 rounded-xl border space-y-2.5 ${
+                  isDarkMode ? 'bg-slate-850/60 border-slate-750' : 'bg-slate-50 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-bold text-neutral-900 dark:text-white">
+                    <FolderClosed className="w-4 h-4 text-amber-500" />
+                    <span>Carpeta en Google Drive</span>
+                  </div>
+                  {activeCourse.driveFolderUrl && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(activeCourse.driveFolderUrl, '_blank')}
+                      className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline font-semibold cursor-pointer"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      <span>Abrir en Drive</span>
+                    </button>
+                  )}
+                </div>
+                
+                <div className="text-[11px] text-neutral-600 dark:text-slate-400 leading-relaxed">
+                  Ubicación actual:{' '}
+                  <strong className="text-neutral-800 dark:text-slate-200">
+                    {activeCourse.name} / Asistencia y Disposición
+                  </strong>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={customFolderInput}
+                    onChange={(e) => setCustomFolderInput(e.target.value)}
+                    placeholder="Nombre de carpeta o link/ID de Google Drive"
+                    className={`flex-1 px-3 py-2 text-xs rounded-xl border outline-none font-mono transition-colors ${
+                      isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500 focus:border-amber-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400 focus:border-amber-500'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSaveCustomDriveFolder}
+                    disabled={isLinkingCustomFolder || !customFolderInput.trim()}
+                    className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer shrink-0"
+                  >
+                    {isLinkingCustomFolder ? 'Guardando...' : 'Asignar Carpeta'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Paste / Link Existing Google Sheet */}
+              <div
+                className={`p-3.5 rounded-xl border space-y-2.5 ${
+                  isDarkMode ? 'bg-slate-850/60 border-slate-750' : 'bg-slate-50 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-neutral-900 dark:text-white">
+                    Vincular Hoja Existente de Google Sheets
+                  </span>
+                  <span className="text-[10px] text-neutral-500 dark:text-slate-400">Pega el link o ID</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={customSheetInput}
+                    onChange={(e) => setCustomSheetInput(e.target.value)}
+                    placeholder="https://docs.google.com/spreadsheets/d/... o ID"
+                    className={`flex-1 px-3 py-2 text-xs rounded-xl border outline-none font-mono transition-colors ${
+                      isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500 focus:border-emerald-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400 focus:border-emerald-500'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={handleLinkCustomSpreadsheet}
+                    disabled={isLinkingCustomSheet || !customSheetInput.trim()}
+                    className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer shrink-0"
+                  >
+                    {isLinkingCustomSheet ? 'Vinculando...' : 'Vincular'}
+                  </button>
                 </div>
               </div>
 
@@ -8604,9 +10547,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       </svg>
                     )}
                     <div>
-                      <span className="block text-xs font-bold">Vincular con Cuenta de Google</span>
+                      <span className="block text-xs font-bold">
+                        {sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId)
+                          ? 'Conectar Google y Sincronizar Hoja'
+                          : 'Conectar Google y Crear Hoja en Drive'}
+                      </span>
                       <span className="block text-[10px] text-emerald-100 font-normal">
-                        Crea la hoja oficial en tu Drive con sincronización en vivo
+                        Conecta tu cuenta institucional con permisos para editar Google Sheets
                       </span>
                     </div>
                   </div>

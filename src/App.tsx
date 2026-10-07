@@ -60,6 +60,27 @@ function AppContent() {
 
   useEffect(() => {
     loadData();
+  }, [user?.id, user?.email]);
+
+  // Cascaded synchronization of students status across modules and dashboard view
+  useEffect(() => {
+    const handleStudentStatusSync = () => {
+      api
+        .getStudents()
+        .then((updatedStudents) => {
+          if (Array.isArray(updatedStudents) && updatedStudents.length > 0) {
+            setStudents(updatedStudents);
+          }
+        })
+        .catch(() => {});
+    };
+
+    window.addEventListener('docencia_disposition_storage_change', handleStudentStatusSync);
+    window.addEventListener('docencia_student_status_updated', handleStudentStatusSync);
+    return () => {
+      window.removeEventListener('docencia_disposition_storage_change', handleStudentStatusSync);
+      window.removeEventListener('docencia_student_status_updated', handleStudentStatusSync);
+    };
   }, []);
 
   const handleOpenCreateModal = (type: 'course' | 'plan' | 'task' | 'file' = 'course') => {

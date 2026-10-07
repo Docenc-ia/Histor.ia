@@ -24,6 +24,23 @@ export const isRealGoogleSpreadsheetId = (id?: string | null): boolean => {
 };
 
 /**
+ * Extracts a real Google Spreadsheet ID from either a full Google Sheets URL
+ * (e.g. https://docs.google.com/spreadsheets/d/12yId5S8Zj5.../edit) or a raw ID string.
+ */
+export const extractSpreadsheetIdFromInput = (input?: string | null): string | null => {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  const urlMatch = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if (urlMatch && urlMatch[1] && isRealGoogleSpreadsheetId(urlMatch[1])) {
+    return urlMatch[1];
+  }
+  if (isRealGoogleSpreadsheetId(trimmed)) {
+    return trimmed;
+  }
+  return null;
+};
+
+/**
  * Returns a valid Google Sheets URL if the ID is real, or null if it is simulated
  */
 export const getSafeGoogleSpreadsheetUrl = (id?: string | null): string | null => {

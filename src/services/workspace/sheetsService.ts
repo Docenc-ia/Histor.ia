@@ -17,6 +17,8 @@ export interface DispositionSheetResult {
   updatedAt: string;
   summaryRowsCount: number;
   historyRowsCount: number;
+  error?: string;
+  errorCode?: 'NO_TOKEN' | 'UNAUTHORIZED' | 'PERMISSION_DENIED' | 'NOT_FOUND' | 'SYNC_FAILED' | string;
 }
 
 export const sheetsService = {
@@ -166,25 +168,25 @@ export const sheetsService = {
 
       const requests: any[] = [];
 
-      // If there is only one default sheet like "Sheet1" or "Hoja 1", and "Alumnos y Disposición" is requested, rename it
+      // If there is only one default sheet like "Sheet1" or "Hoja 1", and desired title is requested, rename it
       if (
-        sheetTitles.includes('Alumnos y Disposición') &&
-        !existingTitles.includes('Alumnos y Disposición') &&
+        sheetTitles.length > 0 &&
         existingSheets.length > 0 &&
         (existingSheets[0].title === 'Sheet1' ||
           existingSheets[0].title === 'Hoja 1' ||
-          existingSheets[0].title.startsWith('Hoja'))
+          existingSheets[0].title.startsWith('Hoja')) &&
+        !existingTitles.includes(sheetTitles[0])
       ) {
         requests.push({
           updateSheetProperties: {
             properties: {
               sheetId: existingSheets[0].sheetId,
-              title: 'Alumnos y Disposición',
+              title: sheetTitles[0],
             },
             fields: 'title',
           },
         });
-        existingTitles.push('Alumnos y Disposición');
+        existingTitles.push(sheetTitles[0]);
       }
 
       // Add missing sheet tabs
@@ -221,7 +223,7 @@ export const sheetsService = {
 
   /**
    * Real-time synchronization of Class Attendance, Disposition & History with Google Sheets
-   * Updates immediately when an absence or disposition is logged or removed
+   * Creates/Updates separate sheets for 1° Cuatrimestre, 2° Cuatrimestre, Resumen Anual and Historial de Incidencias
    */
   async syncDispositionSheet(
     course: { id: string; name: string },
@@ -230,12 +232,13 @@ export const sheetsService = {
     historyList: StudentHistoryItem[],
     existingSpreadsheetId?: string,
     folderId?: string,
-    providedToken?: string
+    providedToken?: string,
+    dispositionMap2c?: Record<string, StudentDispositionData>
   ): Promise<DispositionSheetResult> {
     const token = providedToken || getCachedAccessToken();
-    const sheetTitle = `📋 Registro de Clase, Ausencias y Disposición - ${course.name}`;
+    const sheetTitle = `📋 Registro de Asistencia y Disposición - ${course.name}`;
 
-    // 1. Table: "Alumnos y Disposición" (Ordenados alfabéticamente por apellido)
+    // Sort students alphabetically by last name, then first name
     const sortedStudents = [...students].sort((a, b) => {
       const lastA = (a.lastName || '').trim();
       const lastB = (b.lastName || '').trim();
@@ -244,28 +247,32 @@ export const sheetsService = {
       return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
     });
 
-    const summaryHeaders = [
+    const map1c = dispositionMap || {};
+    const map2c = dispositionMap2c || {};
+
+    // 1. Table: "1° Cuatrimestre"
+    const summaryHeaders1c = [
       'Apellido y Nombre',
       'Email Institucional',
-      'Total Ausencias',
-      'Llegadas Tarde',
-      'Disposición (Escala 10)',
-      'Última Incidencia / Motivo',
-      'Estado Disposición',
+      'Ausencias 1C',
+      'Llegadas Tarde 1C',
+      'Disposición 1C (Escala 10)',
+      'Última Incidencia 1C',
+      'Estado 1C',
     ];
 
-    const summaryRows = sortedStudents.map((student) => {
-      const absences = dispositionMap[student.id]?.totalAbsences ?? 0;
-      const lates = dispositionMap[student.id]?.totalLates ?? 0;
-      const score = dispositionMap[student.id]?.totalDisposition ?? 10;
-      
-      const studentHistory = historyList
-        .filter((h) => h.studentId === student.id)
+    const summaryRows1c = sortedStudents.map((student) => {
+      const absences = map1c[student.id]?.totalAbsences ?? 0;
+      const lates = map1c[student.id]?.totalLates ?? 0;
+      const score = map1c[student.id]?.totalDisposition ?? 10;
+
+      const studentHistory1c = historyList
+        .filter((h) => h.studentId === student.id && (h.term === '1c' || !h.term))
         .sort((a, b) => b.timestamp - a.timestamp);
-      
-      const lastIncident = studentHistory.length > 0
-        ? `${studentHistory[0].action} (${studentHistory[0].date} ${studentHistory[0].time})`
-        : 'Sin incidencias registradas';
+
+      const lastIncident = studentHistory1c.length > 0
+        ? `${studentHistory1c[0].action} (${studentHistory1c[0].date} ${studentHistory1c[0].time})`
+        : 'Sin incidencias en 1C';
 
       const condition = score >= 8
         ? 'Excelente (>=8)'
@@ -284,10 +291,99 @@ export const sheetsService = {
       ];
     });
 
-    // 2. Table: "Historial de Incidencias"
+    // 2. Table: "2° Cuatrimestre"
+    const summaryHeaders2c = [
+      'Apellido y Nombre',
+      'Email Institucional',
+      'Ausencias 2C',
+      'Llegadas Tarde 2C',
+      'Disposición 2C (Escala 10)',
+      'Última Incidencia 2C',
+      'Estado 2C',
+    ];
+
+    const summaryRows2c = sortedStudents.map((student) => {
+      const absences = map2c[student.id]?.totalAbsences ?? 0;
+      const lates = map2c[student.id]?.totalLates ?? 0;
+      const score = map2c[student.id]?.totalDisposition ?? 10;
+
+      const studentHistory2c = historyList
+        .filter((h) => h.studentId === student.id && h.term === '2c')
+        .sort((a, b) => b.timestamp - a.timestamp);
+
+      const lastIncident = studentHistory2c.length > 0
+        ? `${studentHistory2c[0].action} (${studentHistory2c[0].date} ${studentHistory2c[0].time})`
+        : 'Sin incidencias en 2C';
+
+      const condition = score >= 8
+        ? 'Excelente (>=8)'
+        : score >= 6
+        ? 'Regular (6-7)'
+        : 'Requiere atención (<6)';
+
+      return [
+        `${student.lastName}, ${student.firstName}`,
+        student.email,
+        absences,
+        lates,
+        score,
+        lastIncident,
+        condition,
+      ];
+    });
+
+    // 3. Table: "Resumen Anual" (Consolidado de ambos cuatrimestres)
+    const annualHeaders = [
+      'Apellido y Nombre',
+      'Email Institucional',
+      'Total Ausencias Anual',
+      'Total Tardanzas Anual',
+      'Promedio Disposición Anual',
+      'Disposición 1C',
+      'Disposición 2C',
+      '% Asistencia Estimada',
+      'Condición Anual',
+    ];
+
+    const annualRows = sortedStudents.map((student) => {
+      const abs1 = map1c[student.id]?.totalAbsences ?? 0;
+      const abs2 = map2c[student.id]?.totalAbsences ?? 0;
+      const totalAbs = abs1 + abs2;
+
+      const lat1 = map1c[student.id]?.totalLates ?? 0;
+      const lat2 = map2c[student.id]?.totalLates ?? 0;
+      const totalLat = lat1 + lat2;
+
+      const disp1 = map1c[student.id]?.totalDisposition ?? 10;
+      const disp2 = map2c[student.id]?.totalDisposition ?? 10;
+      const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
+
+      // Asistencia estimada sobre base típica de clases
+      const estimatedAttendance = Math.max(0, Math.min(100, Math.round(100 - (totalAbs * 2.5) - (totalLat * 0.8))));
+      const cond = estimatedAttendance < 75 || avgDisp < 6
+        ? 'Alerta pedagógica'
+        : avgDisp >= 8 && estimatedAttendance >= 85
+        ? 'Excelente'
+        : 'Regular';
+
+      return [
+        `${student.lastName}, ${student.firstName}`,
+        student.email,
+        totalAbs,
+        totalLat,
+        avgDisp,
+        disp1,
+        disp2,
+        `${estimatedAttendance}%`,
+        cond,
+      ];
+    });
+
+    // 4. Table: "Historial de Incidencias"
     const historyHeaders = [
       'Fecha',
       'Hora',
+      'Cuatrimestre',
       'Estudiante',
       'Categoría',
       'Motivo de Conducta',
@@ -299,7 +395,10 @@ export const sheetsService = {
     ];
 
     const historyRows = historyList.map((item) => {
-      const studentScore = dispositionMap[item.studentId]?.totalDisposition ?? 10;
+      const is2c = item.term === '2c';
+      const termLabel = is2c ? '2° Cuatrimestre' : '1° Cuatrimestre';
+      const studentMap = is2c ? map2c : map1c;
+      const studentScore = studentMap[item.studentId]?.totalDisposition ?? 10;
       const isItemAbsence =
         item.category === 'Ausencia' ||
         item.action === 'Ausencia' ||
@@ -326,6 +425,7 @@ export const sheetsService = {
       return [
         item.date,
         item.time,
+        termLabel,
         item.studentName,
         item.category,
         item.action,
@@ -341,27 +441,59 @@ export const sheetsService = {
     if (token) {
       try {
         if (existingSpreadsheetId && isRealGoogleSpreadsheetId(existingSpreadsheetId)) {
-          // Ensure both tabs exist in the existing spreadsheet
+          // Ensure all 4 tabs exist in the existing spreadsheet
           await this.ensureSheetsExist(existingSpreadsheetId, token, [
-            'Alumnos y Disposición',
+            '1° Cuatrimestre',
+            '2° Cuatrimestre',
+            'Resumen Anual',
             'Historial de Incidencias',
           ]);
 
-          // Clear old data from both sheets safely with URL encoding
+          // Clear old data safely from tabs
           try {
             await Promise.all([
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Alumnos y Disposición'!A1:Z500")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
-                  headers: { Authorization: `Bearer ${token}` },
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
                 }
               ),
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z2000")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
-                  headers: { Authorization: `Bearer ${token}` },
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                }
+              ),
+              fetch(
+                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A1:Z500")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                }
+              ),
+              fetch(
+                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z3000")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
                 }
               ),
             ]);
@@ -376,6 +508,7 @@ export const sheetsService = {
                   [
                     new Date().toLocaleDateString('es-AR'),
                     new Date().toLocaleTimeString('es-AR'),
+                    '1° Cuatrimestre',
                     'Toda la clase',
                     'Sistema',
                     'Sin incidencias registradas aún en el curso',
@@ -387,7 +520,7 @@ export const sheetsService = {
                   ],
                 ];
 
-          // Batch update both sheets with current active rows
+          // Batch update all 4 sheets with current active rows
           const updateRes = await fetch(
             `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values:batchUpdate`,
             {
@@ -400,8 +533,16 @@ export const sheetsService = {
                 valueInputOption: 'USER_ENTERED',
                 data: [
                   {
-                    range: "'Alumnos y Disposición'!A1",
-                    values: [summaryHeaders, ...summaryRows],
+                    range: "'1° Cuatrimestre'!A1",
+                    values: [summaryHeaders1c, ...summaryRows1c],
+                  },
+                  {
+                    range: "'2° Cuatrimestre'!A1",
+                    values: [summaryHeaders2c, ...summaryRows2c],
+                  },
+                  {
+                    range: "'Resumen Anual'!A1",
+                    values: [annualHeaders, ...annualRows],
                   },
                   {
                     range: "'Historial de Incidencias'!A1",
@@ -418,13 +559,72 @@ export const sheetsService = {
               url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
               isLiveGoogle: true,
               updatedAt: new Date().toLocaleTimeString(),
-              summaryRowsCount: summaryRows.length,
+              summaryRowsCount: summaryRows1c.length,
               historyRowsCount: historyRows.length,
+            };
+          } else {
+            const errStatus = updateRes.status;
+            let errDetail = 'Error al actualizar Google Sheets';
+            try {
+              const errJson = await updateRes.json();
+              errDetail = errJson?.error?.message || errDetail;
+            } catch (_) {}
+
+            console.error('Google Sheets batchUpdate failed:', errStatus, errDetail);
+
+            if (errStatus === 401) {
+              return {
+                spreadsheetId: existingSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                isLiveGoogle: false,
+                updatedAt: new Date().toLocaleTimeString(),
+                summaryRowsCount: summaryRows1c.length,
+                historyRowsCount: historyRows.length,
+                error: 'Tu sesión de Google expiró. Por favor vuelve a conectar tu cuenta institucional.',
+                errorCode: 'UNAUTHORIZED',
+              };
+            }
+
+            if (errStatus === 403) {
+              return {
+                spreadsheetId: existingSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                isLiveGoogle: false,
+                updatedAt: new Date().toLocaleTimeString(),
+                summaryRowsCount: summaryRows1c.length,
+                historyRowsCount: historyRows.length,
+                error: 'Permiso denegado. Asegúrate de que tu cuenta de Google tenga permisos de edición en la planilla.',
+                errorCode: 'PERMISSION_DENIED',
+              };
+            }
+
+            if (errStatus === 404) {
+              return {
+                spreadsheetId: existingSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                isLiveGoogle: false,
+                updatedAt: new Date().toLocaleTimeString(),
+                summaryRowsCount: summaryRows1c.length,
+                historyRowsCount: historyRows.length,
+                error: 'No se encontró la hoja de cálculo en Google Drive.',
+                errorCode: 'NOT_FOUND',
+              };
+            }
+
+            return {
+              spreadsheetId: existingSpreadsheetId,
+              url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+              isLiveGoogle: false,
+              updatedAt: new Date().toLocaleTimeString(),
+              summaryRowsCount: summaryRows1c.length,
+              historyRowsCount: historyRows.length,
+              error: errDetail,
+              errorCode: 'SYNC_FAILED',
             };
           }
         }
 
-        // Create new spreadsheet if not existing or update failed
+        // Create new spreadsheet with all 4 sheets if no real existing ID was provided
         const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
           method: 'POST',
           headers: {
@@ -436,9 +636,9 @@ export const sheetsService = {
             sheets: [
               {
                 properties: {
-                  title: 'Alumnos y Disposición',
+                  title: '1° Cuatrimestre',
                   gridProperties: {
-                    rowCount: Math.max(50, summaryRows.length + 10),
+                    rowCount: Math.max(50, summaryRows1c.length + 10),
                     columnCount: 10,
                   },
                 },
@@ -448,11 +648,71 @@ export const sheetsService = {
                     startColumn: 0,
                     rowData: [
                       {
-                        values: summaryHeaders.map((h) => ({
+                        values: summaryHeaders1c.map((h) => ({
                           userEnteredValue: { stringValue: h },
                         })),
                       },
-                      ...summaryRows.map((row) => ({
+                      ...summaryRows1c.map((row) => ({
+                        values: row.map((cell) => ({
+                          userEnteredValue:
+                            typeof cell === 'number'
+                              ? { numberValue: cell }
+                              : { stringValue: String(cell) },
+                        })),
+                      })),
+                    ],
+                  },
+                ],
+              },
+              {
+                properties: {
+                  title: '2° Cuatrimestre',
+                  gridProperties: {
+                    rowCount: Math.max(50, summaryRows2c.length + 10),
+                    columnCount: 10,
+                  },
+                },
+                data: [
+                  {
+                    startRow: 0,
+                    startColumn: 0,
+                    rowData: [
+                      {
+                        values: summaryHeaders2c.map((h) => ({
+                          userEnteredValue: { stringValue: h },
+                        })),
+                      },
+                      ...summaryRows2c.map((row) => ({
+                        values: row.map((cell) => ({
+                          userEnteredValue:
+                            typeof cell === 'number'
+                              ? { numberValue: cell }
+                              : { stringValue: String(cell) },
+                        })),
+                      })),
+                    ],
+                  },
+                ],
+              },
+              {
+                properties: {
+                  title: 'Resumen Anual',
+                  gridProperties: {
+                    rowCount: Math.max(50, annualRows.length + 10),
+                    columnCount: 12,
+                  },
+                },
+                data: [
+                  {
+                    startRow: 0,
+                    startColumn: 0,
+                    rowData: [
+                      {
+                        values: annualHeaders.map((h) => ({
+                          userEnteredValue: { stringValue: h },
+                        })),
+                      },
+                      ...annualRows.map((row) => ({
                         values: row.map((cell) => ({
                           userEnteredValue:
                             typeof cell === 'number'
@@ -469,7 +729,7 @@ export const sheetsService = {
                   title: 'Historial de Incidencias',
                   gridProperties: {
                     rowCount: Math.max(100, historyRows.length + 15),
-                    columnCount: 10,
+                    columnCount: 12,
                   },
                 },
                 data: [
@@ -488,6 +748,7 @@ export const sheetsService = {
                             [
                               new Date().toLocaleDateString('es-AR'),
                               new Date().toLocaleTimeString('es-AR'),
+                              '1° Cuatrimestre',
                               'Toda la clase',
                               'Sistema',
                               'Sin incidencias registradas aún en el curso',
@@ -524,25 +785,55 @@ export const sheetsService = {
             url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
             isLiveGoogle: true,
             updatedAt: new Date().toLocaleTimeString(),
-            summaryRowsCount: summaryRows.length,
+            summaryRowsCount: summaryRows1c.length,
             historyRowsCount: historyRows.length,
           };
+        } else {
+          const createStatus = createRes.status;
+          let createErr = 'No se pudo crear la hoja en Google Drive';
+          try {
+            const errJson = await createRes.json();
+            createErr = errJson?.error?.message || createErr;
+          } catch (_) {}
+
+          return {
+            spreadsheetId: `sheet-disp-${course.id}`,
+            url: '',
+            isLiveGoogle: false,
+            updatedAt: new Date().toLocaleTimeString(),
+            summaryRowsCount: summaryRows1c.length,
+            historyRowsCount: historyRows.length,
+            error: createErr,
+            errorCode: createStatus === 401 ? 'UNAUTHORIZED' : createStatus === 403 ? 'PERMISSION_DENIED' : 'SYNC_FAILED',
+          };
         }
-      } catch (err) {
+      } catch (err: any) {
         console.warn('Live Google Sheets call failed:', err);
+        return {
+          spreadsheetId: isRealGoogleSpreadsheetId(existingSpreadsheetId) ? existingSpreadsheetId! : `sheet-disp-${course.id}`,
+          url: isRealGoogleSpreadsheetId(existingSpreadsheetId) ? `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit` : '',
+          isLiveGoogle: false,
+          updatedAt: new Date().toLocaleTimeString(),
+          summaryRowsCount: summaryRows1c.length,
+          historyRowsCount: historyRows.length,
+          error: err?.message || 'Error de red o conexión con Google Sheets',
+          errorCode: 'NETWORK_ERROR',
+        };
       }
     }
 
-    // Fallback/Simulated ID for local storage and fast interactive access
+    // If no token was provided or found
     const isReal = isRealGoogleSpreadsheetId(existingSpreadsheetId);
     const fallbackId = isReal ? existingSpreadsheetId! : `sheet-disp-${course.id}`;
     return {
       spreadsheetId: fallbackId,
       url: isReal ? `https://docs.google.com/spreadsheets/d/${fallbackId}/edit` : '',
-      isLiveGoogle: isReal,
+      isLiveGoogle: false,
       updatedAt: new Date().toLocaleTimeString(),
-      summaryRowsCount: summaryRows.length,
+      summaryRowsCount: summaryRows1c.length,
       historyRowsCount: historyRows.length,
+      error: 'No hay sesión de Google activa con permisos de edición.',
+      errorCode: 'NO_TOKEN',
     };
   },
 

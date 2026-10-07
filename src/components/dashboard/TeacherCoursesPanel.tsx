@@ -81,8 +81,8 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
     try {
       setIsSyncingRoster(true);
-      // Fetch active courses from Classroom to check roster and enrollment numbers
-      const res = await classroomService.listClassroomCourses(activeToken);
+      // Fetch active courses from Classroom (fast, without blocking on individual student counts)
+      const res = await classroomService.listClassroomCourses(activeToken, { fetchStudentCounts: false });
       if (res.rosterPermissionRequired) {
         setNeedsRosterPermission(true);
       } else {
@@ -104,52 +104,59 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
       // STRICTLY UPDATE EXISTING COURSES ONLY - DO NOT AUTO-IMPORT ANY MISSING/DELETED COURSES
       const updates: Array<{ id: string; studentsCount: number }> = [];
 
-      for (const course of courses) {
-        let realCount: number | null = null;
-        let realStudents: any[] = [];
-        let matchedId = course.classroomCourseId;
+      // Process all courses in full parallel for maximum speed
+      await Promise.all(
+        courses.map(async (course) => {
+          let realCount: number | null = null;
+          let realStudents: any[] = [];
+          let matchedId = course.classroomCourseId;
 
-        try {
-          const rosterRes = await classroomService.resolveAndFetchCourseStudents(course, activeToken);
-          if (rosterRes.rosterPermissionRequired) {
-            setNeedsRosterPermission(true);
-          }
-          if (rosterRes.success) {
-            realStudents = rosterRes.students || [];
-            realCount = realStudents.length;
-            matchedId = rosterRes.realClassroomId || matchedId;
-          }
-        } catch (_) {}
+          try {
+            const rosterRes = await classroomService.resolveAndFetchCourseStudents(
+              course,
+              activeToken,
+              res.courses
+            );
+            if (rosterRes.rosterPermissionRequired) {
+              setNeedsRosterPermission(true);
+            }
+            if (rosterRes.success) {
+              realStudents = rosterRes.students || [];
+              realCount = realStudents.length;
+              matchedId = rosterRes.realClassroomId || matchedId;
+            }
+          } catch (_) {}
 
-        if (realCount === null) {
-          if (course.classroomCourseId && classroomMap.has(course.classroomCourseId)) {
-            realCount = classroomMap.get(course.classroomCourseId)!;
-          } else {
-            const cleanName = course.name.toLowerCase().trim();
-            const cleanSubject = course.subject.toLowerCase().trim();
-            if (classroomMap.has(cleanName)) {
-              realCount = classroomMap.get(cleanName)!;
-            } else if (classroomMap.has(cleanSubject)) {
-              realCount = classroomMap.get(cleanSubject)!;
+          if (realCount === null) {
+            if (course.classroomCourseId && classroomMap.has(course.classroomCourseId)) {
+              realCount = classroomMap.get(course.classroomCourseId)!;
+            } else {
+              const cleanName = course.name.toLowerCase().trim();
+              const cleanSubject = course.subject.toLowerCase().trim();
+              if (classroomMap.has(cleanName)) {
+                realCount = classroomMap.get(cleanName)!;
+              } else if (classroomMap.has(cleanSubject)) {
+                realCount = classroomMap.get(cleanSubject)!;
+              }
             }
           }
-        }
 
-        if (realStudents.length > 0) {
-          try {
-            await api.syncCourseStudentsRoster(course.id, realStudents);
-          } catch (e) {
-            console.warn('Error saving students in batch sync:', e);
+          if (realStudents.length > 0) {
+            try {
+              await api.syncCourseStudentsRoster(course.id, realStudents);
+            } catch (e) {
+              console.warn('Error saving students in batch sync:', e);
+            }
           }
-        }
 
-        if (realCount !== null && (realCount !== course.studentsCount || matchedId !== course.classroomCourseId)) {
-          updates.push({ id: course.id, studentsCount: realCount });
-          if (matchedId && matchedId !== course.classroomCourseId) {
-            await api.updateCourse(course.id, { classroomCourseId: matchedId, classroomSynced: true });
+          if (realCount !== null && (realCount !== course.studentsCount || matchedId !== course.classroomCourseId)) {
+            updates.push({ id: course.id, studentsCount: realCount });
+            if (matchedId && matchedId !== course.classroomCourseId) {
+              await api.updateCourse(course.id, { classroomCourseId: matchedId, classroomSynced: true });
+            }
           }
-        }
-      }
+        })
+      );
 
       if (updates.length > 0) {
         await api.syncCourseStudents(updates);

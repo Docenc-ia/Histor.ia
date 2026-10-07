@@ -104,7 +104,10 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
       }
 
       setScanMessage('Consultando tus clases en Google Classroom...');
-      const result = await classroomService.listClassroomCourses(activeToken || undefined);
+      const result = await classroomService.listClassroomCourses(activeToken || undefined, {
+        fetchStudentCounts: false,
+        forceFresh: true,
+      });
       setHasScanned(true);
 
       if (result.success && result.courses.length > 0) {

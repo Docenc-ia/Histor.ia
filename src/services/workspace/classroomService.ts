@@ -9,81 +9,172 @@
 import { getCachedAccessToken } from './googleAuth';
 import { ClassroomTask } from '../../types';
 
+// Helper for timeout-protected fetch requests
+const fetchWithTimeout = async (
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 6000
+): Promise<Response> => {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+};
+
+// In-memory cache for courses to avoid redundant network round-trips
+let cachedClassroomCourses: {
+  timestamp: number;
+  token: string;
+  courses: any[];
+} | null = null;
+const COURSES_CACHE_TTL_MS = 60000; // 60 seconds cache
+
+// In-memory cache for course student rosters
+const cachedRosters = new Map<
+  string,
+  {
+    timestamp: number;
+    token: string;
+    students: any[];
+    studentsRaw: any[];
+  }
+>();
+const ROSTER_CACHE_TTL_MS = 60000; // 60 seconds cache
+
 export const classroomService = {
   /**
-   * Fetch courses directly from Google Classroom
+   * Fetch courses directly from Google Classroom with fast response and optional student counts
    */
   async listClassroomCourses(
-    providedToken?: string
-  ): Promise<{ success: boolean; courses: any[]; isLive: boolean; rosterPermissionRequired?: boolean; message?: string; errorDetail?: string }> {
+    providedToken?: string,
+    options?: { fetchStudentCounts?: boolean; forceFresh?: boolean }
+  ): Promise<{
+    success: boolean;
+    courses: any[];
+    isLive: boolean;
+    rosterPermissionRequired?: boolean;
+    message?: string;
+    errorDetail?: string;
+  }> {
     const token = providedToken || getCachedAccessToken();
     if (!token) {
       return {
         success: false,
         courses: [],
         isLive: false,
-        message: 'No hay una sesión de Google activa con permisos de Classroom. Haz clic en "Conectar Google Classroom" para autorizar el acceso.',
+        message:
+          'No hay una sesión de Google activa con permisos de Classroom. Haz clic en "Conectar Google Classroom" para autorizar el acceso.',
       };
     }
 
+    const now = Date.now();
+    // Use cache if fresh and not explicitly forced, and doesn't require missing student counts
+    if (
+      !options?.forceFresh &&
+      cachedClassroomCourses &&
+      cachedClassroomCourses.token === token &&
+      now - cachedClassroomCourses.timestamp < COURSES_CACHE_TTL_MS
+    ) {
+      if (
+        !options?.fetchStudentCounts ||
+        cachedClassroomCourses.courses.some((c) => typeof c.studentsCount === 'number')
+      ) {
+        return {
+          success: true,
+          courses: cachedClassroomCourses.courses,
+          isLive: true,
+          rosterPermissionRequired: false,
+          message: `Se encontraron ${cachedClassroomCourses.courses.length} clases activas en Google Classroom.`,
+        };
+      }
+    }
+
     try {
-      // 1. First try fetching courses where user is teacher
-      let res = await fetch('https://classroom.googleapis.com/v1/courses?teacherId=me&courseStates=ACTIVE', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      // 1. Fetch active courses where user is teacher (with 6s timeout)
+      let res = await fetchWithTimeout(
+        'https://classroom.googleapis.com/v1/courses?teacherId=me&courseStates=ACTIVE',
+        { headers: { Authorization: `Bearer ${token}` } },
+        6000
+      );
 
       // 2. If 400 or empty, try general active courses
       if (!res.ok && res.status === 400) {
-        res = await fetch('https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        res = await fetchWithTimeout(
+          'https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE',
+          { headers: { Authorization: `Bearer ${token}` } },
+          6000
+        );
       }
 
       if (res.ok) {
         const data = await res.json();
-        let coursesRaw = data.courses || [];
+        let coursesRaw: any[] = Array.isArray(data.courses) ? data.courses : [];
 
-        // If 0 courses found with teacherId=me, check if there are any general active courses
+        // If 0 courses found with teacherId=me, check fallback general active courses
         if (coursesRaw.length === 0) {
           try {
-            const fallbackRes = await fetch('https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE', {
-              headers: { Authorization: `Bearer ${token}` },
-            });
+            const fallbackRes = await fetchWithTimeout(
+              'https://classroom.googleapis.com/v1/courses?courseStates=ACTIVE',
+              { headers: { Authorization: `Bearer ${token}` } },
+              5000
+            );
             if (fallbackRes.ok) {
               const fallbackData = await fallbackRes.json();
-              if (fallbackData.courses && fallbackData.courses.length > 0) {
+              if (Array.isArray(fallbackData.courses) && fallbackData.courses.length > 0) {
                 coursesRaw = fallbackData.courses;
               }
             }
           } catch (_) {}
         }
 
-        // Fetch actual student counts for all found courses directly from Google Classroom
         let rosterPermissionRequired = false;
-        const courses = await Promise.all(
-          coursesRaw.map(async (course: any) => {
-            let realCount = 0;
-            try {
-              const studentsRes = await fetch(
-                `https://classroom.googleapis.com/v1/courses/${course.id}/students?pageSize=100`,
-                { headers: { Authorization: `Bearer ${token}` } }
-              );
-              if (studentsRes.ok) {
-                const sData = await studentsRes.json();
-                realCount = Array.isArray(sData.students) ? sData.students.length : 0;
-              } else if (studentsRes.status === 403) {
-                rosterPermissionRequired = true;
-                console.warn(`Classroom roster permission required for course ${course.id} (status 403)`);
+        let courses: any[] = [];
+
+        // If caller explicitly asked for student counts (e.g. Import modal preview),
+        // fetch student counts with tight individual timeout (3.5s per course)
+        if (options?.fetchStudentCounts && coursesRaw.length > 0) {
+          courses = await Promise.all(
+            coursesRaw.map(async (course: any) => {
+              let realCount = 0;
+              try {
+                const studentsRes = await fetchWithTimeout(
+                  `https://classroom.googleapis.com/v1/courses/${course.id}/students?pageSize=100`,
+                  { headers: { Authorization: `Bearer ${token}` } },
+                  3500
+                );
+                if (studentsRes.ok) {
+                  const sData = await studentsRes.json();
+                  realCount = Array.isArray(sData.students) ? sData.students.length : 0;
+                } else if (studentsRes.status === 403) {
+                  rosterPermissionRequired = true;
+                }
+              } catch (sErr) {
+                // Timeout or network glitch for single course - don't crash or stall overall list
               }
-            } catch (sErr) {
-              console.warn(`Classroom student count fetch error for ${course.id}:`, sErr);
-            }
-            return {
-              ...course,
-              studentsCount: realCount,
-            };
-          })
-        );
+              return {
+                ...course,
+                studentsCount: realCount,
+              };
+            })
+          );
+        } else {
+          // Fast path: return courses instantly without blocking on 10+ student queries
+          courses = coursesRaw.map((course: any) => ({
+            ...course,
+            studentsCount: typeof course.studentsCount === 'number' ? course.studentsCount : 0,
+          }));
+        }
+
+        // Save in-memory cache
+        cachedClassroomCourses = {
+          timestamp: now,
+          token,
+          courses,
+        };
 
         return {
           success: true,
@@ -111,12 +202,16 @@ export const classroomService = {
         }
 
         if (res.status === 403) {
-          if (rawErrMsg.toLowerCase().includes('disabled') || rawErrMsg.toLowerCase().includes('has not been used')) {
+          if (
+            rawErrMsg.toLowerCase().includes('disabled') ||
+            rawErrMsg.toLowerCase().includes('has not been used')
+          ) {
             return {
               success: false,
               courses: [],
               isLive: false,
-              message: 'La API de Google Classroom aún no está habilitada en el proyecto de Google Cloud. Puedes usar la pestaña "Carga Rápida" para ingresar tus materias sin restricciones.',
+              message:
+                'La API de Google Classroom aún no está habilitada en el proyecto de Google Cloud. Puedes usar la pestaña "Carga Rápida" para ingresar tus materias sin restricciones.',
               errorDetail: rawErrMsg,
             };
           }
@@ -124,7 +219,8 @@ export const classroomService = {
             success: false,
             courses: [],
             isLive: false,
-            message: 'Tu cuenta de Google requiere permisos de docente en Google Classroom (Google Workspace for Education). Puedes usar "Carga Rápida" para escribir tus materias.',
+            message:
+              'Tu cuenta de Google requiere permisos de docente en Google Classroom (Google Workspace for Education). Puedes usar "Carga Rápida" para escribir tus materias.',
             errorDetail: rawErrMsg,
           };
         }
@@ -133,7 +229,9 @@ export const classroomService = {
           success: false,
           courses: [],
           isLive: false,
-          message: rawErrMsg || 'No se pudo conectar con Google Classroom. Puedes importar tus clases desde la pestaña "Carga Rápida".',
+          message:
+            rawErrMsg ||
+            'No se pudo conectar con Google Classroom. Puedes importar tus clases desde la pestaña "Carga Rápida".',
           errorDetail: rawErrMsg,
         };
       }
@@ -172,10 +270,23 @@ export const classroomService = {
       return { success: false, students: [], studentsRaw: [], rosterPermissionRequired: false, message: 'Falta sesión o ID de curso.' };
     }
 
+    const now = Date.now();
+    const cached = cachedRosters.get(classroomCourseId);
+    if (cached && cached.token === token && now - cached.timestamp < ROSTER_CACHE_TTL_MS) {
+      return {
+        success: true,
+        students: cached.students,
+        studentsRaw: cached.studentsRaw,
+        rosterPermissionRequired: false,
+      };
+    }
+
     try {
-      const res = await fetch(`https://classroom.googleapis.com/v1/courses/${classroomCourseId}/students?pageSize=100`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetchWithTimeout(
+        `https://classroom.googleapis.com/v1/courses/${classroomCourseId}/students?pageSize=100`,
+        { headers: { Authorization: `Bearer ${token}` } },
+        3500
+      );
 
       if (res.ok) {
         const data = await res.json();
@@ -204,6 +315,13 @@ export const classroomService = {
             averageGrade: 0,
             notes: 'Sincronizado desde Google Classroom',
           };
+        });
+
+        cachedRosters.set(classroomCourseId, {
+          timestamp: now,
+          token,
+          students: formatted,
+          studentsRaw: rawList,
         });
 
         return {
@@ -248,7 +366,8 @@ export const classroomService = {
    */
   async resolveAndFetchCourseStudents(
     course: { id: string; name: string; subject?: string; classroomCourseId?: string },
-    providedToken?: string
+    providedToken?: string,
+    preloadedClassroomCourses?: any[]
   ): Promise<{
     success: boolean;
     students: any[];
@@ -267,7 +386,7 @@ export const classroomService = {
     // 1. If we have a genuine numeric classroom course ID, try direct query first
     if (targetClassroomId && !isPlaceholderId) {
       const directRes = await this.listCourseStudentsDetailed(targetClassroomId, token);
-      if (directRes.success && directRes.students.length > 0) {
+      if (directRes.success) {
         return {
           success: true,
           students: directRes.students,
@@ -286,22 +405,28 @@ export const classroomService = {
       }
     }
 
-    // 2. Query all active Google Classroom courses to match by real ID or name
-    const listRes = await this.listClassroomCourses(token);
-    if (listRes.rosterPermissionRequired) {
-      return {
-        success: false,
-        students: [],
-        rosterPermissionRequired: true,
-        message: 'Se requiere permiso para leer nóminas de Google Classroom.',
-      };
+    // 2. Query or reuse active Google Classroom courses to match by real ID or name
+    let availableCourses = preloadedClassroomCourses;
+    if (!availableCourses || availableCourses.length === 0) {
+      const listRes = await this.listClassroomCourses(token, { fetchStudentCounts: false });
+      if (listRes.rosterPermissionRequired) {
+        return {
+          success: false,
+          students: [],
+          rosterPermissionRequired: true,
+          message: 'Se requiere permiso para leer nóminas de Google Classroom.',
+        };
+      }
+      if (listRes.success && Array.isArray(listRes.courses)) {
+        availableCourses = listRes.courses;
+      }
     }
 
-    if (listRes.success && Array.isArray(listRes.courses)) {
+    if (Array.isArray(availableCourses) && availableCourses.length > 0) {
       const cleanName = course.name.toLowerCase().trim();
       const cleanSubj = (course.subject || '').toLowerCase().trim();
 
-      const matched = listRes.courses.find((gc: any) => {
+      const matched = availableCourses.find((gc: any) => {
         if (!gc) return false;
         const gcName = (gc.name || '').toLowerCase().trim();
         const gcSection = (gc.section || '').toLowerCase().trim();

@@ -13,6 +13,8 @@ import {
   clearAuthSession,
   googleSignIn,
   signInWithGoogleIdToken,
+  signInWithGoogleIdentityServices,
+  requestGoogleAccessToken,
   logoutUser,
   initAuth,
   WORKSPACE_SCOPES,
@@ -41,7 +43,8 @@ interface WorkspaceAuthContextType {
   loginError: string | null;
   isDarkMode: boolean;
   toggleDarkMode: () => void;
-  loginWithGoogle: (email?: string) => Promise<void>;
+  loginWithGoogle: (email?: string) => Promise<string | null>;
+  requestAccessToken: () => Promise<string>;
   loginWithGoogleIdToken: (idToken: string) => Promise<TeacherProfile>;
   loginWithEmail: (email: string, password?: string, name?: string) => Promise<void>;
   loginSimulated: () => Promise<void>;
@@ -73,27 +76,47 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   const [user, setUser] = useState<TeacherProfile | null>(() => {
-    // Only restore if user previously logged in explicitly during current session
-    if (typeof window !== 'undefined' && sessionStorage.getItem('docencia_session_active') === 'true') {
+    if (typeof window !== 'undefined') {
       try {
-        const saved = sessionStorage.getItem('docencia_user_profile');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed && parsed.email) return parsed;
+        const isSessionActive =
+          sessionStorage.getItem('docencia_session_active') === 'true' ||
+          localStorage.getItem('docencia_session_active') === 'true';
+        if (isSessionActive) {
+          const saved =
+            sessionStorage.getItem('docencia_user_profile') ||
+            localStorage.getItem('docencia_user_profile');
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (parsed && (parsed.email || parsed.id)) return parsed;
+          }
         }
       } catch (_) {}
     }
     return null;
   });
   const [mode, setMode] = useState<'connected' | 'simulation' | 'disconnected'>(() => {
-    const isLogged = typeof window !== 'undefined' && sessionStorage.getItem('docencia_session_active') === 'true';
-    return isLogged ? 'connected' : 'disconnected';
+    if (typeof window !== 'undefined') {
+      const isLogged =
+        sessionStorage.getItem('docencia_session_active') === 'true' ||
+        localStorage.getItem('docencia_session_active') === 'true';
+      return isLogged ? 'connected' : 'disconnected';
+    }
+    return 'disconnected';
   });
   const [token, setToken] = useState<string | null>(getCachedAccessToken());
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
   const services: ServiceStatus[] = [
+    {
+      id: 'sheets',
+      name: 'Google Sheets',
+      scope: 'https://www.googleapis.com/auth/spreadsheets',
+      active: mode !== 'disconnected',
+      color: '#0f9d58',
+      iconName: 'FileSpreadsheet',
+      description: 'Sincronización en vivo de nómina de alumnos, inasistencias y notas de conducta.',
+    },
     {
       id: 'drive',
       name: 'Google Drive',
@@ -161,8 +184,20 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Check auth on startup
   useEffect(() => {
-    const hasActiveSession = typeof window !== 'undefined' && sessionStorage.getItem('docencia_session_active') === 'true';
+    const hasActiveSession =
+      typeof window !== 'undefined' &&
+      (sessionStorage.getItem('docencia_session_active') === 'true' ||
+        localStorage.getItem('docencia_session_active') === 'true');
     if (hasActiveSession) {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('docencia_session_active', 'true');
+        const savedProf =
+          sessionStorage.getItem('docencia_user_profile') ||
+          localStorage.getItem('docencia_user_profile');
+        if (savedProf) {
+          sessionStorage.setItem('docencia_user_profile', savedProf);
+        }
+      }
       api.getAuthUser()
         .then((data) => {
           if (data.authenticated && data.user && data.user.email) {
@@ -175,7 +210,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const unsubscribe = initAuth(
       (authUser, accessToken) => {
-        const isSessionActive = typeof window !== 'undefined' && sessionStorage.getItem('docencia_session_active') === 'true';
+        const isSessionActive =
+          typeof window !== 'undefined' &&
+          (sessionStorage.getItem('docencia_session_active') === 'true' ||
+            localStorage.getItem('docencia_session_active') === 'true');
         if (isSessionActive) {
           setToken(accessToken);
           setMode('connected');
@@ -184,7 +222,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           const teacherName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
           const derivedSchool = deriveSchoolFromEmail(teacherEmail);
 
-          setUser({
+          const newProfile: TeacherProfile = {
             id: authUser.uid,
             name: teacherName,
             email: teacherEmail,
@@ -193,7 +231,12 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
             school: derivedSchool,
             permissions: DEFAULT_TEACHER.permissions,
             scopes: WORKSPACE_SCOPES,
-          });
+          };
+          setUser(newProfile);
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
+            localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
+          }
         }
       },
       () => {
@@ -230,7 +273,16 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
-  const loginWithGoogle = async (preferredEmail?: string) => {
+  const requestAccessToken = async (): Promise<string> => {
+    const liveToken = await requestGoogleAccessToken();
+    if (liveToken) {
+      setToken(liveToken);
+      setMode('connected');
+    }
+    return liveToken;
+  };
+
+  const loginWithGoogle = async (preferredEmail?: string): Promise<string | null> => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -246,13 +298,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         localStorage.setItem('docencia_teacher_email', result.profile.email);
       }
+      return result.accessToken;
     } catch (err: any) {
       if (err?.code === 'auth/unauthorized-domain-needs-email' || err?.message?.includes('UNAUTHORIZED_DOMAIN_NEEDS_EMAIL')) {
         throw err;
       }
       if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
         // Handled via fallback profile
-        return;
+        return null;
       }
       console.warn('Aviso de inicio de sesión:', err);
       if (err?.code === 'auth/popup-closed-by-user' || err?.type === 'popup_closed') {
@@ -424,6 +477,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isDarkMode,
         toggleDarkMode,
         loginWithGoogle,
+        requestAccessToken,
         loginWithGoogleIdToken,
         loginWithEmail,
         loginSimulated,

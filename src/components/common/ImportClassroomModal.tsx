@@ -131,7 +131,7 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
     setImportError(null);
     setHasSearched(true);
     try {
-      const res = await classroomService.listClassroomCourses();
+      const res = await classroomService.listClassroomCourses(undefined, { fetchStudentCounts: false });
       if (res.success && res.courses && res.courses.length > 0) {
         const mapped: DetectedClassroomCourse[] = res.courses.map((c: any, idx: number) => ({
           id: c.id || `gc-${idx}`,

@@ -59,6 +59,8 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [courseToDelete, setCourseToDelete] = useState<Course | null>(null);
+  const [isConfirmClearAllOpen, setIsConfirmClearAllOpen] = useState(false);
+  const [isClearingAll, setIsClearingAll] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [newCourseName, setNewCourseName] = useState('');
   const [newCourseGrade, setNewCourseGrade] = useState('Secundaria - 4° Año');
@@ -104,9 +106,10 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
       // STRICTLY UPDATE EXISTING COURSES ONLY - DO NOT AUTO-IMPORT ANY MISSING/DELETED COURSES
       const updates: Array<{ id: string; studentsCount: number }> = [];
 
-      // Process all courses in full parallel for maximum speed
+      // Process all unique courses in full parallel for maximum speed
+      const uniqueCoursesToSync = api.deduplicateCourses(courses);
       await Promise.all(
-        courses.map(async (course) => {
+        uniqueCoursesToSync.map(async (course) => {
           let realCount: number | null = null;
           let realStudents: any[] = [];
           let matchedId = course.classroomCourseId;
@@ -222,7 +225,10 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   // NOTE: Automatic background synchronization is intentionally disabled per user instructions.
   // Synchronization of students and courses is strictly manual and explicit.
 
-  const filteredCourses = courses.filter((c) =>
+  // Strictly deduplicate courses to prevent any repeating subjects in UI
+  const uniqueCourses = React.useMemo(() => api.deduplicateCourses(courses), [courses]);
+
+  const filteredCourses = uniqueCourses.filter((c) =>
     c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
     c.grade.toLowerCase().includes(searchQuery.toLowerCase())
@@ -483,8 +489,24 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
           <p className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-            Mostrando <strong>{filteredCourses.length}</strong> de {courses.length} materias
+            Mostrando <strong>{filteredCourses.length}</strong> de {uniqueCourses.length} materias
           </p>
+
+          {onClearCourses && uniqueCourses.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setIsConfirmClearAllOpen(true)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                isDarkMode
+                  ? 'bg-red-950/30 border-red-900/50 text-red-400 hover:bg-red-900/40 hover:text-red-300'
+                  : 'bg-red-50/80 border-red-200 text-red-600 hover:bg-red-100 hover:text-red-700'
+              }`}
+              title="Borrar todas las materias cargadas para limpiar el espacio"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Limpiar todas</span>
+            </button>
+          )}
 
           {/* View Mode Toggle: Cuadrícula vs Lista */}
           <div
@@ -531,7 +553,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
       </div>
 
       {/* Courses Cards Grid or Empty State */}
-      {courses.length === 0 ? (
+      {uniqueCourses.length === 0 ? (
         <div
           className={`rounded-3xl border-2 border-dashed p-8 sm:p-14 text-center space-y-6 max-w-2xl mx-auto transition-colors ${
             isDarkMode
@@ -1025,6 +1047,77 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                   <>
                     <Trash2 className="w-3.5 h-3.5" />
                     <span>Sí, eliminar materia</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirm Clear All Courses */}
+      {isConfirmClearAllOpen && onClearCourses && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div
+            className={`rounded-3xl p-6 sm:p-8 max-w-md w-full border shadow-2xl space-y-5 animate-in fade-in zoom-in-95 duration-150 ${
+              isDarkMode
+                ? 'bg-slate-900 border-slate-700 text-white'
+                : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div
+              className={`w-12 h-12 rounded-2xl flex items-center justify-center border ${
+                isDarkMode
+                  ? 'bg-red-950/60 text-red-400 border-red-900/60'
+                  : 'bg-red-50 text-red-600 border-red-100'
+              }`}
+            >
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold">¿Limpiar todas las materias?</h3>
+              <p className={`text-xs leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
+                Se eliminarán todas las materias ({uniqueCourses.length}) de tu panel de control para dejar tu espacio limpio. Podrás volver a importar tus materias reales de Google Classroom en cualquier momento.
+              </p>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isClearingAll}
+                onClick={() => setIsConfirmClearAllOpen(false)}
+                className={`px-4 py-2 text-xs font-medium rounded-xl transition-all ${
+                  isDarkMode
+                    ? 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                    : 'text-neutral-600 hover:bg-neutral-100'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isClearingAll}
+                onClick={async () => {
+                  setIsClearingAll(true);
+                  try {
+                    await onClearCourses();
+                    setIsConfirmClearAllOpen(false);
+                  } finally {
+                    setIsClearingAll(false);
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {isClearingAll ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    <span>Limpiando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Sí, limpiar todas</span>
                   </>
                 )}
               </button>

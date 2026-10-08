@@ -428,15 +428,27 @@ export const classroomService = {
 
       const matched = availableCourses.find((gc: any) => {
         if (!gc) return false;
+        // 1. Direct ID match (Google Classroom numeric ID)
+        if (gc.id && (gc.id === course.classroomCourseId || gc.id === course.id)) return true;
+
         const gcName = (gc.name || '').toLowerCase().trim();
         const gcSection = (gc.section || '').toLowerCase().trim();
-        return (
-          gc.id === course.classroomCourseId ||
-          gcName === cleanName ||
-          cleanName.includes(gcName) ||
-          gcName.includes(cleanName) ||
-          (cleanSubj && (gcName.includes(cleanSubj) || gcSection.includes(cleanSubj)))
-        );
+        const fullGc = `${gcName} ${gcSection}`.trim();
+
+        // 2. Exact match
+        if (gcName === cleanName || fullGc === cleanName) return true;
+
+        // 3. Match subject AND section/group specifically (never match on subject alone!)
+        const parenMatch = cleanName.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+        if (parenMatch) {
+          const sub = parenMatch[1].trim();
+          const group = parenMatch[2].trim();
+          const matchesSub = gcName.includes(sub) || (cleanSubj && gcName.includes(cleanSubj));
+          const matchesGroup = gcSection === group || fullGc.includes(group);
+          if (matchesSub && matchesGroup) return true;
+        }
+
+        return false;
       });
 
       if (matched && matched.id) {

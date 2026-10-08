@@ -236,6 +236,7 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
         return;
       }
       coursesToCreate = selected.map((c) => ({
+        id: c.id,
         name: c.name,
         subject: c.name,
         grade: c.section ? `Curso ${c.section}` : 'Secundaria',

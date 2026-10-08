@@ -245,6 +245,7 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
           const formattedName = !hasParen && rawSection ? `${rawName} (${rawSection})` : rawName;
 
           return {
+            id: c.id,
             name: formattedName,
             subject: rawName,
             grade: rawSection || 'Secundaria',

@@ -9,7 +9,8 @@ import mammoth from "mammoth";
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT) || 3000;
+// Port 3000 is required by the AI Studio environment
+const PORT = 3000;
 
 // In-memory persistent data store for the teacher session
 interface Course {
@@ -165,24 +166,94 @@ let students: Student[] = [];
 const COURSES_DATA_FILE = path.join(process.cwd(), "data", "courses.json");
 const STUDENTS_DATA_FILE = path.join(process.cwd(), "data", "students.json");
 
+function normalizeCourseKey(c: Partial<Course>): string {
+  if (!c) return "";
+  if (c.classroomCourseId && !c.classroomCourseId.startsWith("gc-") && !isNaN(Number(c.classroomCourseId))) {
+    return `classroom:${String(c.classroomCourseId).trim()}`;
+  }
+  const name = (c.name || "").trim().toLowerCase();
+  const sub = (c.subject || "").trim().toLowerCase();
+  const sec = (c.section || c.grade || c.division || "").trim().toLowerCase();
+  const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+  if (paren) {
+    return `name:${paren[1].trim()}:${paren[2].trim()}`;
+  }
+  return `name:${sub || name}:${sec || "main"}`;
+}
+
+function deduplicateCoursesList(list: Course[]): Course[] {
+  if (!Array.isArray(list)) return [];
+  const result: Course[] = [];
+  for (const c of list) {
+    if (!c || (!c.name && !c.subject)) continue;
+    const key = normalizeCourseKey(c);
+    const existingIdx = result.findIndex((existing) => {
+      if (existing.id && c.id && existing.id === c.id) return true;
+      const exCId = existing.classroomCourseId ? String(existing.classroomCourseId).trim() : null;
+      const cCId = c.classroomCourseId ? String(c.classroomCourseId).trim() : null;
+      if (exCId && cCId && exCId === cCId) return true;
+      if (exCId && (c.id === exCId || cCId === exCId)) return true;
+      if (cCId && (existing.id === cCId || exCId === cCId)) return true;
+      if (key && normalizeCourseKey(existing) === key) return true;
+      return false;
+    });
+
+    if (existingIdx >= 0) {
+      const existing = result[existingIdx];
+      const preferredId =
+        (existing.classroomCourseId && existing.id === existing.classroomCourseId)
+          ? existing.id
+          : (c.classroomCourseId && c.id === c.classroomCourseId)
+          ? c.id
+          : existing.id || c.id;
+
+      result[existingIdx] = {
+        ...existing,
+        ...c,
+        id: preferredId,
+        classroomCourseId: existing.classroomCourseId || c.classroomCourseId,
+        classroomSynced: existing.classroomSynced || c.classroomSynced,
+        studentsCount: Math.max(Number(existing.studentsCount) || 0, Number(c.studentsCount) || 0),
+        name: existing.name || c.name,
+        subject: existing.subject || c.subject,
+        grade: existing.grade || c.grade,
+        section: existing.section || c.section,
+        schoolYear: existing.schoolYear || c.schoolYear || "2026",
+      };
+    } else {
+      result.push(c);
+    }
+  }
+  return result;
+}
+
+let coursesLoadedFromDisk = false;
+
 function loadCoursesFromDisk() {
   try {
     if (fs.existsSync(COURSES_DATA_FILE)) {
       const raw = fs.readFileSync(COURSES_DATA_FILE, "utf-8");
       const parsed = JSON.parse(raw);
+      let list: Course[] = [];
       if (Array.isArray(parsed.courses)) {
-        courses = parsed.courses;
+        list = parsed.courses;
       } else if (Array.isArray(parsed)) {
-        courses = parsed;
+        list = parsed;
       }
+      courses = deduplicateCoursesList(list);
+    } else {
+      courses = [];
     }
+    coursesLoadedFromDisk = true;
   } catch (e) {
     console.warn("Failed to load courses from disk:", e);
+    coursesLoadedFromDisk = true;
   }
 }
 
-function saveCoursesToDisk() {
+function saveCoursesToDisk(force = true) {
   try {
+    courses = deduplicateCoursesList(courses);
     const dir = path.dirname(COURSES_DATA_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(COURSES_DATA_FILE, JSON.stringify({ courses }, null, 2), "utf-8");
@@ -207,7 +278,7 @@ function loadStudentsFromDisk() {
   }
 }
 
-function saveStudentsToDisk() {
+function saveStudentsToDisk(_force = true) {
   try {
     const dir = path.dirname(STUDENTS_DATA_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1078,7 +1149,7 @@ async function startServer() {
 
   // Courses API
   app.get("/api/courses", (_req, res) => {
-    if (!courses || courses.length === 0) {
+    if (!coursesLoadedFromDisk) {
       loadCoursesFromDisk();
     }
     // Sanitize any course that had "Ciencias Sociales" by mistake
@@ -1089,24 +1160,7 @@ async function startServer() {
       }
     });
 
-    // Deduplicate courses by classroomCourseId and id so no duplicate courses are served
-    const seenClassroomIds = new Set<string>();
-    const seenCourseIds = new Set<string>();
-    const uniqueCourses: Course[] = [];
-
-    for (const c of courses) {
-      if (seenCourseIds.has(c.id)) continue;
-      if (c.classroomCourseId && seenClassroomIds.has(String(c.classroomCourseId).trim())) {
-        continue;
-      }
-      seenCourseIds.add(c.id);
-      if (c.classroomCourseId) {
-        seenClassroomIds.add(String(c.classroomCourseId).trim());
-      }
-      uniqueCourses.push(c);
-    }
-    courses = uniqueCourses;
-
+    courses = deduplicateCoursesList(courses);
     res.json({ courses });
   });
 
@@ -1116,24 +1170,25 @@ async function startServer() {
       return res.status(400).json({ error: "Nombre y materia son requeridos." });
     }
 
+    if (!coursesLoadedFromDisk) {
+      loadCoursesFromDisk();
+    }
+
     const incomingClassroomId = req.body.classroomCourseId ? String(req.body.classroomCourseId).trim() : null;
     const incomingId = req.body.id ? String(req.body.id).trim() : null;
 
-    // Check if course already exists by identity number
+    // Check if course already exists
     const existing = courses.find((c) => {
-      if (incomingClassroomId) {
-        return c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId;
+      if (incomingClassroomId && (c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId)) {
+        return true;
       }
-      if (incomingId) {
-        return c.id === incomingId || c.classroomCourseId === incomingId;
+      if (incomingId && (c.id === incomingId || c.classroomCourseId === incomingId)) {
+        return true;
       }
-      const itemSec = (req.body.section || '').trim().toLowerCase();
-      const cSec = (c.section || '').trim().toLowerCase();
-      return c.name.trim().toLowerCase() === name.trim().toLowerCase() && (itemSec === '' || cSec === itemSec);
+      return normalizeCourseKey(c) === normalizeCourseKey(req.body);
     });
 
     if (existing) {
-      // Do not duplicate! Update existing course and return it
       existing.name = name;
       existing.subject = subject;
       if (req.body.studentsCount) existing.studentsCount = Number(req.body.studentsCount);
@@ -1142,8 +1197,9 @@ async function startServer() {
       return res.status(200).json({ course: existing, isDuplicate: true });
     }
 
+    const courseId = incomingClassroomId || req.body.id || `c-${Date.now().toString().slice(-4)}`;
     const newCourse: Course = {
-      id: req.body.id || `c-${Date.now().toString().slice(-4)}`,
+      id: courseId,
       name,
       subject,
       grade: grade || "General",
@@ -1152,7 +1208,7 @@ async function startServer() {
       color: color || "#1a73e8",
       studentsCount: Number(req.body.studentsCount) || 25,
       classroomSynced: req.body.classroomSynced !== undefined ? Boolean(req.body.classroomSynced) : true,
-      classroomCourseId: req.body.classroomCourseId || `gc-${Date.now().toString().slice(-4)}`,
+      classroomCourseId: incomingClassroomId || req.body.classroomCourseId || undefined,
       code: req.body.code || undefined,
       section: req.body.section || undefined,
       orientation: orientation || req.body.orientation || undefined,
@@ -1161,6 +1217,7 @@ async function startServer() {
       driveFolderId: req.body.driveFolderId || `f-${Date.now().toString().slice(-4)}`,
     };
     courses.push(newCourse);
+    courses = deduplicateCoursesList(courses);
     saveCoursesToDisk();
     res.status(201).json({ course: newCourse });
   });
@@ -1170,6 +1227,10 @@ async function startServer() {
     const { courses: newCoursesList } = req.body;
     if (!Array.isArray(newCoursesList) || newCoursesList.length === 0) {
       return res.status(400).json({ error: "Se requiere una lista de materias para importar." });
+    }
+
+    if (!coursesLoadedFromDisk) {
+      loadCoursesFromDisk();
     }
 
     const processedCourses: Course[] = [];
@@ -1188,25 +1249,23 @@ async function startServer() {
           : 0;
 
       // Identity numbers (Google Classroom ID or custom ID)
-      const incomingClassroomId = item.classroomCourseId ? String(item.classroomCourseId).trim() : (item.id ? String(item.id).trim() : null);
+      const incomingClassroomId = item.classroomCourseId
+        ? String(item.classroomCourseId).trim()
+        : (item.id && !item.id.startsWith('c-') ? String(item.id).trim() : null);
 
-      // Check if this course is ALREADY present by identity number
+      // Check if this course is ALREADY present
       const existing = courses.find((c) => {
-        if (incomingClassroomId) {
-          return (c.classroomCourseId && String(c.classroomCourseId).trim() === incomingClassroomId) ||
-                 (c.id && String(c.id).trim() === incomingClassroomId);
-        }
-        if (item.id && (String(c.id).trim() === String(item.id).trim() || String(c.classroomCourseId).trim() === String(item.id).trim())) {
+        if (incomingClassroomId && (c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId)) {
           return true;
         }
-        const itemSec = (item.section || '').trim().toLowerCase();
-        const cSec = (c.section || '').trim().toLowerCase();
-        return c.name.trim().toLowerCase() === courseName.toLowerCase() && (itemSec === '' || cSec === itemSec);
+        if (item.id && (c.id === item.id || c.classroomCourseId === item.id)) {
+          return true;
+        }
+        return normalizeCourseKey(c) === normalizeCourseKey(item);
       });
 
       if (existing) {
-        // DO NOT DUPLICATE! Update existing course data instead of adding a new one
-        if (studentsNum > 0) existing.studentsCount = studentsNum;
+        if (studentsNum > 0) existing.studentsCount = Math.max(existing.studentsCount, studentsNum);
         if (incomingClassroomId && !existing.classroomCourseId) existing.classroomCourseId = incomingClassroomId;
         existing.classroomSynced = true;
         if (!processedCourses.some((c) => c.id === existing.id)) {
@@ -1218,16 +1277,14 @@ async function startServer() {
 
       // Check if already added in this same batch to prevent internal batch duplicates
       const alreadyInBatch = processedCourses.find((c) => {
-        if (incomingClassroomId) {
-          return c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId;
+        if (incomingClassroomId && (c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId)) {
+          return true;
         }
-        const itemSec = (item.section || '').trim().toLowerCase();
-        const cSec = (c.section || '').trim().toLowerCase();
-        return c.name.trim().toLowerCase() === courseName.toLowerCase() && (itemSec === '' || cSec === itemSec);
+        return normalizeCourseKey(c) === normalizeCourseKey(item);
       });
       if (alreadyInBatch) continue;
 
-      const courseId = item.id || `c-${Date.now().toString().slice(-4)}-${Math.random().toString(36).substring(2, 5)}`;
+      const courseId = incomingClassroomId || item.id || `c-${Date.now().toString().slice(-4)}-${Math.random().toString(36).substring(2, 5)}`;
       const newCourse: Course = {
         id: courseId,
         name: courseName,
@@ -1238,7 +1295,7 @@ async function startServer() {
         color: item.color || "#137333", // Classroom Green
         studentsCount: studentsNum,
         classroomSynced: true,
-        classroomCourseId: incomingClassroomId || `gc-${Math.random().toString(36).substring(2, 7)}`,
+        classroomCourseId: incomingClassroomId || undefined,
         code: item.code || Math.random().toString(36).substring(2, 8),
         section: item.section || "1",
         orientation: item.orientation || undefined,
@@ -1252,6 +1309,7 @@ async function startServer() {
       addedCount++;
     }
 
+    courses = deduplicateCoursesList(courses);
     saveCoursesToDisk();
 
     res.status(201).json({
@@ -1308,18 +1366,26 @@ async function startServer() {
 
   app.delete("/api/courses/:id", (req, res) => {
     const { id } = req.params;
-    const index = courses.findIndex((c) => c.id === id);
-    if (index === -1) {
-      return res.status(404).json({ error: "Materia no encontrada." });
+    if (!coursesLoadedFromDisk) {
+      loadCoursesFromDisk();
     }
-    const removedCourse = courses.splice(index, 1)[0];
+    const target = courses.find((c) => c.id === id || c.classroomCourseId === id || (c.code && c.code === id));
+    if (!target) {
+      return res.json({ success: true, message: "Materia eliminada o no encontrada.", courseId: id });
+    }
+    const targetKey = normalizeCourseKey(target);
+    const removedName = target.name || "Materia";
+    const targetIds = new Set<string>([id, target.id]);
+    if (target.classroomCourseId) targetIds.add(target.classroomCourseId);
+
+    courses = courses.filter((c) => !targetIds.has(c.id) && (!c.classroomCourseId || !targetIds.has(c.classroomCourseId)) && normalizeCourseKey(c) !== targetKey);
     // Remove students associated with this course
-    students = students.filter((s) => s.courseId !== id);
-    saveCoursesToDisk();
-    saveStudentsToDisk();
+    students = students.filter((s) => !targetIds.has(s.courseId));
+    saveCoursesToDisk(true);
+    saveStudentsToDisk(true);
     res.json({
       success: true,
-      message: `Materia "${removedCourse.name}" eliminada correctamente.`,
+      message: `Materia "${removedName}" eliminada correctamente.`,
       courseId: id,
     });
   });
@@ -1330,8 +1396,9 @@ async function startServer() {
     students = [];
     ragPlans = [];
     interactiveManuals = [];
-    saveCoursesToDisk();
-    saveStudentsToDisk();
+    coursesLoadedFromDisk = true;
+    saveCoursesToDisk(true);
+    saveStudentsToDisk(true);
     res.json({
       success: true,
       message: "Se eliminaron todas las materias y estudiantes de prueba. Espacio de trabajo limpio para tus clases reales.",
@@ -4254,7 +4321,7 @@ Responde ÚNICAMENTE en formato JSON válido con la siguiente estructura:
   // -------------------------------------------------------------
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: "spa",
     });
     app.use(vite.middlewares);

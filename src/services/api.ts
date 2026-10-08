@@ -18,7 +18,112 @@ function getUserStorageKey(baseKey: string): string {
   return userId ? `${baseKey}_${userId}` : baseKey;
 }
 
-function getLocalCourses(): Course[] {
+export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
+  if (!c) return '';
+  if (c.classroomCourseId && !c.classroomCourseId.startsWith('gc-') && !isNaN(Number(c.classroomCourseId))) {
+    return `classroom:${String(c.classroomCourseId).trim()}`;
+  }
+  const name = (c.name || '').trim().toLowerCase();
+  const sub = (c.subject || '').trim().toLowerCase();
+  const sec = (c.section || c.grade || c.division || '').trim().toLowerCase();
+  const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+  if (paren) {
+    return `name:${paren[1].trim()}:${paren[2].trim()}`;
+  }
+  return `name:${sub || name}:${sec || 'main'}`;
+}
+
+export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolean {
+  if (!c1 || !c2) return false;
+  if (c1.id && c2.id && String(c1.id).trim() === String(c2.id).trim()) return true;
+
+  const id1 = c1.classroomCourseId ? String(c1.classroomCourseId).trim() : null;
+  const id2 = c2.classroomCourseId ? String(c2.classroomCourseId).trim() : null;
+
+  if (id1 && id2 && id1 === id2) return true;
+  if (id1 && (c2.id === id1 || c2.classroomCourseId === id1)) return true;
+  if (id2 && (c1.id === id2 || c1.classroomCourseId === id2)) return true;
+
+  const k1 = normalizeCourseCanonicalKey(c1);
+  const k2 = normalizeCourseCanonicalKey(c2);
+  if (k1 && k2 && k1 === k2) return true;
+
+  return false;
+}
+
+export function deduplicateCourses(coursesList: Course[]): Course[] {
+  if (!Array.isArray(coursesList)) return [];
+  const result: Course[] = [];
+
+  for (const c of coursesList) {
+    if (!c || (!c.name && !c.subject)) continue;
+
+    const existingIdx = result.findIndex((existing) => areCoursesSame(existing, c));
+    if (existingIdx >= 0) {
+      const existing = result[existingIdx];
+      const preferredId =
+        (existing.classroomCourseId && existing.id === existing.classroomCourseId)
+          ? existing.id
+          : (c.classroomCourseId && c.id === c.classroomCourseId)
+          ? c.id
+          : existing.id || c.id;
+
+      result[existingIdx] = {
+        ...existing,
+        ...c,
+        id: preferredId,
+        classroomCourseId: existing.classroomCourseId || c.classroomCourseId,
+        classroomSynced: existing.classroomSynced || c.classroomSynced,
+        studentsCount: Math.max(Number(existing.studentsCount) || 0, Number(c.studentsCount) || 0),
+        name: existing.name || c.name,
+        subject: existing.subject || c.subject,
+        grade: existing.grade || c.grade,
+        section: existing.section || c.section,
+        schoolYear: existing.schoolYear || c.schoolYear || '2026',
+      };
+    } else {
+      result.push(c);
+    }
+  }
+
+  return result;
+}
+
+export function deduplicateStudents(studentsList: Student[]): Student[] {
+  if (!Array.isArray(studentsList)) return [];
+  const result: Student[] = [];
+
+  for (const st of studentsList) {
+    if (!st || (!st.firstName && !st.lastName)) continue;
+    const cleanEmail = (st.email || '').trim().toLowerCase();
+    const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.toLowerCase();
+    const cId = st.courseId || '';
+
+    const existingIdx = result.findIndex((existing) => {
+      if (existing.id && st.id && existing.id === st.id) return true;
+      if (cId && existing.courseId && cId === existing.courseId) {
+        if (cleanEmail && existing.email && existing.email.trim().toLowerCase() === cleanEmail) return true;
+        const exName = `${(existing.firstName || '').trim()} ${(existing.lastName || '').trim()}`.toLowerCase();
+        if (exName && cleanName && exName === cleanName) return true;
+      }
+      return false;
+    });
+
+    if (existingIdx >= 0) {
+      result[existingIdx] = {
+        ...result[existingIdx],
+        ...st,
+        id: result[existingIdx].id || st.id,
+      };
+    } else {
+      result.push(st);
+    }
+  }
+
+  return result;
+}
+
+export function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
@@ -29,41 +134,55 @@ function getLocalCourses(): Course[] {
     if (!raw) {
       raw = localStorage.getItem('docencia_persisted_courses');
     }
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    if (raw !== null && raw !== undefined) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return deduplicateCourses(parsed);
+      } catch (_) {}
     }
-    // Deep fallback: scan all keys in localStorage for any saved courses list
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
-        try {
-          const item = localStorage.getItem(k);
-          if (item) {
-            const p = JSON.parse(item);
-            if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
-              return p;
+    // Deep fallback only if raw was never saved before (null)
+    if (raw === null || raw === undefined) {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
+          try {
+            const item = localStorage.getItem(k);
+            if (item) {
+              const p = JSON.parse(item);
+              if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
+                return deduplicateCourses(p);
+              }
             }
-          }
-        } catch (_) {}
+          } catch (_) {}
+        }
       }
     }
   } catch (_) {}
   return [];
 }
 
-function saveLocalCourses(coursesList: Course[]): void {
+export function saveLocalCourses(coursesList: Course[]): void {
   if (typeof window === 'undefined') return;
   try {
+    const cleanList = deduplicateCourses(coursesList);
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    const dataStr = JSON.stringify(coursesList);
+    const dataStr = JSON.stringify(cleanList);
     localStorage.setItem(key, dataStr);
     localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
     localStorage.setItem('docencia_persisted_courses', dataStr);
+    if (cleanList.length === 0) {
+      // Invalidate legacy or alternate keys so deleted courses never resurrect
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
+          localStorage.setItem(k, '[]');
+        }
+      }
+    }
   } catch (_) {}
 }
 
-function getLocalStudents(courseId?: string): Student[] {
+export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
@@ -77,7 +196,8 @@ function getLocalStudents(courseId?: string): Student[] {
     if (raw) {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return courseId ? parsed.filter((s) => s.courseId === courseId) : parsed;
+        const clean = deduplicateStudents(parsed);
+        return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
       }
     }
     // Deep fallback: scan localStorage keys
@@ -89,7 +209,8 @@ function getLocalStudents(courseId?: string): Student[] {
           if (item) {
             const p = JSON.parse(item);
             if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
-              return courseId ? p.filter((s: Student) => s.courseId === courseId) : p;
+              const clean = deduplicateStudents(p);
+              return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
             }
           }
         } catch (_) {}
@@ -99,13 +220,13 @@ function getLocalStudents(courseId?: string): Student[] {
   return [];
 }
 
-function saveLocalStudents(courseId: string, studentsList: Student[]): void {
+export function saveLocalStudents(courseId: string, studentsList: Student[]): void {
   if (typeof window === 'undefined') return;
   try {
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     const all = getLocalStudents();
     const rest = all.filter((s) => s.courseId !== courseId);
-    const updated = [...rest, ...studentsList];
+    const updated = deduplicateStudents([...rest, ...studentsList]);
     const dataStr = JSON.stringify(updated);
     localStorage.setItem(key, dataStr);
     localStorage.setItem(STORAGE_KEYS.STUDENTS, dataStr);
@@ -390,50 +511,35 @@ export const api = {
   // Courses
   async getCourses(): Promise<Course[]> {
     const userId = getActiveUserId();
-    const mergedMap = new Map<string, Course>();
 
-    // 1. Load local courses
-    const local = getLocalCourses();
-    local.forEach((c) => {
-      if (c && c.id) mergedMap.set(c.id, c);
-    });
+    // 1. Immediately get deduplicated local courses
+    const local = deduplicateCourses(getLocalCourses());
 
-    // 2. Fetch server courses
-    try {
-      const res = await fetch('/api/courses');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.courses)) {
-          data.courses.forEach((c: Course) => {
-            if (c && c.id) {
-              const existing = mergedMap.get(c.id);
-              mergedMap.set(c.id, { ...existing, ...c });
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('Backend /api/courses unavailable:', e);
+    // 2. Fetch server courses and cloud Firestore courses in parallel
+    const serverPromise = fetch('/api/courses')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => (data && Array.isArray(data.courses) ? (data.courses as Course[]) : []))
+      .catch((e) => {
+        console.warn('Backend /api/courses unavailable:', e);
+        return [] as Course[];
+      });
+
+    const cloudPromise = userId
+      ? firestoreSync.loadCourses(userId).catch((err) => {
+          console.warn('Firestore loadCourses failed:', err);
+          return [] as Course[];
+        })
+      : Promise.resolve([] as Course[]);
+
+    const [serverCourses, cloudCourses] = await Promise.all([serverPromise, cloudPromise]);
+
+    // If both server and local are empty, respect the zero-courses state
+    if (serverCourses.length === 0 && local.length === 0) {
+      saveLocalCourses([]);
+      return [];
     }
 
-    // 3. Fetch cloud Firestore courses
-    if (userId) {
-      try {
-        const cloudCourses = await firestoreSync.loadCourses(userId);
-        if (Array.isArray(cloudCourses) && cloudCourses.length > 0) {
-          cloudCourses.forEach((c: Course) => {
-            if (c && c.id) {
-              const existing = mergedMap.get(c.id);
-              mergedMap.set(c.id, { ...existing, ...c });
-            }
-          });
-        }
-      } catch (err) {
-        console.warn('Firestore loadCourses failed:', err);
-      }
-    }
-
-    const mergedList = Array.from(mergedMap.values());
+    const mergedList = deduplicateCourses([...local, ...serverCourses, ...cloudCourses]);
 
     if (mergedList.length > 0) {
       saveLocalCourses(mergedList);
@@ -443,6 +549,7 @@ export const api = {
       return mergedList;
     }
 
+    saveLocalCourses([]);
     return [];
   },
 
@@ -456,8 +563,7 @@ export const api = {
       if (res.ok) {
         const data = await res.json();
         if (data && data.course) {
-          const list = getLocalCourses().filter((c) => c.id !== data.course.id);
-          list.push(data.course);
+          const list = deduplicateCourses([...getLocalCourses(), data.course]);
           saveLocalCourses(list);
           const userId = getActiveUserId();
           if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
@@ -469,7 +575,7 @@ export const api = {
     }
 
     const newCourse: Course = {
-      id: courseData.id || `c-${Date.now().toString().slice(-4)}`,
+      id: courseData.classroomCourseId || courseData.id || `c-${Date.now().toString().slice(-4)}`,
       name: courseData.name || 'Nueva Materia',
       subject: courseData.subject || courseData.name || 'Materia',
       grade: courseData.grade || 'Secundaria',
@@ -485,8 +591,7 @@ export const api = {
       division: courseData.division,
       schoolYear: courseData.schoolYear || '2026',
     };
-    const list = getLocalCourses();
-    list.push(newCourse);
+    const list = deduplicateCourses([...getLocalCourses(), newCourse]);
     saveLocalCourses(list);
     const userId = getActiveUserId();
     if (userId) {
@@ -506,10 +611,7 @@ export const api = {
         const data = await res.json();
         const incoming = Array.isArray(data.courses) ? data.courses : [];
         const local = getLocalCourses();
-        const mergedMap = new Map<string, Course>();
-        local.forEach((c) => mergedMap.set(c.id, c));
-        incoming.forEach((c: Course) => mergedMap.set(c.id, c));
-        const fullList = Array.from(mergedMap.values());
+        const fullList = deduplicateCourses([...local, ...incoming]);
         if (fullList.length > 0) {
           saveLocalCourses(fullList);
           const uId = getActiveUserId();
@@ -534,27 +636,22 @@ export const api = {
       const courseSubject = (item.subject || courseName).trim();
       const studentsNum = typeof item.studentsCount === 'number' ? item.studentsCount : 0;
 
-      const existingIndex = processed.findIndex((c) => {
-        if (incomingClassroomId && (c.classroomCourseId === incomingClassroomId || c.id === incomingClassroomId)) return true;
-        if (incomingId && (c.id === incomingId || c.classroomCourseId === incomingId)) return true;
-        const itemSec = (item.section || '').trim().toLowerCase();
-        const cSec = (c.section || '').trim().toLowerCase();
-        return c.name.trim().toLowerCase() === courseName.toLowerCase() && (itemSec === '' || cSec === itemSec);
-      });
+      const existingIndex = processed.findIndex((c) => areCoursesSame(c, item));
 
       if (existingIndex >= 0) {
         processed[existingIndex] = {
           ...processed[existingIndex],
           name: courseName || processed[existingIndex].name,
           subject: courseSubject || processed[existingIndex].subject,
-          studentsCount: studentsNum || processed[existingIndex].studentsCount,
+          studentsCount: Math.max(processed[existingIndex].studentsCount || 0, studentsNum),
           classroomSynced: true,
           classroomCourseId: incomingClassroomId || processed[existingIndex].classroomCourseId,
         };
         updatedCount++;
       } else {
+        const courseId = incomingClassroomId || incomingId || `c-${Date.now().toString().slice(-4)}-${Math.random().toString(36).substring(2, 5)}`;
         const newCourse: Course = {
-          id: item.id || `c-${Date.now().toString().slice(-4)}-${Math.random().toString(36).substring(2, 5)}`,
+          id: courseId,
           name: courseName,
           subject: courseSubject,
           grade: item.grade || 'Secundaria',
@@ -563,7 +660,7 @@ export const api = {
           color: item.color || '#137333',
           studentsCount: studentsNum,
           classroomSynced: true,
-          classroomCourseId: incomingClassroomId || `gc-${Math.random().toString(36).substring(2, 7)}`,
+          classroomCourseId: incomingClassroomId || undefined,
           code: item.code || Math.random().toString(36).substring(2, 8),
           section: item.section || '1',
           schoolYear: item.schoolYear || '2026',
@@ -574,10 +671,11 @@ export const api = {
       }
     }
 
-    saveLocalCourses(processed);
+    const cleanFull = deduplicateCourses(processed);
+    saveLocalCourses(cleanFull);
     const userId = getActiveUserId();
     if (userId) {
-      firestoreSync.saveCourses(userId, processed).catch((err) => console.warn('Firestore bulk import sync warning:', err));
+      firestoreSync.saveCourses(userId, cleanFull).catch((err) => console.warn('Firestore bulk import sync warning:', err));
     }
 
     return {
@@ -585,7 +683,7 @@ export const api = {
       message: addedCount > 0
         ? `Se agregaron ${addedCount} materias nuevas.`
         : `Las materias ya estaban cargadas previamente.`,
-      courses: processed,
+      courses: cleanFull,
     };
   },
 
@@ -642,40 +740,51 @@ export const api = {
   },
 
   async deleteCourse(id: string): Promise<{ success: boolean; message: string; courseId: string }> {
+    const localCourses = getLocalCourses();
+    const target = localCourses.find((c) => c.id === id || c.classroomCourseId === id || c.code === id);
+    const idsToDelete = new Set<string>([id]);
+    if (target?.id) idsToDelete.add(target.id);
+    if (target?.classroomCourseId) idsToDelete.add(target.classroomCourseId);
+
+    const list = localCourses.filter((c) => !idsToDelete.has(c.id) && (!c.classroomCourseId || !idsToDelete.has(c.classroomCourseId)));
+    saveLocalCourses(list);
+
+    const userId = getActiveUserId();
+    if (userId) {
+      idsToDelete.forEach((cid) => {
+        firestoreSync.deleteCourse(userId, cid).catch(() => {});
+      });
+      firestoreSync.saveCourses(userId, list).catch(() => {});
+    }
+
     try {
       const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       });
       if (res.ok) {
-        const list = getLocalCourses().filter((c) => c.id !== id);
-        saveLocalCourses(list);
-        const userId = getActiveUserId();
-        if (userId) firestoreSync.deleteCourse(userId, id).catch(() => {});
         return res.json();
       }
     } catch (_) {}
 
-    const list = getLocalCourses().filter((c) => c.id !== id);
-    saveLocalCourses(list);
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync.deleteCourse(userId, id).catch(() => {});
-    }
     return { success: true, message: 'Materia eliminada correctamente', courseId: id };
   },
 
   async clearAllCourses(): Promise<{ success: boolean; message: string }> {
+    saveLocalCourses([]);
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.clearAllCourses(userId).catch(() => {});
+      firestoreSync.saveCourses(userId, []).catch(() => {});
+    }
     try {
       const res = await fetch('/api/courses/clear', {
         method: 'POST',
       });
       if (res.ok) {
-        saveLocalCourses([]);
         return res.json();
       }
     } catch (_) {}
 
-    saveLocalCourses([]);
     return { success: true, message: 'Materias de prueba eliminadas correctamente' };
   },
 
@@ -711,52 +820,30 @@ export const api = {
       });
     };
 
-    const studentMap = new Map<string, Student>();
+    // 1. Immediately get deduplicated local students
+    const local = deduplicateStudents(getLocalStudents(courseId));
 
-    // 1. Local students
-    const local = getLocalStudents(courseId);
-    local.forEach((st) => {
-      if (st && st.id) studentMap.set(st.id, st);
-    });
+    // 2. Fetch server students & cloud students in parallel
+    const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
+    const serverPromise = fetch(url)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => (data && Array.isArray(data.students) ? (data.students as Student[]) : []))
+      .catch((e) => {
+        console.warn('Backend /api/students unavailable:', e);
+        return [] as Student[];
+      });
 
-    // 2. Server students
-    try {
-      const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.students)) {
-          data.students.forEach((st: Student) => {
-            if (st && st.id) {
-              const existing = studentMap.get(st.id);
-              studentMap.set(st.id, { ...existing, ...st });
-            }
-          });
-        }
-      }
-    } catch (e) {
-      console.warn('Backend /api/students unavailable:', e);
-    }
-
-    // 3. Cloud Firestore students
     const userId = getActiveUserId();
-    if (userId) {
-      try {
-        const cloudStudents = await firestoreSync.loadStudents(userId, courseId);
-        if (Array.isArray(cloudStudents) && cloudStudents.length > 0) {
-          cloudStudents.forEach((st: Student) => {
-            if (st && st.id) {
-              const existing = studentMap.get(st.id);
-              studentMap.set(st.id, { ...existing, ...st });
-            }
-          });
-        }
-      } catch (err) {
-        console.warn('Firestore loadStudents error:', err);
-      }
-    }
+    const cloudPromise = userId
+      ? firestoreSync.loadStudents(userId, courseId).catch((err) => {
+          console.warn('Firestore loadStudents error:', err);
+          return [] as Student[];
+        })
+      : Promise.resolve([] as Student[]);
 
-    const mergedStudents = enrichStudents(Array.from(studentMap.values()));
+    const [serverStudents, cloudStudents] = await Promise.all([serverPromise, cloudPromise]);
+
+    const mergedStudents = enrichStudents(deduplicateStudents([...local, ...serverStudents, ...cloudStudents]));
 
     if (courseId && mergedStudents.length > 0) {
       saveLocalStudents(courseId, mergedStudents);
@@ -2043,5 +2130,11 @@ export const api = {
     if (!res.ok) throw new Error('Error al sincronizar horarios de materias');
     return res.json();
   },
+
+  // Storage & deduplication helpers for instant local cache access
+  getLocalCourses,
+  getLocalStudents,
+  deduplicateCourses,
+  deduplicateStudents,
 };
 

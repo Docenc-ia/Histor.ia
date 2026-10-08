@@ -24,7 +24,10 @@ function AppContent() {
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedCourseId, setSelectedCourseId] = useState<string>('course-1');
+  const [selectedCourseId, setSelectedCourseId] = useState<string>(() => {
+    const local = api.getLocalCourses();
+    return local.length > 0 ? local[0].id : '';
+  });
 
   // Creation modal & Classroom Import modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
@@ -34,10 +37,10 @@ function AppContent() {
   // Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
-  // Core data states
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [students, setStudents] = useState<Student[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  // Core data states - initialize with local cache for instant 0ms first paint
+  const [courses, setCourses] = useState<Course[]>(() => api.getLocalCourses());
+  const [students, setStudents] = useState<Student[]>(() => api.getLocalStudents());
+  const [isLoading, setIsLoading] = useState<boolean>(() => api.getLocalCourses().length === 0);
 
   // Load courses and students data
   const loadData = async () => {
@@ -46,10 +49,12 @@ function AppContent() {
         api.getCourses(),
         api.getStudents(),
       ]);
-      setCourses(c);
-      setStudents(s);
-      if (c.length > 0 && !selectedCourseId) {
-        setSelectedCourseId(c[0].id);
+      const cleanCourses = api.deduplicateCourses(c);
+      const cleanStudents = api.deduplicateStudents(s);
+      setCourses(cleanCourses);
+      setStudents(cleanStudents);
+      if (cleanCourses.length > 0 && (!selectedCourseId || !cleanCourses.some((item) => item.id === selectedCourseId))) {
+        setSelectedCourseId(cleanCourses[0].id);
       }
     } catch (err) {
       console.error('Error fetching workspace courses and students:', err);
@@ -106,22 +111,24 @@ function AppContent() {
 
   const handleDeleteCourse = async (courseId: string) => {
     try {
-      const courseToDelete = courses.find((c) => c.id === courseId);
+      const courseToDelete = courses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
       const courseName = courseToDelete ? courseToDelete.name : 'Materia';
 
       const res = await api.deleteCourse(courseId);
 
       // Immediately update local state
       setCourses((prev) => {
-        const updated = prev.filter((c) => c.id !== courseId);
-        if (selectedCourseId === courseId && updated.length > 0) {
+        const updated = prev.filter((c) => c.id !== courseId && c.classroomCourseId !== courseId);
+        if (updated.length === 0) {
+          setSelectedCourseId('');
+        } else if (selectedCourseId === courseId || (courseToDelete && selectedCourseId === courseToDelete.id)) {
           setSelectedCourseId(updated[0].id);
         }
         return updated;
       });
 
       // Background reload
-      loadData();
+      await loadData();
 
       setToast({ message: res.message || `Materia "${courseName}" eliminada correctamente.`, type: 'success' });
       setTimeout(() => setToast(null), 4000);

@@ -28,15 +28,39 @@ export const db = (firebaseConfig as any).firestoreDatabaseId
   ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
   : getFirestore(app);
 
+// Circuit breaker & timeout helper to prevent hanging the UI on slow/offline Firestore connections
+let firestoreUnavailableUntil = 0;
+const FIRESTORE_TIMEOUT_MS = 1200;
+
+async function executeWithTimeout<T>(promise: Promise<T>, timeoutMs = FIRESTORE_TIMEOUT_MS): Promise<T | null> {
+  if (Date.now() < firestoreUnavailableUntil) {
+    return null;
+  }
+  let timer: any;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    timer = setTimeout(() => {
+      firestoreUnavailableUntil = Date.now() + 45000;
+      resolve(null);
+    }, timeoutMs);
+  });
+  try {
+    const res = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timer);
+    return res;
+  } catch (err) {
+    clearTimeout(timer);
+    firestoreUnavailableUntil = Date.now() + 45000;
+    return null;
+  }
+}
+
 // Test connection on boot as recommended by Firebase guidelines
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    return true;
+    const res = await executeWithTimeout(getDocFromServer(doc(db, 'test', 'connection')), 1000);
+    return !!res;
   } catch (error: any) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firestore offline:', error.message);
-    }
+    firestoreUnavailableUntil = Date.now() + 45000;
     return false;
   }
 }
@@ -73,7 +97,7 @@ export const firestoreSync = {
    * Save all courses to Firestore under /users/{userId}/courses/{courseId}
    */
   async saveCourses(userId: string, courses: Course[]): Promise<void> {
-    if (!userId || !Array.isArray(courses)) return;
+    if (!userId || !Array.isArray(courses) || Date.now() < firestoreUnavailableUntil) return;
     try {
       const batch = writeBatch(db);
       for (const course of courses) {
@@ -83,8 +107,9 @@ export const firestoreSync = {
           updatedAt: new Date().toISOString(),
         }, { merge: true });
       }
-      await batch.commit();
+      await executeWithTimeout(batch.commit());
     } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
       console.warn('Error saving courses to Firestore:', err);
     }
   },
@@ -93,16 +118,17 @@ export const firestoreSync = {
    * Load courses from Firestore
    */
   async loadCourses(userId: string): Promise<Course[]> {
-    if (!userId) return [];
+    if (!userId || Date.now() < firestoreUnavailableUntil) return [];
     try {
-      const coursesCol = collection(db, 'users', userId, 'courses');
-      const snap = await getDocs(coursesCol);
+      const snap = await executeWithTimeout(getDocs(collection(db, 'users', userId, 'courses')));
+      if (!snap) return [];
       const courses: Course[] = [];
-      snap.forEach((docSnap) => {
+      snap.forEach((docSnap: any) => {
         courses.push(docSnap.data() as Course);
       });
       return courses;
     } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
       console.warn('Error loading courses from Firestore:', err);
       return [];
     }
@@ -112,12 +138,32 @@ export const firestoreSync = {
    * Delete a course from Firestore
    */
   async deleteCourse(userId: string, courseId: string): Promise<void> {
-    if (!userId || !courseId) return;
+    if (!userId || !courseId || Date.now() < firestoreUnavailableUntil) return;
     try {
       const ref = doc(db, 'users', userId, 'courses', courseId);
-      await deleteDoc(ref);
+      await executeWithTimeout(deleteDoc(ref));
     } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
       console.warn('Error deleting course from Firestore:', err);
+    }
+  },
+
+  /**
+   * Clear all courses for a user from Firestore
+   */
+  async clearAllCourses(userId: string): Promise<void> {
+    if (!userId || Date.now() < firestoreUnavailableUntil) return;
+    try {
+      const snap = await executeWithTimeout(getDocs(collection(db, 'users', userId, 'courses')));
+      if (!snap || snap.empty) return;
+      const batch = writeBatch(db);
+      snap.forEach((docSnap: any) => {
+        batch.delete(docSnap.ref);
+      });
+      await executeWithTimeout(batch.commit());
+    } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
+      console.warn('Error clearing courses in Firestore:', err);
     }
   },
 
@@ -125,7 +171,7 @@ export const firestoreSync = {
    * Save students roster for a course to Firestore
    */
   async saveStudents(userId: string, courseId: string, students: Student[]): Promise<void> {
-    if (!userId || !courseId || !Array.isArray(students)) return;
+    if (!userId || !courseId || !Array.isArray(students) || Date.now() < firestoreUnavailableUntil) return;
     try {
       const batch = writeBatch(db);
       for (const st of students) {
@@ -136,8 +182,9 @@ export const firestoreSync = {
           updatedAt: new Date().toISOString(),
         }, { merge: true });
       }
-      await batch.commit();
+      await executeWithTimeout(batch.commit());
     } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
       console.warn('Error saving students to Firestore:', err);
     }
   },
@@ -146,12 +193,12 @@ export const firestoreSync = {
    * Load students from Firestore
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
-    if (!userId) return [];
+    if (!userId || Date.now() < firestoreUnavailableUntil) return [];
     try {
-      const studentsCol = collection(db, 'users', userId, 'students');
-      const snap = await getDocs(studentsCol);
+      const snap = await executeWithTimeout(getDocs(collection(db, 'users', userId, 'students')));
+      if (!snap) return [];
       const students: Student[] = [];
-      snap.forEach((docSnap) => {
+      snap.forEach((docSnap: any) => {
         const data = docSnap.data() as Student;
         if (!courseId || data.courseId === courseId) {
           students.push(data);
@@ -159,6 +206,7 @@ export const firestoreSync = {
       });
       return students;
     } catch (err) {
+      firestoreUnavailableUntil = Date.now() + 45000;
       console.warn('Error loading students from Firestore:', err);
       return [];
     }

@@ -234,6 +234,52 @@ export const driveService = {
   },
 
   /**
+   * Search for an existing Google Spreadsheet file associated with a course or inside its folder
+   */
+  async findCourseSpreadsheet(
+    folderId?: string,
+    courseName?: string,
+    providedToken?: string
+  ): Promise<{ id: string; name: string; url: string } | null> {
+    const token = providedToken || getCachedAccessToken();
+    if (!token) return null;
+
+    try {
+      let query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false";
+      if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
+        query += ` and '${folderId}' in parents`;
+      } else if (courseName) {
+        const safeName = courseName.replace(/'/g, "\\'");
+        query += ` and name contains '${safeName}'`;
+      } else {
+        return null;
+      }
+
+      const searchRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)&orderBy=modifiedTime desc&pageSize=1`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          const file = data.files[0];
+          return {
+            id: file.id,
+            name: file.name,
+            url: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Notice searching for course spreadsheet in Drive:', err);
+    }
+    return null;
+  },
+
+  /**
    * Create a dedicated course folder in Google Drive
    */
   async createCourseFolder(courseName: string): Promise<{ id: string; name: string; url: string }> {
@@ -265,6 +311,116 @@ export const driveService = {
       id: `folder-${Date.now().toString().slice(-4)}`,
       name: `📚 ${courseName} - Materiales Docentes`,
       url: 'https://drive.google.com/drive/u/0/my-drive',
+    };
+  },
+
+  /**
+   * Upload a generated document or HTML report to a Google Drive course folder
+   */
+  async uploadReportFile(
+    fileName: string,
+    content: string,
+    folderId?: string,
+    mimeType: string = 'text/html',
+    providedToken?: string
+  ): Promise<{ id: string; name: string; url: string; isLiveGoogle: boolean }> {
+    const token = providedToken || getCachedAccessToken();
+
+    if (token) {
+      try {
+        const metadata: any = {
+          name: fileName,
+          mimeType: mimeType,
+        };
+        if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
+          metadata.parents = [folderId];
+        }
+
+        const boundary = '-------314159265358979323846';
+        const delimiter = "\r\n--" + boundary + "\r\n";
+        const close_delim = "\r\n--" + boundary + "--";
+
+        const multipartRequestBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(metadata) +
+          delimiter +
+          `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n` +
+          content +
+          close_delim;
+
+        const res = await fetch(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+          {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': `multipart/related; boundary=${boundary}`,
+            },
+            body: multipartRequestBody,
+          }
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          const liveUrl = data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`;
+
+          // Also register in local server drive resources
+          try {
+            await fetch('/api/drive/upload', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: fileName,
+                type: 'doc',
+                folder: folderId || 'Informes y Reportes',
+              }),
+            });
+          } catch {}
+
+          return {
+            id: data.id,
+            name: data.name,
+            url: liveUrl,
+            isLiveGoogle: true,
+          };
+        } else {
+          const errText = await res.text();
+          console.warn('Google Drive report upload API response not OK:', res.status, errText);
+        }
+      } catch (err) {
+        console.warn('Error uploading report file to Google Drive:', err);
+      }
+    }
+
+    // Fallback: register in local server resources
+    try {
+      const res = await fetch('/api/drive/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: fileName,
+          type: 'doc',
+          folder: folderId || 'Informes y Reportes',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          id: data.file.id,
+          name: data.file.name,
+          url: data.file.googleDriveUrl,
+          isLiveGoogle: false,
+        };
+      }
+    } catch {}
+
+    const fallbackId = `report-${Date.now()}`;
+    return {
+      id: fallbackId,
+      name: fileName,
+      url: 'https://drive.google.com/drive/u/0/my-drive',
+      isLiveGoogle: false,
     };
   },
 };

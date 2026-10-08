@@ -1571,6 +1571,21 @@ export const api = {
         url: isReal ? cached.url : '',
       };
     }
+
+    // Check course object in local store for dispositionSheetId
+    try {
+      const localCourses = this.getLocalCourses();
+      const matched = localCourses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
+      if (matched?.dispositionSheetId && isRealGoogleSpreadsheetId(matched.dispositionSheetId)) {
+        return {
+          spreadsheetId: matched.dispositionSheetId,
+          url: matched.dispositionSheetUrl || `https://docs.google.com/spreadsheets/d/${matched.dispositionSheetId}/edit`,
+          isLiveGoogle: true,
+          lastSyncedAt: new Date().toISOString(),
+        };
+      }
+    } catch (_) {}
+
     return {};
   },
 

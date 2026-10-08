@@ -42,6 +42,8 @@ export interface GradebookMatrixProps {
   isDarkMode: boolean;
   activeTerm?: GradebookTerm;
   onTermChange?: (term: GradebookTerm) => void;
+  driveFolderId?: string;
+  driveFolderUrl?: string;
 }
 
 export const DEFAULT_CATEGORIES: GradeCategory[] = [
@@ -89,6 +91,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   isDarkMode,
   activeTerm,
   onTermChange,
+  driveFolderId,
+  driveFolderUrl,
 }) => {
   const [internalTerm, setInternalTerm] = useState<GradebookTerm>(() => {
     if (typeof window !== 'undefined') {
@@ -848,6 +852,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           annualOverrides={annualOverrides}
           onSaveOverride={saveAnnualOverride}
           onSwitchTerm={(t) => setTerm(t)}
+          driveFolderId={driveFolderId}
+          driveFolderUrl={driveFolderUrl}
         />
       ) : (
         <>

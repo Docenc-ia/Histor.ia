@@ -14,6 +14,7 @@ import { Student, GradeEntry, StudentHistoryItem, StudentDispositionData } from 
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
+import { api } from '../api';
 
 export interface DispositionSheetResult {
   spreadsheetId: string;
@@ -28,17 +29,86 @@ export interface DispositionSheetResult {
 
 export const sheetsService = {
   /**
+   * Helper to resolve or find the specific Google Spreadsheet ID associated with a courseId.
+   * Retrieves dynamically by courseId from persistent storage or searches the course's Drive folder,
+   * completely avoiding static paths or shared sheets.
+   */
+  async resolveCourseSpreadsheetId(
+    courseId: string,
+    courseName?: string,
+    existingId?: string,
+    folderId?: string,
+    providedToken?: string
+  ): Promise<string | undefined> {
+    // 1. If explicit real Google Spreadsheet ID is already provided and not a placeholder
+    if (existingId && isRealGoogleSpreadsheetId(existingId)) {
+      return existingId;
+    }
+
+    // 2. Fetch specific spreadsheet associated with this courseId from persistent storage
+    if (courseId) {
+      try {
+        const stored = await api.getCourseDispositionSheet(courseId);
+        if (stored?.spreadsheetId && isRealGoogleSpreadsheetId(stored.spreadsheetId)) {
+          return stored.spreadsheetId;
+        }
+      } catch (_) {}
+    }
+
+    // 3. Search Google Drive within the course folder if user is authenticated
+    const token = providedToken || getCachedAccessToken();
+    if (token) {
+      try {
+        const driveSheet = await driveService.findCourseSpreadsheet(folderId, courseName, token);
+        if (driveSheet?.id && isRealGoogleSpreadsheetId(driveSheet.id)) {
+          // Immediately persist the relationship to this specific courseId
+          if (courseId) {
+            await api
+              .saveCourseDispositionSheet(courseId, {
+                spreadsheetId: driveSheet.id,
+                url: driveSheet.url,
+                lastSyncedAt: new Date().toISOString(),
+              })
+              .catch(() => {});
+          }
+          return driveSheet.id;
+        }
+      } catch (_) {}
+    }
+
+    return undefined;
+  },
+
+  /**
    * Export or synchronize Student Gradebook with Google Sheets
    */
   async syncGradebookToSheet(
-    courseName: string,
+    course: { id: string; name: string } | string,
     students: Student[],
     evaluations: string[],
     grades: GradeEntry[],
-    folderId?: string
+    folderId?: string,
+    existingSpreadsheetId?: string,
+    providedToken?: string
   ): Promise<{ spreadsheetId: string; url?: string; isLiveGoogle?: boolean }> {
-    const token = getCachedAccessToken();
+    const token = providedToken && isValidGoogleAccessToken(providedToken) ? providedToken : getCachedAccessToken();
+    const courseId: string = typeof course === 'object' && course ? course.id : '';
+    const courseName: string = typeof course === 'object' && course ? course.name : typeof course === 'string' && course ? course : 'Materia';
     const sheetTitle = `📊 Planilla de Calificaciones - ${courseName}`;
+
+    // Resolve spreadsheet specifically tied to courseId instead of static path
+    let targetSpreadsheetId: string | undefined = undefined;
+    if (courseId) {
+      targetSpreadsheetId = await this.resolveCourseSpreadsheetId(
+        courseId,
+        courseName,
+        existingSpreadsheetId,
+        folderId,
+        token || undefined
+      );
+    } else if (existingSpreadsheetId && isRealGoogleSpreadsheetId(existingSpreadsheetId)) {
+      targetSpreadsheetId = existingSpreadsheetId;
+    }
 
     // Build the 2D values array
     // Headers: [ 'Alumno', 'Email', ...evaluations, 'Promedio Final', 'Estado' ]
@@ -62,6 +132,33 @@ export const sheetsService = {
 
     if (token) {
       try {
+        if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+          // Update existing course spreadsheet
+          await this.ensureSheetsExist(targetSpreadsheetId, token, ['Calificaciones']);
+          const updateRes = await fetch(
+            `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Calificaciones'!A1")}?valueInputOption=USER_ENTERED`,
+            {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ values: [headerRow, ...rows] }),
+            }
+          );
+          if (updateRes.ok) {
+            const url = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
+            if (courseId) {
+              api.updateCourse(courseId, { gradesSheetId: targetSpreadsheetId, gradesSheetUrl: url }).catch(() => {});
+            }
+            return {
+              spreadsheetId: targetSpreadsheetId,
+              url,
+              isLiveGoogle: true,
+            };
+          }
+        }
+
         const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
           method: 'POST',
           headers: {
@@ -72,6 +169,7 @@ export const sheetsService = {
             properties: { title: sheetTitle },
             sheets: [
               {
+                properties: { title: 'Calificaciones' },
                 data: [
                   {
                     startRow: 0,
@@ -103,9 +201,13 @@ export const sheetsService = {
           if (targetFolderId) {
             await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
           }
+          const url = `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`;
+          if (courseId) {
+            api.updateCourse(courseId, { gradesSheetId: sheetData.spreadsheetId, gradesSheetUrl: url }).catch(() => {});
+          }
           return {
             spreadsheetId: sheetData.spreadsheetId,
-            url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
+            url,
             isLiveGoogle: true,
           };
         }
@@ -114,7 +216,7 @@ export const sheetsService = {
       }
     }
 
-    const fallbackId = `sheet-${Date.now().toString().slice(-4)}`;
+    const fallbackId = targetSpreadsheetId || `sheet-grades-${courseId || Date.now().toString().slice(-4)}`;
     return {
       spreadsheetId: fallbackId,
       url: undefined,
@@ -450,12 +552,21 @@ export const sheetsService = {
       ];
     });
 
+    // Resolve spreadsheet specifically for course.id (dynamic lookup instead of static path or placeholder)
+    let targetSpreadsheetId = await this.resolveCourseSpreadsheetId(
+      course.id,
+      course.name,
+      existingSpreadsheetId,
+      folderId,
+      token || undefined
+    );
+
     // Real Google Sheets API call if access token is available
     if (token) {
       try {
-        if (existingSpreadsheetId && isRealGoogleSpreadsheetId(existingSpreadsheetId)) {
+        if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
           // Ensure all 4 tabs exist in the existing spreadsheet
-          await this.ensureSheetsExist(existingSpreadsheetId, token, [
+          await this.ensureSheetsExist(targetSpreadsheetId, token, [
             '1° Cuatrimestre',
             '2° Cuatrimestre',
             'Resumen Anual',
@@ -466,7 +577,7 @@ export const sheetsService = {
           try {
             await Promise.all([
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A1:Z500")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
@@ -477,7 +588,7 @@ export const sheetsService = {
                 }
               ),
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A1:Z500")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
@@ -488,7 +599,7 @@ export const sheetsService = {
                 }
               ),
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A1:Z500")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
@@ -499,7 +610,7 @@ export const sheetsService = {
                 }
               ),
               fetch(
-                `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z3000")}:clear`,
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z3000")}:clear`,
                 {
                   method: 'POST',
                   headers: {
@@ -535,7 +646,7 @@ export const sheetsService = {
 
           // Batch update all 4 sheets with current active rows
           const updateRes = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values:batchUpdate`,
+            `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values:batchUpdate`,
             {
               method: 'POST',
               headers: {
@@ -567,11 +678,21 @@ export const sheetsService = {
           );
 
           if (updateRes.ok) {
+            const updatedAtStr = new Date().toLocaleTimeString();
+            const sheetUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
+            // Immediately guarantee association with course.id
+            api
+              .saveCourseDispositionSheet(course.id, {
+                spreadsheetId: targetSpreadsheetId,
+                url: sheetUrl,
+                lastSyncedAt: updatedAtStr,
+              })
+              .catch(() => {});
             return {
-              spreadsheetId: existingSpreadsheetId,
-              url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+              spreadsheetId: targetSpreadsheetId,
+              url: sheetUrl,
               isLiveGoogle: true,
-              updatedAt: new Date().toLocaleTimeString(),
+              updatedAt: updatedAtStr,
               summaryRowsCount: summaryRows1c.length,
               historyRowsCount: historyRows.length,
             };
@@ -590,7 +711,7 @@ export const sheetsService = {
                 const freshToken = await requestGoogleAccessToken(true);
                 if (freshToken && isValidGoogleAccessToken(freshToken)) {
                   const retryRes = await fetch(
-                    `https://sheets.googleapis.com/v4/spreadsheets/${existingSpreadsheetId}/values:batchUpdate`,
+                    `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values:batchUpdate`,
                     {
                       method: 'POST',
                       headers: {
@@ -621,11 +742,20 @@ export const sheetsService = {
                     }
                   );
                   if (retryRes.ok) {
+                    const updatedAtStr = new Date().toLocaleTimeString();
+                    const sheetUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
+                    api
+                      .saveCourseDispositionSheet(course.id, {
+                        spreadsheetId: targetSpreadsheetId,
+                        url: sheetUrl,
+                        lastSyncedAt: updatedAtStr,
+                      })
+                      .catch(() => {});
                     return {
-                      spreadsheetId: existingSpreadsheetId,
-                      url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                      spreadsheetId: targetSpreadsheetId,
+                      url: sheetUrl,
                       isLiveGoogle: true,
-                      updatedAt: new Date().toLocaleTimeString(),
+                      updatedAt: updatedAtStr,
                       summaryRowsCount: summaryRows1c.length,
                       historyRowsCount: historyRows.length,
                     };
@@ -634,8 +764,8 @@ export const sheetsService = {
               } catch (_) {}
 
               return {
-                spreadsheetId: existingSpreadsheetId,
-                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                spreadsheetId: targetSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`,
                 isLiveGoogle: false,
                 updatedAt: new Date().toLocaleTimeString(),
                 summaryRowsCount: summaryRows1c.length,
@@ -647,8 +777,8 @@ export const sheetsService = {
 
             if (errStatus === 403) {
               return {
-                spreadsheetId: existingSpreadsheetId,
-                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                spreadsheetId: targetSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`,
                 isLiveGoogle: false,
                 updatedAt: new Date().toLocaleTimeString(),
                 summaryRowsCount: summaryRows1c.length,
@@ -660,8 +790,8 @@ export const sheetsService = {
 
             if (errStatus === 404) {
               return {
-                spreadsheetId: existingSpreadsheetId,
-                url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+                spreadsheetId: targetSpreadsheetId,
+                url: `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`,
                 isLiveGoogle: false,
                 updatedAt: new Date().toLocaleTimeString(),
                 summaryRowsCount: summaryRows1c.length,
@@ -672,8 +802,8 @@ export const sheetsService = {
             }
 
             return {
-              spreadsheetId: existingSpreadsheetId,
-              url: `https://docs.google.com/spreadsheets/d/${existingSpreadsheetId}/edit`,
+              spreadsheetId: targetSpreadsheetId,
+              url: `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`,
               isLiveGoogle: false,
               updatedAt: new Date().toLocaleTimeString(),
               summaryRowsCount: summaryRows1c.length,
@@ -847,11 +977,29 @@ export const sheetsService = {
           if (targetFolderId) {
             await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
           }
+          const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`;
+          const updatedAtStr = new Date().toLocaleTimeString();
+
+          // Immediately save generated sheet associated with this courseId
+          api
+            .saveCourseDispositionSheet(course.id, {
+              spreadsheetId: sheetData.spreadsheetId,
+              url: sheetUrl,
+              lastSyncedAt: updatedAtStr,
+            })
+            .catch(() => {});
+          api
+            .updateCourse(course.id, {
+              dispositionSheetId: sheetData.spreadsheetId,
+              dispositionSheetUrl: sheetUrl,
+            })
+            .catch(() => {});
+
           return {
             spreadsheetId: sheetData.spreadsheetId,
-            url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
+            url: sheetUrl,
             isLiveGoogle: true,
-            updatedAt: new Date().toLocaleTimeString(),
+            updatedAt: updatedAtStr,
             summaryRowsCount: summaryRows1c.length,
             historyRowsCount: historyRows.length,
           };
@@ -1189,8 +1337,15 @@ export const sheetsService = {
 
     if (token) {
       try {
-        let sheetIdToUse = existingSpreadsheetId;
-        if (!sheetIdToUse || sheetIdToUse.startsWith('sheet-disp-')) {
+        let sheetIdToUse = await this.resolveCourseSpreadsheetId(
+          course.id,
+          course.name,
+          existingSpreadsheetId,
+          folderId,
+          token || undefined
+        );
+
+        if (!sheetIdToUse || sheetIdToUse.startsWith('sheet-disp-') || sheetIdToUse.startsWith('sheet-grades-')) {
           // If no existing sheet, create a new one for course grades
           const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
             method: 'POST',
@@ -1223,10 +1378,24 @@ export const sheetsService = {
             if (targetFolderId) {
               await driveService.moveFileToFolder(sheetIdToUse, targetFolderId, token);
             }
+            const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetIdToUse}/edit`;
+            api
+              .saveCourseDispositionSheet(course.id, {
+                spreadsheetId: sheetIdToUse,
+                url: sheetUrl,
+                lastSyncedAt: new Date().toLocaleTimeString(),
+              })
+              .catch(() => {});
+            api
+              .updateCourse(course.id, {
+                gradesSheetId: sheetIdToUse,
+                gradesSheetUrl: sheetUrl,
+              })
+              .catch(() => {});
           }
         }
 
-        if (sheetIdToUse && !sheetIdToUse.startsWith('sheet-disp-')) {
+        if (sheetIdToUse && isRealGoogleSpreadsheetId(sheetIdToUse)) {
           await this.ensureSheetsExist(sheetIdToUse, token, [tabName]);
 
           // Clear previous data in tab

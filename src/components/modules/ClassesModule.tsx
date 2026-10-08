@@ -49,8 +49,10 @@ import {
   Filter,
   FileText,
   Link,
+  Printer,
 } from 'lucide-react';
 import { GradebookMatrix, DEFAULT_CATEGORIES } from './GradebookMatrix';
+import { CourseReportModal } from './CourseReportModal';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
 import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate, StudentObservation } from '../../types';
 import {
@@ -884,6 +886,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     gradesSheetUrl?: string;
   } | null>(null);
 
+  // Course and Student report modal state
+  const [courseReportModalOpen, setCourseReportModalOpen] = useState<boolean>(false);
+  const [courseReportModalTab, setCourseReportModalTab] = useState<'course' | 'individual'>('course');
+  const [courseReportModalStudentId, setCourseReportModalStudentId] = useState<string>('all');
+
   // Guaranteed two-way synchronization on startup to ensure long-term durability across days & months
   useEffect(() => {
     try {
@@ -1060,10 +1067,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         : historyList.filter((h) => h.courseId === activeCourse.id);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
       const realExistingId =
-        isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
-        (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-          ? sheetConfig?.spreadsheetId
-          : undefined;
+        (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
+        (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
 
       // Ensure course Drive folder exists
       let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
@@ -1177,10 +1182,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         (activeCourse.grade || '').toLowerCase().includes('s2 nat');
 
       const realExistingId =
-        isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
-        (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-          ? sheetConfig?.spreadsheetId
-          : undefined;
+        (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
+        (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
 
       // Ensure course dedicated Drive folder exists
       let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
@@ -3687,13 +3690,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       try {
         const evaluations = ['Diagnóstica', 'Trabajo Práctico 1', 'Evaluación Escrita', 'Desempeño'];
         const gradesRes = await sheetsService.syncGradebookToSheet(
-          activeCourse.name,
+          activeCourse,
           courseStudents,
           evaluations,
           [],
-          structure.gradesFolder.id
+          structure.gradesFolder.id,
+          activeCourse.gradesSheetId
         );
         if (gradesRes.url) gradesSheetUrl = gradesRes.url;
+        if (gradesRes.spreadsheetId && isRealGoogleSpreadsheetId(gradesRes.spreadsheetId)) {
+          activeCourse.gradesSheetId = gradesRes.spreadsheetId;
+          activeCourse.gradesSheetUrl = gradesRes.url;
+        }
       } catch (err) {
         console.warn('Could not auto-sync gradebook sheet to Drive folder:', err);
       }
@@ -4246,6 +4254,23 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   >
                     <Settings className="w-3.5 h-3.5 text-emerald-500" />
                     <span>Vincular Sheet</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCourseReportModalTab('course');
+                      setCourseReportModalOpen(true);
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/60'
+                        : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+                    }`}
+                    title="Generar informe oficial del curso o boletines individuales de 1 página para imprimir o guardar en Google Drive"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Informes y Reportes</span>
                   </button>
 
                   <button
@@ -5848,6 +5873,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               courseName={activeCourse.name}
               students={courseStudents}
               isDarkMode={isDarkMode}
+              driveFolderId={activeCourse.driveFolderId}
+              driveFolderUrl={activeCourse.driveFolderUrl}
             />
           )}
 
@@ -7916,13 +7943,29 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setSelectedStudentForProfile(null)}
-                    className="px-4 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white dark:bg-slate-700 dark:hover:bg-slate-600 text-xs font-semibold shadow-xs cursor-pointer transition-colors"
-                  >
-                    Cerrar
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCourseReportModalStudentId(selectedStudentForProfile.id);
+                        setCourseReportModalTab('individual');
+                        setCourseReportModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800 transition-colors cursor-pointer"
+                      title="Ver e imprimir boletín individual de 1 página"
+                    >
+                      <Printer className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+                      <span>Ficha 1 Pág.</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSelectedStudentForProfile(null)}
+                      className="px-4 py-1.5 rounded-xl bg-neutral-800 hover:bg-neutral-900 text-white dark:bg-slate-700 dark:hover:bg-slate-600 text-xs font-semibold shadow-xs cursor-pointer transition-colors"
+                    >
+                      Cerrar
+                    </button>
+                  </div>
                 </div>
               );
             })()}
@@ -10714,6 +10757,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Course & Student Reports Modal */}
+      {courseReportModalOpen && activeCourse && (
+        <CourseReportModal
+          isOpen={courseReportModalOpen}
+          onClose={() => setCourseReportModalOpen(false)}
+          courseId={activeCourse.id}
+          courseName={activeCourse.name}
+          students={courseStudents}
+          isDarkMode={isDarkMode}
+          score1cMap={{}}
+          score2cMap={{}}
+          annualOverrides={{}}
+          driveFolderId={activeCourse.driveFolderId}
+          driveFolderUrl={activeCourse.driveFolderUrl}
+          initialTab={courseReportModalTab}
+          initialStudentId={courseReportModalStudentId}
+        />
       )}
     </div>
   );

@@ -98,14 +98,16 @@ export const GradebookModule: React.FC<GradebookModuleProps> = ({
 
       // Background sync to course's Google Sheet if user has authenticated token
       const activeToken = token;
-      if (activeToken && activeCourse.gradesSheetId && isRealGoogleSpreadsheetId(activeCourse.gradesSheetId)) {
+      if (activeToken) {
         sheetsService
           .syncGradebookToSheet(
-            activeCourse.name,
+            activeCourse,
             courseStudents,
             evaluations,
             grades,
-            activeCourse.gradesFolderId
+            activeCourse.gradesFolderId,
+            activeCourse.gradesSheetId,
+            activeToken || undefined
           )
           .catch(() => {});
       }
@@ -149,13 +151,15 @@ export const GradebookModule: React.FC<GradebookModuleProps> = ({
         } catch (_) {}
       }
 
-      // 2. Sync grades to course sheet
+      // 2. Sync grades to course sheet, retrieving sheet dynamically for activeCourse.id
       const result = await sheetsService.syncGradebookToSheet(
-        activeCourse.name,
+        activeCourse,
         courseStudents,
         evaluations,
         grades,
-        targetFolderId
+        targetFolderId,
+        activeCourse.gradesSheetId,
+        token || undefined
       );
 
       if (result.spreadsheetId && isRealGoogleSpreadsheetId(result.spreadsheetId)) {

@@ -3913,13 +3913,20 @@ Responde ÚNICAMENTE en formato JSON válido con la siguiente estructura:
     setTimeout(() => {
       try {
         const reportId = `rep-${Date.now()}`;
+        const realSheet = courseDispositionSheets[course.id];
+        const dynamicSheetsUrl = (realSheet && realSheet.spreadsheetId && isRealSpreadsheetId(realSheet.spreadsheetId))
+          ? (realSheet.url || `https://docs.google.com/spreadsheets/d/${realSheet.spreadsheetId}/edit`)
+          : (course.dispositionSheetId && isRealSpreadsheetId(course.dispositionSheetId))
+          ? (course.dispositionSheetUrl || `https://docs.google.com/spreadsheets/d/${course.dispositionSheetId}/edit`)
+          : `https://docs.google.com/spreadsheets/d/libreta-${course.id}-${Date.now()}/edit`;
+
         const newReport: GradebookConsolidatedReport = {
           id: reportId,
           courseId: course.id,
           courseName: course.name,
           term: term || "1er Trimestre",
           generatedAt: new Date().toISOString(),
-          googleSheetsUrl: `https://docs.google.com/spreadsheets/d/libreta-${course.id}-${Date.now()}/edit`,
+          googleSheetsUrl: dynamicSheetsUrl,
           categories: {
             trabajosPracticosWeight: weights?.tp || 40,
             examenesWeight: weights?.exam || 50,

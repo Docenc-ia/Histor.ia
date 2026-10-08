@@ -11,8 +11,13 @@ import {
   AlertTriangle,
   FileSpreadsheet,
   Calendar,
+  FileText,
+  UserCheck,
+  Cloud,
+  Printer,
 } from 'lucide-react';
 import { Student } from '../../types';
+import { CourseReportModal } from './CourseReportModal';
 
 export interface AnnualSummaryViewProps {
   courseId: string;
@@ -24,9 +29,12 @@ export interface AnnualSummaryViewProps {
   annualOverrides: Record<string, string>;
   onSaveOverride: (studentId: string, val: string) => void;
   onSwitchTerm: (term: '1c' | '2c') => void;
+  driveFolderId?: string;
+  driveFolderUrl?: string;
 }
 
 export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
+  courseId,
   courseName,
   students,
   isDarkMode,
@@ -35,8 +43,13 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
   annualOverrides,
   onSaveOverride,
   onSwitchTerm,
+  driveFolderId,
+  driveFolderUrl,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [reportModalTab, setReportModalTab] = useState<'course' | 'individual'>('course');
+  const [reportModalStudentId, setReportModalStudentId] = useState<string>('all');
 
   // Calculate annual details for each student
   const studentAnnualData = useMemo(() => {
@@ -237,6 +250,41 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => {
+              setReportModalTab('course');
+              setReportModalOpen(true);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-xs ${
+              isDarkMode
+                ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/70'
+                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+            }`}
+            title="Generar informe oficial completo del curso para imprimir o guardar en Google Drive"
+          >
+            <FileText className="w-3.5 h-3.5 text-blue-500" />
+            <span>Informe del Curso</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setReportModalTab('individual');
+              setReportModalStudentId('all');
+              setReportModalOpen(true);
+            }}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-xs ${
+              isDarkMode
+                ? 'bg-purple-900/40 hover:bg-purple-800/60 text-purple-300 border-purple-700/70'
+                : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+            }`}
+            title="Generar boletines individuales de 1 página por alumno para imprimir o guardar en Drive"
+          >
+            <UserCheck className="w-3.5 h-3.5 text-purple-500" />
+            <span>Boletines (1 Pág. x Alumno)</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleExportAnnualCSV}
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
               isDarkMode
@@ -395,12 +443,13 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                 <th className="py-3 px-4 text-center">Promedio Anual</th>
                 <th className="py-3 px-4 text-center">Calificación Definitiva</th>
                 <th className="py-3 px-4 text-center">Condición Final</th>
+                <th className="py-3 px-3 text-center">Boletín 1 Pág.</th>
               </tr>
             </thead>
             <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800 text-slate-300' : 'divide-neutral-100 text-neutral-700'}`}>
               {filteredData.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 px-4 text-center">
+                  <td colSpan={8} className="py-12 px-4 text-center">
                     <Users className="w-8 h-8 mx-auto mb-2 opacity-30 text-purple-500" />
                     <p className={`font-semibold ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
                       {students.length === 0
@@ -502,6 +551,26 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                         {row.condition}
                       </span>
                     </td>
+
+                    <td className="py-3 px-3 text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReportModalTab('individual');
+                          setReportModalStudentId(row.student.id);
+                          setReportModalOpen(true);
+                        }}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer ${
+                          isDarkMode
+                            ? 'bg-slate-800 hover:bg-slate-700 text-purple-300 border-slate-700'
+                            : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+                        }`}
+                        title={`Generar boletín individual de 1 página para ${row.student.lastName}, ${row.student.firstName}`}
+                      >
+                        <Printer className="w-3 h-3 text-purple-500" />
+                        <span>Ficha 1 Pág.</span>
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}
@@ -509,6 +578,25 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Course & Student Reports Modal */}
+      {reportModalOpen && (
+        <CourseReportModal
+          isOpen={reportModalOpen}
+          onClose={() => setReportModalOpen(false)}
+          courseId={courseId}
+          courseName={courseName}
+          students={students}
+          isDarkMode={isDarkMode}
+          score1cMap={score1cMap}
+          score2cMap={score2cMap}
+          annualOverrides={annualOverrides}
+          driveFolderId={driveFolderId}
+          driveFolderUrl={driveFolderUrl}
+          initialTab={reportModalTab}
+          initialStudentId={reportModalStudentId}
+        />
+      )}
     </div>
   );
 };

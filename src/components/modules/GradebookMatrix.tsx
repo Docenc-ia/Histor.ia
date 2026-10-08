@@ -30,7 +30,8 @@ import {
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { copyTableToClipboard } from '../../utils/sheetsUtils';
+import { copyTableToClipboard, isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
+import { api } from '../../services/api';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -225,16 +226,31 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     const gradesToSave = is2c ? gradesMap2c : gradesMap1c;
 
     try {
+      const courseSheet: any = await api.getCourseDispositionSheet(courseId).catch(() => ({}));
+      const realExistingId = isRealGoogleSpreadsheetId(courseSheet?.spreadsheetId)
+        ? (courseSheet.spreadsheetId as string)
+        : undefined;
+
       const res = await sheetsService.syncGradebookMatrixToSheet(
         { id: courseId, name: courseName },
         termToSave,
         students,
         catsToSave,
         gradesToSave,
-        undefined,
+        realExistingId,
         undefined,
         token || undefined
       );
+
+      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
+        await api
+          .saveCourseDispositionSheet(courseId, {
+            spreadsheetId: res.spreadsheetId,
+            url: res.url,
+            lastSyncedAt: res.updatedAt,
+          })
+          .catch(() => {});
+      }
 
       // Save term snapshot to Firestore for durable storage across sessions
       const userId = getActiveUserId();

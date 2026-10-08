@@ -51,6 +51,28 @@ provider.setCustomParameters({
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 
+/**
+ * Validates whether a token string is a genuine Google OAuth 2.0 access token for Google APIs
+ * (not an OpenID Connect JWT ID token, not a Firebase ID token, and not a dummy/mock token).
+ */
+export const isValidGoogleAccessToken = (token?: string | null): boolean => {
+  if (!token || typeof token !== 'string') return false;
+  const t = token.trim();
+  if (t.length < 20) return false;
+  // JWT tokens start with "eyJ" (Base64url JSON header). They are ID tokens, NOT OAuth 2 access tokens.
+  if (t.startsWith('eyJ')) return false;
+  // Synthetic fallback tokens
+  if (
+    t.startsWith('google_workspace_token_') ||
+    t.startsWith('token_') ||
+    t === 'token_authenticated' ||
+    t === 'default_token'
+  ) {
+    return false;
+  }
+  return true;
+};
+
 export const getTeacherAvatar = (name?: string, email?: string, avatarUrl?: string): string => {
   if (avatarUrl && !avatarUrl.includes('photo-1534528741775') && avatarUrl.trim() !== '') {
     return avatarUrl;
@@ -93,10 +115,19 @@ export const DEFAULT_TEACHER: TeacherProfile = {
   scopes: WORKSPACE_SCOPES,
 };
 
-export const getCachedAccessToken = (): string | null => cachedAccessToken;
+export const getCachedAccessToken = (): string | null => {
+  if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
+    return cachedAccessToken;
+  }
+  return null;
+};
 
 export const setCachedAccessToken = (token: string | null): void => {
-  cachedAccessToken = token;
+  if (token && isValidGoogleAccessToken(token)) {
+    cachedAccessToken = token;
+  } else if (!token) {
+    cachedAccessToken = null;
+  }
 };
 
 export const clearAuthSession = (): void => {
@@ -162,7 +193,18 @@ export const signInWithGoogleIdToken = async (
     scopes: WORKSPACE_SCOPES,
   };
 
-  cachedAccessToken = idToken;
+  // Do not store JWT idToken into cachedAccessToken, as Workspace APIs reject JWTs with 401.
+  // Instead, attempt to obtain an authentic OAuth 2.0 access token via GSI token client if available
+  let realAccessToken = '';
+  if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+    try {
+      const gsiRes = await signInWithGoogleIdentityServices();
+      if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
+        realAccessToken = gsiRes.accessToken;
+        cachedAccessToken = gsiRes.accessToken;
+      }
+    } catch (_) {}
+  }
 
   // Sign into Firebase Auth via credential without needing popup or authDomain
   try {
@@ -178,12 +220,12 @@ export const signInWithGoogleIdToken = async (
     email: profile.email,
     name: profile.name,
     avatar: profile.avatar,
-    token: idToken,
+    token: realAccessToken || idToken,
     scopes: WORKSPACE_SCOPES,
     school: profile.school,
   });
 
-  return { profile, accessToken: idToken };
+  return { profile, accessToken: realAccessToken };
 };
 
 // Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser for ANY user
@@ -209,8 +251,8 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
           }
           try {
             const accessToken = tokenResponse.access_token;
-            if (!accessToken) {
-              return reject(new Error('No se recibió el token de acceso de Google'));
+            if (!accessToken || !isValidGoogleAccessToken(accessToken)) {
+              return reject(new Error('No se recibió un token de acceso OAuth 2.0 válido de Google'));
             }
             cachedAccessToken = accessToken;
             const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
@@ -261,27 +303,40 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
 };
 
 // Requests or returns a valid, authentic Google OAuth access token for Workspace APIs (Sheets, Drive, etc.)
-export const requestGoogleAccessToken = async (): Promise<string> => {
+export const requestGoogleAccessToken = async (forceRefresh = false): Promise<string> => {
   if (
+    !forceRefresh &&
     cachedAccessToken &&
-    cachedAccessToken.length > 20 &&
-    !cachedAccessToken.startsWith('google_workspace_token_') &&
-    !cachedAccessToken.startsWith('token_')
+    isValidGoogleAccessToken(cachedAccessToken)
   ) {
     return cachedAccessToken;
   }
 
   // 1. Prioritize Google Identity Services (GSI) OAuth 2.0 flow
   if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
-    const gsiRes = await signInWithGoogleIdentityServices();
-    if (gsiRes?.accessToken) {
-      return gsiRes.accessToken;
+    try {
+      const gsiRes = await signInWithGoogleIdentityServices();
+      if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
+        cachedAccessToken = gsiRes.accessToken;
+        return gsiRes.accessToken;
+      }
+    } catch (gsiErr) {
+      console.warn('GSI token request warning:', gsiErr);
     }
   }
 
   // 2. Fallback to Firebase popup
-  const fbRes = await googleSignIn();
-  return fbRes.accessToken;
+  try {
+    const fbRes = await googleSignIn();
+    if (fbRes?.accessToken && isValidGoogleAccessToken(fbRes.accessToken)) {
+      cachedAccessToken = fbRes.accessToken;
+      return fbRes.accessToken;
+    }
+  } catch (fbErr) {
+    console.warn('Google sign-in token fallback warning:', fbErr);
+  }
+
+  return '';
 };
 
 // Sign in with Google OAuth popup (prompting ANY user to select/log in to their Google account)
@@ -292,7 +347,7 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
     if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
       try {
         const gsiResult = await signInWithGoogleIdentityServices();
-        if (gsiResult?.accessToken) {
+        if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
           cachedAccessToken = gsiResult.accessToken;
           return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
         }
@@ -309,11 +364,19 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
       const result = await signInWithPopup(auth, provider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
 
-      const token =
-        credential?.accessToken ||
-        (result as any)._tokenResponse?.oauthAccessToken ||
-        (await result.user.getIdToken()) ||
-        'token_authenticated';
+      let token =
+        (credential?.accessToken && isValidGoogleAccessToken(credential.accessToken) ? credential.accessToken : null) ||
+        ((result as any)._tokenResponse?.oauthAccessToken && isValidGoogleAccessToken((result as any)._tokenResponse?.oauthAccessToken) ? (result as any)._tokenResponse?.oauthAccessToken : null) ||
+        null;
+
+      if (!token && typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
+        try {
+          const gsiResult = await signInWithGoogleIdentityServices();
+          if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
+            token = gsiResult.accessToken;
+          }
+        } catch (_) {}
+      }
 
       cachedAccessToken = token;
 

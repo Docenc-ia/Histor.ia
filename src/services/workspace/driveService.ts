@@ -17,8 +17,8 @@ export const driveService = {
   /**
    * Find or create a folder in Google Drive (optionally inside a parent folder)
    */
-  async findOrCreateFolder(folderName: string, parentFolderId?: string): Promise<{ id: string; name: string; url: string }> {
-    const token = getCachedAccessToken();
+  async findOrCreateFolder(folderName: string, parentFolderId?: string, providedToken?: string): Promise<{ id: string; name: string; url: string }> {
+    const token = providedToken || getCachedAccessToken();
     if (!token) {
       const fallbackId = `folder-${Date.now().toString().slice(-4)}`;
       return {
@@ -97,8 +97,8 @@ export const driveService = {
   /**
    * Move a file into a specific Google Drive folder
    */
-  async moveFileToFolder(fileId: string, folderId: string): Promise<boolean> {
-    const token = getCachedAccessToken();
+  async moveFileToFolder(fileId: string, folderId: string, providedToken?: string): Promise<boolean> {
+    const token = providedToken || getCachedAccessToken();
     if (!token || !fileId || !folderId) return false;
 
     try {
@@ -141,13 +141,14 @@ export const driveService = {
    */
   async setupCourseFolderStructure(
     courseName: string,
-    existingFolderId?: string
+    existingFolderId?: string,
+    providedToken?: string
   ): Promise<CourseFolderStructure> {
+    const token = providedToken || getCachedAccessToken();
     const mainFolderName = courseName.trim();
     let mainFolder: { id: string; name: string; url: string };
 
     if (existingFolderId && !existingFolderId.startsWith('folder-') && !existingFolderId.startsWith('f-')) {
-      const token = getCachedAccessToken();
       if (token) {
         try {
           const checkRes = await fetch(`https://www.googleapis.com/drive/v3/files/${existingFolderId}?fields=id,name,webViewLink,trashed`, {
@@ -162,26 +163,26 @@ export const driveService = {
                 url: data.webViewLink || `https://drive.google.com/drive/folders/${data.id}`,
               };
             } else {
-              mainFolder = await this.findOrCreateFolder(mainFolderName);
+              mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
             }
           } else {
-            mainFolder = await this.findOrCreateFolder(mainFolderName);
+            mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
           }
         } catch {
-          mainFolder = await this.findOrCreateFolder(mainFolderName);
+          mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
         }
       } else {
-        mainFolder = await this.findOrCreateFolder(mainFolderName);
+        mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
       }
     } else {
-      mainFolder = await this.findOrCreateFolder(mainFolderName);
+      mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
     }
 
     // Create subfolder 1: "Asistencia y Disposición" inside main folder
-    const attendanceFolder = await this.findOrCreateFolder('Asistencia y Disposición', mainFolder.id);
+    const attendanceFolder = await this.findOrCreateFolder('Asistencia y Disposición', mainFolder.id, token);
 
     // Create subfolder 2: "Calificaciones" inside main folder
-    const gradesFolder = await this.findOrCreateFolder('Calificaciones', mainFolder.id);
+    const gradesFolder = await this.findOrCreateFolder('Calificaciones', mainFolder.id, token);
 
     return {
       mainFolder,

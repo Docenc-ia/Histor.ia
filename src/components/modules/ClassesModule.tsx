@@ -63,7 +63,7 @@ import {
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { classroomService } from '../../services/workspace/classroomService';
 import { gmailService } from '../../services/workspace/gmailService';
-import { getCachedAccessToken, setCachedAccessToken } from '../../services/workspace/googleAuth';
+import { getCachedAccessToken, setCachedAccessToken, isValidGoogleAccessToken } from '../../services/workspace/googleAuth';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { calendarService } from '../../services/workspace/calendarService';
 import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
@@ -992,11 +992,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         .catch(() => {});
 
       // Load saved Google Sheet configuration
+      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+      const isS2NatCourse =
+        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
+        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+
       api
         .getCourseDispositionSheet(activeCourse.id)
         .then((data) => {
           if (!isMounted) return;
-          if (data?.spreadsheetId && isRealGoogleSpreadsheetId(data.spreadsheetId)) {
+          if (
+            data?.spreadsheetId &&
+            isRealGoogleSpreadsheetId(data.spreadsheetId) &&
+            (isS2NatCourse || data.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+          ) {
             setSheetConfig({
               spreadsheetId: data.spreadsheetId,
               url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
@@ -1004,12 +1013,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               lastSyncedAt: data.lastSyncedAt,
             });
           } else {
+            if (data?.spreadsheetId === POISONED_S2_NAT_SHEET_ID && !isS2NatCourse) {
+              api.unlinkCourseDispositionSheet(activeCourse.id).catch(() => {});
+            }
             const fallbackId = `sheet-disp-${activeCourse.id}`;
             setSheetConfig({
               spreadsheetId: fallbackId,
               url: '',
               isLiveGoogle: false,
-              lastSyncedAt: data?.lastSyncedAt,
+              lastSyncedAt: undefined,
             });
           }
         })
@@ -1028,15 +1040,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   ) => {
     if (!activeCourse) return;
     const activeToken = token || getCachedAccessToken();
-    const isAuthenticToken =
-      activeToken &&
-      activeToken.length > 20 &&
-      !activeToken.startsWith('google_workspace_token_') &&
-      !activeToken.startsWith('token_');
+    const isAuthenticToken = activeToken && isValidGoogleAccessToken(activeToken);
 
     if (!isAuthenticToken) {
       return;
     }
+
+    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+    const isS2NatCourse =
+      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
+      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
 
     setIsSyncingSheet(true);
     try {
@@ -1046,9 +1059,38 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         ? customHistory.filter((h) => h.courseId === activeCourse.id)
         : historyList.filter((h) => h.courseId === activeCourse.id);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-      const realExistingId = isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId)
-        ? sheetConfig?.spreadsheetId
-        : undefined;
+      const realExistingId =
+        isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
+        (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+          ? sheetConfig?.spreadsheetId
+          : undefined;
+
+      // Ensure course Drive folder exists
+      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
+      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+        try {
+          const folderStruct = await driveService.setupCourseFolderStructure(
+            activeCourse.name,
+            undefined,
+            activeToken
+          );
+          targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
+          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
+          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
+          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
+          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
+          activeCourse.driveFolderId = folderStruct.mainFolder.id;
+          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
+          api.updateCourse(activeCourse.id, {
+            attendanceFolderId: folderStruct.attendanceFolder.id,
+            attendanceFolderUrl: folderStruct.attendanceFolder.url,
+            gradesFolderId: folderStruct.gradesFolder.id,
+            gradesFolderUrl: folderStruct.gradesFolder.url,
+            driveFolderId: folderStruct.mainFolder.id,
+            driveFolderUrl: folderStruct.mainFolder.url,
+          }).catch(() => {});
+        } catch (_) {}
+      }
 
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
@@ -1056,7 +1098,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         map1cToUse,
         historyToUse,
         realExistingId,
-        activeCourse.attendanceFolderId,
+        targetFolderId,
         activeToken,
         map2cToUse
       );
@@ -1071,11 +1113,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       });
 
       if (isLive) {
+        activeCourse.dispositionSheetId = res.spreadsheetId;
+        activeCourse.dispositionSheetUrl = res.url;
         api
           .saveCourseDispositionSheet(activeCourse.id, {
             spreadsheetId: res.spreadsheetId,
             url: res.url,
             lastSyncedAt: res.updatedAt,
+          })
+          .catch(() => {});
+        api
+          .updateCourse(activeCourse.id, {
+            dispositionSheetId: res.spreadsheetId,
+            dispositionSheetUrl: res.url,
           })
           .catch(() => {});
       } else if (res.errorCode === 'UNAUTHORIZED') {
@@ -1095,22 +1145,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setToastMessage('Verificando conexión con Google Sheets...');
     try {
       let activeToken = token || getCachedAccessToken();
-      let isAuthentic =
-        activeToken &&
-        activeToken.length > 20 &&
-        !activeToken.startsWith('google_workspace_token_') &&
-        !activeToken.startsWith('token_');
+      let isAuthentic = activeToken && isValidGoogleAccessToken(activeToken);
 
       if (!isAuthentic) {
         setToastMessage('Solicitando autorización de tu cuenta de Google...');
         try {
           const freshToken = await requestAccessToken();
-          if (
-            freshToken &&
-            freshToken.length > 20 &&
-            !freshToken.startsWith('google_workspace_token_') &&
-            !freshToken.startsWith('token_')
-          ) {
+          if (freshToken && isValidGoogleAccessToken(freshToken)) {
             activeToken = freshToken;
             isAuthentic = true;
           }
@@ -1128,11 +1169,45 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         return;
       }
 
-      setToastMessage('Sincronizando planillas de 1°C, 2°C y Resumen Anual con Google Sheets...');
+      setToastMessage(`Sincronizando planillas de "${activeCourse.name}" con Google Sheets...`);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-      const realExistingId = isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId)
-        ? sheetConfig?.spreadsheetId
-        : undefined;
+      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+      const isS2NatCourse =
+        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
+        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+
+      const realExistingId =
+        isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
+        (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+          ? sheetConfig?.spreadsheetId
+          : undefined;
+
+      // Ensure course dedicated Drive folder exists
+      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
+      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+        try {
+          const folderStruct = await driveService.setupCourseFolderStructure(
+            activeCourse.name,
+            undefined,
+            activeToken
+          );
+          targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
+          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
+          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
+          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
+          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
+          activeCourse.driveFolderId = folderStruct.mainFolder.id;
+          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
+          api.updateCourse(activeCourse.id, {
+            attendanceFolderId: folderStruct.attendanceFolder.id,
+            attendanceFolderUrl: folderStruct.attendanceFolder.url,
+            gradesFolderId: folderStruct.gradesFolder.id,
+            gradesFolderUrl: folderStruct.gradesFolder.url,
+            driveFolderId: folderStruct.mainFolder.id,
+            driveFolderUrl: folderStruct.mainFolder.url,
+          }).catch(() => {});
+        } catch (_) {}
+      }
 
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
@@ -1140,12 +1215,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         dispositionMap,
         historyList.filter((h) => h.courseId === activeCourse.id),
         realExistingId,
-        activeCourse.attendanceFolderId,
+        targetFolderId,
         activeToken,
         dispositionMap2c
       );
 
       if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
+        activeCourse.dispositionSheetId = res.spreadsheetId;
+        activeCourse.dispositionSheetUrl = res.url;
+
         setSheetConfig({
           spreadsheetId: res.spreadsheetId,
           url: res.url,
@@ -1159,7 +1237,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           lastSyncedAt: res.updatedAt,
         });
 
-        setToastMessage(`✓ Google Sheets sincronizado con éxito (${res.summaryRowsCount} alumnos, ${res.historyRowsCount} incidencias)`);
+        await api.updateCourse(activeCourse.id, {
+          dispositionSheetId: res.spreadsheetId,
+          dispositionSheetUrl: res.url,
+        }).catch(() => {});
+
+        setToastMessage(`✓ Google Sheets de "${activeCourse.name}" sincronizado con éxito (${res.summaryRowsCount} alumnos, ${res.historyRowsCount} incidencias)`);
         setSheetsModalFeedback(null);
         setShowSheetsConnectModal(false);
       } else if (res.errorCode === 'UNAUTHORIZED') {
@@ -1211,11 +1294,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       setSheetsModalFeedback('✓ Hoja vinculada con éxito. Sincronizando datos...');
 
       let activeToken = token || getCachedAccessToken();
-      const isAuthentic =
-        activeToken &&
-        activeToken.length > 20 &&
-        !activeToken.startsWith('google_workspace_token_') &&
-        !activeToken.startsWith('token_');
+      const isAuthentic = activeToken && isValidGoogleAccessToken(activeToken);
 
       if (isAuthentic && activeToken) {
         const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
@@ -1323,8 +1402,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const handleOpenGoogleSheet = async () => {
     if (!activeCourse) return;
 
-    // 1. If we already have a confirmed live Google Sheet URL or real ID
-    if (sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId)) {
+    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+    const isS2NatCourse =
+      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
+      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+
+    // 1. If we already have a confirmed live Google Sheet URL or real ID that belongs to this course
+    if (
+      sheetConfig?.spreadsheetId &&
+      isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) &&
+      (isS2NatCourse || sheetConfig.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+    ) {
       const openUrl = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
       window.open(openUrl, '_blank');
       return;

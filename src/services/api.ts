@@ -1504,21 +1504,41 @@ export const api = {
     spreadsheetId?: string;
     url?: string;
     lastSyncedAt?: string;
+    isLiveGoogle?: boolean;
   }> {
     const localKey = `fds_course_disposition_sheet_${courseId}`;
+    const POISONED_S2_NAT_SHEET_ID = "12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4";
+
     let cached: any = null;
     if (typeof window !== 'undefined') {
       try {
         const raw = localStorage.getItem(localKey);
-        if (raw) cached = JSON.parse(raw);
+        if (raw) {
+          cached = JSON.parse(raw);
+          // Purge inherited/poisoned s2-nat sheet ID from any course
+          if (cached?.spreadsheetId === POISONED_S2_NAT_SHEET_ID) {
+            localStorage.removeItem(localKey);
+            cached = null;
+          }
+        }
       } catch (_) {}
     }
+
     try {
       const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`);
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data?.spreadsheetId) {
+          // If server still had the old poisoned sheet id, purge it
+          if (data.spreadsheetId === POISONED_S2_NAT_SHEET_ID) {
+            if (typeof window !== 'undefined') {
+              try { localStorage.removeItem(localKey); } catch (_) {}
+            }
+            await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, { method: 'DELETE' }).catch(() => {});
+            return {};
+          }
+
           const isReal = isRealGoogleSpreadsheetId(data.spreadsheetId);
           const sanitized = {
             ...data,
@@ -1531,10 +1551,19 @@ export const api = {
             } catch (_) {}
           }
           return sanitized;
+        } else {
+          // No spreadsheet on server for this course: clear local cache
+          if (typeof window !== 'undefined') {
+            try {
+              localStorage.removeItem(localKey);
+            } catch (_) {}
+          }
+          return {};
         }
       }
     } catch (_) {}
-    if (cached?.spreadsheetId) {
+
+    if (cached?.spreadsheetId && cached.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) {
       const isReal = isRealGoogleSpreadsheetId(cached.spreadsheetId);
       return {
         ...cached,
@@ -1543,6 +1572,21 @@ export const api = {
       };
     }
     return {};
+  },
+
+  async unlinkCourseDispositionSheet(courseId: string): Promise<{ success: boolean }> {
+    const localKey = `fds_course_disposition_sheet_${courseId}`;
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem(localKey);
+      } catch (_) {}
+    }
+    try {
+      await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
+        method: 'DELETE',
+      });
+    } catch (_) {}
+    return { success: true };
   },
 
   async saveCourseDispositionSheet(

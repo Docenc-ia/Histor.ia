@@ -13,8 +13,10 @@ import {
 } from 'lucide-react';
 import { Course, Student, GradeEntry } from '../../types';
 import { sheetsService } from '../../services/workspace/sheetsService';
+import { driveService } from '../../services/workspace/driveService';
 import { api } from '../../services/api';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 
 interface GradebookModuleProps {
   courses: Course[];
@@ -33,7 +35,7 @@ export const GradebookModule: React.FC<GradebookModuleProps> = ({
   onSelectCourse,
   onRefreshData,
 }) => {
-  const { isDarkMode } = useWorkspaceAuth();
+  const { isDarkMode, token } = useWorkspaceAuth();
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
   const courseStudents = students.filter((s) => s.courseId === activeCourse?.id);
 
@@ -93,6 +95,20 @@ export const GradebookModule: React.FC<GradebookModuleProps> = ({
         score,
         maxScore: 10,
       });
+
+      // Background sync to course's Google Sheet if user has authenticated token
+      const activeToken = token;
+      if (activeToken && activeCourse.gradesSheetId && isRealGoogleSpreadsheetId(activeCourse.gradesSheetId)) {
+        sheetsService
+          .syncGradebookToSheet(
+            activeCourse.name,
+            courseStudents,
+            evaluations,
+            grades,
+            activeCourse.gradesFolderId
+          )
+          .catch(() => {});
+      }
     } catch (err) {
       console.error('Error saving grade:', err);
     }
@@ -110,13 +126,49 @@ export const GradebookModule: React.FC<GradebookModuleProps> = ({
     if (!activeCourse) return;
     setIsSyncingSheets(true);
     try {
+      // 1. Ensure course dedicated Drive folder exists
+      let targetFolderId = activeCourse.gradesFolderId || activeCourse.driveFolderId;
+      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+        try {
+          const folderStruct = await driveService.setupCourseFolderStructure(
+            activeCourse.name,
+            undefined,
+            token || undefined
+          );
+          targetFolderId = folderStruct.gradesFolder.id || folderStruct.mainFolder.id;
+          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
+          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
+          activeCourse.driveFolderId = folderStruct.mainFolder.id;
+          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
+          api.updateCourse(activeCourse.id, {
+            gradesFolderId: folderStruct.gradesFolder.id,
+            gradesFolderUrl: folderStruct.gradesFolder.url,
+            driveFolderId: folderStruct.mainFolder.id,
+            driveFolderUrl: folderStruct.mainFolder.url,
+          }).catch(() => {});
+        } catch (_) {}
+      }
+
+      // 2. Sync grades to course sheet
       const result = await sheetsService.syncGradebookToSheet(
         activeCourse.name,
         courseStudents,
         evaluations,
-        grades
+        grades,
+        targetFolderId
       );
-      setToastMessage(`Planilla vinculada con Google Sheets: ${result.spreadsheetId}`);
+
+      if (result.spreadsheetId && isRealGoogleSpreadsheetId(result.spreadsheetId)) {
+        activeCourse.gradesSheetId = result.spreadsheetId;
+        activeCourse.gradesSheetUrl = result.url || `https://docs.google.com/spreadsheets/d/${result.spreadsheetId}/edit`;
+        await api.updateCourse(activeCourse.id, {
+          gradesSheetId: result.spreadsheetId,
+          gradesSheetUrl: activeCourse.gradesSheetUrl,
+        }).catch(() => {});
+        setToastMessage(`✓ Planilla de calificaciones de "${activeCourse.name}" guardada en su carpeta de Drive`);
+      } else {
+        setToastMessage(`Planilla vinculada con Google Sheets`);
+      }
       setTimeout(() => setToastMessage(null), 4500);
     } catch (err: any) {
       alert('Error al sincronizar con Google Sheets: ' + err.message);

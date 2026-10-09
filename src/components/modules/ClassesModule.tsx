@@ -4746,40 +4746,43 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* ACTIVE COURSE HEADER CARD & WORKSPACE LINKS                   */}
           {/* ------------------------------------------------------------- */}
           <div
-            className={`rounded-xl border p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
+            className={`rounded-xl border p-5 shadow-xs flex flex-col gap-4 transition-colors ${
               isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-neutral-200'
             }`}
           >
-            <div className="space-y-1.5 flex-1">
-              <div className="flex items-center gap-2">
-                <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                  {activeCourse.grade} • {activeCourse.room}
-                </span>
-                {activeCourse.classroomSynced && (
-                  <span
-                    className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
-                      isDarkMode
-                        ? 'text-emerald-300 bg-emerald-950/60 border-emerald-800/60'
-                        : 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                    }`}
-                  >
-                    <Check className="w-3 h-3" /> Conectado con Classroom
+            {/* Información del aula (nombre de la materia, división, horario, etc.) */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-neutral-200/80 dark:border-slate-800">
+              <div className="space-y-1.5 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    {activeCourse.grade} • {activeCourse.room}
                   </span>
-                )}
-              </div>
+                  {activeCourse.classroomSynced && (
+                    <span
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                        isDarkMode
+                          ? 'text-emerald-300 bg-emerald-950/60 border-emerald-800/60'
+                          : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                      }`}
+                    >
+                      <Check className="w-3 h-3" /> Conectado con Classroom
+                    </span>
+                  )}
+                </div>
 
-              {/* Nombre de la materia */}
-              <div>
-                <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-800'}`}>
-                  {activeCourse.name}
-                </h3>
-                <p className={`text-xs font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                  {activeCourse.subject}
-                </p>
+                {/* Nombre de la materia */}
+                <div>
+                  <h3 className={`text-xl sm:text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
+                    {activeCourse.name}
+                  </h3>
+                  <p className={`text-xs sm:text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
+                    {activeCourse.subject}
+                  </p>
+                </div>
               </div>
               
               {/* Horario con sincronización desde Google Calendar y edición */}
-              <div className="flex flex-wrap items-center gap-2 pt-1">
+              <div className="flex flex-wrap items-center gap-2">
                 <div className="flex items-center gap-1.5 text-xs">
                   <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
                   <span className={`font-semibold ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>

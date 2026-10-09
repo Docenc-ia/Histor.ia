@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import {
   ArrowLeft,
   Users,
-  Trash2
+  Trash2,
+  Plus
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -84,6 +85,22 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
                 </option>
               ))}
             </select>
+
+            {onOpenNewModal && (
+              <button
+                type="button"
+                onClick={() => onOpenNewModal('course')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-all border flex items-center gap-1.5 cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-blue-950/40 hover:bg-blue-900/60 text-blue-300 border-blue-800/60'
+                    : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200 shadow-2xs'
+                }`}
+                title="Agregar una nueva materia manualmente sin necesitar Google Classroom"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Nueva Materia</span>
+              </button>
+            )}
 
             {onDeleteCourse && (
               <button

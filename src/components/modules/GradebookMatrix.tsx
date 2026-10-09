@@ -19,6 +19,8 @@ import {
   Copy,
   ClipboardCheck,
   ExternalLink,
+  Upload,
+  History,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
@@ -27,6 +29,12 @@ import {
   PreliminaryValuationModal,
   PreliminaryValuationRecord,
 } from './PreliminaryValuationModal';
+import { ImportGradesModal } from './ImportGradesModal';
+import {
+  GradeHistoryEntry,
+  exportGradeHistoryToExcel,
+  exportGradebookMatrixToExcel,
+} from '../../utils/excelExport';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -423,6 +431,99 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(record));
       }
     }
+  };
+
+  // Import Grades Modal & Grade History state
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [gradeHistory, setGradeHistory] = useState<GradeHistoryEntry[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem(`fds_grade_history_${courseId}`);
+        if (saved) return JSON.parse(saved);
+      } catch (_) {}
+    }
+    return [];
+  });
+
+  const handleApplyImportedGrades = (data: {
+    term: '1c' | '2c';
+    categoryId: string;
+    subcategoryId: string;
+    newSubcategoryName?: string;
+    updates: Record<string, string>;
+    historyEntry: GradeHistoryEntry;
+  }) => {
+    const isTarget2c = data.term === '2c';
+    let targetCats = isTarget2c ? [...categories2c] : [...categories1c];
+
+    // Si creó una columna nueva, agregarla a la categoría
+    if (data.newSubcategoryName) {
+      targetCats = targetCats.map((cat) => {
+        if (cat.id === data.categoryId) {
+          return {
+            ...cat,
+            subcategories: [
+              ...cat.subcategories,
+              {
+                id: data.subcategoryId,
+                name: data.newSubcategoryName!,
+                maxScore: 10,
+              },
+            ],
+          };
+        }
+        return cat;
+      });
+      saveCategories(targetCats);
+    }
+
+    // Actualizar notas
+    const currentTargetGrades = isTarget2c ? { ...gradesMap2c } : { ...gradesMap1c };
+    Object.entries(data.updates).forEach(([stId, score]) => {
+      if (!currentTargetGrades[stId]) {
+        currentTargetGrades[stId] = {};
+      }
+      currentTargetGrades[stId] = {
+        ...currentTargetGrades[stId],
+        [data.subcategoryId]: score,
+      };
+    });
+
+    saveGrades(currentTargetGrades);
+
+    // Guardar en historial de calificaciones
+    const updatedHistory = [data.historyEntry, ...gradeHistory];
+    setGradeHistory(updatedHistory);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`fds_grade_history_${courseId}`, JSON.stringify(updatedHistory));
+    }
+
+    // Persistir en Firestore
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync
+        .saveTermSnapshot(userId, courseId, data.term, {
+          courseId,
+          term: data.term,
+          termLabel: data.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+          categories: targetCats,
+          gradesMap: currentTargetGrades,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }
+
+    // Disparar evento para actualizar vistas
+    window.dispatchEvent(
+      new CustomEvent('fds-grades-updated', {
+        detail: { term: data.term, courseId },
+      })
+    );
+  };
+
+  const handleExportFullExcel = () => {
+    const termLabel = currentTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
+    exportGradebookMatrixToExcel(courseName, termLabel, students, categories, gradesMap);
   };
 
   // Double Scrollbar Synchronization: Top scrollbar & Bottom Table scrollbar
@@ -975,7 +1076,53 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 <span>Opciones de Categorías</span>
               </button>
 
-              {/* Export Button */}
+              {/* Subir Notas desde Excel o Google Sheets con Verificación */}
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                title="Subir archivo Excel (.xlsx, .xls) o pegar notas desde Google Sheets con verificación previa de alumnos"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>Subir Notas (Excel / Sheets)</span>
+              </button>
+
+              {/* Historial de Calificaciones */}
+              <button
+                type="button"
+                onClick={() => setIsImportModalOpen(true)}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
+                }`}
+                title="Ver historial de notas importadas y exportar reporte"
+              >
+                <History className="w-3.5 h-3.5 text-blue-500" />
+                <span>Historial</span>
+                {gradeHistory.length > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                    {gradeHistory.length}
+                  </span>
+                )}
+              </button>
+
+              {/* Export Full Excel (.xlsx) */}
+              <button
+                type="button"
+                onClick={handleExportFullExcel}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
+                }`}
+                title="Descargar planilla completa en formato Excel (.xlsx)"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                <span>Descargar Excel</span>
+              </button>
+
+              {/* Export CSV Button */}
               <button
                 type="button"
                 onClick={handleExportCSV}
@@ -986,8 +1133,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 }`}
                 title="Descargar planilla en formato CSV para abrir en Excel o Google Sheets"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Descargar CSV</span>
+                <Download className="w-3.5 h-3.5 text-neutral-500" />
+                <span>CSV</span>
               </button>
 
               {/* Guardar Notas del Cuatrimestre en Google Sheets */}
@@ -1973,6 +2120,23 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         isDarkMode={isDarkMode}
         savedValuation={activePreliminaryValuation}
         onSaveValuation={handleSavePreliminaryValuation}
+      />
+
+      {/* Modal: Importar y Registrar Notas desde Excel o Sheets con Verificación Previa */}
+      <ImportGradesModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        courseId={courseId}
+        courseName={courseName}
+        students={students}
+        categories1c={categories1c}
+        categories2c={categories2c}
+        gradesMap1c={gradesMap1c}
+        gradesMap2c={gradesMap2c}
+        currentTerm={is2c ? '2c' : '1c'}
+        isDarkMode={isDarkMode}
+        onApplyGrades={handleApplyImportedGrades}
+        historyEntries={gradeHistory}
       />
         </>
       )}

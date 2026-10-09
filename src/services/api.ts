@@ -889,11 +889,35 @@ export const api = {
     };
     const current = getLocalStudents(studentData.courseId);
     saveLocalStudents(studentData.courseId, [...current, newStudent]);
+    const courses = getLocalCourses();
+    const courseIndex = courses.findIndex((c) => c.id === studentData.courseId);
+    if (courseIndex >= 0) {
+      courses[courseIndex].studentsCount = (courses[courseIndex].studentsCount || 0) + 1;
+      saveLocalCourses(courses);
+    }
     const userId = getActiveUserId();
     if (userId) {
       firestoreSync.saveStudents(userId, studentData.courseId, [...current, newStudent]).catch(() => {});
+      if (courseIndex >= 0) {
+        firestoreSync.saveCourses(userId, courses).catch(() => {});
+      }
     }
     return newStudent;
+  },
+
+  async updateStudent(studentId: string, courseId: string, updates: Partial<Student>): Promise<Student | null> {
+    const current = getLocalStudents(courseId);
+    const idx = current.findIndex((s) => s.id === studentId);
+    if (idx !== -1) {
+      current[idx] = { ...current[idx], ...updates };
+      saveLocalStudents(courseId, current);
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync.saveStudents(userId, courseId, current).catch(() => {});
+      }
+      return current[idx];
+    }
+    return null;
   },
 
   async syncCourseStudentsRoster(courseId: string, students: Partial<Student>[]): Promise<{ success: boolean; count: number; students: Student[] }> {
@@ -1060,7 +1084,7 @@ export const api = {
     timestamp?: number;
     messageSent?: boolean;
     messageText?: string;
-    notificationMethod?: 'classroom' | 'gmail' | 'none';
+    notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none';
     notifiedAt?: string;
     expectedSummary?: { totalAbsences: number; totalLates?: number; totalDisposition: number };
   }): Promise<{

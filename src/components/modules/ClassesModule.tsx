@@ -50,9 +50,18 @@ import {
   FileText,
   Link,
   Printer,
+  ArrowLeftRight,
+  Upload,
 } from 'lucide-react';
 import { GradebookMatrix, DEFAULT_CATEGORIES } from './GradebookMatrix';
+import { ImportGradesModal } from './ImportGradesModal';
 import { CourseReportModal } from './CourseReportModal';
+import {
+  exportCourseClassHistoryToExcel,
+  exportCourseDispositionToExcel,
+  exportGradebookMatrixToExcel,
+  GradeHistoryEntry,
+} from '../../utils/excelExport';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
 import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate, StudentObservation } from '../../types';
 import {
@@ -832,6 +841,53 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [editingDispositionTerm, setEditingDispositionTerm] = useState<'1c' | '2c'>('1c');
   const [editingDispositionReason, setEditingDispositionReason] = useState<string>('');
 
+  // Modal para editar cantidad de faltas (pasaje de papel, fecha retroactiva y aviso al alumno)
+  const [editingAbsenceStudent, setEditingAbsenceStudent] = useState<Student | null>(null);
+  const [editingAbsenceCount, setEditingAbsenceCount] = useState<string>('0');
+  const [editingAbsenceTerm, setEditingAbsenceTerm] = useState<'1c' | '2c'>('1c');
+  const [editingAbsenceDate, setEditingAbsenceDate] = useState<string>(() => {
+    const today = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+  });
+  const [editingAbsenceReason, setEditingAbsenceReason] = useState<string>('Pasado de planilla en papel');
+  const [editingAbsenceSendNotif, setEditingAbsenceSendNotif] = useState<boolean>(false);
+  const [editingAbsenceChannel, setEditingAbsenceChannel] = useState<'classroom' | 'gmail'>('classroom');
+  const [editingAbsenceMessageText, setEditingAbsenceMessageText] = useState<string>('');
+  const [isSavingAbsenceEdit, setIsSavingAbsenceEdit] = useState<boolean>(false);
+
+  // Modal para agregar alumno manualmente (con correo para avisos y mensajes)
+  const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
+  const [addStudentFirstName, setAddStudentFirstName] = useState('');
+  const [addStudentLastName, setAddStudentLastName] = useState('');
+  const [addStudentEmail, setAddStudentEmail] = useState('');
+  const [addStudentPhone, setAddStudentPhone] = useState('');
+  const [addStudentNotes, setAddStudentNotes] = useState('');
+  const [isSavingManualStudent, setIsSavingManualStudent] = useState(false);
+  const [addStudentTab, setAddStudentTab] = useState<'single' | 'batch'>('single');
+  const [batchStudentsText, setBatchStudentsText] = useState('');
+
+  // Modal para enviar mensaje directo a un estudiante (usando su correo o canales)
+  const [directMessageModal, setDirectMessageModal] = useState<{
+    isOpen: boolean;
+    student: Student | null;
+    subject: string;
+    messageText: string;
+    channel: 'gmail' | 'classroom' | 'whatsapp';
+    isSending: boolean;
+  }>({
+    isOpen: false,
+    student: null,
+    subject: '',
+    messageText: '',
+    channel: 'gmail',
+    isSending: false,
+  });
+
+  // State para edición de email en ficha del alumno
+  const [isEditingStudentEmail, setIsEditingStudentEmail] = useState(false);
+  const [editedStudentEmail, setEditedStudentEmail] = useState('');
+
   // Ficha y observaciones del estudiante (al hacer clic en su nombre)
   const [selectedStudentForProfile, setSelectedStudentForProfile] = useState<Student | null>(null);
   const [newObservationText, setNewObservationText] = useState('');
@@ -868,6 +924,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [customFolderInput, setCustomFolderInput] = useState('');
   const [isLinkingCustomFolder, setIsLinkingCustomFolder] = useState(false);
   const [historySubTab, setHistorySubTab] = useState<'incidents' | 'summary'>('incidents');
+
+  // Doble Entrada (Two-Way Sync): lectura de cambios desde Google Sheets a la App
+  const [isPullingFromSheet, setIsPullingFromSheet] = useState(false);
+  const [dobleEntradaDiffs, setDobleEntradaDiffs] = useState<any[] | null>(null);
+  const [isDobleEntradaModalOpen, setIsDobleEntradaModalOpen] = useState(false);
+
+  // Modal / Selector de Exportar Excel en la cabecera
+  const [isHeaderExportExcelModalOpen, setIsHeaderExportExcelModalOpen] = useState(false);
+
+  // Modal de Importar desde Excel / Sheets en la cabecera
+  const [isHeaderImportModalOpen, setIsHeaderImportModalOpen] = useState(false);
 
   // Permanent history controls (always visible in roster tab & history tab)
   const [permHistorySearch, setPermHistorySearch] = useState('');
@@ -1174,7 +1241,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         return;
       }
 
-      setToastMessage(`Sincronizando planillas de "${activeCourse.name}" con Google Sheets...`);
+      setToastMessage(`Sincronizando con Google Sheets para "${activeCourse.name}"...`);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
       const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
       const isS2NatCourse =
@@ -1184,6 +1251,63 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const realExistingId =
         (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
         (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
+
+      let map1cToSync = dispositionMap;
+      let map2cToSync = dispositionMap2c;
+      let pulledChangesCount = 0;
+
+      // 1. Doble Entrada (Pull): Si ya existe hoja en Sheets, primero verificamos y traemos
+      // cualquier cambio que el profesor haya hecho directamente en la hoja de cálculo.
+      if (realExistingId) {
+        try {
+          const pullRes = await sheetsService.pullDispositionSheetFromGoogle(
+            activeCourse,
+            currentStudents,
+            dispositionMap,
+            dispositionMap2c,
+            realExistingId,
+            activeToken
+          );
+          if (pullRes.success && pullRes.changesCount > 0) {
+            pulledChangesCount = pullRes.changesCount;
+            map1cToSync = pullRes.updatedMap1c;
+            map2cToSync = pullRes.updatedMap2c;
+            setDispositionMap(pullRes.updatedMap1c);
+            setDispositionMap2c(pullRes.updatedMap2c);
+
+            if (typeof window !== 'undefined' && activeCourse?.id) {
+              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(pullRes.updatedMap1c));
+              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(pullRes.updatedMap2c));
+            }
+
+            const now = new Date();
+            const dateStr = formatLocalDateDMY(now);
+            const timeStr = formatLocalTimeHMS(now);
+            const newHistoryItems: StudentHistoryItem[] = pullRes.changes.map((change, idx) => ({
+              id: `sheet-pull-${Date.now()}-${idx}`,
+              studentId: change.studentId,
+              studentName: change.studentName,
+              courseId: activeCourse.id,
+              term: change.term,
+              category: change.field === 'totalAbsences' ? 'Ausencia' : change.field === 'totalLates' ? 'Llegada tarde' : 'Disposición',
+              action: `Sincronización Sheets (${change.termLabel}): ${change.fieldLabel} modificado en Google Sheet de ${change.oldValue} a ${change.newValue}`,
+              date: dateStr,
+              time: timeStr,
+              timestamp: Date.now() + idx,
+            }));
+
+            const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
+            setHistoryList(updatedHistory);
+            saveAllDispositionStorage(pullRes.updatedMap1c, updatedHistory);
+            window.dispatchEvent(new Event('docencia_student_status_updated'));
+
+            setDobleEntradaDiffs(pullRes.changes);
+            setIsDobleEntradaModalOpen(true);
+          }
+        } catch (pullErr) {
+          console.warn('Advertencia al leer modificaciones previas en Google Sheets:', pullErr);
+        }
+      }
 
       // Ensure course dedicated Drive folder exists
       let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
@@ -1212,15 +1336,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         } catch (_) {}
       }
 
+      // 2. Doble Entrada (Push): Subir y sincronizar la planilla completa hacia Google Sheets
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
-        dispositionMap,
+        map1cToSync,
         historyList.filter((h) => h.courseId === activeCourse.id),
         realExistingId,
         targetFolderId,
         activeToken,
-        dispositionMap2c
+        map2cToSync
       );
 
       if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
@@ -1245,7 +1370,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           dispositionSheetUrl: res.url,
         }).catch(() => {});
 
-        setToastMessage(`✓ Google Sheets de "${activeCourse.name}" sincronizado con éxito (${res.summaryRowsCount} alumnos, ${res.historyRowsCount} incidencias)`);
+        if (pulledChangesCount > 0) {
+          setToastMessage(`✓ ¡Sincronizado con Sheets! Se incorporaron ${pulledChangesCount} cambio(s) desde Google Sheets y se actualizó la planilla.`);
+        } else {
+          setToastMessage(`✓ ¡Sincronizado con Sheets! Planilla de "${activeCourse.name}" actualizada con éxito (${res.summaryRowsCount} alumnos).`);
+        }
         setSheetsModalFeedback(null);
         setShowSheetsConnectModal(false);
       } else if (res.errorCode === 'UNAUTHORIZED') {
@@ -1430,6 +1559,237 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     if (sheetConfig?.url) {
       window.open(sheetConfig.url, '_blank');
     }
+  };
+
+  // Doble Entrada (Two-Way Sync): Traer cambios realizados directamente en Google Sheets a la App
+  const handlePullFromGoogleSheet = async (showFeedback = true) => {
+    if (!activeCourse) return;
+    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+    const isS2NatCourse =
+      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
+      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+
+    const sheetId =
+      (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
+      (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
+
+    if (!sheetId) {
+      setToastMessage('Aviso: Primero vincula una hoja de Google Sheets a la materia para usar Doble Entrada.');
+      setTimeout(() => setToastMessage(null), 4000);
+      setShowSheetsConnectModal(true);
+      return;
+    }
+
+    const activeToken = token || getCachedAccessToken();
+    if (!activeToken || !isValidGoogleAccessToken(activeToken)) {
+      setToastMessage('Para leer datos de Google Sheets en tiempo real, autoriza tu cuenta de Google.');
+      setShowSheetsConnectModal(true);
+      return;
+    }
+
+    setIsPullingFromSheet(true);
+    try {
+      const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+      const res = await sheetsService.pullDispositionSheetFromGoogle(
+        activeCourse,
+        currentStudents,
+        dispositionMap,
+        dispositionMap2c,
+        sheetId,
+        activeToken
+      );
+
+      if (!res.success) {
+        setToastMessage(res.message);
+        setTimeout(() => setToastMessage(null), 4500);
+        return;
+      }
+
+      if (res.changesCount > 0) {
+        // Actualizar estados locales de 1c y 2c
+        setDispositionMap(res.updatedMap1c);
+        setDispositionMap2c(res.updatedMap2c);
+        if (typeof window !== 'undefined' && activeCourse?.id) {
+          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(res.updatedMap1c));
+          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(res.updatedMap2c));
+        }
+
+        // Registrar los cambios en el historial para auditoría
+        const now = new Date();
+        const dateStr = formatLocalDateDMY(now);
+        const timeStr = formatLocalTimeHMS(now);
+        const newHistoryItems: StudentHistoryItem[] = res.changes.map((change, idx) => ({
+          id: `sheet-pull-${Date.now()}-${idx}`,
+          studentId: change.studentId,
+          studentName: change.studentName,
+          courseId: activeCourse.id,
+          term: change.term,
+          category: change.field === 'totalAbsences' ? 'Ausencia' : change.field === 'totalLates' ? 'Llegada tarde' : 'Disposición',
+          action: `Doble Entrada Sheets (${change.termLabel}): ${change.fieldLabel} modificado en Google Sheet de ${change.oldValue} a ${change.newValue}`,
+          date: dateStr,
+          time: timeStr,
+          timestamp: Date.now() + idx,
+        }));
+
+        const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
+        setHistoryList(updatedHistory);
+        saveAllDispositionStorage(res.updatedMap1c, updatedHistory);
+
+        // Notificar a toda la aplicación
+        window.dispatchEvent(new Event('docencia_student_status_updated'));
+
+        setDobleEntradaDiffs(res.changes);
+        setIsDobleEntradaModalOpen(true);
+        setToastMessage(`✓ ¡Doble Entrada! Se sincronizaron ${res.changesCount} cambio(s) desde Google Sheets.`);
+        setTimeout(() => setToastMessage(null), 5000);
+      } else {
+        if (showFeedback) {
+          setToastMessage('✓ Google Sheet y App sincronizados: No hay diferencias pendientes.');
+          setTimeout(() => setToastMessage(null), 3500);
+        }
+      }
+    } catch (err: any) {
+      console.error('Error in handlePullFromGoogleSheet:', err);
+      setToastMessage('No se pudo leer la hoja de cálculo. Verifica permisos o conexión.');
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setIsPullingFromSheet(false);
+    }
+  };
+
+  // Exportar archivos Excel para la materia
+  const handleExportAllCourseExcel = (type: 'all' | 'disposition' | 'grades' | 'history') => {
+    if (!activeCourse) return;
+    if (type === 'disposition') {
+      exportCourseDispositionToExcel(activeCourse.name, courseStudents, dispositionMap, dispositionMap2c);
+    } else if (type === 'history') {
+      exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
+    } else if (type === 'grades') {
+      const cats1c = localStorage.getItem(`fds_grades_categories_${activeCourse.id}_1c`) || localStorage.getItem(`fds_grades_categories_${activeCourse.id}`);
+      const parsedCats = cats1c ? JSON.parse(cats1c) : DEFAULT_CATEGORIES;
+      const gradesData = localStorage.getItem(`fds_grades_data_${activeCourse.id}_1c`) || localStorage.getItem(`fds_grades_data_${activeCourse.id}`);
+      const parsedGrades = gradesData ? JSON.parse(gradesData) : {};
+      exportGradebookMatrixToExcel(activeCourse.name, '1° Cuatrimestre', courseStudents, parsedCats, parsedGrades);
+    } else {
+      // Export package: both disposition and history
+      exportCourseDispositionToExcel(activeCourse.name, courseStudents, dispositionMap, dispositionMap2c);
+      setTimeout(() => {
+        exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
+      }, 500);
+    }
+    setIsHeaderExportExcelModalOpen(false);
+    setToastMessage(`✓ Archivo Excel descargado para "${activeCourse.name}"`);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Helper para categorías de calificaciones del curso
+  const getCategoriesForImport = (term: '1c' | '2c'): GradeCategory[] => {
+    if (!activeCourse) return DEFAULT_CATEGORIES;
+    try {
+      const key = `fds_grades_categories_${activeCourse.id}_${term}`;
+      const saved = localStorage.getItem(key) || (term === '1c' ? localStorage.getItem(`fds_grades_categories_${activeCourse.id}`) : null);
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return DEFAULT_CATEGORIES;
+  };
+
+  // Helper para mapa de notas del curso
+  const getGradesMapForImport = (term: '1c' | '2c'): StudentGradesMap => {
+    if (!activeCourse) return {};
+    try {
+      const key = `fds_grades_data_${activeCourse.id}_${term}`;
+      const saved = localStorage.getItem(key) || (term === '1c' ? localStorage.getItem(`fds_grades_data_${activeCourse.id}`) : null);
+      if (saved) return JSON.parse(saved);
+    } catch (_) {}
+    return {};
+  };
+
+  // Aplicar notas importadas desde el modal de la cabecera
+  const handleApplyImportFromClassesModule = (data: {
+    term: '1c' | '2c';
+    categoryId: string;
+    subcategoryId: string;
+    newSubcategoryName?: string;
+    updates: Record<string, string>;
+    historyEntry: GradeHistoryEntry;
+  }) => {
+    if (!activeCourse) return;
+    const isTarget2c = data.term === '2c';
+    let targetCats = getCategoriesForImport(data.term);
+
+    if (data.newSubcategoryName) {
+      targetCats = targetCats.map((cat) => {
+        if (cat.id === data.categoryId) {
+          return {
+            ...cat,
+            subcategories: [
+              ...cat.subcategories,
+              {
+                id: data.subcategoryId,
+                name: data.newSubcategoryName!,
+                maxScore: 10,
+              },
+            ],
+          };
+        }
+        return cat;
+      });
+      localStorage.setItem(`fds_grades_categories_${activeCourse.id}_${data.term}`, JSON.stringify(targetCats));
+      if (!isTarget2c) {
+        localStorage.setItem(`fds_grades_categories_${activeCourse.id}`, JSON.stringify(targetCats));
+      }
+    }
+
+    const currentTargetGrades = getGradesMapForImport(data.term);
+    Object.entries(data.updates).forEach(([stId, score]) => {
+      if (!currentTargetGrades[stId]) {
+        currentTargetGrades[stId] = {};
+      }
+      currentTargetGrades[stId] = {
+        ...currentTargetGrades[stId],
+        [data.subcategoryId]: score,
+      };
+    });
+
+    localStorage.setItem(`fds_grades_data_${activeCourse.id}_${data.term}`, JSON.stringify(currentTargetGrades));
+    if (!isTarget2c) {
+      localStorage.setItem(`fds_grades_data_${activeCourse.id}`, JSON.stringify(currentTargetGrades));
+    }
+
+    // Guardar en historial
+    try {
+      const hKey = `fds_grade_history_${activeCourse.id}`;
+      const savedHist = localStorage.getItem(hKey);
+      const parsedHist = savedHist ? JSON.parse(savedHist) : [];
+      localStorage.setItem(hKey, JSON.stringify([data.historyEntry, ...parsedHist]));
+    } catch (_) {}
+
+    // Persistir en Firestore
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync
+        .saveTermSnapshot(userId, activeCourse.id, data.term, {
+          courseId: activeCourse.id,
+          term: data.term,
+          termLabel: data.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+          categories: targetCats,
+          gradesMap: currentTargetGrades,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }
+
+    // Notificar al sistema
+    window.dispatchEvent(
+      new CustomEvent('fds-grades-updated', {
+        detail: { term: data.term, courseId: activeCourse.id },
+      })
+    );
+
+    setActiveTab('grades');
+    setIsHeaderImportModalOpen(false);
+    setToastMessage(`✓ ¡Se importaron y registraron ${Object.keys(data.updates).length} nota(s) con éxito!`);
+    setTimeout(() => setToastMessage(null), 4500);
   };
 
   const handleOpenInSheetsNew = async () => {
@@ -3030,6 +3390,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  // 6b. Exportar Historial a Excel (.xlsx) nativo
+  const handleExportHistoryExcel = () => {
+    if (!activeCourse) return;
+    const courseHistory = historyList.filter((h) => h.courseId === activeCourse.id);
+    exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
+  };
+
   // 7a. Abrir modal para editar manualmente la nota de disposición (por ej. si usó papel o no trajo computadora)
   const handleOpenEditDisposition = (student: Student, termOverride?: '1c' | '2c') => {
     const termToUse: '1c' | '2c' = termOverride || (attendanceTerm === '2c' ? '2c' : '1c');
@@ -3165,6 +3532,559 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     setEditingDispositionStudent(null);
+  };
+
+  // 7b. Abrir modal para editar la cantidad de faltas (pasaje de papel, fecha retroactiva y aviso)
+  const handleOpenEditAbsences = (student: Student, termOverride?: '1c' | '2c') => {
+    const termToUse: '1c' | '2c' = termOverride || (attendanceTerm === '2c' ? '2c' : '1c');
+    const currentMetrics = getStudentMetrics(student.id, termToUse);
+    const today = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+    const formattedDateDMY = `${pad(today.getDate())}/${pad(today.getMonth() + 1)}/${today.getFullYear()}`;
+
+    setEditingAbsenceStudent(student);
+    setEditingAbsenceTerm(termToUse);
+    setEditingAbsenceCount(String(currentMetrics.totalAbsences));
+    setEditingAbsenceDate(todayStr);
+    setEditingAbsenceReason('Pasado de planilla en papel');
+    setEditingAbsenceSendNotif(false);
+    setEditingAbsenceChannel(notifSettings.channel || 'classroom');
+
+    const curDisp = currentMetrics.totalDisposition ?? 10;
+    const defaultAbsenceTpl =
+      savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
+      notifSettings.templateClassroom ||
+      DEFAULT_ABSENCE_PRESETS[0].text;
+
+    const defaultMsg = formatTemplateForStudent(
+      defaultAbsenceTpl,
+      student,
+      activeCourse.name,
+      curDisp,
+      formattedDateDMY
+    );
+    setEditingAbsenceMessageText(defaultMsg);
+  };
+
+  const handleChangeEditingAbsenceTerm = (newTerm: '1c' | '2c') => {
+    setEditingAbsenceTerm(newTerm);
+    if (editingAbsenceStudent) {
+      const metrics = getStudentMetrics(editingAbsenceStudent.id, newTerm);
+      setEditingAbsenceCount(String(metrics.totalAbsences));
+    }
+  };
+
+  const handleNavigateEditAbsenceStudent = (direction: -1 | 1) => {
+    if (!editingAbsenceStudent) return;
+    const currentIndex = filteredStudents.findIndex((s) => s.id === editingAbsenceStudent.id);
+    if (currentIndex === -1) return;
+    const targetIndex = currentIndex + direction;
+    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
+      const targetStudent = filteredStudents[targetIndex];
+      const metrics = getStudentMetrics(targetStudent.id, editingAbsenceTerm);
+      setEditingAbsenceStudent(targetStudent);
+      setEditingAbsenceCount(String(metrics.totalAbsences));
+
+      let dmy = '';
+      if (editingAbsenceDate) {
+        const parts = editingAbsenceDate.split('-');
+        if (parts.length === 3) {
+          dmy = `${parts[2]}/${parts[1]}/${parts[0]}`;
+        }
+      }
+      const defaultAbsenceTpl =
+        savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
+        notifSettings.templateClassroom ||
+        DEFAULT_ABSENCE_PRESETS[0].text;
+      const defaultMsg = formatTemplateForStudent(
+        defaultAbsenceTpl,
+        targetStudent,
+        activeCourse.name,
+        metrics.totalDisposition ?? 10,
+        dmy || formatLocalDateDMY()
+      );
+      setEditingAbsenceMessageText(defaultMsg);
+    }
+  };
+
+  const handleSaveStudentAbsences = async (moveToNext: boolean = false) => {
+    if (!activeCourse || !editingAbsenceStudent) return;
+
+    const student = editingAbsenceStudent;
+    const term = editingAbsenceTerm;
+    const parsed = parseInt(editingAbsenceCount, 10);
+    if (isNaN(parsed) || parsed < 0) {
+      setToastMessage('Ingresá una cantidad de faltas válida (número entero mayor o igual a 0).');
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+    const finalAbsences = Math.max(0, Math.floor(parsed));
+
+    const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
+    const current = baseMap[student.id] || getStudentMetrics(student.id, term);
+    const oldAbsences = current.totalAbsences ?? 0;
+    const difference = finalAbsences - oldAbsences;
+
+    // Parse user selected date (YYYY-MM-DD -> DD/MM/YYYY)
+    let selectedDateDMY = formatLocalDateDMY();
+    let recordTimestamp = Date.now();
+    if (editingAbsenceDate) {
+      const parts = editingAbsenceDate.split('-');
+      if (parts.length === 3) {
+        const y = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        const d = parseInt(parts[2], 10);
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        selectedDateDMY = `${pad(d)}/${pad(m)}/${y}`;
+        const targetDateObj = new Date(y, m - 1, d, 12, 0, 0);
+        if (!isNaN(targetDateObj.getTime())) {
+          recordTimestamp = targetDateObj.getTime();
+        }
+      }
+    }
+
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const studentFullName = `${student.lastName}, ${student.firstName}`;
+    const termLabel = term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
+    const reasonTrimmed = editingAbsenceReason.trim();
+
+    setIsSavingAbsenceEdit(true);
+
+    try {
+      // 1. Update disposition map directly with edited count
+      const updatedMap: Record<string, StudentDispositionData> = {
+        ...baseMap,
+        [student.id]: {
+          ...current,
+          totalAbsences: finalAbsences,
+        },
+      };
+
+      // 2. Generate history entry reflecting the manual update and retroactive date
+      let newHistoryEntry: StudentHistoryItem | null = null;
+      let newHistoryEntries: StudentHistoryItem[] = [];
+
+      if (difference !== 0 || editingAbsenceSendNotif) {
+        const actionText = difference > 0
+          ? `Inasistencia asentada en fecha ${selectedDateDMY} (+${difference} ${difference === 1 ? 'falta' : 'faltas'} • Total: ${finalAbsences})`
+          : difference < 0
+          ? `Faltas ajustadas a ${finalAbsences} (descuento de ${Math.abs(difference)} en fecha ${selectedDateDMY})`
+          : `Inasistencia registrada en fecha ${selectedDateDMY} (Total: ${finalAbsences} faltas)`;
+
+        const fullActionDesc = reasonTrimmed
+          ? `${actionText} - ${reasonTrimmed}`
+          : actionText;
+
+        newHistoryEntry = {
+          id: `rec-abs-edit-${student.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          studentId: student.id,
+          studentName: studentFullName,
+          courseId: activeCourse.id,
+          date: selectedDateDMY,
+          time,
+          term,
+          action: fullActionDesc,
+          category: 'Ausencia',
+          pointsChange: 0,
+          timestamp: recordTimestamp,
+          messageSent: false,
+          messageText: '',
+          notificationMethod: 'none',
+        };
+        newHistoryEntries.push(newHistoryEntry);
+      }
+
+      // If user reduced absences, purge oldest non-notified absences for student if appropriate
+      let updatedHistory = deduplicateHistory([...newHistoryEntries, ...historyList]);
+      if (difference < 0) {
+        const toRemoveCount = Math.abs(difference);
+        let removed = 0;
+        updatedHistory = updatedHistory.filter((h) => {
+          if (
+            removed < toRemoveCount &&
+            h.studentId === student.id &&
+            (term === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
+            (h.category === 'Ausencia' || h.action?.toLowerCase().includes('ausencia') || h.action?.toLowerCase().includes('falta')) &&
+            !newHistoryEntries.some(ne => ne.id === h.id)
+          ) {
+            markHistoryIdDeleted(h.id);
+            api.deleteDispositionHistory(h.id).catch(() => {});
+            removed++;
+            return false;
+          }
+          return true;
+        });
+      }
+
+      // 3. Optional message notification sending (even if not recorded the same day)
+      if (editingAbsenceSendNotif && editingAbsenceMessageText.trim() && newHistoryEntry) {
+        const channel = editingAbsenceChannel;
+        const msgText = editingAbsenceMessageText.trim();
+        let notifSuccess = false;
+
+        if (channel === 'classroom') {
+          const classroomCourseId = activeCourse.classroomCourseId || activeCourse.id;
+          const res = await classroomService.createIndividualAnnouncement(
+            classroomCourseId,
+            student.id,
+            msgText
+          );
+          notifSuccess = res.success;
+        } else {
+          const emailSubject = `Notificación de Inasistencia - ${activeCourse.name} (${selectedDateDMY})`;
+          const res = await gmailService.sendEmail(
+            student.email || '',
+            emailSubject,
+            msgText
+          );
+          notifSuccess = res.success;
+        }
+
+        const notifiedAt = new Date().toLocaleTimeString();
+        newHistoryEntry.messageSent = true;
+        newHistoryEntry.messageText = msgText;
+        newHistoryEntry.notificationMethod = channel;
+        newHistoryEntry.notifiedAt = notifiedAt;
+
+        // Update in history list
+        updatedHistory = updatedHistory.map((item) =>
+          item.id === newHistoryEntry!.id
+            ? {
+                ...item,
+                messageSent: true,
+                messageText: msgText,
+                notificationMethod: channel,
+                notifiedAt,
+              }
+            : item
+        );
+      }
+
+      setHistoryList(updatedHistory);
+      saveTermDisposition(term, updatedMap, updatedHistory);
+
+      triggerSheetsSync(
+        term === '1c' ? updatedMap : dispositionMap,
+        updatedHistory,
+        term === '2c' ? updatedMap : dispositionMap2c
+      );
+
+      // Persist to API / backend
+      if (newHistoryEntry) {
+        api
+          .recordDisposition({
+            id: newHistoryEntry.id,
+            studentId: student.id,
+            studentName: studentFullName,
+            courseId: activeCourse.id,
+            action: newHistoryEntry.action,
+            category: 'Ausencia',
+            term,
+            date: selectedDateDMY,
+            time,
+            timestamp: recordTimestamp,
+            messageSent: newHistoryEntry.messageSent,
+            messageText: newHistoryEntry.messageText,
+            notificationMethod: newHistoryEntry.notificationMethod,
+            notifiedAt: newHistoryEntry.notifiedAt,
+            expectedSummary: {
+              totalAbsences: finalAbsences,
+              totalLates: current.totalLates ?? 0,
+              totalDisposition: current.totalDisposition ?? 10,
+            },
+          })
+          .catch(() => {});
+      }
+
+      const notifMsgPart = editingAbsenceSendNotif
+        ? ` y aviso enviado por ${editingAbsenceChannel === 'classroom' ? 'Classroom' : 'Gmail'}`
+        : '';
+      setToastMessage(
+        `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (fecha: ${selectedDateDMY} en ${term === '2c' ? '2°C' : '1°C'})${notifMsgPart}.`
+      );
+      setTimeout(() => setToastMessage(null), 4000);
+
+      if (moveToNext) {
+        const currentIndex = filteredStudents.findIndex((s) => s.id === student.id);
+        if (currentIndex !== -1 && currentIndex < filteredStudents.length - 1) {
+          const nextStudent = filteredStudents[currentIndex + 1];
+          const nextMetrics = getStudentMetrics(nextStudent.id, term);
+          setEditingAbsenceStudent(nextStudent);
+          setEditingAbsenceCount(String(nextMetrics.totalAbsences));
+
+          const defaultAbsenceTpl =
+            savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
+            notifSettings.templateClassroom ||
+            DEFAULT_ABSENCE_PRESETS[0].text;
+          const defaultMsg = formatTemplateForStudent(
+            defaultAbsenceTpl,
+            nextStudent,
+            activeCourse.name,
+            nextMetrics.totalDisposition ?? 10,
+            selectedDateDMY
+          );
+          setEditingAbsenceMessageText(defaultMsg);
+          return;
+        }
+      }
+
+      setEditingAbsenceStudent(null);
+    } catch (err: any) {
+      setToastMessage(`Error al guardar: ${err?.message || 'intente nuevamente'}`);
+      setTimeout(() => setToastMessage(null), 3500);
+    } finally {
+      setIsSavingAbsenceEdit(false);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // CARGA MANUAL DE ALUMNOS (CON CORREO) Y MENSAJES DIRECTOS
+  // -------------------------------------------------------------
+  const handleOpenAddStudentModal = () => {
+    setAddStudentFirstName('');
+    setAddStudentLastName('');
+    setAddStudentEmail('');
+    setAddStudentPhone('');
+    setAddStudentNotes('');
+    setAddStudentTab('single');
+    setBatchStudentsText('');
+    setIsAddStudentModalOpen(true);
+  };
+
+  const handleSaveSingleStudent = async (addAnother: boolean = false) => {
+    if (!activeCourse) return;
+    const firstName = addStudentFirstName.trim();
+    const lastName = addStudentLastName.trim();
+    const email = addStudentEmail.trim();
+
+    if (!firstName || !lastName) {
+      setToastMessage('Por favor, ingresá el nombre y apellido del estudiante.');
+      setTimeout(() => setToastMessage(null), 3500);
+      return;
+    }
+
+    setIsSavingManualStudent(true);
+    try {
+      await api.createStudent({
+        courseId: activeCourse.id,
+        firstName,
+        lastName,
+        email: email || undefined,
+      });
+
+      // Notify listeners and reload data
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
+      if (onRefreshData) onRefreshData();
+
+      setToastMessage(`Alumno/a "${lastName}, ${firstName}" agregado con éxito.`);
+      setTimeout(() => setToastMessage(null), 4000);
+
+      if (addAnother) {
+        setAddStudentFirstName('');
+        setAddStudentLastName('');
+        setAddStudentEmail('');
+        setAddStudentPhone('');
+        setAddStudentNotes('');
+      } else {
+        setIsAddStudentModalOpen(false);
+      }
+    } catch (err: any) {
+      setToastMessage(`Error al guardar estudiante: ${err?.message || 'intente nuevamente'}`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setIsSavingManualStudent(false);
+    }
+  };
+
+  const handleSaveBatchStudents = async () => {
+    if (!activeCourse || !batchStudentsText.trim()) return;
+    setIsSavingManualStudent(true);
+    try {
+      const lines = batchStudentsText.split('\n').map((l) => l.trim()).filter(Boolean);
+      const parsed: Array<{ firstName: string; lastName: string; email?: string }> = [];
+
+      for (const line of lines) {
+        if (line.includes(',')) {
+          const parts = line.split(',').map((p) => p.trim());
+          if (parts.length >= 2) {
+            const lastName = parts[0];
+            const firstName = parts[1];
+            const email = parts[2] || '';
+            parsed.push({ firstName, lastName, email: email || undefined });
+            continue;
+          }
+        }
+
+        const emailMatch = line.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+        const email = emailMatch ? emailMatch[1] : '';
+        const namePart = line.replace(email, '').trim().replace(/[,;\t]/g, ' ').replace(/\s+/g, ' ');
+        const words = namePart.split(' ').filter(Boolean);
+        if (words.length >= 2) {
+          parsed.push({
+            lastName: words[0],
+            firstName: words.slice(1).join(' '),
+            email: email || undefined,
+          });
+        } else if (words.length === 1) {
+          parsed.push({
+            lastName: words[0],
+            firstName: 'Alumno',
+            email: email || undefined,
+          });
+        }
+      }
+
+      if (parsed.length === 0) {
+        setToastMessage('No se detectaron alumnos. Formato sugerido: Apellido, Nombre, correo@ejemplo.com');
+        setTimeout(() => setToastMessage(null), 4000);
+        setIsSavingManualStudent(false);
+        return;
+      }
+
+      for (const item of parsed) {
+        await api.createStudent({
+          courseId: activeCourse.id,
+          firstName: item.firstName,
+          lastName: item.lastName,
+          email: item.email,
+        });
+      }
+
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
+      if (onRefreshData) onRefreshData();
+
+      setToastMessage(`¡Éxito! Se agregaron ${parsed.length} alumnos a ${activeCourse.name}.`);
+      setTimeout(() => setToastMessage(null), 4500);
+      setIsAddStudentModalOpen(false);
+      setBatchStudentsText('');
+    } catch (err: any) {
+      setToastMessage(`Error al guardar lote: ${err?.message || 'intente nuevamente'}`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setIsSavingManualStudent(false);
+    }
+  };
+
+  const handleOpenDirectMessageModal = (student: Student) => {
+    const defaultSubject = `Comunicado de ${activeCourse.name}`;
+    const defaultMsg = `Estimado/a ${student.firstName},\n\nNos comunicamos desde la materia ${activeCourse.name}.\n\nSaludos cordiales.`;
+    setDirectMessageModal({
+      isOpen: true,
+      student,
+      subject: defaultSubject,
+      messageText: defaultMsg,
+      channel: student.email ? 'gmail' : 'classroom',
+      isSending: false,
+    });
+  };
+
+  const handleSendDirectMessage = async () => {
+    if (!directMessageModal.student || !directMessageModal.messageText.trim()) return;
+    const { student, subject, messageText, channel } = directMessageModal;
+
+    setDirectMessageModal((prev) => ({ ...prev, isSending: true }));
+    try {
+      if (channel === 'gmail') {
+        if (!student.email) {
+          throw new Error('El estudiante no tiene correo electrónico cargado.');
+        }
+        const res = await gmailService.sendEmail(student.email, subject, messageText);
+        if (!res.success) {
+          // Fallback to mailto link
+          window.open(
+            `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageText)}`
+          );
+        }
+      } else if (channel === 'classroom') {
+        const cid = activeCourse.classroomCourseId || activeCourse.id;
+        await classroomService.createIndividualAnnouncement(cid, student.id, messageText);
+      } else if (channel === 'whatsapp') {
+        const phone = (student as any).phone ? (student as any).phone.replace(/[^0-9]/g, '') : '';
+        const waUrl = phone
+          ? `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`
+          : `https://wa.me/?text=${encodeURIComponent(messageText)}`;
+        window.open(waUrl, '_blank');
+      }
+
+      // Log in permanent history
+      const now = new Date();
+      const pad = (n: number) => n.toString().padStart(2, '0');
+      const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+      const newHistoryItem: StudentHistoryItem = {
+        id: `msg-${student.id}-${Date.now()}`,
+        studentId: student.id,
+        studentName: `${student.lastName}, ${student.firstName}`,
+        courseId: activeCourse.id,
+        date: formatLocalDateDMY(),
+        time: timeStr,
+        term: attendanceTerm === '2c' ? '2c' : '1c',
+        action: `Mensaje directo enviado: "${subject}"`,
+        category: 'Disposición',
+        pointsChange: 0,
+        timestamp: Date.now(),
+        messageSent: true,
+        messageText,
+        notificationMethod: channel,
+        notifiedAt: timeStr,
+      };
+
+      const updated = deduplicateHistory([newHistoryItem, ...historyList]);
+      setHistoryList(updated);
+      saveTermDisposition(
+        attendanceTerm === '2c' ? '2c' : '1c',
+        attendanceTerm === '2c' ? dispositionMap2c : dispositionMap,
+        updated
+      );
+      api.recordDisposition({
+        id: newHistoryItem.id,
+        studentId: student.id,
+        studentName: newHistoryItem.studentName,
+        courseId: activeCourse.id,
+        action: newHistoryItem.action,
+        category: 'Disposición',
+        term: newHistoryItem.term,
+        date: newHistoryItem.date,
+        time: newHistoryItem.time,
+        timestamp: newHistoryItem.timestamp,
+        messageSent: true,
+        messageText,
+        notificationMethod: channel,
+        notifiedAt: newHistoryItem.notifiedAt,
+      }).catch(() => {});
+
+      setToastMessage(`Mensaje enviado a ${student.firstName} ${student.lastName} correctamente.`);
+      setTimeout(() => setToastMessage(null), 4000);
+      setDirectMessageModal((prev) => ({ ...prev, isOpen: false, isSending: false }));
+    } catch (err: any) {
+      setToastMessage(`Error al enviar mensaje: ${err?.message || 'intente de nuevo'}`);
+      setTimeout(() => setToastMessage(null), 4000);
+      setDirectMessageModal((prev) => ({ ...prev, isSending: false }));
+    }
+  };
+
+  const handleSaveEditedStudentEmail = async () => {
+    if (!selectedStudentForProfile || !editedStudentEmail.trim()) return;
+    try {
+      const emailTrimmed = editedStudentEmail.trim();
+      await api.updateStudent(selectedStudentForProfile.id, activeCourse.id, {
+        email: emailTrimmed,
+      });
+      setSelectedStudentForProfile({
+        ...selectedStudentForProfile,
+        email: emailTrimmed,
+      });
+      setIsEditingStudentEmail(false);
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
+      if (onRefreshData) onRefreshData();
+      setToastMessage(`Correo actualizado para ${selectedStudentForProfile.firstName}: ${emailTrimmed}`);
+      setTimeout(() => setToastMessage(null), 3500);
+    } catch (err: any) {
+      setToastMessage(`Error al actualizar correo: ${err?.message || 'intente de nuevo'}`);
+      setTimeout(() => setToastMessage(null), 3500);
+    }
   };
 
   // -------------------------------------------------------------
@@ -3830,7 +4750,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-neutral-200'
             }`}
           >
-            <div className="space-y-1">
+            <div className="space-y-1.5 flex-1">
               <div className="flex items-center gap-2">
                 <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
                   {activeCourse.grade} • {activeCourse.room}
@@ -3847,8 +4767,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   </span>
                 )}
               </div>
-              <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-neutral-800'}`}>{activeCourse.name}</h3>
-              <p className={`text-xs font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>{activeCourse.subject}</p>
+
+              {/* Nombre de la materia */}
+              <div>
+                <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-800'}`}>
+                  {activeCourse.name}
+                </h3>
+                <p className={`text-xs font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
+                  {activeCourse.subject}
+                </p>
+              </div>
               
               {/* Horario con sincronización desde Google Calendar y edición */}
               <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -3883,7 +4811,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   )}
                 </div>
 
-                {/* Botón para sincronizar desde Google Calendar (Abre el selector de eventos) */}
+                {/* Botón para sincronizar desde Google Calendar */}
                 <button
                   type="button"
                   onClick={() => handleOpenCalendarSyncModal(activeCourse)}
@@ -3915,51 +4843,178 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               </div>
             </div>
 
-            {/* Quick Workspace Action Badges */}
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleSyncRoster}
-                disabled={isSyncingClassroomRoster}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-blue-950/40 hover:bg-blue-950/60 text-blue-300 border-blue-800/60'
-                    : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-200'
-                }`}
-                title="Sincronizar nómina real desde Google Classroom"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 text-blue-500 ${isSyncingClassroomRoster ? 'animate-spin' : ''}`} />
-                <span>{isSyncingClassroomRoster ? 'Sincronizando...' : 'Sincronizar Estudiantes'}</span>
-              </button>
-              <button
-                onClick={() => onNavigate('classroom', activeCourse.id)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-green-950/40 hover:bg-green-950/60 text-green-300 border-green-800/60'
-                    : 'bg-green-50 hover:bg-green-100 text-green-800 border-green-200'
+            {/* ------------------------------------------------------------- */}
+            {/* TRES COLUMNAS DE ACCIONES                                     */}
+            {/* ------------------------------------------------------------- */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
+              {/* Columna 1: Classroom y Sincronizar Estudiantes */}
+              <div
+                className={`p-3 rounded-xl border flex flex-col gap-2 ${
+                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
                 }`}
               >
-                <GraduationCap className={`w-3.5 h-3.5 ${isDarkMode ? 'text-white' : 'text-green-700'}`} />
-                Classroom
-              </button>
-              <button
-                type="button"
-                onClick={handleOpenCourseDriveFolder}
-                disabled={isSettingUpDriveFolder}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
-                    : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
+                <div className="flex items-center justify-between px-0.5">
+                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    Classroom y Estudiantes
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 flex-1 justify-center">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('classroom', activeCourse.id)}
+                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-green-950/40 hover:bg-green-950/60 text-green-300 border-green-800/60'
+                        : 'bg-green-50 hover:bg-green-100 text-green-800 border-green-200'
+                    }`}
+                    title="Ir a Google Classroom de este curso"
+                  >
+                    <GraduationCap className={`w-4 h-4 ${isDarkMode ? 'text-white' : 'text-green-700'}`} />
+                    <span>Classroom</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSyncRoster}
+                    disabled={isSyncingClassroomRoster}
+                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-blue-950/40 hover:bg-blue-950/60 text-blue-300 border-blue-800/60'
+                        : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-200'
+                    }`}
+                    title="Sincronizar nómina real desde Google Classroom"
+                  >
+                    <RefreshCw className={`w-4 h-4 text-blue-500 ${isSyncingClassroomRoster ? 'animate-spin' : ''}`} />
+                    <span>{isSyncingClassroomRoster ? 'Sincronizando...' : 'Sincronizar Estudiantes'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Columna 2: Carpeta Drive y Hacer informe */}
+              <div
+                className={`p-3 rounded-xl border flex flex-col gap-2 ${
+                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
                 }`}
-                title={`Crear y abrir carpeta en Google Drive ("${activeCourse.name}") con subcarpetas Asistencia y Disposición y Calificaciones`}
               >
-                {isSettingUpDriveFolder ? (
-                  <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-                ) : (
-                  <FolderClosed className="w-3.5 h-3.5 text-amber-500" />
-                )}
-                <span>{isSettingUpDriveFolder ? 'Abriendo Drive...' : 'Carpeta Drive'}</span>
-              </button>
+                <div className="flex items-center justify-between px-0.5">
+                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    Carpeta Drive e Informes
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 flex-1 justify-center">
+                  <button
+                    type="button"
+                    onClick={handleOpenCourseDriveFolder}
+                    disabled={isSettingUpDriveFolder}
+                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
+                        : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
+                    }`}
+                    title={`Crear y abrir carpeta en Google Drive ("${activeCourse.name}") con subcarpetas Asistencia y Disposición y Calificaciones`}
+                  >
+                    {isSettingUpDriveFolder ? (
+                      <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
+                    ) : (
+                      <FolderClosed className="w-4 h-4 text-amber-500" />
+                    )}
+                    <span>{isSettingUpDriveFolder ? 'Abriendo Drive...' : 'Carpeta Drive'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCourseReportModalStudentId('all');
+                      setCourseReportModalTab('course');
+                      setCourseReportModalOpen(true);
+                    }}
+                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-purple-950/40 hover:bg-purple-950/60 text-purple-300 border-purple-800/60'
+                        : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
+                    }`}
+                    title={`Generar informe oficial del curso "${activeCourse.name}" o constancias individuales de 1 página por alumno para guardar en Drive o imprimir`}
+                  >
+                    <FileText className="w-4 h-4 text-purple-500" />
+                    <span>Hacer Informe</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Columna 3: Importar desde Excel y Vincular Sheet */}
+              <div
+                className={`p-3 rounded-xl border flex flex-col gap-2 ${
+                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
+                }`}
+              >
+                <div className="flex items-center justify-between px-0.5">
+                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    Excel y Google Sheets
+                  </span>
+                </div>
+                <div className="flex flex-col gap-2 flex-1 justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setIsHeaderImportModalOpen(true)}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border border-emerald-600/30 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+                    title="Subir y verificar notas desde un archivo Excel (.xlsx, .xls, .csv) o Google Sheets"
+                  >
+                    <Upload className="w-4 h-4" />
+                    <span>Importar desde Excel</span>
+                  </button>
+
+                  {sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) ? (
+                    <div className="grid grid-cols-2 gap-1.5 w-full">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const url = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
+                          window.open(url, '_blank');
+                        }}
+                        className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
+                          isDarkMode
+                            ? 'bg-green-950/70 hover:bg-green-900 text-green-300 border-green-700'
+                            : 'bg-green-100 hover:bg-green-200 text-green-800 border-green-300'
+                        }`}
+                        title="Abrir hoja vinculada de Google Sheets en una nueva pestaña"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-green-600 dark:text-green-400 shrink-0" />
+                        <span className="truncate">Sheet Vinculado</span>
+                        <ExternalLink className="w-3 h-3 opacity-80 shrink-0" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleManualSheetsSync}
+                        disabled={isSyncingSheet || isPullingFromSheet}
+                        className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
+                          isDarkMode
+                            ? 'bg-blue-950/70 hover:bg-blue-900 text-blue-300 border-blue-700'
+                            : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
+                        }`}
+                        title="Sincronizar con Sheets: Doble entrada bidireccional. Si modificaste ausencias, tardanzas o notas en el Sheet, las trae a la app y actualiza la planilla en Google Drive"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin' : ''}`} />
+                        <span className="truncate">{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowSheetsConnectModal(true)}
+                      className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
+                        isDarkMode
+                          ? 'bg-green-950/60 hover:bg-green-900 text-green-300 border-green-800'
+                          : 'bg-green-50 hover:bg-green-100 text-green-800 border-green-300'
+                      }`}
+                      title="Vincular una hoja de cálculo de Google Sheets con esta materia para sincronización bidireccional de doble entrada"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-green-600 dark:text-green-400" />
+                      <span>Vincular Sheet</span>
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -4033,274 +5088,319 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* ------------------------------------------------------------- */}
           {/* VIEW SWITCHER TABS & ACTION BUTTONS                           */}
           {/* ------------------------------------------------------------- */}
+          {/* ------------------------------------------------------------- */}
+          {/* RENGLÓN SUPERIOR DE PESTAÑAS (A LO LARGO)                     */}
+          {/* ------------------------------------------------------------- */}
           <div
-            className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
-              isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
+            className={`p-1.5 rounded-xl border grid grid-cols-1 sm:grid-cols-3 gap-2 transition-colors ${
+              isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-100 border-neutral-200'
             }`}
           >
-            {/* View switcher tabs: Nómina vs Calificaciones vs Historial */}
-            <div
-              className={`inline-flex p-1 rounded-xl border text-xs font-semibold ${
-                isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-200'
+            <button
+              type="button"
+              onClick={() => setActiveTab('roster')}
+              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === 'roster'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
               }`}
             >
-              <button
-                type="button"
-                onClick={() => setActiveTab('roster')}
-                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                  activeTab === 'roster'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-slate-400 hover:text-white'
-                    : 'text-neutral-600 hover:text-neutral-900'
-                }`}
-              >
-                <Users className="w-3.5 h-3.5" />
-                <span>Asistencia y Disposición</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('grades')}
-                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                  activeTab === 'grades'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-slate-400 hover:text-white'
-                    : 'text-neutral-600 hover:text-neutral-900'
-                }`}
-              >
-                <Award className="w-3.5 h-3.5" />
-                <span>Calificaciones</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('history')}
-                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-                  activeTab === 'history'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : isDarkMode
-                    ? 'text-slate-400 hover:text-white'
-                    : 'text-neutral-600 hover:text-neutral-900'
-                }`}
-              >
-                <History className="w-3.5 h-3.5" />
-                <span>Historial / Hoja Google Sheets</span>
-                {courseHistory.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-blue-500/20 text-blue-600 dark:text-blue-300 font-bold">
-                    {courseHistory.length}
-                  </span>
-                )}
-              </button>
-            </div>
+              <Users className="w-4 h-4 shrink-0" />
+              <span>Asistencia y Disposición</span>
+            </button>
 
-            {/* Quick action tools */}
-            <div className="flex flex-wrap items-center gap-2">
-              {activeTab === 'roster' ? (
-                <>
-                  {/* Search box */}
-                  <div className="relative flex items-center">
-                    <Search className={`absolute left-3 w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
-                    <input
-                      type="text"
-                      placeholder="Buscar estudiante..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className={`pl-8 pr-3 py-1.5 text-xs rounded-lg focus:outline-none w-44 sm:w-52 transition-colors border ${
-                        isDarkMode
-                          ? 'bg-slate-800 text-white placeholder-slate-500 border-slate-700 focus:border-blue-500'
-                          : 'bg-white text-neutral-900 placeholder-neutral-400 border-neutral-200 focus:ring-1 focus:ring-blue-500'
-                      }`}
-                    />
-                  </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('grades')}
+              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === 'grades'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+              }`}
+            >
+              <Award className="w-4 h-4 shrink-0" />
+              <span>Calificaciones</span>
+            </button>
 
-                  {/* Batch send button if students are selected */}
-                  {selectedStudentIds.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={handleOpenBatchFromSelectedStudents}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
-                      title="Enviar aviso de inasistencia a todos los estudiantes seleccionados"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Avisar a seleccionados ({selectedStudentIds.length})</span>
-                    </button>
-                  )}
-
-                  {/* Batch send button if there are pending notifications */}
-                  {selectedStudentIds.length === 0 && pendingAllItems.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => handleOpenBatchFromPending('all')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
-                      title="Enviar avisos pendientes a todos los estudiantes (ausencias y conductas)"
-                    >
-                      <Bell className="w-3.5 h-3.5" />
-                      <span>Avisos pendientes ({pendingAllItems.length})</span>
-                    </button>
-                  )}
-
-                  {/* Botón principal: Mandar Nota de Disposición a Calificaciones según el cuatrimestre activo */}
-                  <button
-                    type="button"
-                    onClick={() => setIsSendDispositionModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
-                    title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
-                  >
-                    <Award className="w-3.5 h-3.5 text-amber-300" />
-                    <span>Mandar a Calificaciones</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setIsNotifConfigModalOpen(true)}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'border-slate-700 text-blue-400 hover:text-blue-300 hover:bg-slate-800'
-                        : 'border-blue-200 text-blue-700 hover:text-blue-800 hover:bg-blue-50'
-                    }`}
-                    title="Configurar mensajes preestablecidos y opciones de Classroom / Gmail"
-                  >
-                    <Bookmark className="w-3.5 h-3.5 text-blue-500" />
-                    <span>Mensajes Preestablecidos</span>
-                  </button>
-
-                  {/* Google Sheets Sync & Open buttons on the Roster Tab */}
-                  <button
-                    type="button"
-                    onClick={handleManualSheetsSync}
-                    disabled={isSyncingSheet}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                      sheetConfig?.isLiveGoogle
-                        ? isDarkMode
-                          ? 'bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 border-emerald-700/60'
-                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                        : isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Sincronizar nómina, faltas y notas de conducta en vivo con Google Sheets"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin text-emerald-500' : 'text-emerald-600 dark:text-emerald-400'}`} />
-                    <span>{isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Sheets'}</span>
-                    {sheetConfig?.lastSyncedAt && !isSyncingSheet && (
-                      <span className="hidden xl:inline text-[10px] opacity-75">({sheetConfig.lastSyncedAt})</span>
-                    )}
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleOpenGoogleSheet}
-                    disabled={isOpeningSheet}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Abrir la planilla vinculada en Google Sheets"
-                  >
-                    {isOpeningSheet ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                    )}
-                    <span className="hidden sm:inline">Google Sheets</span>
-                  </button>
-                </>
-              ) : (
-                /* History Tab Buttons */
-                <>
-                  <button
-                    type="button"
-                    onClick={handleOpenGoogleSheet}
-                    disabled={isOpeningSheet}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
-                    title="Abrir o crear hoja oficial en Google Sheets"
-                  >
-                    {isOpeningSheet ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    )}
-                    <span>Abrir en Google Sheets</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleManualSheetsSync}
-                    disabled={isSyncingSheet}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Forzar actualización inmediata de la hoja de Google Sheets"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin text-blue-500' : ''}`} />
-                    <span>{isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Sheets'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSheetsModalFeedback(null);
-                      setShowSheetsConnectModal(true);
-                    }}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Configurar y vincular hoja existente de Google Sheets"
-                  >
-                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
-                    <span>Vincular Sheet</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCourseReportModalTab('course');
-                      setCourseReportModalOpen(true);
-                    }}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/60'
-                        : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-                    }`}
-                    title="Generar informe oficial del curso o boletines individuales de 1 página para imprimir o guardar en Google Drive"
-                  >
-                    <FileText className="w-3.5 h-3.5 text-blue-500" />
-                    <span>Informes y Reportes</span>
-                  </button>
-
-                  <button
-                    onClick={handleCopyForGoogleSheets}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Copia los datos tabulados para pegar con Ctrl+V directamente en Google Sheets"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                    <span>Copiar datos</span>
-                  </button>
-
-                  <button
-                    onClick={handleExportHistoryCsv}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Descargar CSV</span>
-                  </button>
-                </>
+            <button
+              type="button"
+              onClick={() => setActiveTab('history')}
+              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === 'history'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+              }`}
+            >
+              <History className="w-4 h-4 shrink-0" />
+              <span>Historial</span>
+              {courseHistory.length > 0 && (
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    activeTab === 'history'
+                      ? 'bg-white/20 text-white'
+                      : 'bg-blue-500/20 text-blue-600 dark:text-blue-300'
+                  }`}
+                >
+                  {courseHistory.length}
+                </span>
               )}
-            </div>
+            </button>
           </div>
+
+          {/* ------------------------------------------------------------- */}
+          {/* BARRA DE HERRAMIENTAS (AGREGAR ALUMNO, MANDAR CALIFICACIONES, ETC.) */}
+          {/* ------------------------------------------------------------- */}
+          {activeTab === 'roster' && (
+            <div
+              className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
+                isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
+              }`}
+            >
+              {/* Search box */}
+              <div className="relative flex items-center">
+                <Search className={`absolute left-3 w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
+                <input
+                  type="text"
+                  placeholder="Buscar estudiante..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className={`pl-8 pr-3 py-1.5 text-xs rounded-lg focus:outline-none w-44 sm:w-56 transition-colors border ${
+                    isDarkMode
+                      ? 'bg-slate-800 text-white placeholder-slate-500 border-slate-700 focus:border-blue-500'
+                      : 'bg-white text-neutral-900 placeholder-neutral-400 border-neutral-200 focus:ring-1 focus:ring-blue-500'
+                  }`}
+                />
+              </div>
+
+              {/* Botones de acción: Agregar Alumno, Mandar a Calificaciones, etc. */}
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Botón para agregar alumno manualmente con su correo */}
+                <button
+                  type="button"
+                  onClick={handleOpenAddStudentModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+                  title="Agregar un nuevo alumno manualmente con su correo para pasar faltas y mandarle mensajes"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>+ Agregar Alumno</span>
+                </button>
+
+                {/* Batch send button if students are selected */}
+                {selectedStudentIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleOpenBatchFromSelectedStudents}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
+                    title="Enviar aviso de inasistencia a todos los estudiantes seleccionados"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Avisar a seleccionados ({selectedStudentIds.length})</span>
+                  </button>
+                )}
+
+                {/* Batch send button if there are pending notifications */}
+                {selectedStudentIds.length === 0 && pendingAllItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenBatchFromPending('all')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
+                    title="Enviar avisos pendientes a todos los estudiantes (ausencias y conductas)"
+                  >
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>Avisos pendientes ({pendingAllItems.length})</span>
+                  </button>
+                )}
+
+                {/* Botón principal: Mandar Nota de Disposición a Calificaciones según el cuatrimestre activo */}
+                <button
+                  type="button"
+                  onClick={() => setIsSendDispositionModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
+                  title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+                >
+                  <Award className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Mandar a Calificaciones</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsNotifConfigModalOpen(true)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'border-slate-700 text-blue-400 hover:text-blue-300 hover:bg-slate-800'
+                      : 'border-blue-200 text-blue-700 hover:text-blue-800 hover:bg-blue-50'
+                  }`}
+                  title="Configurar mensajes preestablecidos y opciones de Classroom / Gmail"
+                >
+                  <Bookmark className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Mensajes Preestablecidos</span>
+                </button>
+
+                {/* Sincronizar con Sheets: Doble Entrada Bidireccional */}
+                <button
+                  type="button"
+                  onClick={handleManualSheetsSync}
+                  disabled={isSyncingSheet || isPullingFromSheet}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
+                    isDarkMode
+                      ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
+                      : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
+                  }`}
+                  title="Sincronizar con Sheets: Doble entrada bidireccional. Si modificaste ausencias, tardanzas o notas en el Google Sheet, las trae a la app y actualiza la planilla en Google Drive"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-blue-500 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
+                  {sheetConfig?.lastSyncedAt && !(isSyncingSheet || isPullingFromSheet) && (
+                    <span className="hidden xl:inline text-[10px] opacity-75">({sheetConfig.lastSyncedAt})</span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleOpenGoogleSheet}
+                  disabled={isOpeningSheet}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Abrir la planilla vinculada en Google Sheets"
+                >
+                  {isOpeningSheet ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                  )}
+                  <span className="hidden sm:inline">Abrir Sheet</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'history' && (
+            <div
+              className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
+                isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`text-xs font-semibold ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
+                  Bitácora de Sincronización e Historial ({courseHistory.length} registros)
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenGoogleSheet}
+                  disabled={isOpeningSheet}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
+                  title="Abrir o crear hoja oficial en Google Sheets"
+                >
+                  {isOpeningSheet ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  )}
+                  <span>Abrir en Google Sheets</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleManualSheetsSync}
+                  disabled={isSyncingSheet || isPullingFromSheet}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Sincronizar con Google Sheets de forma bidireccional"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin text-blue-500' : ''}`} />
+                  <span>{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSheetsModalFeedback(null);
+                    setShowSheetsConnectModal(true);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Configurar y vincular hoja existente de Google Sheets"
+                >
+                  <Settings className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Vincular Sheet</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCourseReportModalTab('course');
+                    setCourseReportModalOpen(true);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/60'
+                      : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+                  }`}
+                  title="Generar informe oficial del curso o boletines individuales de 1 página para imprimir o guardar en Google Drive"
+                >
+                  <FileText className="w-3.5 h-3.5 text-blue-500" />
+                  <span>Informes y Reportes</span>
+                </button>
+
+                <button
+                  onClick={handleCopyForGoogleSheets}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Copia los datos tabulados para pegar con Ctrl+V directamente en Google Sheets"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copiar datos</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportHistoryExcel}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Descargar historial en formato Excel (.xlsx) nativo"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Exportar Excel</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportHistoryCsv}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Descargar CSV</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ------------------------------------------------------------- */}
           {/* TAB 1: STUDENT ROSTER WITH INTEGRATED SCRIPT CONTROLS        */}
@@ -4971,18 +6071,30 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   No hay estudiantes cargados para esta materia
                                 </h4>
                                 <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                                  Sincronizá los estudiantes reales inscriptos en Google Classroom con un solo clic.
+                                  ¿No usás Classroom? Podés agregar a tus alumnos manualmente con su correo para pasar asistencia de papel, registrar conducta y mandarles mensajes.
                                 </p>
                               </div>
-                              <div className="flex flex-wrap items-center justify-center gap-2 mt-2">
+                              <div className="flex flex-wrap items-center justify-center gap-2.5 mt-2">
+                                <button
+                                  type="button"
+                                  onClick={handleOpenAddStudentModal}
+                                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                                >
+                                  <UserPlus className="w-4 h-4" />
+                                  <span>+ Agregar Alumnos Manualmente</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={handleSyncRoster}
                                   disabled={isSyncingClassroomRoster}
-                                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
+                                  className={`inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-xl border transition-all cursor-pointer ${
+                                    isDarkMode
+                                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200 shadow-2xs'
+                                  }`}
                                 >
                                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingClassroomRoster ? 'animate-spin' : ''}`} />
-                                  <span>{isSyncingClassroomRoster ? 'Sincronizando nómina real...' : 'Sincronizar Estudiantes de Classroom'}</span>
+                                  <span>{isSyncingClassroomRoster ? 'Sincronizando...' : 'Sincronizar desde Classroom'}</span>
                                 </button>
                               </div>
                             </div>
@@ -5104,27 +6216,40 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         </span>
                                       )}
                                     </div>
-                                    <span className={`text-[11px] font-mono block ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                                      {student.email}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      <span className={`text-[11px] font-mono ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                                        {student.email || 'Sin correo asignado'}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenDirectMessageModal(student)}
+                                        className="p-1 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                        title={`Enviar mensaje o correo a ${student.firstName} ${student.lastName}`}
+                                      >
+                                        <Mail className="w-3 h-3" />
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
                               </td>
 
-                              {/* Columna Asistencia: Conteo acumulado */}
+                              {/* Columna Asistencia: Conteo acumulado editable */}
                               <td className="py-3 px-3 text-center whitespace-nowrap">
                                 <div className="inline-flex flex-col items-center gap-1">
-                                  {/* Badge contador de ausencias */}
-                                  <span
-                                    className={`inline-flex items-center justify-center min-w-[32px] px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all ${
+                                  {/* Badge contador de ausencias (clickable para editar) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditAbsences(student)}
+                                    className={`inline-flex items-center gap-1 justify-center min-w-[32px] px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${
                                       metrics.totalAbsences > 0
-                                        ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60'
-                                        : 'bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border-neutral-200 dark:border-slate-700'
+                                        ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60 hover:bg-red-100 dark:hover:bg-red-900/60'
+                                        : 'bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border-neutral-200 dark:border-slate-700 hover:bg-neutral-200 dark:hover:bg-slate-700'
                                     }`}
-                                    title={`Total inasistencias acumuladas: ${metrics.totalAbsences}`}
+                                    title={`Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar la cantidad de faltas (pasar de papel, marcar fecha y enviar aviso).`}
                                   >
-                                    {metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}
-                                  </span>
+                                    <span>{metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}</span>
+                                    <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
+                                  </button>
 
                                   {/* Badge contador de llegadas tarde si tiene */}
                                   {(metrics.totalLates || 0) > 0 && (
@@ -5173,6 +6298,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   >
                                     <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                                     <span>Tarde</span>
+                                  </button>
+
+                                  {/* Botón: Editar faltas (pasar de papel) */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditAbsences(student)}
+                                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium transition-all cursor-pointer active:scale-90 shadow-2xs ${
+                                      isDarkMode
+                                        ? 'border-slate-700 text-slate-300 hover:text-red-300 hover:border-red-800 hover:bg-red-950/40'
+                                        : 'border-neutral-200 text-neutral-600 hover:text-red-700 hover:border-red-200 hover:bg-red-50'
+                                    }`}
+                                    title="Editar cantidad de faltas (pasar de papel, marcar fecha retroactiva y mandar mensaje)"
+                                  >
+                                    <Pencil className="w-3 h-3 text-red-500" />
+                                    <span className="text-[11px]">Editar</span>
                                   </button>
 
                                   {/* Botón: Borrar falta */}
@@ -5406,6 +6546,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   >
                     <Copy className="w-3.5 h-3.5" />
                     <span className="hidden sm:inline">Copiar datos</span>
+                  </button>
+
+                  {/* Botón Excel */}
+                  <button
+                    type="button"
+                    onClick={handleExportHistoryExcel}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-300 shadow-2xs'
+                    }`}
+                    title="Descargar historial en formato Excel (.xlsx) nativo"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                    <span className="hidden sm:inline">Exportar Excel</span>
                   </button>
 
                   {/* Botón CSV */}
@@ -7077,16 +8232,27 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     {getStudentMetrics(selectedStudentForHistory.id).totalAbsences}
                   </span>
                 </div>
-                {getStudentMetrics(selectedStudentForHistory.id).totalAbsences > 0 && (
+                <div className="mt-1 flex items-center gap-1 flex-wrap justify-center">
                   <button
                     type="button"
-                    onClick={() => handleDeleteLatestAbsence(selectedStudentForHistory)}
-                    className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors"
-                    title="Eliminar la última falta registrada de este estudiante y actualizar total"
+                    onClick={() => handleOpenEditAbsences(selectedStudentForHistory)}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors inline-flex items-center gap-1"
+                    title="Editar cantidad de faltas de este estudiante (pasar de papel, marcar fecha y avisar)"
                   >
-                    Borrar última falta
+                    <Pencil className="w-2.5 h-2.5" />
+                    <span>Editar faltas</span>
                   </button>
-                )}
+                  {getStudentMetrics(selectedStudentForHistory.id).totalAbsences > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteLatestAbsence(selectedStudentForHistory)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors"
+                      title="Eliminar la última falta registrada de este estudiante y actualizar total"
+                    >
+                      Borrar última
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 flex flex-col items-center justify-between">
@@ -7686,6 +8852,470 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       )}
 
       {/* ------------------------------------------------------------- */}
+      {/* MODAL: EDITAR CANTIDAD DE FALTAS (PASAR DE PAPEL / FECHA / MENSAJE) */}
+      {/* ------------------------------------------------------------- */}
+      {editingAbsenceStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 animate-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Editar Inasistencias del Alumno</h3>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400">
+                    Estudiante: <strong className="text-neutral-900 dark:text-slate-100">{editingAbsenceStudent.lastName}, {editingAbsenceStudent.firstName}</strong>
+                    {activeCourse && ` • ${activeCourse.name}`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingAbsenceStudent(null)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Banner explicativo */}
+            <div className="p-3 rounded-xl bg-red-50/70 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 text-xs flex items-start gap-2.5">
+              <span className="text-base leading-none">📋</span>
+              <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
+                <strong>Tomaste asistencia en papel:</strong> Podés definir directamente el total de faltas acumuladas, elegir el día exacto en que faltó (incluso fechas anteriores) y enviar el aviso por Classroom o Gmail aunque haya sido otro día.
+              </p>
+            </div>
+
+            {/* Selector de Cuatrimestre */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Cuatrimestre a modificar:
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleChangeEditingAbsenceTerm('1c')}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex items-center justify-between transition-all cursor-pointer ${
+                    editingAbsenceTerm === '1c'
+                      ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                >
+                  <span>1° Cuatrimestre</span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                      editingAbsenceTerm === '1c'
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-200 dark:bg-slate-700 text-neutral-700 dark:text-slate-300'
+                    }`}
+                  >
+                    Actual: {getStudentMetrics(editingAbsenceStudent.id, '1c').totalAbsences}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleChangeEditingAbsenceTerm('2c')}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex items-center justify-between transition-all cursor-pointer ${
+                    editingAbsenceTerm === '2c'
+                      ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-300 border-slate-700'
+                      : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}
+                >
+                  <span>2° Cuatrimestre</span>
+                  <span
+                    className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${
+                      editingAbsenceTerm === '2c'
+                        ? 'bg-white/20 text-white'
+                        : 'bg-neutral-200 dark:bg-slate-700 text-neutral-700 dark:text-slate-300'
+                    }`}
+                  >
+                    Actual: {getStudentMetrics(editingAbsenceStudent.id, '2c').totalAbsences}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Input de Cantidad Total de Faltas */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                  Cantidad Total de Inasistencias:
+                </label>
+                <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                  Número de clases ausente
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentVal = parseInt(editingAbsenceCount, 10) || 0;
+                    setEditingAbsenceCount(String(Math.max(0, currentVal - 1)));
+                  }}
+                  className="w-10 h-10 rounded-xl border border-neutral-300 dark:border-slate-700 flex items-center justify-center font-bold text-lg hover:bg-neutral-100 dark:hover:bg-slate-800 cursor-pointer"
+                  title="Restar 1 falta"
+                >
+                  -
+                </button>
+
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={editingAbsenceCount}
+                    onChange={(e) => setEditingAbsenceCount(e.target.value)}
+                    placeholder="0"
+                    className={`w-full px-4 py-2.5 rounded-xl border text-lg font-bold text-center outline-hidden transition-all focus:ring-2 focus:ring-red-500 ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white focus:border-red-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 focus:border-red-500 shadow-inner'
+                    }`}
+                  />
+                  <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-semibold text-neutral-400 dark:text-slate-500">
+                    {parseInt(editingAbsenceCount, 10) === 1 ? 'falta' : 'faltas'}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentVal = parseInt(editingAbsenceCount, 10) || 0;
+                    setEditingAbsenceCount(String(currentVal + 1));
+                  }}
+                  className="w-10 h-10 rounded-xl border border-neutral-300 dark:border-slate-700 flex items-center justify-center font-bold text-lg hover:bg-neutral-100 dark:hover:bg-slate-800 cursor-pointer"
+                  title="Sumar 1 falta"
+                >
+                  +
+                </button>
+              </div>
+
+              {/* Botones rápidos de selección de faltas */}
+              <div className="flex flex-wrap items-center gap-1 pt-1">
+                <span className="text-[10px] text-neutral-500 dark:text-slate-400 mr-1 font-medium">Accesos rápidos:</span>
+                {[0, 1, 2, 3, 4, 5, 6, 8, 10].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setEditingAbsenceCount(String(num))}
+                    className={`h-6 min-w-6 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                      editingAbsenceCount === String(num)
+                        ? 'bg-red-600 text-white border-red-600 scale-105'
+                        : isDarkMode
+                        ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-750'
+                        : 'bg-neutral-100 text-neutral-700 border-neutral-200 hover:bg-neutral-200'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Fecha en que el alumno faltó (permite marcar fecha retroactiva) */}
+            <div className="space-y-1.5 p-3 rounded-xl border border-neutral-200 dark:border-slate-800 bg-neutral-50/70 dark:bg-slate-850">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-neutral-800 dark:text-slate-200 flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-red-500" />
+                  <span>Día en que el alumno faltó:</span>
+                </label>
+                <span className="text-[10px] text-neutral-500 dark:text-slate-400">
+                  Podés elegir una fecha anterior
+                </span>
+              </div>
+              <input
+                type="date"
+                value={editingAbsenceDate}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setEditingAbsenceDate(val);
+                  if (val && editingAbsenceStudent) {
+                    const parts = val.split('-');
+                    if (parts.length === 3) {
+                      const dmy = `${parts[2]}/${parts[1]}/${parts[0]}`;
+                      const defaultAbsenceTpl =
+                        savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
+                        notifSettings.templateClassroom ||
+                        DEFAULT_ABSENCE_PRESETS[0].text;
+                      const updatedMsg = formatTemplateForStudent(
+                        defaultAbsenceTpl,
+                        editingAbsenceStudent,
+                        activeCourse.name,
+                        getStudentMetrics(editingAbsenceStudent.id, editingAbsenceTerm).totalDisposition,
+                        dmy
+                      );
+                      setEditingAbsenceMessageText(updatedMsg);
+                    }
+                  }
+                }}
+                className={`w-full px-3 py-2 rounded-xl border text-xs font-medium outline-hidden transition-all focus:ring-2 focus:ring-red-500 ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-white'
+                    : 'bg-white border-neutral-300 text-neutral-900'
+                }`}
+              />
+              <div className="flex items-center gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const today = new Date();
+                    const pad = (n: number) => n.toString().padStart(2, '0');
+                    setEditingAbsenceDate(`${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`);
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-neutral-300 dark:border-slate-700 text-neutral-600 dark:text-slate-400 hover:bg-neutral-200 dark:hover:bg-slate-750 cursor-pointer"
+                >
+                  Hoy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    const pad = (n: number) => n.toString().padStart(2, '0');
+                    setEditingAbsenceDate(`${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`);
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-neutral-300 dark:border-slate-700 text-neutral-600 dark:text-slate-400 hover:bg-neutral-200 dark:hover:bg-slate-750 cursor-pointer"
+                >
+                  Ayer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const lastWeek = new Date();
+                    lastWeek.setDate(lastWeek.getDate() - 7);
+                    const pad = (n: number) => n.toString().padStart(2, '0');
+                    setEditingAbsenceDate(`${lastWeek.getFullYear()}-${pad(lastWeek.getMonth() + 1)}-${pad(lastWeek.getDate())}`);
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-neutral-300 dark:border-slate-700 text-neutral-600 dark:text-slate-400 hover:bg-neutral-200 dark:hover:bg-slate-750 cursor-pointer"
+                >
+                  Hace 7 días
+                </button>
+              </div>
+            </div>
+
+            {/* Motivo o aclaración */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Aclaración / Motivo (opcional):
+              </label>
+              <input
+                type="text"
+                value={editingAbsenceReason}
+                onChange={(e) => setEditingAbsenceReason(e.target.value)}
+                placeholder="Ej: Pasado de planilla en papel, clase recuperatoria, etc."
+                className={`w-full px-3 py-2 rounded-xl border text-xs outline-hidden transition-all focus:ring-2 focus:ring-red-500 ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                    : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                }`}
+              />
+              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                {[
+                  'Pasado de planilla en papel',
+                  'Inasistencia justificada',
+                  'Falta sin avisar',
+                  'Ajuste de error',
+                ].map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    onClick={() => setEditingAbsenceReason(tag)}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${
+                      editingAbsenceReason === tag
+                        ? 'bg-red-600 text-white border-red-600'
+                        : isDarkMode
+                        ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-750'
+                        : 'bg-neutral-100 text-neutral-600 border-neutral-200 hover:bg-neutral-200'
+                    }`}
+                  >
+                    + {tag}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Opción para enviar mensaje al alumno (aunque no haya sido el mismo día) */}
+            <div className={`p-3.5 rounded-xl border transition-all space-y-3 ${
+              editingAbsenceSendNotif
+                ? isDarkMode
+                  ? 'bg-blue-950/30 border-blue-800/80'
+                  : 'bg-blue-50/70 border-blue-200'
+                : isDarkMode
+                ? 'bg-slate-800/40 border-slate-700'
+                : 'bg-neutral-50 border-neutral-200'
+            }`}>
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editingAbsenceSendNotif}
+                  onChange={(e) => setEditingAbsenceSendNotif(e.target.checked)}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-bold text-neutral-900 dark:text-slate-100 block">
+                    Enviar mensaje/aviso al alumno sobre esta falta
+                  </span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400 block">
+                    Permite notificar al estudiante por Classroom o Gmail aunque la falta haya sido un día anterior
+                  </span>
+                </div>
+              </label>
+
+              {editingAbsenceSendNotif && (
+                <div className="space-y-3 pt-2 border-t border-blue-200/60 dark:border-blue-900/40 animate-in fade-in duration-150">
+                  {/* Selector de canal */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingAbsenceChannel('classroom')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 cursor-pointer transition-all ${
+                        editingAbsenceChannel === 'classroom'
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : isDarkMode
+                          ? 'bg-slate-800 text-slate-300 border-slate-700'
+                          : 'bg-white text-neutral-700 border-neutral-200'
+                      }`}
+                    >
+                      <MessageSquare className="w-4 h-4" />
+                      <span>Tablón Classroom</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditingAbsenceChannel('gmail')}
+                      className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 cursor-pointer transition-all ${
+                        editingAbsenceChannel === 'gmail'
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : isDarkMode
+                          ? 'bg-slate-800 text-slate-300 border-slate-700'
+                          : 'bg-white text-neutral-700 border-neutral-200'
+                      }`}
+                    >
+                      <Mail className="w-4 h-4" />
+                      <span>Correo Gmail</span>
+                    </button>
+                  </div>
+
+                  {/* Cuadro de texto para editar el mensaje */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                        Mensaje a enviar:
+                      </label>
+                      <span className="text-[10px] text-neutral-400">Podés editar este texto antes de enviar</span>
+                    </div>
+                    <textarea
+                      rows={3}
+                      value={editingAbsenceMessageText}
+                      onChange={(e) => setEditingAbsenceMessageText(e.target.value)}
+                      placeholder="Escribe el mensaje..."
+                      className={`w-full p-2.5 text-xs rounded-xl border focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
+                        isDarkMode
+                          ? 'bg-slate-850 border-slate-700 text-white placeholder-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer con Navegación y Acciones */}
+            {(() => {
+              const currentIndex = filteredStudents.findIndex((s) => s.id === editingAbsenceStudent.id);
+              const hasPrev = currentIndex > 0;
+              const hasNext = currentIndex !== -1 && currentIndex < filteredStudents.length - 1;
+
+              return (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 pt-3 border-t border-neutral-100 dark:border-slate-800">
+                  {/* Navegación entre alumnos */}
+                  <div className="flex items-center gap-1.5 w-full sm:w-auto justify-between sm:justify-start">
+                    <button
+                      type="button"
+                      disabled={!hasPrev || isSavingAbsenceEdit}
+                      onClick={() => handleNavigateEditAbsenceStudent(-1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ir al alumno anterior"
+                    >
+                      ← Anterior
+                    </button>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400 font-medium">
+                      {currentIndex !== -1 ? `${currentIndex + 1} de ${filteredStudents.length}` : ''}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={!hasNext || isSavingAbsenceEdit}
+                      onClick={() => handleNavigateEditAbsenceStudent(1)}
+                      className={`px-2.5 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                      title="Ir al alumno siguiente"
+                    >
+                      Siguiente →
+                    </button>
+                  </div>
+
+                  {/* Botones de acción */}
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      disabled={isSavingAbsenceEdit}
+                      onClick={() => setEditingAbsenceStudent(null)}
+                      className={`px-3 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                        isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                      }`}
+                    >
+                      Cancelar
+                    </button>
+                    {hasNext && (
+                      <button
+                        type="button"
+                        disabled={isSavingAbsenceEdit}
+                        onClick={() => handleSaveStudentAbsences(true)}
+                        className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95 transition-all"
+                        title="Guardar las faltas de este alumno y pasar al siguiente en la lista"
+                      >
+                        <span>Guardar y siguiente</span>
+                        <span>→</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={isSavingAbsenceEdit}
+                      onClick={() => handleSaveStudentAbsences(false)}
+                      className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-semibold shadow-xs cursor-pointer inline-flex items-center gap-1 active:scale-95 transition-all"
+                    >
+                      {isSavingAbsenceEdit ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Check className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isSavingAbsenceEdit ? 'Guardando...' : 'Guardar faltas'}</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
       {/* MODAL: FICHA DEL ESTUDIANTE Y OBSERVACIONES DOCENTE (INFORMES) */}
       {/* ------------------------------------------------------------- */}
       {selectedStudentForProfile && (
@@ -7714,9 +9344,60 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       Ficha del Alumno
                     </span>
                   </div>
-                  <p className="text-xs text-neutral-500 dark:text-slate-400 font-mono mt-0.5">
-                    {selectedStudentForProfile.email}
-                  </p>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    {!isEditingStudentEmail ? (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-neutral-500 dark:text-slate-400 font-mono">
+                          {selectedStudentForProfile.email || 'Sin correo registrado'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditedStudentEmail(selectedStudentForProfile.email || '');
+                            setIsEditingStudentEmail(true);
+                          }}
+                          className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-0.5 cursor-pointer"
+                          title="Modificar correo electrónico"
+                        >
+                          <Pencil className="w-2.5 h-2.5" />
+                          <span>Editar correo</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="email"
+                          value={editedStudentEmail}
+                          onChange={(e) => setEditedStudentEmail(e.target.value)}
+                          placeholder="correo@ejemplo.com"
+                          className="px-2 py-0.5 text-xs rounded border border-blue-400 bg-white dark:bg-slate-800 text-neutral-900 dark:text-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleSaveEditedStudentEmail}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white cursor-pointer"
+                        >
+                          Guardar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsEditingStudentEmail(false)}
+                          className="px-1.5 py-0.5 rounded text-[10px] text-neutral-400 hover:text-neutral-600 cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => handleOpenDirectMessageModal(selectedStudentForProfile)}
+                      className="inline-flex items-center gap-1 px-2.5 py-0.5 text-[11px] font-semibold rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:hover:bg-blue-900 dark:text-blue-300 border border-blue-200 dark:border-blue-800 transition-colors cursor-pointer shadow-2xs"
+                    >
+                      <Mail className="w-3 h-3 text-blue-500" />
+                      <span>Enviar mensaje</span>
+                    </button>
+                  </div>
                   {activeCourse && (
                     <p className="text-xs text-neutral-600 dark:text-slate-300 mt-1 font-medium">
                       Materia: <span className="font-semibold">{activeCourse.name}</span>
@@ -7744,14 +9425,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 <div className={`px-5 py-3 border-b grid grid-cols-3 gap-2 text-center text-xs ${
                   isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-100 bg-white'
                 }`}>
-                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
-                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Inasistencias</span>
-                    <span className="text-sm font-bold text-red-600 dark:text-red-400">
-                      {metrics1c.totalAbsences + metrics2c.totalAbsences}
-                    </span>
-                    <span className="text-[10px] text-neutral-400 block">
-                      (1°C: {metrics1c.totalAbsences} • 2°C: {metrics2c.totalAbsences})
-                    </span>
+                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60 flex flex-col items-center justify-between">
+                    <div>
+                      <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Inasistencias</span>
+                      <span className="text-sm font-bold text-red-600 dark:text-red-400">
+                        {metrics1c.totalAbsences + metrics2c.totalAbsences}
+                      </span>
+                      <span className="text-[10px] text-neutral-400 block">
+                        (1°C: {metrics1c.totalAbsences} • 2°C: {metrics2c.totalAbsences})
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditAbsences(selectedStudentForProfile)}
+                      className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors inline-flex items-center gap-1"
+                      title="Editar cantidad de faltas (pasar de papel, marcar fecha y enviar aviso)"
+                    >
+                      <Pencil className="w-2.5 h-2.5" />
+                      <span>Editar faltas</span>
+                    </button>
                   </div>
 
                   <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
@@ -10646,6 +12338,37 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 </div>
               )}
 
+              {/* Doble Entrada: Traer cambios realizados directamente en el Sheet */}
+              {sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) && (
+                <div
+                  className={`p-3.5 rounded-xl border space-y-2 ${
+                    isDarkMode ? 'bg-blue-950/20 border-blue-800/40 text-blue-200' : 'bg-blue-50/70 border-blue-200 text-blue-900'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-xs">
+                      <ArrowLeftRight className="w-4 h-4 text-blue-500" />
+                      <span>Doble Entrada: Sincronización Bidireccional</span>
+                    </div>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                      Activa
+                    </span>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-neutral-600 dark:text-slate-300">
+                    Si modificas ausencias, tardanzas o notas de conducta en las celdas de tu Google Sheet, este botón lee la hoja y vuelca los cambios automáticamente en la app.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handlePullFromGoogleSheet(true)}
+                    disabled={isPullingFromSheet}
+                    className="w-full py-2 px-3 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-xs cursor-pointer transition-colors"
+                  >
+                    <ArrowLeftRight className={`w-3.5 h-3.5 ${isPullingFromSheet ? 'animate-spin' : ''}`} />
+                    <span>{isPullingFromSheet ? 'Leyendo cambios en Google Sheets...' : 'Comprobar y Traer Cambios del Sheet (Doble Entrada)'}</span>
+                  </button>
+                </div>
+              )}
+
               <div className="space-y-2.5 pt-1">
                 {/* Option 1: Connect Google */}
                 <button
@@ -10753,6 +12476,708 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 }`}
               >
                 Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Exportar a Excel (.xlsx) desde la cabecera */}
+      {isHeaderExportExcelModalOpen && activeCourse && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+              isDarkMode ? 'bg-slate-900 border-slate-750 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div
+              className={`p-4 border-b flex items-center justify-between ${
+                isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-emerald-50/70 border-emerald-100'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Exportar a Excel (.xlsx)</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">{activeCourse.name}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHeaderExportExcelModalOpen(false)}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-neutral-100 text-neutral-500'
+                }`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-xs">
+              <p className="text-neutral-600 dark:text-slate-300">
+                Selecciona qué archivo deseas descargar en formato Excel nativo (.xlsx):
+              </p>
+
+              {/* Opción 1: Asistencia y Disposición */}
+              <button
+                type="button"
+                onClick={() => handleExportAllCourseExcel('disposition')}
+                className={`w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-850 hover:bg-slate-800 border-slate-750'
+                    : 'bg-neutral-50 hover:bg-emerald-50/40 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600">
+                    <FileSpreadsheet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="font-bold block text-sm">Asistencia y Disposición (.xlsx)</span>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                      Incluye hojas de 1° Cuatrimestre, 2° Cuatrimestre y Resumen Anual consolidado
+                    </span>
+                  </div>
+                </div>
+                <Download className="w-4 h-4 text-emerald-500" />
+              </button>
+
+              {/* Opción 2: Calificaciones */}
+              <button
+                type="button"
+                onClick={() => handleExportAllCourseExcel('grades')}
+                className={`w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-850 hover:bg-slate-800 border-slate-750'
+                    : 'bg-neutral-50 hover:bg-blue-50/40 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-blue-500/10 text-blue-600">
+                    <FileSpreadsheet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="font-bold block text-sm">Planilla de Calificaciones (.xlsx)</span>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                      Matriz completa de notas con columnas, promedios y notas finales
+                    </span>
+                  </div>
+                </div>
+                <Download className="w-4 h-4 text-blue-500" />
+              </button>
+
+              {/* Opción 3: Historial y Bitácora */}
+              <button
+                type="button"
+                onClick={() => handleExportAllCourseExcel('history')}
+                className={`w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-850 hover:bg-slate-800 border-slate-750'
+                    : 'bg-neutral-50 hover:bg-purple-50/40 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-purple-500/10 text-purple-600">
+                    <History className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="font-bold block text-sm">Historial y Bitácora (.xlsx)</span>
+                    <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                      Registro cronológico de faltas, observaciones, conducta y avisos
+                    </span>
+                  </div>
+                </div>
+                <Download className="w-4 h-4 text-purple-500" />
+              </button>
+
+              {/* Opción 4: Paquete Completo */}
+              <button
+                type="button"
+                onClick={() => handleExportAllCourseExcel('all')}
+                className="w-full p-3.5 rounded-xl border border-emerald-500/40 bg-emerald-600 hover:bg-emerald-700 text-white font-bold flex items-center justify-between shadow-xs transition-all cursor-pointer"
+              >
+                <div className="flex items-center gap-3">
+                  <Download className="w-5 h-5 text-white" />
+                  <span className="text-sm">Descargar Todo el Paquete del Curso</span>
+                </div>
+                <span className="text-xs opacity-90">Archivos .xlsx</span>
+              </button>
+            </div>
+
+            <div
+              className={`p-3.5 border-t flex justify-end ${
+                isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setIsHeaderExportExcelModalOpen(false)}
+                className="px-4 py-2 rounded-xl border text-xs font-semibold cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Importar desde Excel / Sheets con Verificación Previa */}
+      {isHeaderImportModalOpen && activeCourse && (
+        <ImportGradesModal
+          isOpen={isHeaderImportModalOpen}
+          onClose={() => setIsHeaderImportModalOpen(false)}
+          courseId={activeCourse.id}
+          courseName={activeCourse.name}
+          students={courseStudents}
+          categories1c={getCategoriesForImport('1c')}
+          categories2c={getCategoriesForImport('2c')}
+          gradesMap1c={getGradesMapForImport('1c')}
+          gradesMap2c={getGradesMapForImport('2c')}
+          currentTerm={attendanceTerm === '2c' ? '2c' : '1c'}
+          isDarkMode={isDarkMode}
+          onApplyGrades={handleApplyImportFromClassesModule}
+          historyEntries={(() => {
+            try {
+              const hKey = `fds_grade_history_${activeCourse.id}`;
+              const savedHist = localStorage.getItem(hKey);
+              return savedHist ? JSON.parse(savedHist) : [];
+            } catch (_) {
+              return [];
+            }
+          })()}
+        />
+      )}
+
+
+      {/* Modal: Resumen de Doble Entrada (Cambios detectados desde Google Sheets) */}
+      {isDobleEntradaModalOpen && activeCourse && dobleEntradaDiffs && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+              isDarkMode ? 'bg-slate-900 border-slate-750 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div
+              className={`p-4 border-b flex items-center justify-between ${
+                isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-blue-50/70 border-blue-100'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 border border-blue-500/20">
+                  <ArrowLeftRight className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Doble Entrada: Cambios desde Google Sheets</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    {activeCourse.name} • {dobleEntradaDiffs.length} cambio(s) aplicados
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDobleEntradaModalOpen(false)}
+                className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                  isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-neutral-100 text-neutral-500'
+                }`}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-xs max-h-96 overflow-y-auto">
+              <p className="text-neutral-600 dark:text-slate-300">
+                Se detectaron y actualizaron las siguientes modificaciones hechas en Google Sheets:
+              </p>
+
+              <div className="divide-y divide-neutral-100 dark:divide-slate-800 border rounded-xl overflow-hidden">
+                {dobleEntradaDiffs.map((diff, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-3 flex items-center justify-between gap-3 ${
+                      isDarkMode ? 'bg-slate-850/60' : 'bg-neutral-50/50'
+                    }`}
+                  >
+                    <div>
+                      <span className="font-bold text-xs block">{diff.studentName}</span>
+                      <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                        {diff.termLabel} • {diff.fieldLabel}
+                      </span>
+                    </div>
+
+                    <div className="text-right">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono font-bold text-xs bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                        <span>{diff.oldValue}</span>
+                        <span>→</span>
+                        <span className="text-blue-600 dark:text-blue-400">{diff.newValue}</span>
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div
+              className={`p-3.5 border-t flex justify-end ${
+                isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setIsDobleEntradaModalOpen(false)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs cursor-pointer"
+              >
+                Entendido
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: AGREGAR ALUMNO MANUALMENTE (CON CORREO ELECTRÓNICO)     */}
+      {/* ------------------------------------------------------------- */}
+      {isAddStudentModalOpen && activeCourse && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 animate-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
+                  <UserPlus className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Agregar Alumno a {activeCourse.name}</h3>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400">
+                    Carga manual para materias sin Google Classroom
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddStudentModalOpen(false)}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar ventana"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Pestañas: Individual vs Lote */}
+            <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-slate-800 pb-2">
+              <button
+                type="button"
+                onClick={() => setAddStudentTab('single')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  addStudentTab === 'single'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : isDarkMode
+                    ? 'text-slate-400 hover:text-white'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                Carga Individual
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddStudentTab('batch')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  addStudentTab === 'batch'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : isDarkMode
+                    ? 'text-slate-400 hover:text-white'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                Cargar varios a la vez (Pegar lista)
+              </button>
+            </div>
+
+            {addStudentTab === 'single' ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSaveSingleStudent(false);
+                }}
+                className="space-y-4"
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="block text-xs font-semibold">
+                      Apellido <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. González"
+                      value={addStudentLastName}
+                      onChange={(e) => setAddStudentLastName(e.target.value)}
+                      className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-xs font-semibold">
+                      Nombre <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Martín"
+                      value={addStudentFirstName}
+                      onChange={(e) => setAddStudentFirstName(e.target.value)}
+                      className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold">
+                      Correo Electrónico (Gmail / Institucional)
+                    </label>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                      Para mandarle avisos y mensajes
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-2.5 w-4 h-4 text-neutral-400" />
+                    <input
+                      type="email"
+                      placeholder="alumno@ejemplo.com"
+                      value={addStudentEmail}
+                      onChange={(e) => setAddStudentEmail(e.target.value)}
+                      className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                  </div>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    Al cargar el correo podrás enviarle avisos de inasistencia, conducta o mensajes directos.
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold">
+                    Teléfono / WhatsApp (Opcional)
+                  </label>
+                  <div className="relative">
+                    <Smartphone className="absolute left-3 top-2.5 w-4 h-4 text-neutral-400" />
+                    <input
+                      type="tel"
+                      placeholder="+54 9 11 1234-5678"
+                      value={addStudentPhone}
+                      onChange={(e) => setAddStudentPhone(e.target.value)}
+                      className={`w-full pl-9 pr-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold">
+                    Observaciones o Nota Inicial (Opcional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ej. Alumno ingresante, libreta sanitaria entregada..."
+                    value={addStudentNotes}
+                    onChange={(e) => setAddStudentNotes(e.target.value)}
+                    className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                    }`}
+                  />
+                </div>
+
+                <div className="pt-3 border-t border-neutral-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddStudentModalOpen(false)}
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                        : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Cancelar
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isSavingManualStudent}
+                      onClick={() => handleSaveSingleStudent(true)}
+                      className="px-3.5 py-2 text-xs font-semibold rounded-xl bg-neutral-100 dark:bg-slate-800 hover:bg-neutral-200 dark:hover:bg-slate-700 text-neutral-800 dark:text-slate-200 border border-neutral-200 dark:border-slate-700 cursor-pointer transition-colors"
+                      title="Guardar este alumno y mantener el formulario abierto para cargar el siguiente"
+                    >
+                      Guardar y agregar otro
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingManualStudent}
+                      className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                    >
+                      {isSavingManualStudent ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Check className="w-3.5 h-3.5" />
+                      )}
+                      <span>Guardar Alumno</span>
+                    </button>
+                  </div>
+                </div>
+              </form>
+            ) : (
+              <div className="space-y-4">
+                <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs">
+                  <p className="font-semibold text-emerald-900 dark:text-emerald-300">
+                    📋 Pegá una lista completa de alumnos desde Excel o Word:
+                  </p>
+                  <p className="text-neutral-600 dark:text-slate-400 mt-1">
+                    Cada renglón debe tener el formato: <code>Apellido, Nombre, correo@ejemplo.com</code>
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block text-xs font-semibold">
+                    Lista de estudiantes (una fila por alumno):
+                  </label>
+                  <textarea
+                    rows={8}
+                    placeholder={`Pérez, Juan, juan.perez@colegio.edu.ar\nGómez, María, maria.gomez@gmail.com\nRodríguez, Lucas, lucas.rodriguez@gmail.com`}
+                    value={batchStudentsText}
+                    onChange={(e) => setBatchStudentsText(e.target.value)}
+                    className={`w-full px-3 py-2 text-xs font-mono rounded-xl border focus:outline-none focus:ring-2 focus:ring-emerald-500 ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                    }`}
+                  />
+                </div>
+
+                <div className="pt-3 border-t border-neutral-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsAddStudentModalOpen(false)}
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                        : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                    }`}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingManualStudent || !batchStudentsText.trim()}
+                    onClick={handleSaveBatchStudents}
+                    className="px-4 py-2 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                  >
+                    {isSavingManualStudent ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>Importar lista de alumnos</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: ENVIAR MENSAJE DIRECTO AL ESTUDIANTE (CORREO / WHATSAPP) */}
+      {/* ------------------------------------------------------------- */}
+      {directMessageModal.isOpen && directMessageModal.student && activeCourse && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-6 space-y-4 animate-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold">Enviar Mensaje al Alumno</h3>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400">
+                    Destinatario: <strong className="text-neutral-900 dark:text-slate-100">{directMessageModal.student.lastName}, {directMessageModal.student.firstName}</strong>
+                    {directMessageModal.student.email && ` (${directMessageModal.student.email})`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDirectMessageModal(prev => ({ ...prev, isOpen: false }))}
+                className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar modal"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Canal de Envío */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Canal de comunicación:
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDirectMessageModal(prev => ({ ...prev, channel: 'gmail' }))}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                    directMessageModal.channel === 'gmail'
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-800'
+                      : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Mail className="w-4 h-4" />
+                  <span>Correo / Gmail</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDirectMessageModal(prev => ({ ...prev, channel: 'classroom' }))}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                    directMessageModal.channel === 'classroom'
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-800'
+                      : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  <GraduationCap className="w-4 h-4" />
+                  <span>Classroom</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDirectMessageModal(prev => ({ ...prev, channel: 'whatsapp' }))}
+                  className={`p-2 rounded-xl text-xs font-semibold border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                    directMessageModal.channel === 'whatsapp'
+                      ? 'bg-green-600 text-white border-green-600 shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-800'
+                      : 'bg-neutral-50 text-neutral-700 border-neutral-200 hover:bg-neutral-100'
+                  }`}
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>WhatsApp</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Asunto */}
+            {directMessageModal.channel === 'gmail' && (
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                  Asunto del mensaje:
+                </label>
+                <input
+                  type="text"
+                  value={directMessageModal.subject}
+                  onChange={(e) => setDirectMessageModal(prev => ({ ...prev, subject: e.target.value }))}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                  }`}
+                />
+              </div>
+            )}
+
+            {/* Plantillas Rápidas */}
+            <div className="space-y-1">
+              <label className="block text-xs font-semibold text-neutral-500 dark:text-slate-400">
+                Plantillas rápidas:
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { label: 'Recordatorio entrega', text: `Hola ${directMessageModal.student.firstName},\n\nTe recuerdo que tenés una actividad pendiente de entrega en la materia ${activeCourse.name}. Por favor completala a la brevedad.\n\nSaludos,\nProfesor/a.` },
+                  { label: 'Consulta inasistencias', text: `Estimado/a ${directMessageModal.student.firstName},\n\nNos ponemos en contacto debido a que registrás faltas recientes en ${activeCourse.name}. Si necesitás el material de las clases o justificar la inasistencia, avisanos.\n\nSaludos cordiales.` },
+                  { label: 'Felicitación y mérito', text: `¡Felicitaciones ${directMessageModal.student.firstName}!\n\nQueríamos destacar tu excelente participación y compromiso en las clases de ${activeCourse.name}. ¡Seguí así!\n\nSaludos.` },
+                ].map((tpl) => (
+                  <button
+                    key={tpl.label}
+                    type="button"
+                    onClick={() => setDirectMessageModal(prev => ({ ...prev, messageText: tpl.text }))}
+                    className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-300 border-slate-700'
+                        : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-200'
+                    }`}
+                  >
+                    + {tpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Texto del Mensaje */}
+            <div className="space-y-1">
+              <label className="block text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                Mensaje:
+              </label>
+              <textarea
+                rows={5}
+                value={directMessageModal.messageText}
+                onChange={(e) => setDirectMessageModal(prev => ({ ...prev, messageText: e.target.value }))}
+                className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 leading-relaxed ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                    : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                }`}
+              />
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-neutral-100 dark:border-slate-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setDirectMessageModal(prev => ({ ...prev, isOpen: false }))}
+                className={`px-3 py-2 text-xs font-semibold rounded-xl border transition-colors cursor-pointer ${
+                  isDarkMode
+                    ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={directMessageModal.isSending || !directMessageModal.messageText.trim()}
+                onClick={handleSendDirectMessage}
+                className="px-4 py-2 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-xs cursor-pointer flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              >
+                {directMessageModal.isSending ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5" />
+                )}
+                <span>Enviar {directMessageModal.channel === 'gmail' ? 'por Gmail / Correo' : directMessageModal.channel === 'whatsapp' ? 'por WhatsApp' : 'por Classroom'}</span>
               </button>
             </div>
           </div>

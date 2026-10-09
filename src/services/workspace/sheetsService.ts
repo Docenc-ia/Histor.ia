@@ -27,6 +27,29 @@ export interface DispositionSheetResult {
   errorCode?: 'NO_TOKEN' | 'UNAUTHORIZED' | 'PERMISSION_DENIED' | 'NOT_FOUND' | 'SYNC_FAILED' | string;
 }
 
+export interface SheetPullDiff {
+  studentId: string;
+  studentName: string;
+  studentEmail?: string;
+  term: '1c' | '2c';
+  termLabel: string;
+  field: 'totalAbsences' | 'totalLates' | 'totalDisposition';
+  fieldLabel: string;
+  oldValue: number;
+  newValue: number;
+}
+
+export interface SheetPullResult {
+  success: boolean;
+  changesCount: number;
+  changes: SheetPullDiff[];
+  updatedMap1c: Record<string, StudentDispositionData>;
+  updatedMap2c: Record<string, StudentDispositionData>;
+  message: string;
+  spreadsheetId?: string;
+  sheetUrl?: string;
+}
+
 export const sheetsService = {
   /**
    * Helper to resolve or find the specific Google Spreadsheet ID associated with a courseId.
@@ -1050,6 +1073,276 @@ export const sheetsService = {
       error: 'No hay sesión de Google activa con permisos de edición.',
       errorCode: 'NO_TOKEN',
     };
+  },
+
+  /**
+   * Doble Entrada (Two-Way Sync):
+   * Lee la hoja de Google Sheets vinculada al curso y detecta cualquier modificación
+   * en Ausencias, Llegadas Tarde o Puntaje de Disposición realizada directamente en Google Sheets.
+   */
+  async pullDispositionSheetFromGoogle(
+    course: { id: string; name: string },
+    students: Student[],
+    currentMap1c: Record<string, StudentDispositionData>,
+    currentMap2c: Record<string, StudentDispositionData>,
+    spreadsheetId?: string,
+    providedToken?: string
+  ): Promise<SheetPullResult> {
+    const token =
+      providedToken && isValidGoogleAccessToken(providedToken)
+        ? providedToken
+        : getCachedAccessToken();
+
+    if (!spreadsheetId || !isRealGoogleSpreadsheetId(spreadsheetId)) {
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedMap1c: currentMap1c,
+        updatedMap2c: currentMap2c,
+        message: 'No hay una hoja real de Google Sheets vinculada a esta materia.',
+      };
+    }
+
+    if (!token) {
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedMap1c: currentMap1c,
+        updatedMap2c: currentMap2c,
+        message: 'Se requiere iniciar sesión con Google para leer datos en tiempo real.',
+        spreadsheetId,
+      };
+    }
+
+    try {
+      // Leer valores de 1° Cuatrimestre y 2° Cuatrimestre
+      const range1c = encodeURIComponent("'1° Cuatrimestre'!A2:E200");
+      const range2c = encodeURIComponent("'2° Cuatrimestre'!A2:E200");
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values:batchGet?ranges=${range1c}&ranges=${range2c}`;
+
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`Google Sheets API error: ${res.status}`);
+      }
+
+      const data = await res.json();
+      const valueRanges = data.valueRanges || [];
+      const rows1c: any[][] = valueRanges[0]?.values || [];
+      const rows2c: any[][] = valueRanges[1]?.values || [];
+
+      const changes: SheetPullDiff[] = [];
+      const updatedMap1c: Record<string, StudentDispositionData> = { ...currentMap1c };
+      const updatedMap2c: Record<string, StudentDispositionData> = { ...currentMap2c };
+
+      // Helper para buscar alumno por email o nombre
+      const matchStudent = (nameInSheet: string, emailInSheet: string): Student | undefined => {
+        const cleanEmail = (emailInSheet || '').trim().toLowerCase();
+        if (cleanEmail) {
+          const byEmail = students.find((s) => (s.email || '').trim().toLowerCase() === cleanEmail);
+          if (byEmail) return byEmail;
+        }
+
+        const cleanName = (nameInSheet || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]/g, ' ')
+          .trim();
+
+        return students.find((s) => {
+          const sLast = (s.lastName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          const sFirst = (s.firstName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          return (
+            (cleanName.includes(sLast) && cleanName.includes(sFirst)) ||
+            `${sLast} ${sFirst}` === cleanName ||
+            `${sFirst} ${sLast}` === cleanName
+          );
+        });
+      };
+
+      // Procesar 1° Cuatrimestre
+      rows1c.forEach((row) => {
+        const nameCell = String(row[0] || '');
+        const emailCell = String(row[1] || '');
+        const student = matchStudent(nameCell, emailCell);
+        if (!student) return;
+
+        const currentData = updatedMap1c[student.id] || {
+          studentId: student.id,
+          totalDisposition: 10,
+          totalAbsences: 0,
+          totalLates: 0,
+        };
+
+        const sheetAbs = parseInt(String(row[2] || '0').trim(), 10);
+        const sheetLates = parseInt(String(row[3] || '0').trim(), 10);
+        const sheetDisp = parseFloat(String(row[4] || '10').replace(',', '.').trim());
+
+        let changed = false;
+        const newStudentData = { ...currentData };
+
+        if (!isNaN(sheetAbs) && sheetAbs >= 0 && sheetAbs !== currentData.totalAbsences) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '1c',
+            termLabel: '1° Cuatrimestre',
+            field: 'totalAbsences',
+            fieldLabel: 'Ausencias',
+            oldValue: currentData.totalAbsences,
+            newValue: sheetAbs,
+          });
+          newStudentData.totalAbsences = sheetAbs;
+          changed = true;
+        }
+
+        if (!isNaN(sheetLates) && sheetLates >= 0 && sheetLates !== currentData.totalLates) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '1c',
+            termLabel: '1° Cuatrimestre',
+            field: 'totalLates',
+            fieldLabel: 'Llegadas Tarde',
+            oldValue: currentData.totalLates,
+            newValue: sheetLates,
+          });
+          newStudentData.totalLates = sheetLates;
+          changed = true;
+        }
+
+        if (!isNaN(sheetDisp) && sheetDisp >= 0 && sheetDisp <= 10 && sheetDisp !== currentData.totalDisposition) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '1c',
+            termLabel: '1° Cuatrimestre',
+            field: 'totalDisposition',
+            fieldLabel: 'Disposición',
+            oldValue: currentData.totalDisposition,
+            newValue: sheetDisp,
+          });
+          newStudentData.totalDisposition = sheetDisp;
+          changed = true;
+        }
+
+        if (changed) {
+          updatedMap1c[student.id] = newStudentData;
+        }
+      });
+
+      // Procesar 2° Cuatrimestre
+      rows2c.forEach((row) => {
+        const nameCell = String(row[0] || '');
+        const emailCell = String(row[1] || '');
+        const student = matchStudent(nameCell, emailCell);
+        if (!student) return;
+
+        const currentData = updatedMap2c[student.id] || {
+          studentId: student.id,
+          totalDisposition: 10,
+          totalAbsences: 0,
+          totalLates: 0,
+        };
+
+        const sheetAbs = parseInt(String(row[2] || '0').trim(), 10);
+        const sheetLates = parseInt(String(row[3] || '0').trim(), 10);
+        const sheetDisp = parseFloat(String(row[4] || '10').replace(',', '.').trim());
+
+        let changed = false;
+        const newStudentData = { ...currentData };
+
+        if (!isNaN(sheetAbs) && sheetAbs >= 0 && sheetAbs !== currentData.totalAbsences) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '2c',
+            termLabel: '2° Cuatrimestre',
+            field: 'totalAbsences',
+            fieldLabel: 'Ausencias',
+            oldValue: currentData.totalAbsences,
+            newValue: sheetAbs,
+          });
+          newStudentData.totalAbsences = sheetAbs;
+          changed = true;
+        }
+
+        if (!isNaN(sheetLates) && sheetLates >= 0 && sheetLates !== currentData.totalLates) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '2c',
+            termLabel: '2° Cuatrimestre',
+            field: 'totalLates',
+            fieldLabel: 'Llegadas Tarde',
+            oldValue: currentData.totalLates,
+            newValue: sheetLates,
+          });
+          newStudentData.totalLates = sheetLates;
+          changed = true;
+        }
+
+        if (!isNaN(sheetDisp) && sheetDisp >= 0 && sheetDisp <= 10 && sheetDisp !== currentData.totalDisposition) {
+          changes.push({
+            studentId: student.id,
+            studentName: `${student.lastName}, ${student.firstName}`,
+            studentEmail: student.email,
+            term: '2c',
+            termLabel: '2° Cuatrimestre',
+            field: 'totalDisposition',
+            fieldLabel: 'Disposición',
+            oldValue: currentData.totalDisposition,
+            newValue: sheetDisp,
+          });
+          newStudentData.totalDisposition = sheetDisp;
+          changed = true;
+        }
+
+        if (changed) {
+          updatedMap2c[student.id] = newStudentData;
+        }
+      });
+
+      const sheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+      const msg =
+        changes.length > 0
+          ? `✓ Doble Entrada: Se sincronizaron ${changes.length} cambio(s) detectados en Google Sheets.`
+          : '✓ Google Sheet al día: Los datos de asistencia y disposición coinciden exactamente.';
+
+      return {
+        success: true,
+        changesCount: changes.length,
+        changes,
+        updatedMap1c,
+        updatedMap2c,
+        message: msg,
+        spreadsheetId,
+        sheetUrl,
+      };
+    } catch (err: any) {
+      console.warn('Error en Doble Entrada (pull de Google Sheets):', err);
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedMap1c: currentMap1c,
+        updatedMap2c: currentMap2c,
+        message: `Error al conectar con Google Sheets: ${err?.message || 'Error de red'}`,
+        spreadsheetId,
+      };
+    }
   },
 
   /**

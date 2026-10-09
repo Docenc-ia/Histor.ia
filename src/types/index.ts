@@ -69,7 +69,7 @@ export interface StudentHistoryItem {
   timestamp: number;
   messageSent?: boolean;
   messageText?: string;
-  notificationMethod?: 'classroom' | 'gmail' | 'none';
+  notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none';
   notifiedAt?: string;
 }
 

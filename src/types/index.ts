@@ -69,7 +69,8 @@ export interface StudentHistoryItem {
   timestamp: number;
   messageSent?: boolean;
   messageText?: string;
-  notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none';
+  notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
+  omitNotification?: boolean;
   notifiedAt?: string;
 }
 

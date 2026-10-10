@@ -1084,7 +1084,8 @@ export const api = {
     timestamp?: number;
     messageSent?: boolean;
     messageText?: string;
-    notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none';
+    notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
+    omitNotification?: boolean;
     notifiedAt?: string;
     expectedSummary?: { totalAbsences: number; totalLates?: number; totalDisposition: number };
   }): Promise<{

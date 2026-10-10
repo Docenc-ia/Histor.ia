@@ -35,6 +35,7 @@ import {
   Pencil,
   Award,
   Bell,
+  BellOff,
   Mail,
   Send,
   CheckSquare,
@@ -583,8 +584,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       templateGmail: 'Estimado/a {ESTUDIANTE},\n\nTe informamos que en la fecha {FECHA} se ha registrado una inasistencia en la clase de {MATERIA}.\n\nPor favor consulta con tus compañeros o en el aula virtual las tareas correspondientes para mantenerte al día.\n\nSaludos cordiales,\nProfesor/a',
       templateConductClassroom: 'Estimado/a {ESTUDIANTE}, te notificamos que hoy {FECHA} se registró un llamado de atención por "{MOTIVO}" en la materia {MATERIA}, descontándose 1 punto en tu nota de disposición (Puntaje actual: {DISPOSICION}/10). Te solicitamos mantener las pautas de trabajo y convivencia acordadas para el aula.',
       templateConductGmail: 'Estimado/a {ESTUDIANTE}:\n\nPor medio del presente te informamos que en la fecha {FECHA} durante la clase de {MATERIA} se ha registrado un llamado de atención por el motivo: "{MOTIVO}".\nComo consecuencia, tu registro de disposición de la materia queda en {DISPOSICION}/10 puntos.\nTe pedimos reflexionar y mejorar en este aspecto para no comprometer tu evaluación de cursada.\n\nAtentamente,\nProfesor/a',
-      dontShowPopupOnAbsence: false,
-      dontShowPopupOnDisposition: false,
+      dontShowPopupOnAbsence: true,
+      dontShowPopupOnDisposition: true,
     };
 
     if (typeof window !== 'undefined') {
@@ -660,7 +661,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const pendingAbsenceItems = useMemo(() => {
     if (!activeCourse) return [];
     return historyList.filter(
-      (h) => h.courseId === activeCourse.id && h.category === 'Ausencia' && !h.messageSent
+      (h) =>
+        h.courseId === activeCourse.id &&
+        h.category === 'Ausencia' &&
+        !h.messageSent &&
+        !h.omitNotification &&
+        h.notificationMethod !== 'omitted'
     );
   }, [historyList, activeCourse?.id]);
 
@@ -668,7 +674,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const pendingConductItems = useMemo(() => {
     if (!activeCourse) return [];
     return historyList.filter(
-      (h) => h.courseId === activeCourse.id && h.category === 'Disposición' && !h.messageSent
+      (h) =>
+        h.courseId === activeCourse.id &&
+        h.category === 'Disposición' &&
+        !h.messageSent &&
+        !h.omitNotification &&
+        h.notificationMethod !== 'omitted'
     );
   }, [historyList, activeCourse?.id]);
 
@@ -2233,25 +2244,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     );
 
     if (notifSettings.autoNotify) {
-      // Auto-send directly
+      // Auto-send directly only if teacher configured automatic notification
       sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
-    } else if (notifSettings.dontShowPopupOnAbsence) {
-      // Fast roll-call mode: do not open modal per student, record absence as pending for batch send
-      setToastMessage(`Ausencia registrada para ${student.firstName} ${student.lastName}. Aviso pendiente para enviar al final.`);
-      setTimeout(() => setToastMessage(null), 3500);
-    } else {
-      // Open customizable notification modal for teacher confirmation/editing
-      setAbsenceNotifModal({
-        isOpen: true,
-        historyItem: newHistoryEntry,
-        student,
-        channel: channelToUse,
-        messageText: personalizedMessage,
-        selectedPresetId: activePreset.id,
-        showSavePresetInput: false,
-        newPresetName: '',
-        isSending: false,
-      });
     }
   };
 
@@ -2696,13 +2690,110 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   const toggleSelectAllPendingHistory = () => {
     const pendingIds = courseHistory
-      .filter((item) => (item.category === 'Ausencia' || item.category === 'Disposición') && !item.messageSent)
+      .filter(
+        (item) =>
+          (item.category === 'Ausencia' || item.category === 'Disposición') &&
+          !item.messageSent &&
+          !item.omitNotification &&
+          item.notificationMethod !== 'omitted'
+      )
       .map((item) => item.id);
     if (selectedPendingHistoryIds.length === pendingIds.length && pendingIds.length > 0) {
       setSelectedPendingHistoryIds([]);
     } else {
       setSelectedPendingHistoryIds(pendingIds);
     }
+  };
+
+  // Marcar aviso como "No mandar" (sale de los pendientes pero queda en el historial docente)
+  const handleMarkOmitNotification = (item: StudentHistoryItem) => {
+    const updatedHistory = historyList.map((h) => {
+      if (h.id === item.id) {
+        return {
+          ...h,
+          omitNotification: true,
+          notificationMethod: 'omitted' as const,
+          messageSent: false,
+          notifiedAt: 'Omitido',
+        };
+      }
+      return h;
+    });
+
+    setHistoryList(updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
+
+    api
+      .recordDisposition({
+        id: item.id,
+        studentId: item.studentId,
+        studentName: item.studentName,
+        courseId: activeCourse.id,
+        action: item.action,
+        category: item.category,
+        date: item.date,
+        time: item.time,
+        timestamp: item.timestamp,
+        messageSent: false,
+        notificationMethod: 'omitted',
+      })
+      .catch(() => {});
+
+    setToastMessage(`Aviso marcado como "No mandar" para ${item.studentName}. Permanece registrado en tu historial docente.`);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Marcar selección como "No mandar" en lote
+  const handleBatchMarkOmitNotification = () => {
+    if (selectedPendingHistoryIds.length === 0) return;
+    const idsSet = new Set(selectedPendingHistoryIds);
+    const updatedHistory = historyList.map((h) => {
+      if (idsSet.has(h.id)) {
+        return {
+          ...h,
+          omitNotification: true,
+          notificationMethod: 'omitted' as const,
+          messageSent: false,
+          notifiedAt: 'Omitido',
+        };
+      }
+      return h;
+    });
+
+    setHistoryList(updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    const count = selectedPendingHistoryIds.length;
+    setSelectedPendingHistoryIds([]);
+
+    setToastMessage(`${count} aviso${count > 1 ? 's' : ''} marcado${count > 1 ? 's' : ''} como "No mandar". Permanecen intactos en tu historial docente.`);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  // Descartar todos los pendientes a la vez (salen de pendientes pero quedan en historial)
+  const handleMarkAllPendingAsOmitted = () => {
+    if (pendingAllItems.length === 0) return;
+    const pendingIdsSet = new Set(pendingAllItems.map((p) => p.id));
+    const updatedHistory = historyList.map((h) => {
+      if (pendingIdsSet.has(h.id)) {
+        return {
+          ...h,
+          omitNotification: true,
+          notificationMethod: 'omitted' as const,
+          messageSent: false,
+          notifiedAt: 'Omitido',
+        };
+      }
+      return h;
+    });
+
+    setHistoryList(updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    setSelectedPendingHistoryIds([]);
+    const count = pendingAllItems.length;
+
+    setToastMessage(`${count} aviso${count > 1 ? 's' : ''} marcado${count > 1 ? 's' : ''} como "No mandar". Todos quedan registrados en tu historial docente.`);
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   // 2. LÓGICA PARA DISPOSICIÓN (Resta o suma puntos del total y registra en historial)
@@ -2839,27 +2930,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     );
 
     if (notifSettings.autoNotify) {
+      // Auto-send directly only if teacher configured automatic notification
       sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
-    } else if (notifSettings.dontShowPopupOnDisposition) {
-      setToastMessage(
-        delta > 0
-          ? `Reconocimiento registrado (+${delta} pto). Aviso para ${student.firstName} ${student.lastName} pendiente para enviar.`
-          : `Conducta registrada (${delta} pto). Aviso para ${student.firstName} ${student.lastName} pendiente para enviar.`
-      );
-      setTimeout(() => setToastMessage(null), 3500);
-    } else {
-      setAbsenceNotifModal({
-        isOpen: true,
-        historyItem: newHistoryEntry,
-        student,
-        channel: channelToUse,
-        messageText: personalizedMessage,
-        selectedPresetId: `reason-${finalAction}`,
-        showSavePresetInput: false,
-        newPresetName: '',
-        isSending: false,
-      });
-      setSaveReasonAsDefaultOnSend(true);
     }
   };
 
@@ -6704,6 +6776,48 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </div>
                   </div>
 
+                  {/* Barra de selección múltiple para mandar / no mandar en lote */}
+                  {selectedPendingHistoryIds.length > 0 && (
+                    <div
+                      className={`p-3 border-b flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-150 ${
+                        isDarkMode ? 'bg-indigo-950/40 border-slate-800 text-indigo-200' : 'bg-indigo-50 border-neutral-200 text-indigo-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <CheckCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                        <span className="font-semibold text-xs">
+                          {selectedPendingHistoryIds.length} aviso{selectedPendingHistoryIds.length > 1 ? 's' : ''} pendiente{selectedPendingHistoryIds.length > 1 ? 's' : ''} seleccionado{selectedPendingHistoryIds.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedPendingHistoryIds([])}
+                          className="px-2.5 py-1 text-xs font-medium rounded-lg hover:underline opacity-80 cursor-pointer"
+                        >
+                          Deseleccionar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleBatchMarkOmitNotification}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-100 text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
+                          title="Quitar de los pendientes sin mandar notificación. Quedan intactos en el historial."
+                        >
+                          <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                          <span>No mandar ({selectedPendingHistoryIds.length})</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleOpenBatchFromSelectedHistory}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Mandar ({selectedPendingHistoryIds.length})</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Tabla de Registros */}
                   <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
                     <table className="w-full text-left text-xs">
@@ -6951,14 +7065,37 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                     <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
                       {selectedPendingHistoryIds.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleBatchMarkOmitNotification}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-100 shadow-xs transition-all cursor-pointer"
+                            title="Marcar los registros seleccionados como No mandar"
+                          >
+                            <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                            <span>No mandar ({selectedPendingHistoryIds.length})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenBatchFromSelectedHistory}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer"
+                            title="Enviar aviso a los registros seleccionados"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>Mandar ({selectedPendingHistoryIds.length})</span>
+                          </button>
+                        </>
+                      )}
+
+                      {pendingAllItems.length > 0 && (
                         <button
                           type="button"
-                          onClick={handleOpenBatchFromSelectedHistory}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer"
-                          title="Enviar aviso a los registros seleccionados"
+                          onClick={handleMarkAllPendingAsOmitted}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-neutral-700 dark:text-slate-300 border border-neutral-300 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
+                          title="Quitar todos los avisos pendientes a la vez: quedan guardados en tu historial docente sin mandar notificaciones"
                         >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>Enviar a seleccionados ({selectedPendingHistoryIds.length})</span>
+                          <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                          <span>No mandar ({pendingAllItems.length})</span>
                         </button>
                       )}
 
@@ -6981,7 +7118,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         title="Enviar todas las notificaciones de ausencias y conductas acumuladas a lo largo de la clase a todos los alumnos correspondientes"
                       >
                         <Send className="w-4 h-4" />
-                        <span>Enviar a todos</span>
+                        <span>Mandar a todos</span>
                         {pendingAllItems.length > 0 && (
                           <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white text-blue-700 shadow-xs">
                             {pendingAllItems.length}
@@ -7173,13 +7310,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             {selectedPendingHistoryIds.length} aviso{selectedPendingHistoryIds.length > 1 ? 's' : ''} pendiente{selectedPendingHistoryIds.length > 1 ? 's' : ''} seleccionado{selectedPendingHistoryIds.length > 1 ? 's' : ''}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <button
                             type="button"
                             onClick={() => setSelectedPendingHistoryIds([])}
                             className="px-2.5 py-1 text-xs font-medium rounded-lg hover:underline opacity-80 cursor-pointer"
                           >
                             Deseleccionar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleBatchMarkOmitNotification}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-100 text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
+                            title="Quitar de los pendientes sin mandar notificación. Quedan intactos en el historial."
+                          >
+                            <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                            <span>No mandar ({selectedPendingHistoryIds.length})</span>
                           </button>
                           <button
                             type="button"
@@ -7247,7 +7393,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           ) : (
                             courseHistory.map((item) => {
                               const student = courseStudents.find((s) => s.id === item.studentId);
-                              const isPendingNotif = (item.category === 'Ausencia' || item.category === 'Disposición') && !item.messageSent;
+                              const isPendingNotif = (item.category === 'Ausencia' || item.category === 'Disposición') && !item.messageSent && !item.omitNotification && item.notificationMethod !== 'omitted';
                               const isSelectedPending = selectedPendingHistoryIds.includes(item.id);
 
                               return (
@@ -7344,7 +7490,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </span>
                               </td>
 
-                              {/* Columna Mensaje Enviado (con tick o botón para mandar si quedó pendiente) */}
+                              {/* Columna Mensaje Enviado (con tick, opción No mandar o botón para mandar) */}
                               <td className="py-3 px-4 text-center">
                                 {item.category === 'Ausencia' || item.category === 'Disposición' ? (
                                   item.messageSent ? (
@@ -7355,16 +7501,45 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                       <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 stroke-[3]" />
                                       <span>Enviado</span>
                                     </span>
+                                  ) : (item.omitNotification || item.notificationMethod === 'omitted') ? (
+                                    <div className="inline-flex items-center gap-1.5 justify-center">
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border border-neutral-200 dark:border-slate-700"
+                                        title="Aviso omitido por el docente. Queda guardado en tu historial sin mandar notificación."
+                                      >
+                                        <BellOff className="w-2.5 h-2.5 text-neutral-400" />
+                                        <span>No mandar</span>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenNotifyModal(item, student || null)}
+                                        className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                                        title="Cambiar y enviar aviso ahora"
+                                      >
+                                        Mandar
+                                      </button>
+                                    </div>
                                   ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenNotifyModal(item, student || null)}
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 cursor-pointer shadow-2xs"
-                                      title={`Enviar aviso de ${item.category === 'Ausencia' ? 'inasistencia' : 'conducta'} al alumno ahora`}
-                                    >
-                                      <Send className="w-3 h-3" />
-                                      <span>Mandar ahora</span>
-                                    </button>
+                                    <div className="inline-flex items-center gap-1 justify-center flex-wrap">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenNotifyModal(item, student || null)}
+                                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 cursor-pointer shadow-2xs"
+                                        title={`Enviar aviso de ${item.category === 'Ausencia' ? 'inasistencia' : 'conducta'} al alumno ahora`}
+                                      >
+                                        <Send className="w-3 h-3" />
+                                        <span>Mandar</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleMarkOmitNotification(item)}
+                                        className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-neutral-600 dark:text-slate-300 border border-neutral-200 dark:border-slate-700 cursor-pointer shadow-2xs"
+                                        title="No mandar: sale de los pendientes y permanece en tu historial docente"
+                                      >
+                                        <BellOff className="w-2.5 h-2.5 text-neutral-400" />
+                                        <span>No mandar</span>
+                                      </button>
+                                    </div>
                                   )
                                 ) : (
                                   <span className="text-[11px] text-neutral-400 dark:text-slate-500">—</span>
@@ -7382,7 +7557,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   </p>
                                 ) : (
                                   <span className="text-[11px] text-neutral-400 dark:text-slate-500 italic">
-                                    {(item.category === 'Ausencia' || item.category === 'Disposición') ? 'Pendiente de envío' : 'N/A'}
+                                    {(item.omitNotification || item.notificationMethod === 'omitted')
+                                      ? 'Sin aviso (guardado en historial)'
+                                      : (item.category === 'Ausencia' || item.category === 'Disposición')
+                                      ? 'Pendiente de envío'
+                                      : 'N/A'}
                                   </span>
                                 )}
                               </td>
@@ -7431,14 +7610,37 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                     <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
                       {selectedPendingHistoryIds.length > 0 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={handleBatchMarkOmitNotification}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-100 shadow-xs transition-all cursor-pointer"
+                            title="Marcar los registros seleccionados como No mandar"
+                          >
+                            <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                            <span>No mandar ({selectedPendingHistoryIds.length})</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenBatchFromSelectedHistory}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer"
+                            title="Enviar aviso a los registros seleccionados"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>Enviar a seleccionados ({selectedPendingHistoryIds.length})</span>
+                          </button>
+                        </>
+                      )}
+
+                      {pendingAllItems.length > 0 && (
                         <button
                           type="button"
-                          onClick={handleOpenBatchFromSelectedHistory}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer"
-                          title="Enviar aviso a los registros seleccionados"
+                          onClick={handleMarkAllPendingAsOmitted}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-neutral-700 dark:text-slate-300 border border-neutral-300 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
+                          title="Quitar todos los avisos pendientes a la vez: quedan guardados en tu historial docente sin mandar notificaciones"
                         >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>Enviar a seleccionados ({selectedPendingHistoryIds.length})</span>
+                          <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                          <span>No mandar ({pendingAllItems.length})</span>
                         </button>
                       )}
 
@@ -8570,7 +8772,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/60 text-xs flex items-start gap-2.5">
               <span className="text-base leading-none">📝</span>
               <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
-                <strong>Carga manual o notas en papel:</strong> Podés definir directamente la nota de disposición de este estudiante. Es ideal si ese día no usaste computadora en clase o tomaste apuntes en papel y querés pasarlo al sistema.
+                <strong>Carga manual o notas en papel:</strong> Podés definir directamente la nota de disposición de este estudiante. Es ideal para pasar notas tomadas en papel o cuaderno. Se guarda directamente en la planilla sin enviar avisos ni notificaciones al alumno.
               </p>
             </div>
 
@@ -8865,10 +9067,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             </div>
 
             {/* Banner explicativo */}
-            <div className="p-3 rounded-xl bg-red-50/70 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60 text-xs flex items-start gap-2.5">
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-neutral-200 dark:border-slate-700 text-xs flex items-start gap-2.5">
               <span className="text-base leading-none">📋</span>
               <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
-                <strong>Tomaste asistencia en papel:</strong> Podés definir directamente el total de faltas acumuladas, elegir el día exacto en que faltó (incluso fechas anteriores) y enviar el aviso por Classroom o Gmail aunque haya sido otro día.
+                <strong>Carga de planilla / notas en papel:</strong> Podés definir directamente el total de faltas y la fecha. <strong>No se envía ninguna notificación al estudiante</strong> a menos que actives expresamente la casilla opcional de abajo.
               </p>
             </div>
 
@@ -9145,10 +9347,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 />
                 <div>
                   <span className="text-xs font-bold text-neutral-900 dark:text-slate-100 block">
-                    Enviar mensaje/aviso al alumno sobre esta falta
+                    Enviar mensaje/aviso al alumno sobre esta falta (Opcional)
                   </span>
                   <span className="text-[11px] text-neutral-500 dark:text-slate-400 block">
-                    Permite notificar al estudiante por Classroom o Gmail aunque la falta haya sido un día anterior
+                    Desactivado por defecto. Solo marcalo si deseás notificar al estudiante por Classroom o Gmail.
                   </span>
                 </div>
               </label>

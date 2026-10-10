@@ -21,6 +21,7 @@ import {
   ExternalLink,
   Upload,
   History,
+  RefreshCw,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
@@ -227,15 +228,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     url?: string;
     tabName: string;
     isLiveGoogle: boolean;
+    pulledCount?: number;
   } | null>(null);
 
-  const handleSaveCuatrimestreToSheets = async () => {
+  const handleSyncCuatrimestreWithSheets = async () => {
     if (currentTerm === 'annual') return;
     setIsSavingSheets(true);
     setSheetsSavedInfo(null);
-    const termToSave = currentTerm as '1c' | '2c';
-    const catsToSave = is2c ? categories2c : categories1c;
-    const gradesToSave = is2c ? gradesMap2c : gradesMap1c;
+    const termToSync = currentTerm as '1c' | '2c';
+    const catsToSync = is2c ? categories2c : categories1c;
+    let gradesToSync = is2c ? { ...gradesMap2c } : { ...gradesMap1c };
 
     try {
       const courseSheet: any = await api.getCourseDispositionSheet(courseId).catch(() => ({}));
@@ -243,12 +245,44 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         ? (courseSheet.spreadsheetId as string)
         : undefined;
 
+      let pulledCount = 0;
+
+      // 1. Doble entrada (Pull): Si ya existe el sheet vinculado, traemos cambios hechos por el docente en Sheets
+      if (realExistingId) {
+        try {
+          const pullRes = await sheetsService.pullGradebookMatrixFromGoogle(
+            { id: courseId, name: courseName },
+            termToSync,
+            students,
+            catsToSync,
+            gradesToSync,
+            realExistingId,
+            token || undefined
+          );
+
+          if (pullRes.success && pullRes.changesCount > 0) {
+            pulledCount = pullRes.changesCount;
+            gradesToSync = pullRes.updatedGradesMap;
+            if (is2c) {
+              setGradesMap2c(gradesToSync);
+              localStorage.setItem(`gradebook_matrix_grades_2c_${courseId}`, JSON.stringify(gradesToSync));
+            } else {
+              setGradesMap1c(gradesToSync);
+              localStorage.setItem(`gradebook_matrix_grades_1c_${courseId}`, JSON.stringify(gradesToSync));
+            }
+          }
+        } catch (pullErr) {
+          console.warn('Error al consultar cambios de notas en Sheets:', pullErr);
+        }
+      }
+
+      // 2. Push: Subir las notas completas actualizadas a Google Sheets
       const res = await sheetsService.syncGradebookMatrixToSheet(
         { id: courseId, name: courseName },
-        termToSave,
+        termToSync,
         students,
-        catsToSave,
-        gradesToSave,
+        catsToSync,
+        gradesToSync,
         realExistingId,
         undefined,
         token || undefined
@@ -264,16 +298,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           .catch(() => {});
       }
 
-      // Save term snapshot to Firestore for durable storage across sessions
+      // Guardar snapshot del término en Firestore
       const userId = getActiveUserId();
       if (userId) {
         firestoreSync
-          .saveTermSnapshot(userId, courseId, termToSave, {
+          .saveTermSnapshot(userId, courseId, termToSync, {
             courseId,
-            term: termToSave,
-            termLabel: termToSave === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-            categories: catsToSave,
-            gradesMap: gradesToSave,
+            term: termToSync,
+            termLabel: termToSync === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+            categories: catsToSync,
+            gradesMap: gradesToSync,
             updatedAt: new Date().toISOString(),
           })
           .catch(() => {});
@@ -283,9 +317,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         url: res.url,
         tabName: res.tabName,
         isLiveGoogle: res.isLiveGoogle,
+        pulledCount,
       });
     } catch (err) {
-      console.warn('Error saving grades to sheets:', err);
+      console.warn('Error sincronizando notas con sheets:', err);
     } finally {
       setIsSavingSheets(false);
     }
@@ -964,221 +999,173 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
             }`}
           >
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className={`font-bold text-base ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
-                  Planilla de Calificaciones — {currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}
-                </h3>
-                <span
-                  className={`text-[11px] px-2 py-0.5 rounded-full font-semibold border ${
-                    isDarkMode
-                      ? 'bg-blue-950/60 text-blue-400 border-blue-800/60'
-                      : 'bg-blue-50 text-blue-700 border-blue-200'
-                  }`}
-                >
-                  {categories.length} {categories.length === 1 ? 'Categoría' : 'Categorías'}
+            {/* Título: Planilla de Calificaciones y abajo 1º Cuatrimestre */}
+            <div className="shrink-0">
+              <h3 className={`font-bold text-base lg:text-lg leading-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
+                Planilla de Calificaciones
+              </h3>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`text-xs font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                  {currentTerm === '1c' ? '1º Cuatrimestre' : '2º Cuatrimestre'}
                 </span>
+                {is2c && (
+                  <button
+                    type="button"
+                    onClick={handleCopyCategoriesFrom1c}
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 border rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-700 text-emerald-400 border-slate-700'
+                        : 'bg-white hover:bg-emerald-50 text-emerald-700 border-neutral-200'
+                    }`}
+                    title="Copiar las categorías creadas en el 1° Cuatrimestre para utilizarlas en este 2° Cuatrimestre"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Copiar de 1° C</span>
+                  </button>
+                )}
               </div>
-              <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                Organizada por categorías mayores y subcategorías de {currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}. El criterio de promediar o calificar manualmente es 100% decisión tuya.
-              </p>
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Copiar categorías de 1c si está en 2c */}
-              {is2c && (
+            {/* Tres columnas a la derecha */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3 w-full lg:max-w-3xl items-start">
+              {/* Columna 1: Descargar Excel y Descargar CSV */}
+              <div className="flex flex-col gap-1.5">
                 <button
                   type="button"
-                  onClick={handleCopyCategoriesFrom1c}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  onClick={handleExportFullExcel}
+                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs ${
                     isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-700 text-emerald-400 border-slate-700'
-                      : 'bg-white hover:bg-emerald-50 text-emerald-700 border-neutral-200'
+                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
                   }`}
-                  title="Copiar las categorías creadas en el 1° Cuatrimestre para utilizarlas en este 2° Cuatrimestre"
+                  title="Descargar planilla completa en formato Excel (.xlsx)"
                 >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copiar categorías de 1° C</span>
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                  <span className="truncate">Descargar Excel</span>
                 </button>
-              )}
 
-              {/* Botón Generar Valoración Preliminar */}
-              <button
-                type="button"
-                id="btn-generar-valoracion-preliminar"
-                onClick={() => setIsPreliminaryModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all cursor-pointer ring-2 ring-amber-500/20"
-                title={`Generar Valoración Preliminar para ${currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'} con selección de notas y escala TEA / TEP`}
-              >
-                <ClipboardCheck className="w-3.5 h-3.5" />
-                <span>Generar Valoración Preliminar</span>
-                {activePreliminaryValuation && (
-                  <span className="ml-0.5 px-1.5 py-0.2 rounded-full text-[10px] bg-white text-amber-800 font-extrabold shadow-2xs">
-                    TEA/TEP ✓
-                  </span>
-                )}
-              </button>
-
-              {/* Criterio de Calificación Final Toggle */}
-              <div
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs ${
-                  isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-50 border-neutral-200'
-                }`}
-              >
-                <span className={`font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                  Nota Final:
-                </span>
                 <button
                   type="button"
-                  onClick={() =>
-                    saveOverallCalc(
-                      overallCalculation === 'manual_final'
-                        ? 'average_of_categories'
-                        : 'manual_final'
-                    )
-                  }
-                  className={`px-2 py-0.5 rounded-lg font-bold text-[11px] transition-all cursor-pointer ${
-                    overallCalculation === 'manual_final'
-                      ? 'bg-purple-600 text-white shadow-2xs'
-                      : 'bg-blue-600 text-white shadow-2xs'
+                  onClick={handleExportCSV}
+                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
                   }`}
-                  title="Cambiar criterio para la calificación final"
+                  title="Descargar planilla en formato CSV para abrir en Excel o Google Sheets"
                 >
-                  {overallCalculation === 'manual_final'
-                    ? '✍️ A criterio del docente (Manual)'
-                    : '📊 Promedio automático de notas'}
+                  <Download className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
+                  <span className="truncate">Descargar CSV</span>
                 </button>
               </div>
 
-              {/* Add Category Button */}
-              <button
-                type="button"
-                onClick={() => setIsAddCategoryOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Categoría Mayor</span>
-              </button>
+              {/* Columna 2: Importar Notas y Sincronizar Notas en Sheets */}
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsImportModalOpen(true)}
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                  title="Importar archivo Excel (.xlsx, .xls) o pegar notas desde Google Sheets con verificación previa de alumnos"
+                >
+                  <Upload className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Importar Notas</span>
+                </button>
 
-              {/* Opciones de Categorías Button */}
-              <button
-                type="button"
-                onClick={() => setIsManageCategoriesOpen(true)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                }`}
-                title="Opciones de categorías: editar nombres, agregar o eliminar"
-              >
-                <Settings className="w-3.5 h-3.5 text-blue-500" />
-                <span>Opciones de Categorías</span>
-              </button>
-
-              {/* Subir Notas desde Excel o Google Sheets con Verificación */}
-              <button
-                type="button"
-                onClick={() => setIsImportModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                title="Subir archivo Excel (.xlsx, .xls) o pegar notas desde Google Sheets con verificación previa de alumnos"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                <span>Subir Notas (Excel / Sheets)</span>
-              </button>
-
-              {/* Historial de Calificaciones */}
-              <button
-                type="button"
-                onClick={() => setIsImportModalOpen(true)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                }`}
-                title="Ver historial de notas importadas y exportar reporte"
-              >
-                <History className="w-3.5 h-3.5 text-blue-500" />
-                <span>Historial</span>
-                {gradeHistory.length > 0 && (
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
-                    {gradeHistory.length}
+                <button
+                  type="button"
+                  onClick={handleSyncCuatrimestreWithSheets}
+                  disabled={isSavingSheets}
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                  title="Sincronizar notas con Google Sheets (doble entrada bidireccional): detecta y trae modificaciones del Sheet y actualiza la planilla en Drive"
+                >
+                  {isSavingSheets ? (
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5 text-white shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {isSavingSheets ? 'Sincronizando...' : 'Sincronizar Notas en Sheets'}
                   </span>
+                </button>
+
+                {sheetsSavedInfo && (
+                  <div className="flex items-center gap-1.5 flex-wrap text-[11px] mt-0.5">
+                    {sheetsSavedInfo.pulledCount && sheetsSavedInfo.pulledCount > 0 ? (
+                      <span
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 font-medium rounded-lg bg-purple-100 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-800 truncate"
+                        title="Notas importadas y actualizadas desde Google Sheets"
+                      >
+                        <RefreshCw className="w-2.5 h-2.5 text-purple-600 dark:text-purple-400 shrink-0" />
+                        <span>{sheetsSavedInfo.pulledCount} sincronizada(s)</span>
+                      </span>
+                    ) : null}
+                    {sheetsSavedInfo.isLiveGoogle && sheetsSavedInfo.url ? (
+                      <a
+                        href={sheetsSavedInfo.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 px-1.5 py-0.5 font-semibold rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:underline truncate"
+                        title="Abrir pestaña en Google Sheets"
+                      >
+                        <ExternalLink className="w-2.5 h-2.5 shrink-0" />
+                        <span>Ver Sheet</span>
+                      </a>
+                    ) : null}
+                  </div>
                 )}
-              </button>
+              </div>
 
-              {/* Export Full Excel (.xlsx) */}
-              <button
-                type="button"
-                onClick={handleExportFullExcel}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                }`}
-                title="Descargar planilla completa en formato Excel (.xlsx)"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>Descargar Excel</span>
-              </button>
+              {/* Columna 3: Generar Valoración Preliminar y Nota Final */}
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  id="btn-generar-valoracion-preliminar"
+                  onClick={() => setIsPreliminaryModalOpen(true)}
+                  className="w-full inline-flex items-center justify-between gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all cursor-pointer ring-2 ring-amber-500/20"
+                  title={`Generar Valoración Preliminar para ${currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'} con selección de notas y escala TEA / TEP`}
+                >
+                  <div className="inline-flex items-center gap-1.5 truncate">
+                    <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">Generar Valoración Preliminar</span>
+                  </div>
+                  {activePreliminaryValuation && (
+                    <span className="px-1 py-0.2 rounded-full text-[9px] bg-white text-amber-800 font-extrabold shadow-2xs shrink-0">
+                      TEA/TEP ✓
+                    </span>
+                  )}
+                </button>
 
-              {/* Export CSV Button */}
-              <button
-                type="button"
-                onClick={handleExportCSV}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                    : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                }`}
-                title="Descargar planilla en formato CSV para abrir en Excel o Google Sheets"
-              >
-                <Download className="w-3.5 h-3.5 text-neutral-500" />
-                <span>CSV</span>
-              </button>
-
-              {/* Guardar Notas del Cuatrimestre en Google Sheets */}
-              <button
-                type="button"
-                onClick={handleSaveCuatrimestreToSheets}
-                disabled={isSavingSheets}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs"
-                title="Guardar y registrar permanentemente las notas de este cuatrimestre en Google Sheets"
-              >
-                {isSavingSheets ? (
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-white" />
-                )}
-                <span>
-                  {isSavingSheets
-                    ? 'Guardando...'
-                    : `Guardar Notas en Sheets (${currentTerm === '2c' ? '2° C' : '1° C'})`}
-                </span>
-              </button>
-
-              {sheetsSavedInfo && (
-                sheetsSavedInfo.isLiveGoogle && sheetsSavedInfo.url ? (
-                  <a
-                    href={sheetsSavedInfo.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:underline"
-                    title="Abrir la pestaña con las notas guardadas en Google Sheets"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    <span>Ver {sheetsSavedInfo.tabName}</span>
-                  </a>
-                ) : (
-                  <span
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800"
-                    title="Notas guardadas en la base de datos y preparadas para Sheets"
-                  >
-                    <Check className="w-3 h-3 text-blue-600 dark:text-blue-400" />
-                    <span>Guardado ({sheetsSavedInfo.tabName})</span>
+                {/* Criterio de Calificación Final Toggle */}
+                <div
+                  className={`w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs ${
+                    isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-50 border-neutral-200'
+                  }`}
+                >
+                  <span className={`font-semibold shrink-0 ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
+                    Nota Final:
                   </span>
-                )
-              )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      saveOverallCalc(
+                        overallCalculation === 'manual_final'
+                          ? 'average_of_categories'
+                          : 'manual_final'
+                      )
+                    }
+                    className={`px-2 py-0.5 rounded-lg font-bold text-[11px] transition-all cursor-pointer truncate ${
+                      overallCalculation === 'manual_final'
+                        ? 'bg-purple-600 text-white shadow-2xs'
+                        : 'bg-blue-600 text-white shadow-2xs'
+                    }`}
+                    title="Cambiar criterio para la calificación final"
+                  >
+                    {overallCalculation === 'manual_final'
+                      ? '✍️ Manual'
+                      : '📊 Promedio'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 

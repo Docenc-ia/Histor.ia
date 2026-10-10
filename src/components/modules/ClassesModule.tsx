@@ -5727,7 +5727,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     isDarkMode ? 'hover:bg-slate-850/50' : 'hover:bg-neutral-50'
                                   }`}
                                 >
-                                  <td className="py-3 px-4">
+                                  <td className="py-2.5 px-4">
                                     <div className="flex items-center gap-2.5">
                                       <div className="w-7 h-7 rounded-full bg-purple-500/20 text-purple-600 font-bold flex items-center justify-center text-xs">
                                         {student.firstName[0]}
@@ -5742,7 +5742,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         >
                                           {student.lastName}, {student.firstName}
                                         </button>
-                                        <div className="text-[11px] text-neutral-400">{student.email}</div>
                                       </div>
                                     </div>
                                   </td>
@@ -5750,46 +5749,72 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   {/* 1C */}
                                   <td className="py-3 px-3 text-center bg-blue-500/5">
                                     <div className="inline-flex items-center gap-2">
-                                      <span className="text-red-600 dark:text-red-400 font-semibold" title="Faltas 1C">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditAbsences(student, '1c')}
+                                        className="text-red-600 dark:text-red-400 font-semibold hover:underline cursor-pointer transition-all hover:scale-105"
+                                        title="Faltas 1° Cuatrimestre (clic para editar)"
+                                      >
                                         {m1.totalAbsences}F
-                                      </span>
-                                      <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Tardanzas 1C">
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditAbsences(student, '1c')}
+                                        className="text-amber-600 dark:text-amber-400 font-semibold hover:underline cursor-pointer transition-all hover:scale-105"
+                                        title="Tardanzas 1° Cuatrimestre (clic para editar)"
+                                      >
                                         {m1.totalLates || 0}T
-                                      </span>
-                                      <span
-                                        className={`px-2 py-0.5 rounded font-bold ${
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditDisposition(student, '1c')}
+                                        className={`px-2 py-0.5 rounded font-bold cursor-pointer transition-all hover:scale-105 shadow-2xs ${
                                           m1.totalDisposition >= 8
                                             ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300'
                                             : m1.totalDisposition >= 6
                                             ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
                                             : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
                                         }`}
+                                        title="Disposición 1° Cuatrimestre (clic para editar)"
                                       >
                                         {m1.totalDisposition}
-                                      </span>
+                                      </button>
                                     </div>
                                   </td>
 
                                   {/* 2C */}
                                   <td className="py-3 px-3 text-center bg-emerald-500/5">
                                     <div className="inline-flex items-center gap-2">
-                                      <span className="text-red-600 dark:text-red-400 font-semibold" title="Faltas 2C">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditAbsences(student, '2c')}
+                                        className="text-red-600 dark:text-red-400 font-semibold hover:underline cursor-pointer transition-all hover:scale-105"
+                                        title="Faltas 2° Cuatrimestre (clic para editar)"
+                                      >
                                         {m2.totalAbsences}F
-                                      </span>
-                                      <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Tardanzas 2C">
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditAbsences(student, '2c')}
+                                        className="text-amber-600 dark:text-amber-400 font-semibold hover:underline cursor-pointer transition-all hover:scale-105"
+                                        title="Tardanzas 2° Cuatrimestre (clic para editar)"
+                                      >
                                         {m2.totalLates || 0}T
-                                      </span>
-                                      <span
-                                        className={`px-2 py-0.5 rounded font-bold ${
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditDisposition(student, '2c')}
+                                        className={`px-2 py-0.5 rounded font-bold cursor-pointer transition-all hover:scale-105 shadow-2xs ${
                                           m2.totalDisposition >= 8
                                             ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
                                             : m2.totalDisposition >= 6
                                             ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'
                                             : 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300'
                                         }`}
+                                        title="Disposición 2° Cuatrimestre (clic para editar)"
                                       >
                                         {m2.totalDisposition}
-                                      </span>
+                                      </button>
                                     </div>
                                   </td>
 
@@ -6008,23 +6033,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         </th>
                         <th className="py-3 px-4">Estudiante</th>
                         <th className="py-3 px-3 text-center">
-                          <div className="inline-flex flex-col items-center">
-                            <span>Asistencia</span>
-                            <span className="text-[10px] font-normal lowercase opacity-70">acumulado</span>
-                          </div>
+                          <span>Asistencia</span>
                         </th>
                         <th className="py-3 px-4 text-center">
-                          <div className="inline-flex flex-col items-center">
-                            <span>Registrar asistencia</span>
-                            <span className="text-[10px] font-normal lowercase opacity-70">falta / tarde / borrar</span>
-                          </div>
+                          <span>Registrar asistencia</span>
                         </th>
                         <th className="py-3 px-4 text-center">
                           <div className="inline-flex flex-col items-center gap-1">
-                            <div className="flex items-center gap-1">
-                              <span>Disposición</span>
-                              <span className="text-[10px] font-normal lowercase opacity-70">escala 10</span>
-                            </div>
+                            <span>Disposición</span>
                             <button
                               type="button"
                               onClick={() => setIsSendDispositionModalOpen(true)}
@@ -6142,7 +6158,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               }`}
                             >
                               {/* Selection checkbox */}
-                              <td className="py-3 px-3 text-center">
+                              <td className="py-2 px-2.5 text-center">
                                 <button
                                   type="button"
                                   onClick={() => toggleSelectStudent(student.id)}
@@ -6157,9 +6173,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </button>
                               </td>
 
-                              {/* Student info */}
-                              <td className="py-3 px-4">
-                                <div className="flex items-center gap-3">
+                              {/* Student info (sin email visible para una fila más fina y compacta) */}
+                              <td className="py-2 px-3">
+                                <div className="flex items-center gap-2.5">
                                   <button
                                     type="button"
                                     onClick={() => handleOpenStudentProfile(student)}
@@ -6169,13 +6185,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     <img
                                       src={student.avatar}
                                       alt={student.firstName}
-                                      className={`w-9 h-9 rounded-full object-cover border shrink-0 transition-transform group-hover/avatar:scale-105 group-hover/avatar:ring-2 group-hover/avatar:ring-indigo-400 ${
+                                      className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover border shrink-0 transition-transform group-hover/avatar:scale-105 group-hover/avatar:ring-2 group-hover/avatar:ring-indigo-400 ${
                                         isDarkMode ? 'border-slate-700' : 'border-neutral-200'
                                       }`}
                                     />
                                     {studentObservations[student.id]?.length > 0 && (
                                       <span
-                                        className="absolute -top-1 -right-1 w-4 h-4 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[9px] font-bold border-2 border-white dark:border-slate-900 shadow-xs"
+                                        className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[8px] font-bold border-2 border-white dark:border-slate-900 shadow-xs"
                                         title={`${studentObservations[student.id].length} observación(es) registrada(s)`}
                                       >
                                         {studentObservations[student.id].length}
@@ -6183,11 +6199,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     )}
                                   </button>
                                   <div className="min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <button
                                         type="button"
                                         onClick={() => handleOpenStudentProfile(student)}
-                                        className={`font-semibold text-left transition-colors cursor-pointer group flex items-center gap-1.5 hover:underline ${
+                                        className={`font-semibold text-left transition-colors cursor-pointer group flex items-center gap-1 hover:underline text-xs sm:text-sm ${
                                           isDarkMode
                                             ? 'text-slate-100 hover:text-indigo-400'
                                             : 'text-neutral-800 hover:text-indigo-600'
@@ -6202,7 +6218,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         <button
                                           type="button"
                                           onClick={() => handleOpenStudentProfile(student)}
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer shadow-2xs"
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer shadow-2xs"
                                           title={`${studentObservations[student.id].length} observación(es) registrada(s). Clic para abrir ficha.`}
                                         >
                                           <FileText className="w-2.5 h-2.5 text-indigo-600 dark:text-indigo-400" />
@@ -6218,37 +6234,31 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                           Aviso pendiente
                                         </span>
                                       )}
-                                    </div>
-                                    <div className="flex items-center gap-1.5 mt-0.5">
-                                      <span className={`text-[11px] font-mono ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                                        {student.email || 'Sin correo asignado'}
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleOpenDirectMessageModal(student)}
-                                        className="p-1 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                                        title={`Enviar mensaje o correo a ${student.firstName} ${student.lastName}`}
-                                      >
-                                        <Mail className="w-3 h-3" />
-                                      </button>
+
                                     </div>
                                   </div>
                                 </div>
                               </td>
 
-                              {/* Columna Asistencia: Conteo acumulado editable */}
-                              <td className="py-3 px-3 text-center whitespace-nowrap">
-                                <div className="inline-flex flex-col items-center gap-1">
-                                  {/* Badge contador de ausencias (clickable para editar) */}
+                              {/* Columna Asistencia: Conteo acumulado (clic directo sobre la nota/número o celda para editar) */}
+                              <td
+                                className="py-2 px-3 text-center whitespace-nowrap cursor-pointer hover:bg-red-50/40 dark:hover:bg-slate-800/40 transition-colors"
+                                onClick={() => handleOpenEditAbsences(student)}
+                              >
+                                <div className="inline-flex items-center justify-center gap-1.5">
+                                  {/* Badge contador de ausencias (hacer clic sobre la nota para editar) */}
                                   <button
                                     type="button"
-                                    onClick={() => handleOpenEditAbsences(student)}
-                                    className={`inline-flex items-center gap-1 justify-center min-w-[32px] px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenEditAbsences(student);
+                                    }}
+                                    className={`inline-flex items-center gap-1 justify-center min-w-[32px] px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${
                                       metrics.totalAbsences > 0
                                         ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60 hover:bg-red-100 dark:hover:bg-red-900/60'
                                         : 'bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border-neutral-200 dark:border-slate-700 hover:bg-neutral-200 dark:hover:bg-slate-700'
                                     }`}
-                                    title={`Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar la cantidad de faltas (pasar de papel, marcar fecha y enviar aviso).`}
+                                    title={`Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar las faltas (pasar de papel, marcar fecha y enviar aviso).`}
                                   >
                                     <span>{metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}</span>
                                     <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
@@ -6256,25 +6266,30 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                                   {/* Badge contador de llegadas tarde si tiene */}
                                   {(metrics.totalLates || 0) > 0 && (
-                                    <span
-                                      className="inline-flex items-center gap-1 justify-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60"
-                                      title={`Llegadas tarde acumuladas: ${metrics.totalLates}`}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleOpenEditAbsences(student);
+                                      }}
+                                      className="inline-flex items-center gap-1 justify-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60 hover:scale-105 transition-all cursor-pointer"
+                                      title={`Llegadas tarde acumuladas: ${metrics.totalLates}. Hacé clic para editar.`}
                                     >
                                       <Clock className="w-2.5 h-2.5 text-amber-500" />
-                                      {metrics.totalLates} {metrics.totalLates === 1 ? 'tarde' : 'tardes'}
-                                    </span>
+                                      <span>{metrics.totalLates} {metrics.totalLates === 1 ? 'tarde' : 'tardes'}</span>
+                                    </button>
                                   )}
                                 </div>
                               </td>
 
-                              {/* Columna Registrar asistencia: Botones separados */}
-                              <td className="py-3 px-4 text-center">
+                              {/* Columna Registrar asistencia: Botones directos (+ Falta, Tarde, Borrar) - Sin cartel repetido de editar */}
+                              <td className="py-2 px-3 text-center">
                                 <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
-                                  {/* Botón: +1 Falta */}
+                                  {/* Botón: Falta (sin el +) */}
                                   <button
                                     type="button"
                                     onClick={() => handleAddAbsence(student)}
-                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-90 ${
+                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
                                       pulsingStudentId === `abs-${student.id}`
                                         ? 'bg-red-600 text-white border-red-600 scale-105'
                                         : isDarkMode
@@ -6283,14 +6298,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     }`}
                                     title="Marcar falta (suma 1 ausencia sin descontar puntos de disposición)"
                                   >
-                                    <span>+ Falta</span>
+                                    <span>Falta</span>
                                   </button>
 
-                                  {/* Botón: Llegada Tarde */}
+                                  {/* Botón: Tarde (al lado de falta, sin relojito) */}
                                   <button
                                     type="button"
                                     onClick={() => handleRecordLateArrival(student)}
-                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center gap-1 active:scale-90 ${
+                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
                                       pulsingStudentId === `late-${student.id}`
                                         ? 'bg-amber-600 text-white border-amber-600 scale-105'
                                         : isDarkMode
@@ -6299,23 +6314,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     }`}
                                     title="Registrar llegada tarde. Si el alumno tenía una falta registrada hoy, se borra automáticamente."
                                   >
-                                    <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                                     <span>Tarde</span>
-                                  </button>
-
-                                  {/* Botón: Editar faltas (pasar de papel) */}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenEditAbsences(student)}
-                                    className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium transition-all cursor-pointer active:scale-90 shadow-2xs ${
-                                      isDarkMode
-                                        ? 'border-slate-700 text-slate-300 hover:text-red-300 hover:border-red-800 hover:bg-red-950/40'
-                                        : 'border-neutral-200 text-neutral-600 hover:text-red-700 hover:border-red-200 hover:bg-red-50'
-                                    }`}
-                                    title="Editar cantidad de faltas (pasar de papel, marcar fecha retroactiva y mandar mensaje)"
-                                  >
-                                    <Pencil className="w-3 h-3 text-red-500" />
-                                    <span className="text-[11px]">Editar</span>
                                   </button>
 
                                   {/* Botón: Borrar falta */}
@@ -6346,53 +6345,30 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 </div>
                               </td>
 
-                            {/* Columna Disposición (Inicia en 10, editable o por incidencias) */}
-                            <td className="py-3 px-4 text-center">
-                              <div className="inline-flex flex-col items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditDisposition(student)}
-                                  className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${scoreBadgeClass}`}
-                                  title={`Hacé clic para editar la nota de disposición de ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
-                                >
-                                  <span>{metrics.totalDisposition}</span>
-                                  <span className="text-[10px] font-normal opacity-70">/ 10</span>
-                                  <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
-                                </button>
-
-                                {/* Mini Progress bar visual */}
-                                <div className="w-16 h-1 rounded-full bg-neutral-200 dark:bg-slate-700 overflow-hidden">
-                                  <div
-                                    className={`h-full transition-all duration-300 ${
-                                      metrics.totalDisposition >= 8
-                                        ? 'bg-emerald-500'
-                                        : metrics.totalDisposition >= 6
-                                        ? 'bg-amber-500'
-                                        : 'bg-red-500'
-                                    }`}
-                                    style={{ width: `${Math.min(100, Math.max(0, metrics.totalDisposition * 10))}%` }}
-                                  />
+                              {/* Columna Disposición: Clic directo sobre la nota o celda para editar */}
+                              <td
+                                className="py-2 px-3 text-center cursor-pointer hover:bg-blue-50/40 dark:hover:bg-slate-800/40 transition-colors"
+                                onClick={() => handleOpenEditDisposition(student)}
+                              >
+                                <div className="inline-flex items-center justify-center">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleOpenEditDisposition(student);
+                                    }}
+                                    className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${scoreBadgeClass}`}
+                                    title={`Hacé clic sobre la nota para editar la calificación de disposición de ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
+                                  >
+                                    <span>{metrics.totalDisposition}</span>
+                                    <span className="text-[10px] font-normal opacity-70">/ 10</span>
+                                    <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
+                                  </button>
                                 </div>
-
-                                {/* Botón: Editar nota de disposición (pasar de papel o ajustar nota) */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEditDisposition(student)}
-                                  className={`mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-all cursor-pointer shadow-2xs hover:scale-102 active:scale-95 ${
-                                    isDarkMode
-                                      ? 'text-indigo-400 hover:text-indigo-300 hover:bg-indigo-950/60 border border-indigo-800/60'
-                                      : 'text-indigo-700 hover:text-indigo-900 hover:bg-indigo-50 border border-indigo-200'
-                                  }`}
-                                  title={`Editar nota de disposición para ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
-                                >
-                                  <Pencil className="w-2.5 h-2.5" />
-                                  <span>Editar nota</span>
-                                </button>
-                              </div>
-                            </td>
+                              </td>
 
                             {/* Columna Registrar conducta (sumar o restar puntos) */}
-                            <td className="py-3 px-4">
+                            <td className="py-2 px-3">
                               <div className="flex flex-wrap items-center gap-1.5">
                                 {teacherConductOptions.map((opt) => {
                                   const isPositive =
@@ -6473,7 +6449,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             </td>
 
                             {/* Columna Bitácora individual del alumno */}
-                            <td className="py-3 px-4 text-center">
+                            <td className="py-2 px-3 text-center">
                               <button
                                 type="button"
                                 onClick={() => setSelectedStudentForHistory(student)}

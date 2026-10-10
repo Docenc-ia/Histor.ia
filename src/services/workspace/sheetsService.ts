@@ -50,6 +50,28 @@ export interface SheetPullResult {
   sheetUrl?: string;
 }
 
+export interface GradePullDiff {
+  studentId: string;
+  studentName: string;
+  studentEmail?: string;
+  term: '1c' | '2c';
+  termLabel: string;
+  columnId: string;
+  columnName: string;
+  oldGrade: string;
+  newGrade: string;
+}
+
+export interface GradeSheetPullResult {
+  success: boolean;
+  changesCount: number;
+  changes: GradePullDiff[];
+  updatedGradesMap: Record<string, Record<string, string>>;
+  message: string;
+  spreadsheetId?: string;
+  url?: string;
+}
+
 export const sheetsService = {
   /**
    * Helper to resolve or find the specific Google Spreadsheet ID associated with a courseId.
@@ -1739,6 +1761,227 @@ export const sheetsService = {
       isLiveGoogle: isReal,
       updatedAt: new Date().toLocaleTimeString(),
     };
+  },
+
+  /**
+   * Doble Entrada para Calificaciones (Two-Way Sync):
+   * Lee la pestaña correspondiente del cuatrimestre ("Calificaciones - 1° Cuatrimestre" o "Calificaciones - 2° Cuatrimestre")
+   * y detecta cualquier nota modificada directamente en Google Sheets por el docente para incorporarla a la app.
+   */
+  async pullGradebookMatrixFromGoogle(
+    course: { id: string; name: string },
+    term: '1c' | '2c',
+    students: Student[],
+    categories: GradeCategory[],
+    currentGradesMap: Record<string, Record<string, string>>,
+    spreadsheetId?: string,
+    providedToken?: string
+  ): Promise<GradeSheetPullResult> {
+    const token =
+      providedToken && isValidGoogleAccessToken(providedToken)
+        ? providedToken
+        : getCachedAccessToken();
+
+    const termLabel = term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
+    const tabName = `Calificaciones - ${termLabel}`;
+
+    if (!spreadsheetId || !isRealGoogleSpreadsheetId(spreadsheetId)) {
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedGradesMap: currentGradesMap,
+        message: 'No hay una hoja real de Google Sheets vinculada a esta materia.',
+      };
+    }
+
+    if (!token) {
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedGradesMap: currentGradesMap,
+        message: 'Se requiere iniciar sesión con Google para leer calificaciones en tiempo real.',
+        spreadsheetId,
+      };
+    }
+
+    try {
+      const range = encodeURIComponent(`'${tabName}'!A1:ZZ500`);
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`;
+
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        return {
+          success: true,
+          changesCount: 0,
+          changes: [],
+          updatedGradesMap: currentGradesMap,
+          message: 'La pestaña de calificaciones aún no existe o no tiene datos cargados.',
+          spreadsheetId,
+          url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+        };
+      }
+
+      const data = await res.json();
+      const rows: any[][] = data.values || [];
+      if (rows.length < 2) {
+        return {
+          success: true,
+          changesCount: 0,
+          changes: [],
+          updatedGradesMap: currentGradesMap,
+          message: 'La pestaña de calificaciones no contiene filas con notas.',
+          spreadsheetId,
+          url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+        };
+      }
+
+      // Flatten assessment columns
+      const assessmentColumns: { id: string; header: string }[] = [];
+      categories.forEach((cat) => {
+        if (!cat.subcategories || cat.subcategories.length === 0) {
+          assessmentColumns.push({ id: cat.id, header: cat.name });
+        } else {
+          cat.subcategories.forEach((sub) => {
+            assessmentColumns.push({
+              id: sub.id,
+              header: `${cat.name} - ${sub.name}`,
+            });
+          });
+        }
+      });
+
+      // Map columns from sheet header
+      const headerRow = rows[0] || [];
+      const colIndexToAssessment: Record<number, { id: string; header: string }> = {};
+
+      headerRow.forEach((hVal, idx) => {
+        if (idx < 2) return; // 0: Name, 1: Email
+        const hClean = String(hVal || '').trim().toLowerCase();
+        if (
+          hClean.includes('promedio') ||
+          hClean.includes('condición') ||
+          hClean.includes('condicion') ||
+          hClean.includes('actualización') ||
+          hClean.includes('actualizacion')
+        ) {
+          return;
+        }
+
+        const match = assessmentColumns.find((ac) => {
+          const acClean = ac.header.trim().toLowerCase();
+          return (
+            acClean === hClean ||
+            hClean.endsWith(acClean) ||
+            hClean.includes(acClean) ||
+            acClean.includes(hClean)
+          );
+        });
+
+        if (match) {
+          colIndexToAssessment[idx] = match;
+        }
+      });
+
+      // Match student helper
+      const matchStudent = (nameInSheet: string, emailInSheet: string): Student | undefined => {
+        const cleanEmail = (emailInSheet || '').trim().toLowerCase();
+        if (cleanEmail) {
+          const byEmail = students.find((s) => (s.email || '').trim().toLowerCase() === cleanEmail);
+          if (byEmail) return byEmail;
+        }
+
+        const cleanName = (nameInSheet || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]/g, ' ')
+          .trim();
+
+        return students.find((s) => {
+          const sLast = (s.lastName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          const sFirst = (s.firstName || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          return (
+            (cleanName.includes(sLast) && cleanName.includes(sFirst)) ||
+            `${sLast} ${sFirst}` === cleanName ||
+            `${sFirst} ${sLast}` === cleanName
+          );
+        });
+      };
+
+      const changes: GradePullDiff[] = [];
+      const updatedGradesMap: Record<string, Record<string, string>> = {};
+
+      // Clone existing grades
+      Object.keys(currentGradesMap).forEach((stId) => {
+        updatedGradesMap[stId] = { ...(currentGradesMap[stId] || {}) };
+      });
+
+      // Process rows from index 1
+      for (let r = 1; r < rows.length; r++) {
+        const row = rows[r];
+        const nameCell = String(row[0] || '');
+        const emailCell = String(row[1] || '');
+        const student = matchStudent(nameCell, emailCell);
+        if (!student) continue;
+
+        if (!updatedGradesMap[student.id]) {
+          updatedGradesMap[student.id] = {};
+        }
+
+        Object.entries(colIndexToAssessment).forEach(([colIdxStr, colInfo]) => {
+          const colIdx = Number(colIdxStr);
+          const rawCellVal = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
+          const currentVal = String(updatedGradesMap[student.id][colInfo.id] || '').trim();
+
+          const normalizedCell = rawCellVal.replace(',', '.');
+          const normalizedCurr = currentVal.replace(',', '.');
+
+          if (normalizedCell !== normalizedCurr && rawCellVal !== '') {
+            changes.push({
+              studentId: student.id,
+              studentName: `${student.lastName}, ${student.firstName}`,
+              studentEmail: student.email,
+              term,
+              termLabel,
+              columnId: colInfo.id,
+              columnName: colInfo.header,
+              oldGrade: currentVal,
+              newGrade: rawCellVal,
+            });
+            updatedGradesMap[student.id][colInfo.id] = rawCellVal;
+          }
+        });
+      }
+
+      return {
+        success: true,
+        changesCount: changes.length,
+        changes,
+        updatedGradesMap,
+        message:
+          changes.length > 0
+            ? `Se sincronizaron ${changes.length} nota(s) modificada(s) desde Google Sheets.`
+            : 'No se detectaron modificaciones en Google Sheets.',
+        spreadsheetId,
+        url: `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+      };
+    } catch (err) {
+      console.warn('Error al leer calificaciones de Google Sheets:', err);
+      return {
+        success: false,
+        changesCount: 0,
+        changes: [],
+        updatedGradesMap: currentGradesMap,
+        message: 'Ocurrió un error al leer la hoja de Google Sheets.',
+      };
+    }
   },
 
   /**

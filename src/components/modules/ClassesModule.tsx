@@ -82,6 +82,11 @@ import { driveService, CourseFolderStructure } from '../../services/workspace/dr
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
+import { AttendanceHeader } from './classes/AttendanceHeader';
+import { StudentAttendanceRow } from './classes/StudentAttendanceRow';
+import { GoogleSyncManager } from './classes/GoogleSyncManager';
+import { GoogleSessionExpiryBanner } from './classes/GoogleSessionExpiryBanner';
+import { useAttendanceSync } from '../../hooks/useAttendanceSync';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -119,7 +124,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   onNavigate,
   onOpenNewModal,
 }) => {
-  const { isDarkMode, token, user, loginWithGoogle, requestAccessToken } = useWorkspaceAuth();
+  const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
 
   // Students sorted strictly alphabetically by last name (apellido), then first name
@@ -1247,7 +1252,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
 
       if (!activeToken || !isAuthentic) {
-        setToastMessage('Por favor autoriza la conexión con Google para sincronizar la hoja.');
+        setToastMessage('Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.');
         setShowSheetsConnectModal(true);
         return;
       }
@@ -1389,7 +1394,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         setSheetsModalFeedback(null);
         setShowSheetsConnectModal(false);
       } else if (res.errorCode === 'UNAUTHORIZED') {
-        setToastMessage('Tu sesión de Google expiró. Por favor vuelve a autorizar tu cuenta.');
+        setToastMessage('Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.');
         setCachedAccessToken(null);
         setShowSheetsConnectModal(true);
       } else if (res.error) {
@@ -4797,6 +4802,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+      <GoogleSessionExpiryBanner />
+
       {/* ------------------------------------------------------------- */}
       {/* TOP HEADER                                                    */}
       {/* ------------------------------------------------------------- */}
@@ -5226,133 +5233,29 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           </div>
 
           {/* ------------------------------------------------------------- */}
-          {/* BARRA DE HERRAMIENTAS (AGREGAR ALUMNO, MANDAR CALIFICACIONES, ETC.) */}
+          {/* BARRA DE HERRAMIENTAS Y CONTROL DE PERÍODO (AttendanceHeader) */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'roster' && (
-            <div
-              className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
-                isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
-              }`}
-            >
-              {/* Search box */}
-              <div className="relative flex items-center">
-                <Search className={`absolute left-3 w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
-                <input
-                  type="text"
-                  placeholder="Buscar estudiante..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`pl-8 pr-3 py-1.5 text-xs rounded-lg focus:outline-none w-44 sm:w-56 transition-colors border ${
-                    isDarkMode
-                      ? 'bg-slate-800 text-white placeholder-slate-500 border-slate-700 focus:border-blue-500'
-                      : 'bg-white text-neutral-900 placeholder-neutral-400 border-neutral-200 focus:ring-1 focus:ring-blue-500'
-                  }`}
-                />
-              </div>
-
-              {/* Botones de acción: Agregar Alumno, Mandar a Calificaciones, etc. */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* Botón para agregar alumno manualmente con su correo */}
-                <button
-                  type="button"
-                  onClick={handleOpenAddStudentModal}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
-                  title="Agregar un nuevo alumno manualmente con su correo para pasar faltas y mandarle mensajes"
-                >
-                  <UserPlus className="w-3.5 h-3.5" />
-                  <span>+ Agregar Alumno</span>
-                </button>
-
-                {/* Batch send button if students are selected */}
-                {selectedStudentIds.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleOpenBatchFromSelectedStudents}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
-                    title="Enviar aviso de inasistencia a todos los estudiantes seleccionados"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>Avisar a seleccionados ({selectedStudentIds.length})</span>
-                  </button>
-                )}
-
-                {/* Batch send button if there are pending notifications */}
-                {selectedStudentIds.length === 0 && pendingAllItems.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => handleOpenBatchFromPending('all')}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs transition-all cursor-pointer animate-in fade-in"
-                    title="Enviar avisos pendientes a todos los estudiantes (ausencias y conductas)"
-                  >
-                    <Bell className="w-3.5 h-3.5" />
-                    <span>Avisos pendientes ({pendingAllItems.length})</span>
-                  </button>
-                )}
-
-                {/* Botón principal: Mandar Nota de Disposición a Calificaciones según el cuatrimestre activo */}
-                <button
-                  type="button"
-                  onClick={() => setIsSendDispositionModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
-                  title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
-                >
-                  <Award className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Mandar a Calificaciones</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setIsNotifConfigModalOpen(true)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'border-slate-700 text-blue-400 hover:text-blue-300 hover:bg-slate-800'
-                      : 'border-blue-200 text-blue-700 hover:text-blue-800 hover:bg-blue-50'
-                  }`}
-                  title="Configurar mensajes preestablecidos y opciones de Classroom / Gmail"
-                >
-                  <Bookmark className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Mensajes Preestablecidos</span>
-                </button>
-
-                {/* Sincronizar con Sheets: Doble Entrada Bidireccional */}
-                <button
-                  type="button"
-                  onClick={handleManualSheetsSync}
-                  disabled={isSyncingSheet || isPullingFromSheet}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                    isDarkMode
-                      ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
-                      : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
-                  }`}
-                  title="Sincronizar con Sheets: Doble entrada bidireccional. Si modificaste ausencias, tardanzas o notas en el Google Sheet, las trae a la app y actualiza la planilla en Google Drive"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 text-blue-500 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin' : ''}`} />
-                  <span>{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
-                  {sheetConfig?.lastSyncedAt && !(isSyncingSheet || isPullingFromSheet) && (
-                    <span className="hidden xl:inline text-[10px] opacity-75">({sheetConfig.lastSyncedAt})</span>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleOpenGoogleSheet}
-                  disabled={isOpeningSheet}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Abrir la planilla vinculada en Google Sheets"
-                >
-                  {isOpeningSheet ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                  )}
-                  <span className="hidden sm:inline">Abrir Sheet</span>
-                </button>
-              </div>
-            </div>
+            <AttendanceHeader
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              selectedStudentCount={selectedStudentIds.length}
+              onOpenBatchSelected={handleOpenBatchFromSelectedStudents}
+              pendingCount={selectedStudentIds.length === 0 ? pendingAllItems.length : 0}
+              onOpenBatchPending={() => handleOpenBatchFromPending('all')}
+              onOpenAddStudentModal={handleOpenAddStudentModal}
+              onOpenSendDispositionModal={() => setIsSendDispositionModalOpen(true)}
+              onOpenNotifConfigModal={() => setIsNotifConfigModalOpen(true)}
+              isSyncingSheet={isSyncingSheet}
+              isPullingFromSheet={isPullingFromSheet}
+              lastSyncedAt={sheetConfig?.lastSyncedAt}
+              onManualSheetsSync={handleManualSheetsSync}
+              isOpeningSheet={isOpeningSheet}
+              onOpenGoogleSheet={handleOpenGoogleSheet}
+              attendanceTerm={attendanceTerm}
+              onSelectTerm={setAttendanceTermHandler}
+              isDarkMode={isDarkMode}
+            />
           )}
 
           {activeTab === 'history' && (
@@ -5475,104 +5378,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           )}
 
           {/* ------------------------------------------------------------- */}
-          {/* TAB 1: STUDENT ROSTER WITH INTEGRATED SCRIPT CONTROLS        */}
+          {/* TAB 1: STUDENT ROSTER (1C / 2C / ANNUAL VIEW)                 */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'roster' && (
-            <div>
-              {/* Academic Term Header & Switcher (1° Cuatrimestre / 2° Cuatrimestre / Resumen Anual) */}
-              <div
-                className={`p-3.5 rounded-xl border mb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition-colors ${
-                  isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className={`p-2 rounded-lg ${
-                      attendanceTerm === '1c'
-                        ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                        : attendanceTerm === '2c'
-                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                        : 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
-                    }`}
-                  >
-                    <Calendar className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`font-semibold text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                        Período de Asistencia y Disposición:
-                      </span>
-                      <span
-                        className={`text-xs px-2.5 py-0.5 rounded-full font-bold border ${
-                          attendanceTerm === '1c'
-                            ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
-                            : attendanceTerm === '2c'
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
-                            : 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
-                        }`}
-                      >
-                        {attendanceTerm === '1c'
-                          ? '📘 1° Cuatrimestre Activo'
-                          : attendanceTerm === '2c'
-                          ? '📗 2° Cuatrimestre Activo'
-                          : '🎓 Resumen Anual Consolidado'}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Segmented term selector */}
-                <div
-                  className={`p-1 rounded-xl border flex items-center gap-1 shadow-2xs ${
-                    isDarkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-neutral-100 border-neutral-200'
-                  }`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => setAttendanceTermHandler('1c')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                      attendanceTerm === '1c'
-                        ? 'bg-blue-600 text-white shadow-xs'
-                        : isDarkMode
-                        ? 'text-slate-400 hover:text-slate-200'
-                        : 'text-neutral-600 hover:text-neutral-900'
-                    }`}
-                  >
-                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === '1c' ? 'bg-white' : 'bg-blue-400'}`} />
-                    <span>1° Cuatrimestre</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setAttendanceTermHandler('2c')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                      attendanceTerm === '2c'
-                        ? 'bg-emerald-600 text-white shadow-xs'
-                        : isDarkMode
-                        ? 'text-slate-400 hover:text-slate-200'
-                        : 'text-neutral-600 hover:text-neutral-900'
-                    }`}
-                  >
-                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === '2c' ? 'bg-white' : 'bg-emerald-400'}`} />
-                    <span>2° Cuatrimestre</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setAttendanceTermHandler('annual')}
-                    className={`px-3 py-1.5 rounded-lg font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer ${
-                      attendanceTerm === 'annual'
-                        ? 'bg-purple-600 text-white shadow-xs'
-                        : isDarkMode
-                        ? 'text-slate-400 hover:text-slate-200'
-                        : 'text-neutral-600 hover:text-neutral-900'
-                    }`}
-                  >
-                    <span className={`w-2 h-2 rounded-full ${attendanceTerm === 'annual' ? 'bg-white' : 'bg-purple-400'}`} />
-                    <span>Resumen Anual</span>
-                  </button>
-                </div>
-              </div>
+            <div className="space-y-4">
 
               {/* ------------------------------------------------------------- */}
               {/* ANNUAL VIEW: CONSOLIDATED ATTENDANCE & DISPOSITION MATRIX     */}
@@ -6188,351 +5997,43 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           const hasPendingAbsence = historyList.some(
                             (h) => h.courseId === activeCourse.id && h.studentId === student.id && h.category === 'Ausencia' && !h.messageSent
                           );
-
-                          // Disposition score colors
-                          const score = metrics.totalDisposition;
-                          const scoreBadgeClass =
-                            score >= 8
-                              ? isDarkMode
-                                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
-                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : score >= 6
-                              ? isDarkMode
-                                ? 'bg-amber-950/60 text-amber-300 border-amber-800/60'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                              : isDarkMode
-                              ? 'bg-red-950/60 text-red-300 border-red-800/60'
-                              : 'bg-red-50 text-red-700 border-red-200';
-
                           const isSelected = selectedStudentIds.includes(student.id);
 
                           return (
-                            <tr
+                            <StudentAttendanceRow
                               key={student.id}
-                              className={`transition-colors ${
-                                isSelected
-                                  ? isDarkMode
-                                    ? 'bg-indigo-950/30'
-                                    : 'bg-indigo-50/50'
-                                  : isDarkMode
-                                  ? 'hover:bg-slate-800/50'
-                                  : 'hover:bg-neutral-50/70'
-                              }`}
-                            >
-                              {/* Selection checkbox */}
-                              <td className="py-2 px-2.5 text-center">
-                                <button
-                                  type="button"
-                                  onClick={() => toggleSelectStudent(student.id)}
-                                  className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                                  title={isSelected ? 'Deseleccionar estudiante' : 'Seleccionar estudiante para aviso en lote'}
-                                >
-                                  {isSelected ? (
-                                    <CheckSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                                  ) : (
-                                    <Square className="w-4 h-4 text-neutral-400 dark:text-slate-500" />
-                                  )}
-                                </button>
-                              </td>
-
-                              {/* Student info (sin email visible para una fila más fina y compacta) */}
-                              <td className="py-2 px-3">
-                                <div className="flex items-center gap-2.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenStudentProfile(student)}
-                                    className="relative shrink-0 cursor-pointer group/avatar"
-                                    title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
-                                  >
-                                    <img
-                                      src={student.avatar}
-                                      alt={student.firstName}
-                                      className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover border shrink-0 transition-transform group-hover/avatar:scale-105 group-hover/avatar:ring-2 group-hover/avatar:ring-indigo-400 ${
-                                        isDarkMode ? 'border-slate-700' : 'border-neutral-200'
-                                      }`}
-                                    />
-                                    {studentObservations[student.id]?.length > 0 && (
-                                      <span
-                                        className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[8px] font-bold border-2 border-white dark:border-slate-900 shadow-xs"
-                                        title={`${studentObservations[student.id].length} observación(es) registrada(s)`}
-                                      >
-                                        {studentObservations[student.id].length}
-                                      </span>
-                                    )}
-                                  </button>
-                                  <div className="min-w-0">
-                                    <div className="flex items-center gap-1.5 flex-wrap">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleOpenStudentProfile(student)}
-                                        className={`font-semibold text-left transition-colors cursor-pointer group flex items-center gap-1 hover:underline text-xs sm:text-sm ${
-                                          isDarkMode
-                                            ? 'text-slate-100 hover:text-indigo-400'
-                                            : 'text-neutral-800 hover:text-indigo-600'
-                                        }`}
-                                        title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
-                                      >
-                                        <span>{student.lastName}, {student.firstName}</span>
-                                      </button>
-
-                                      {/* Badge si tiene observaciones registradas */}
-                                      {studentObservations[student.id]?.length > 0 && (
-                                        <button
-                                          type="button"
-                                          onClick={() => handleOpenStudentProfile(student)}
-                                          className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer shadow-2xs"
-                                          title={`${studentObservations[student.id].length} observación(es) registrada(s). Clic para abrir ficha.`}
-                                        >
-                                          <FileText className="w-2.5 h-2.5 text-indigo-600 dark:text-indigo-400" />
-                                          <span>{studentObservations[student.id].length}</span>
-                                        </button>
-                                      )}
-
-                                      {hasPendingAbsence && (
-                                        <span
-                                          className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
-                                          title="Tiene una ausencia registrada pendiente de enviar notificación"
-                                        >
-                                          Aviso pendiente
-                                        </span>
-                                      )}
-
-                                    </div>
-                                  </div>
-                                </div>
-                              </td>
-
-                              {/* Columna Asistencia: Conteo acumulado (clic directo sobre la nota/número o celda para editar) */}
-                              <td
-                                className="py-2 px-3 text-center whitespace-nowrap cursor-pointer hover:bg-red-50/40 dark:hover:bg-slate-800/40 transition-colors"
-                                onClick={() => handleOpenEditAbsences(student)}
-                              >
-                                <div className="inline-flex items-center justify-center gap-1.5">
-                                  {/* Badge contador de ausencias (hacer clic sobre la nota para editar) */}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenEditAbsences(student);
-                                    }}
-                                    className={`inline-flex items-center gap-1 justify-center min-w-[32px] px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${
-                                      metrics.totalAbsences > 0
-                                        ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60 hover:bg-red-100 dark:hover:bg-red-900/60'
-                                        : 'bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border-neutral-200 dark:border-slate-700 hover:bg-neutral-200 dark:hover:bg-slate-700'
-                                    }`}
-                                    title={`Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar las faltas (pasar de papel, marcar fecha y enviar aviso).`}
-                                  >
-                                    <span>{metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}</span>
-                                    <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
-                                  </button>
-
-                                  {/* Badge contador de llegadas tarde si tiene */}
-                                  {(metrics.totalLates || 0) > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleOpenEditAbsences(student);
-                                      }}
-                                      className="inline-flex items-center gap-1 justify-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800/60 hover:scale-105 transition-all cursor-pointer"
-                                      title={`Llegadas tarde acumuladas: ${metrics.totalLates}. Hacé clic para editar.`}
-                                    >
-                                      <Clock className="w-2.5 h-2.5 text-amber-500" />
-                                      <span>{metrics.totalLates} {metrics.totalLates === 1 ? 'tarde' : 'tardes'}</span>
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-
-                              {/* Columna Registrar asistencia: Botones directos (+ Falta, Tarde, Borrar) - Sin cartel repetido de editar */}
-                              <td className="py-2 px-3 text-center">
-                                <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
-                                  {/* Botón: Falta (sin el +) */}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleAddAbsence(student)}
-                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
-                                      pulsingStudentId === `abs-${student.id}`
-                                        ? 'bg-red-600 text-white border-red-600 scale-105'
-                                        : isDarkMode
-                                        ? 'border-slate-700 text-slate-300 hover:text-red-300 hover:border-red-800 hover:bg-red-950/40'
-                                        : 'border-neutral-200 text-neutral-700 hover:text-red-700 hover:border-red-200 hover:bg-red-50 shadow-2xs'
-                                    }`}
-                                    title="Marcar falta (suma 1 ausencia sin descontar puntos de disposición)"
-                                  >
-                                    <span>Falta</span>
-                                  </button>
-
-                                  {/* Botón: Tarde (al lado de falta, sin relojito) */}
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRecordLateArrival(student)}
-                                    className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
-                                      pulsingStudentId === `late-${student.id}`
-                                        ? 'bg-amber-600 text-white border-amber-600 scale-105'
-                                        : isDarkMode
-                                        ? 'border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-800 hover:bg-amber-950/40'
-                                        : 'border-neutral-200 text-neutral-700 hover:text-amber-700 hover:border-amber-200 hover:bg-amber-50 shadow-2xs'
-                                    }`}
-                                    title="Registrar llegada tarde. Si el alumno tenía una falta registrada hoy, se borra automáticamente."
-                                  >
-                                    <span>Tarde</span>
-                                  </button>
-
-                                  {/* Botón: Borrar falta */}
-                                  {metrics.totalAbsences > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteLatestAbsence(student)}
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-red-600 hover:border-red-200 dark:hover:border-red-800/60 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-                                      title="Borrar falta: elimina la última inasistencia registrada y actualiza el contador"
-                                    >
-                                      <RotateCcw className="w-3 h-3 text-red-500" />
-                                      <span className="text-[11px]">Borrar falta</span>
-                                    </button>
-                                  )}
-
-                                  {/* Botón: Borrar tardanza */}
-                                  {(metrics.totalLates || 0) > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleDeleteLatestLate(student)}
-                                      className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-amber-600 hover:border-amber-200 dark:hover:border-amber-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-                                      title="Borrar tardanza: elimina la última llegada tarde registrada y actualiza el contador"
-                                    >
-                                      <RotateCcw className="w-3 h-3 text-amber-500" />
-                                      <span className="text-[11px]">Borrar tarde</span>
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-
-                              {/* Columna Disposición: Clic directo sobre la nota o celda para editar */}
-                              <td
-                                className="py-2 px-3 text-center cursor-pointer hover:bg-blue-50/40 dark:hover:bg-slate-800/40 transition-colors"
-                                onClick={() => handleOpenEditDisposition(student)}
-                              >
-                                <div className="inline-flex items-center justify-center">
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleOpenEditDisposition(student);
-                                    }}
-                                    className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${scoreBadgeClass}`}
-                                    title={`Hacé clic sobre la nota para editar la calificación de disposición de ${student.lastName}, ${student.firstName} (pasar de papel o ajustar)`}
-                                  >
-                                    <span>{metrics.totalDisposition}</span>
-                                    <span className="text-[10px] font-normal opacity-70">/ 10</span>
-                                    <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
-                                  </button>
-                                </div>
-                              </td>
-
-                            {/* Columna Registrar conducta (sumar o restar puntos) */}
-                            <td className="py-2 px-3">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                {teacherConductOptions.map((opt) => {
-                                  const isPositive =
-                                    opt.startsWith('+') ||
-                                    opt.startsWith('[+]') ||
-                                    opt.includes('(+') ||
-                                    /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(opt);
-                                  const cleanOpt = opt.replace(/^(\+|\[\+\])\s*/, '');
-                                  const delta = isPositive ? 1 : -1;
-                                  return (
-                                    <button
-                                      key={opt}
-                                      type="button"
-                                      onClick={() => handleRecordDispositionAction(student, cleanOpt, undefined, delta)}
-                                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium transition-all cursor-pointer flex items-center gap-1 active:scale-95 ${
-                                        pulsingStudentId === `disp-${student.id}`
-                                          ? isPositive
-                                            ? 'bg-emerald-600 text-white border-emerald-600 scale-105'
-                                            : 'bg-rose-600 text-white border-rose-600 scale-105'
-                                          : isPositive
-                                          ? isDarkMode
-                                            ? 'bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 border-emerald-800/60 hover:border-emerald-700'
-                                            : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 hover:border-emerald-300 shadow-2xs'
-                                          : isDarkMode
-                                          ? 'bg-slate-800/90 hover:bg-slate-750 text-slate-200 border-slate-700 hover:border-slate-600'
-                                          : 'bg-white hover:bg-rose-50 text-neutral-800 border-neutral-200 hover:border-rose-300 shadow-2xs'
-                                      }`}
-                                      title={isPositive ? `Sumar 1 punto por: ${cleanOpt}` : `Restar 1 punto por: ${cleanOpt}`}
-                                    >
-                                      <span>{cleanOpt}</span>
-                                      <span className={`text-[10px] font-bold ${isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500'}`}>
-                                        {isPositive ? '+1' : '-1'}
-                                      </span>
-                                    </button>
-                                  );
-                                })}
-
-                                {/* Botón rápido: Sumar puntos / Reconocimiento */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setConductRecordModal({
-                                      isOpen: true,
-                                      student,
-                                      mode: 'add',
-                                      points: 1,
-                                      customReason: '',
-                                      saveToOptions: false,
-                                    });
-                                  }}
-                                  className="px-2 py-1 rounded-lg border border-dashed border-emerald-500/80 bg-emerald-50/70 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
-                                  title={`Sumar puntos a ${student.lastName}, ${student.firstName} (participación, reconocimiento, tarea...)`}
-                                >
-                                  <Plus className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-                                  <span>+ Sumar</span>
-                                </button>
-
-                                {/* Botón rápido: Restar puntos / Llamado de atención */}
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setConductRecordModal({
-                                      isOpen: true,
-                                      student,
-                                      mode: 'subtract',
-                                      points: 1,
-                                      customReason: '',
-                                      saveToOptions: false,
-                                    });
-                                  }}
-                                  className="px-2 py-1 rounded-lg border border-dashed border-rose-400/80 bg-rose-50/60 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
-                                  title={`Restar puntos a ${student.lastName}, ${student.firstName} (falta de tarea, libro, conducta...)`}
-                                >
-                                  <Minus className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
-                                  <span>- Restar</span>
-                                </button>
-                              </div>
-                            </td>
-
-                            {/* Columna Bitácora individual del alumno */}
-                            <td className="py-2 px-3 text-center">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedStudentForHistory(student)}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${
-                                  studentHistory.length > 0
-                                    ? isDarkMode
-                                      ? 'bg-blue-950/40 hover:bg-blue-950/70 text-blue-300 border-blue-800/60'
-                                      : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-                                    : isDarkMode
-                                    ? 'text-slate-500 border-transparent hover:border-slate-800'
-                                    : 'text-neutral-400 border-transparent hover:border-neutral-200'
-                                }`}
-                                title="Ver historial de este alumno"
-                              >
-                                <History className="w-3.5 h-3.5" />
-                                <span>{studentHistory.length}</span>
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
+                              student={student}
+                              isSelected={isSelected}
+                              onToggleSelect={toggleSelectStudent}
+                              metrics={metrics}
+                              observationsCount={studentObservations[student.id]?.length || 0}
+                              hasPendingAbsence={hasPendingAbsence}
+                              studentHistory={studentHistory}
+                              teacherConductOptions={teacherConductOptions}
+                              pulsingStudentId={pulsingStudentId}
+                              onOpenProfile={handleOpenStudentProfile}
+                              onOpenEditAbsences={handleOpenEditAbsences}
+                              onOpenEditDisposition={handleOpenEditDisposition}
+                              onAddAbsence={handleAddAbsence}
+                              onRecordLateArrival={handleRecordLateArrival}
+                              onDeleteLatestAbsence={handleDeleteLatestAbsence}
+                              onDeleteLatestLate={handleDeleteLatestLate}
+                              onRecordDispositionAction={handleRecordDispositionAction}
+                              onOpenConductModal={(s, mode) =>
+                                setConductRecordModal({
+                                  isOpen: true,
+                                  student: s,
+                                  mode,
+                                  points: 1,
+                                  customReason: '',
+                                  saveToOptions: false,
+                                })
+                              }
+                              onOpenStudentHistory={setSelectedStudentForHistory}
+                              isDarkMode={isDarkMode}
+                            />
+                          );
+                        })
                     )}
                   </tbody>
                 </table>
@@ -7081,92 +6582,23 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* ------------------------------------------------------------- */}
           {activeTab === 'history' && (
             <div className="space-y-4">
-              {/* Google Sheets Live Status Banner */}
-              <div
-                className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
-                  isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
-                    <FileSpreadsheet className="w-6 h-6" />
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h4 className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
-                        Google Sheets: {activeCourse.name}
-                      </h4>
-                      {isSyncingSheet ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
-                          <Loader2 className="w-3 h-3 animate-spin" />
-                          Sincronizando...
-                        </span>
-                      ) : sheetConfig?.isLiveGoogle ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          En vivo en Google Drive
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">
-                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                          Guardado local
-                        </span>
-                      )}
-                    </div>
-                    {sheetConfig?.lastSyncedAt && (
-                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                        Última actualización: {sheetConfig.lastSyncedAt}.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2 self-start md:self-center">
-                  <button
-                    type="button"
-                    onClick={handleOpenGoogleSheet}
-                    disabled={isOpeningSheet}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold shadow-xs transition-all cursor-pointer"
-                    title="Abrir o sincronizar en Google Sheets"
-                  >
-                    {isOpeningSheet ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    )}
-                    <span>Abrir Google Sheet</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleManualSheetsSync}
-                    disabled={isSyncingSheet}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-300'
-                    }`}
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-                    <span>Sincronizar Ahora</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSheetsModalFeedback(null);
-                      setShowSheetsConnectModal(true);
-                    }}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-neutral-50 hover:bg-neutral-100 text-neutral-700 border-neutral-300'
-                    }`}
-                    title="Configurar y vincular hoja existente de Google Sheets"
-                  >
-                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
-                    <span>Vincular Sheet</span>
-                  </button>
-                </div>
-              </div>
+              {/* Google Sheets Live Status Banner (GoogleSyncManager) */}
+              <GoogleSyncManager
+                courseName={activeCourse.name}
+                isSyncingSheet={isSyncingSheet}
+                isLiveGoogle={sheetConfig?.isLiveGoogle || false}
+                lastSyncedAt={sheetConfig?.lastSyncedAt}
+                isOpeningSheet={isOpeningSheet}
+                isTokenExpired={isTokenExpired}
+                onOpenGoogleSheet={handleOpenGoogleSheet}
+                onManualSheetsSync={handleManualSheetsSync}
+                onOpenConnectModal={() => {
+                  setSheetsModalFeedback(null);
+                  setShowSheetsConnectModal(true);
+                }}
+                onRenewToken={renewGoogleSession}
+                isDarkMode={isDarkMode}
+              />
 
               {/* Sub-tabs: Incidencias vs Resumen Alumnos y Disposición */}
               <div
@@ -12284,6 +11716,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
             {/* Body */}
             <div className="p-5 space-y-4 text-xs">
+              <GoogleSessionExpiryBanner />
               <div
                 className={`p-3.5 rounded-xl border flex items-start gap-3 ${
                   isDarkMode

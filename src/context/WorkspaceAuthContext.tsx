@@ -18,6 +18,8 @@ import {
   logoutUser,
   initAuth,
   WORKSPACE_SCOPES,
+  isGoogleSessionExpired,
+  isValidGoogleAccessToken,
 } from '../services/workspace/googleAuth';
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
@@ -42,6 +44,9 @@ interface WorkspaceAuthContextType {
   isLoggingIn: boolean;
   loginError: string | null;
   isDarkMode: boolean;
+  isTokenExpired: boolean;
+  dismissTokenExpiryBanner: () => void;
+  renewGoogleSession: () => Promise<boolean>;
   toggleDarkMode: () => void;
   loginWithGoogle: (email?: string) => Promise<string | null>;
   requestAccessToken: () => Promise<string>;
@@ -116,6 +121,53 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [token, setToken] = useState<string | null>(getCachedAccessToken());
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
+
+  // Proactive Google OAuth session expiration monitoring (~55-60 mins)
+  useEffect(() => {
+    const handleExpiredEvent = () => {
+      if (mode === 'connected') {
+        setIsTokenExpired(true);
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('google_session_expired', handleExpiredEvent);
+    }
+
+    // Periodic check every 30 seconds
+    const intervalId = setInterval(() => {
+      if (mode === 'connected' && isGoogleSessionExpired()) {
+        setIsTokenExpired(true);
+      }
+    }, 30000);
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('google_session_expired', handleExpiredEvent);
+      }
+      clearInterval(intervalId);
+    };
+  }, [mode]);
+
+  const dismissTokenExpiryBanner = () => {
+    setIsTokenExpired(false);
+  };
+
+  const renewGoogleSession = async (): Promise<boolean> => {
+    try {
+      const freshToken = await requestAccessToken();
+      if (freshToken && isValidGoogleAccessToken(freshToken)) {
+        setToken(freshToken);
+        setIsTokenExpired(false);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.warn('Renew Google session error:', err);
+      return false;
+    }
+  };
 
   const services: ServiceStatus[] = [
     {
@@ -485,6 +537,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         isLoggingIn,
         loginError,
         isDarkMode,
+        isTokenExpired,
+        dismissTokenExpiryBanner,
+        renewGoogleSession,
         toggleDarkMode,
         loginWithGoogle,
         requestAccessToken,

@@ -15,6 +15,7 @@ import { CreateModal } from './components/common/CreateModal';
 import { Course, Student } from './types';
 import { api } from './services/api';
 import { CheckCircle2 } from 'lucide-react';
+import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
@@ -261,6 +262,9 @@ function AppContent() {
 
         {/* Dynamic Content View */}
         <main className="flex-1 overflow-y-auto min-h-[calc(100vh-4rem)]">
+          <div className="max-w-7xl mx-auto px-4 pt-3">
+            <GoogleSessionExpiryBanner />
+          </div>
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-96 space-y-3">
               <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />

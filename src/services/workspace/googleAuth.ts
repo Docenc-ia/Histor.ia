@@ -115,6 +115,26 @@ export const DEFAULT_TEACHER: TeacherProfile = {
   scopes: WORKSPACE_SCOPES,
 };
 
+// In-memory token expiration tracking (Google OAuth tokens expire in ~60 minutes)
+let tokenIssuedAt: number | null = null;
+const TOKEN_LIFETIME_MS = 55 * 60 * 1000; // 55 minutes proactive threshold
+
+export const isGoogleSessionExpired = (): boolean => {
+  if (!cachedAccessToken) return true;
+  if (!tokenIssuedAt) return false;
+  return Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS;
+};
+
+export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('google_session_expired', {
+        detail: { reason, message: 'Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.' },
+      })
+    );
+  }
+};
+
 export const getCachedAccessToken = (): string | null => {
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
     return cachedAccessToken;
@@ -125,13 +145,16 @@ export const getCachedAccessToken = (): string | null => {
 export const setCachedAccessToken = (token: string | null): void => {
   if (token && isValidGoogleAccessToken(token)) {
     cachedAccessToken = token;
+    tokenIssuedAt = Date.now();
   } else if (!token) {
     cachedAccessToken = null;
+    tokenIssuedAt = null;
   }
 };
 
 export const clearAuthSession = (): void => {
   cachedAccessToken = null;
+  tokenIssuedAt = null;
 };
 
 // Listen to Firebase Auth state

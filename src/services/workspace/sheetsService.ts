@@ -9,6 +9,7 @@ import {
   setCachedAccessToken,
   isValidGoogleAccessToken,
   requestGoogleAccessToken,
+  notifyGoogleSessionExpired,
 } from './googleAuth';
 import { Student, GradeEntry, StudentHistoryItem, StudentDispositionData } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
@@ -808,6 +809,7 @@ export const sheetsService = {
                 }
               } catch (_) {}
 
+              notifyGoogleSessionExpired('sheets_unauthorized');
               return {
                 spreadsheetId: targetSpreadsheetId,
                 url: `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`,
@@ -815,7 +817,7 @@ export const sheetsService = {
                 updatedAt: new Date().toLocaleTimeString(),
                 summaryRowsCount: summaryRows1c.length,
                 historyRowsCount: historyRows.length,
-                error: 'Tu sesión de Google expiró. Por favor vuelve a conectar tu cuenta institucional.',
+                error: 'Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.',
                 errorCode: 'UNAUTHORIZED',
               };
             }
@@ -1056,6 +1058,9 @@ export const sheetsService = {
             createErr = errJson?.error?.message || createErr;
           } catch (_) {}
 
+          if (createStatus === 401) {
+            notifyGoogleSessionExpired('sheets_create_unauthorized');
+          }
           return {
             spreadsheetId: `sheet-disp-${course.id}`,
             url: '',
@@ -1063,7 +1068,7 @@ export const sheetsService = {
             updatedAt: new Date().toLocaleTimeString(),
             summaryRowsCount: summaryRows1c.length,
             historyRowsCount: historyRows.length,
-            error: createErr,
+            error: createStatus === 401 ? 'Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.' : createErr,
             errorCode: createStatus === 401 ? 'UNAUTHORIZED' : createStatus === 403 ? 'PERMISSION_DENIED' : 'SYNC_FAILED',
           };
         }

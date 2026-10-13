@@ -75,6 +75,16 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      if (isDarkMode) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
+    }
+  }, [isDarkMode]);
+
   const [user, setUser] = useState<TeacherProfile | null>(() => {
     if (typeof window !== 'undefined') {
       try {

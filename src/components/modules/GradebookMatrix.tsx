@@ -911,13 +911,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   : '🎓 Cierre y Calificación Anual'}
               </span>
             </div>
-            <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-              {currentTerm === '1c'
-                ? 'Carga de notas, trabajos prácticos y evaluaciones correspondientes al 1° Cuatrimestre.'
-                : currentTerm === '2c'
-                ? 'Carga de notas, trabajos prácticos y evaluaciones correspondientes al 2° Cuatrimestre.'
-                : 'Consolidado general para promediar ambos cuatrimestres y emitir la nota definitiva anual.'}
-            </p>
           </div>
         </div>
 

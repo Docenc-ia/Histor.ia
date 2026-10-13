@@ -4755,25 +4755,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return Array.from(dates);
   }, [courseHistory]);
 
-  const filteredPermHistory = useMemo(() => {
-    return courseHistory.filter((item) => {
-      if (permHistoryCategory !== 'all' && item.category !== permHistoryCategory) {
-        return false;
-      }
-      if (permHistoryDate !== 'all' && item.date !== permHistoryDate) {
-        return false;
+  const filteredPendingMessages = useMemo(() => {
+    return pendingAllItems.filter((item) => {
+      if (permHistoryCategory !== 'all') {
+        if (permHistoryCategory === 'Ausencia' && item.category !== 'Ausencia') return false;
+        if (permHistoryCategory === 'Disposición' && item.category !== 'Disposición') return false;
       }
       if (permHistorySearch.trim()) {
         const query = permHistorySearch.toLowerCase().trim();
         const matchesName = (item.studentName || '').toLowerCase().includes(query);
         const matchesAction = (item.action || '').toLowerCase().includes(query);
         const matchesDate = (item.date || '').toLowerCase().includes(query);
-        const matchesMsg = (item.messageText || '').toLowerCase().includes(query);
-        if (!matchesName && !matchesAction && !matchesDate && !matchesMsg) return false;
+        if (!matchesName && !matchesAction && !matchesDate) return false;
       }
       return true;
     });
-  }, [courseHistory, permHistoryCategory, permHistoryDate, permHistorySearch]);
+  }, [pendingAllItems, permHistoryCategory, permHistorySearch]);
 
   const averageDisposition = useMemo(() => {
     if (courseStudents.length === 0) return 10;
@@ -5521,13 +5518,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           : '🎓 Resumen Anual Consolidado'}
                       </span>
                     </div>
-                    <p className={`text-[11px] mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      {attendanceTerm === '1c'
-                        ? 'Registro diario de inasistencias, tardanzas, llamados de atención y notas de disposición del 1° Cuatrimestre.'
-                        : attendanceTerm === '2c'
-                        ? 'Registro diario de inasistencias, tardanzas, llamados de atención y notas de disposición del 2° Cuatrimestre (inicia con 10 pts).'
-                        : 'Planilla consolidada que compara ambos cuatrimestres, computa totales de faltas y calcula el promedio anual de disposición.'}
-                    </p>
                   </div>
                 </div>
 
@@ -6553,80 +6543,63 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             {/* HISTORIAL PERMANENTE DE CLASES, ASISTENCIAS Y CONDUCTAS        */}
             {/* Permanece siempre visible en la pantalla principal             */}
             {/* ------------------------------------------------------------- */}
+            {/* ------------------------------------------------------------- */}
+            {/* BANDEJA DE AVISOS Y MENSAJES PENDIENTES (MANDAR O NO MANDAR)  */}
+            {/* ------------------------------------------------------------- */}
             <div
               className={`mt-8 rounded-xl border shadow-xs overflow-hidden transition-all ${
                 isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
               }`}
             >
-              {/* Header con botón para colapsar/expandir, badge de persistencia y acciones */}
+              {/* Header */}
               <div
                 className={`p-4 border-b flex flex-col md:flex-row md:items-center justify-between gap-3 ${
                   isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-neutral-50 border-neutral-200'
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800/60">
-                    <History className="w-5 h-5" />
+                  <div className={`p-2 rounded-lg border ${
+                    pendingAllItems.length > 0
+                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800/60'
+                      : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/60'
+                  }`}>
+                    <Send className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
                       <h4 className={`text-sm sm:text-base font-bold ${isDarkMode ? 'text-white' : 'text-neutral-800'}`}>
-                        Historial Permanente de Clases e Incidencias
+                        Avisos de la Clase (Mandar / No Mandar)
                       </h4>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
-                        Siempre visible ({courseHistory.length})
-                      </span>
+                      {pendingAllItems.length > 0 ? (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/60">
+                          {pendingAllItems.length} pendiente{pendingAllItems.length === 1 ? '' : 's'}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800/60">
+                          Al día (0 pendientes)
+                        </span>
+                      )}
                     </div>
                     <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      Registro cronológico completo de inasistencias, tardanzas y observaciones de conducta guardados en el sistema y Google Sheets.
+                      Inasistencias y conductas para definir envío. Al elegir &ldquo;Mandar&rdquo; o &ldquo;No mandar&rdquo;, el mensaje se procesa y desaparece de aquí (queda guardado en la pestaña Historial de arriba).
                     </p>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
-                  {/* Botón copiar para Google Sheets */}
+                  {/* Botón para ir a la pestaña Historial general de arriba */}
                   <button
                     type="button"
-                    onClick={handleCopyForGoogleSheets}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
+                    onClick={() => setActiveTab('history')}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
                       isDarkMode
                         ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
                         : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-300 shadow-2xs'
                     }`}
-                    title="Copia los datos de historial tabulados para pegar con Ctrl+V en Google Sheets"
+                    title="Ver registro cronológico completo, hojas de Google Sheets y auditoría en la pestaña Historial de arriba"
                   >
-                    <Copy className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Copiar datos</span>
-                  </button>
-
-                  {/* Botón Excel */}
-                  <button
-                    type="button"
-                    onClick={handleExportHistoryExcel}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-300 shadow-2xs'
-                    }`}
-                    title="Descargar historial en formato Excel (.xlsx) nativo"
-                  >
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                    <span className="hidden sm:inline">Exportar Excel</span>
-                  </button>
-
-                  {/* Botón CSV */}
-                  <button
-                    type="button"
-                    onClick={handleExportHistoryCsv}
-                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-300 shadow-2xs'
-                    }`}
-                    title="Descargar archivo CSV compatible con Google Sheets y Excel"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Exportar CSV</span>
+                    <History className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Ver Historial General ({courseHistory.length})</span>
                   </button>
 
                   {/* Botón colapsar / expandir */}
@@ -6638,7 +6611,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
                         : 'bg-white border-neutral-300 text-neutral-600 hover:text-neutral-900 shadow-2xs'
                     }`}
-                    title={isPermHistoryCollapsed ? 'Expandir tabla de historial' : 'Minimizar tabla de historial'}
+                    title={isPermHistoryCollapsed ? 'Expandir bandeja de avisos' : 'Minimizar bandeja de avisos'}
                   >
                     {isPermHistoryCollapsed ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
                   </button>
@@ -6647,109 +6620,60 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
               {!isPermHistoryCollapsed && (
                 <div>
-                  {/* Barra de Filtros y Búsqueda */}
-                  <div
-                    className={`p-3 border-b flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs ${
-                      isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-neutral-50/70 border-neutral-200'
-                    }`}
-                  >
-                    {/* Filtros de Categoría */}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={`font-semibold mr-1 flex items-center gap-1 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                        <Filter className="w-3.5 h-3.5" />
-                        Filtrar:
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setPermHistoryCategory('all')}
-                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
-                          permHistoryCategory === 'all'
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                            : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                        }`}
-                      >
-                        Todos ({courseHistory.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPermHistoryCategory('Ausencia')}
-                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
-                          permHistoryCategory === 'Ausencia'
-                            ? 'bg-red-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-red-300 hover:bg-slate-700'
-                            : 'bg-white border border-neutral-200 text-red-700 hover:bg-red-50'
-                        }`}
-                      >
-                        Faltas ({courseHistory.filter((h) => h.category === 'Ausencia').length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPermHistoryCategory('Llegada tarde')}
-                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
-                          permHistoryCategory === 'Llegada tarde'
-                            ? 'bg-amber-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-amber-300 hover:bg-slate-700'
-                            : 'bg-white border border-neutral-200 text-amber-700 hover:bg-amber-50'
-                        }`}
-                      >
-                        Llegadas tarde ({courseHistory.filter((h) => h.category === 'Llegada tarde').length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPermHistoryCategory('Disposición')}
-                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
-                          permHistoryCategory === 'Disposición'
-                            ? 'bg-purple-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-purple-300 hover:bg-slate-700'
-                            : 'bg-white border border-neutral-200 text-purple-700 hover:bg-purple-50'
-                        }`}
-                      >
-                        Conducta ({courseHistory.filter((h) => h.category === 'Disposición').length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPermHistoryCategory('Calificación')}
-                        className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
-                          permHistoryCategory === 'Calificación'
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-blue-300 hover:bg-slate-700'
-                            : 'bg-white border border-neutral-200 text-blue-700 hover:bg-blue-50'
-                        }`}
-                      >
-                        Notas y Sistema ({courseHistory.filter((h) => h.category === 'Calificación' || h.category === 'Sistema').length})
-                      </button>
-                    </div>
+                  {pendingAllItems.length > 0 && (
+                    <div
+                      className={`p-3 border-b flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs ${
+                        isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-neutral-50/70 border-neutral-200'
+                      }`}
+                    >
+                      {/* Filtros de Categoría */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`font-semibold mr-1 flex items-center gap-1 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                          <Filter className="w-3.5 h-3.5" />
+                          Filtrar pendientes:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPermHistoryCategory('all')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                            permHistoryCategory === 'all'
+                              ? 'bg-blue-600 text-white shadow-2xs'
+                              : isDarkMode
+                              ? 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                              : 'bg-white border border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                          }`}
+                        >
+                          Todos ({pendingAllItems.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPermHistoryCategory('Ausencia')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                            permHistoryCategory === 'Ausencia'
+                              ? 'bg-red-600 text-white shadow-2xs'
+                              : isDarkMode
+                              ? 'bg-slate-800 text-red-300 hover:bg-slate-700'
+                              : 'bg-white border border-neutral-200 text-red-700 hover:bg-red-50'
+                          }`}
+                        >
+                          Faltas ({pendingAbsenceItems.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPermHistoryCategory('Disposición')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                            permHistoryCategory === 'Disposición'
+                              ? 'bg-purple-600 text-white shadow-2xs'
+                              : isDarkMode
+                              ? 'bg-slate-800 text-purple-300 hover:bg-slate-700'
+                              : 'bg-white border border-neutral-200 text-purple-700 hover:bg-purple-50'
+                          }`}
+                        >
+                          Conducta ({pendingConductItems.length})
+                        </button>
+                      </div>
 
-                    {/* Selector de Fecha y Buscador */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {distinctCourseDates.length > 0 && (
-                        <div className="flex items-center gap-1.5">
-                          <Calendar className={`w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`} />
-                          <select
-                            value={permHistoryDate}
-                            onChange={(e) => setPermHistoryDate(e.target.value)}
-                            className={`px-2.5 py-1 rounded-lg border text-xs transition-colors cursor-pointer ${
-                              isDarkMode
-                                ? 'bg-slate-800 border-slate-700 text-white'
-                                : 'bg-white border-neutral-300 text-neutral-800 shadow-2xs'
-                            }`}
-                          >
-                            <option value="all">Todas las clases ({distinctCourseDates.length} fechas)</option>
-                            {distinctCourseDates.map((d) => (
-                              <option key={d} value={d}>
-                                Clase del {d}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-
+                      {/* Buscador */}
                       <div className="relative">
                         <Search className={`w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
                         <input
@@ -6774,7 +6698,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         )}
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Barra de selección múltiple para mandar / no mandar en lote */}
                   {selectedPendingHistoryIds.length > 0 && (
@@ -6801,7 +6725,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           type="button"
                           onClick={handleBatchMarkOmitNotification}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-100 text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
-                          title="Quitar de los pendientes sin mandar notificación. Quedan intactos en el historial."
+                          title="Quitar los avisos seleccionados sin mandar notificación. Quedan registrados en el Historial."
                         >
                           <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
                           <span>No mandar ({selectedPendingHistoryIds.length})</span>
@@ -6818,7 +6742,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </div>
                   )}
 
-                  {/* Tabla de Registros */}
+                  {/* Tabla de Avisos Pendientes */}
                   <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
                     <table className="w-full text-left text-xs">
                       <thead
@@ -6830,12 +6754,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       >
                         <tr>
                           <th className="py-2.5 px-3 w-10 text-center">
-                            {pendingAllItems.length > 0 && (
+                            {filteredPendingMessages.length > 0 && (
                               <button
                                 type="button"
                                 onClick={toggleSelectAllPendingHistory}
                                 className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                                title="Seleccionar todos los avisos pendientes de la clase (ausencias y conductas)"
+                                title="Seleccionar todos los avisos pendientes"
                               >
                                 {selectedPendingHistoryIds.length > 0 && selectedPendingHistoryIds.length === pendingAllItems.length ? (
                                   <CheckSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
@@ -6854,29 +6778,43 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           <th className="py-2.5 px-3">Tipo / Incidencia</th>
                           <th className="py-2.5 px-4">Detalle / Motivo</th>
                           <th className="py-2.5 px-3 text-center">Impacto</th>
-                          <th className="py-2.5 px-3 text-center">Aviso</th>
+                          <th className="py-2.5 px-3 text-center">Decisión (Mandar / No Mandar)</th>
                           <th className="py-2.5 px-3 text-center">Acción</th>
                         </tr>
                       </thead>
                       <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800 text-slate-300' : 'divide-neutral-100 text-neutral-700'}`}>
-                        {filteredPermHistory.length === 0 ? (
+                        {filteredPendingMessages.length === 0 ? (
                           <tr>
                             <td colSpan={8} className="py-12 px-4 text-center">
-                              <History className="w-8 h-8 mx-auto mb-2 opacity-30 text-blue-500" />
-                              <p className={`font-semibold ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
-                                {courseHistory.length === 0
-                                  ? 'Aún no se registraron incidencias en este curso.'
-                                  : 'No se encontraron registros que coincidan con los filtros seleccionados.'}
+                              <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto mb-2.5">
+                                <CheckCircle2 className="w-6 h-6" />
+                              </div>
+                              <p className={`font-bold text-sm ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
+                                {pendingAllItems.length === 0
+                                  ? 'No hay avisos pendientes'
+                                  : 'No hay avisos pendientes que coincidan con el filtro.'}
                               </p>
-                              {courseHistory.length === 0 && (
-                                <p className={`text-xs mt-1 ${isDarkMode ? 'text-slate-500' : 'text-neutral-400'}`}>
-                                  Las inasistencias, llegadas tarde y observaciones de conducta quedarán registradas aquí de forma permanente.
-                                </p>
+                              <p className={`text-xs mt-1 max-w-md mx-auto ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                                {pendingAllItems.length === 0
+                                  ? 'Todos los mensajes de inasistencias y conductas de la clase ya han sido enviados o marcados como "No mandar". Podés consultar el historial completo de la clase en la pestaña Historial de arriba.'
+                                  : 'Probá cambiando el filtro o la búsqueda.'}
+                              </p>
+                              {pendingAllItems.length === 0 && (
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => setActiveTab('history')}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                                  >
+                                    <History className="w-3.5 h-3.5" />
+                                    <span>Ir al Historial Completo</span>
+                                  </button>
+                                </div>
                               )}
                             </td>
                           </tr>
                         ) : (
-                          filteredPermHistory.map((item) => {
+                          filteredPendingMessages.map((item) => {
                             const isAbsence =
                               item.category === 'Ausencia' ||
                               item.action === 'Ausencia' ||
@@ -6888,29 +6826,34 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               item.action?.toLowerCase().includes('llegada tarde') ||
                               item.action?.toLowerCase().includes('tarde') ||
                               item.action?.toLowerCase().includes('tardanza');
+                            const isSelectedPending = selectedPendingHistoryIds.includes(item.id);
 
                             return (
                               <tr
                                 key={item.id}
-                                className={`transition-colors ${isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-neutral-50/70'}`}
+                                className={`transition-colors ${
+                                  isSelectedPending
+                                    ? isDarkMode
+                                      ? 'bg-indigo-950/30'
+                                      : 'bg-indigo-50/50'
+                                    : isDarkMode
+                                    ? 'hover:bg-slate-800/50'
+                                    : 'hover:bg-neutral-50/70'
+                                }`}
                               >
                                 <td className="py-2.5 px-3 text-center w-10">
-                                  {(item.category === 'Ausencia' || item.category === 'Disposición') && !item.messageSent ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleSelectPendingHistory(item.id)}
-                                      className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                                      title={selectedPendingHistoryIds.includes(item.id) ? 'Deseleccionar aviso' : 'Seleccionar aviso para envío grupal'}
-                                    >
-                                      {selectedPendingHistoryIds.includes(item.id) ? (
-                                        <CheckSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                                      ) : (
-                                        <Square className="w-4 h-4 text-neutral-400 dark:text-slate-500" />
-                                      )}
-                                    </button>
-                                  ) : (
-                                    <span className="text-[10px] text-neutral-300 dark:text-slate-600">-</span>
-                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleSelectPendingHistory(item.id)}
+                                    className="p-1 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                                    title={isSelectedPending ? 'Deseleccionar aviso' : 'Seleccionar aviso para mandar o no mandar'}
+                                  >
+                                    {isSelectedPending ? (
+                                      <CheckSquare className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                                    ) : (
+                                      <Square className="w-4 h-4 text-neutral-400 dark:text-slate-500" />
+                                    )}
+                                  </button>
                                 </td>
 
                                 <td className="py-2.5 px-3 whitespace-nowrap">
@@ -6934,26 +6877,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/60">
                                       <Clock className="w-3 h-3 text-amber-500" />
                                       Llegada tarde
-                                    </span>
-                                  ) : item.category === 'Calificación' ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/60">
-                                      <Award className="w-3 h-3 text-blue-500" />
-                                      Calificación
-                                    </span>
-                                  ) : item.category === 'Sistema' ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60">
-                                      <RotateCcw className="w-3 h-3 text-indigo-500" />
-                                      Sistema
-                                    </span>
-                                  ) : item.category === 'Asistencia' ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
-                                      <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                                      Presente
-                                    </span>
-                                  ) : item.category === 'Disposición' && item.pointsChange !== undefined && item.pointsChange > 0 ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
-                                      <Award className="w-3 h-3 text-emerald-500" />
-                                      Reconocimiento
                                     </span>
                                   ) : (
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800/60">
@@ -6979,7 +6902,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     }`}>
                                       {item.previousDisposition} → {item.resultingDisposition} pts
                                     </span>
-                                  ) : item.pointsChange !== undefined && item.pointsChange !== 0 && !isAbsence && !isLate ? (
+                                  ) : item.pointsChange !== undefined && item.pointsChange !== 0 ? (
                                     <span className={`font-mono font-bold px-2 py-0.5 rounded border ${
                                       item.pointsChange > 0
                                         ? 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800/60'
@@ -6992,33 +6915,31 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                   )}
                                 </td>
 
+                                {/* Opción Mandar y Opción No mandar */}
                                 <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                                  {isAbsence || item.category === 'Disposición' ? (
-                                    item.messageSent ? (
-                                      <span
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300"
-                                        title={item.messageText || 'Aviso enviado'}
-                                      >
-                                        <Check className="w-3 h-3 text-emerald-600" />
-                                        Enviado
-                                      </span>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const st = courseStudents.find((s) => s.id === item.studentId);
-                                          handleOpenNotifyModal(item, st || { id: item.studentId, firstName: item.studentName, lastName: '', email: '' } as any);
-                                        }}
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 hover:bg-amber-200 cursor-pointer transition-colors"
-                                        title={`Enviar aviso de ${isAbsence ? 'inasistencia' : 'conducta / disposición'} por Classroom o Gmail`}
-                                      >
-                                        <Send className="w-2.5 h-2.5" />
-                                        Mandar
-                                      </button>
-                                    )
-                                  ) : (
-                                    <span className="text-[11px] text-neutral-400 dark:text-slate-500">-</span>
-                                  )}
+                                  <div className="inline-flex items-center gap-1.5 justify-center">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const st = courseStudents.find((s) => s.id === item.studentId);
+                                        handleOpenNotifyModal(item, st || { id: item.studentId, firstName: item.studentName, lastName: '', email: '' } as any);
+                                      }}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer shadow-xs transition-all active:scale-95"
+                                      title={`Enviar aviso de ${isAbsence ? 'inasistencia' : 'conducta'} al alumno ahora`}
+                                    >
+                                      <Send className="w-3 h-3" />
+                                      <span>Mandar</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMarkOmitNotification(item)}
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-neutral-200 hover:bg-neutral-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-neutral-800 dark:text-slate-200 cursor-pointer shadow-2xs transition-all active:scale-95"
+                                      title="No mandar: quita este aviso de la lista y lo deja registrado en el Historial"
+                                    >
+                                      <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                                      <span>No mandar</span>
+                                    </button>
+                                  </div>
                                 </td>
 
                                 <td className="py-2.5 px-3 text-center whitespace-nowrap">
@@ -7026,7 +6947,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     type="button"
                                     onClick={() => handleDeleteHistoryEntry(item)}
                                     className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-950/50 text-neutral-400 hover:text-red-600 dark:hover:text-red-400 transition-colors cursor-pointer"
-                                    title="Borrar este registro del historial y revertir puntuación en Google Sheets"
+                                    title="Borrar este registro por error y revertir puntuación en Google Sheets"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -7039,32 +6960,36 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </table>
                   </div>
 
-                  {/* Barra inferior al final del historial: botón 'Enviar a todos' para notificaciones acumuladas a lo largo de la clase */}
+                  {/* Barra inferior de acciones (Mandar / No mandar) */}
                   <div
                     className={`px-4 py-3 border-t flex flex-col sm:flex-row items-center justify-between gap-3 ${
                       isDarkMode ? 'bg-slate-800/90 border-slate-700/80' : 'bg-slate-50 border-neutral-200'
                     }`}
                   >
                     <div className="flex items-center gap-2 text-xs flex-wrap">
-                      <span className={`font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                        Total en historial: <strong>{filteredPermHistory.length}</strong> registro{filteredPermHistory.length === 1 ? '' : 's'}
-                      </span>
-                      <span className="text-neutral-400">•</span>
                       {pendingAllItems.length > 0 ? (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-semibold text-[11px] bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800/70">
                           <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                          {pendingAllItems.length} notificación{pendingAllItems.length === 1 ? '' : 'es'} pendiente{pendingAllItems.length === 1 ? '' : 's'} de la clase
+                          {pendingAllItems.length} aviso{pendingAllItems.length === 1 ? '' : 's'} pendiente{pendingAllItems.length === 1 ? '' : 's'} de definir
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-medium text-[11px] bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300">
                           <Check className="w-3 h-3 text-emerald-600" />
-                          Todos los avisos de la clase están enviados
+                          Todos los avisos están procesados
                         </span>
                       )}
+                      <span className="text-neutral-400">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('history')}
+                        className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                      >
+                        Ver Historial completo ({courseHistory.length} registros)
+                      </button>
                     </div>
 
                     <div className="flex items-center gap-2 w-full sm:w-auto justify-end flex-wrap">
-                      {selectedPendingHistoryIds.length > 0 && (
+                      {selectedPendingHistoryIds.length > 0 ? (
                         <>
                           <button
                             type="button"
@@ -7085,46 +7010,48 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             <span>Mandar ({selectedPendingHistoryIds.length})</span>
                           </button>
                         </>
-                      )}
+                      ) : (
+                        <>
+                          {pendingAllItems.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={handleMarkAllPendingAsOmitted}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-neutral-700 dark:text-slate-300 border border-neutral-300 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
+                              title="Marcar todos los avisos pendientes como No mandar: salen de aquí y quedan guardados en el Historial"
+                            >
+                              <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+                              <span>No mandar a todos ({pendingAllItems.length})</span>
+                            </button>
+                          )}
 
-                      {pendingAllItems.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleMarkAllPendingAsOmitted}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-neutral-700 dark:text-slate-300 border border-neutral-300 dark:border-slate-700 shadow-2xs transition-all cursor-pointer"
-                          title="Quitar todos los avisos pendientes a la vez: quedan guardados en tu historial docente sin mandar notificaciones"
-                        >
-                          <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
-                          <span>No mandar ({pendingAllItems.length})</span>
-                        </button>
+                          <button
+                            type="button"
+                            id="btn-enviar-notificaciones-todos-historial"
+                            onClick={() => {
+                              if (pendingAllItems.length === 0) {
+                                setToastMessage('Todos los avisos de la clase ya han sido enviados o marcados como no mandar.');
+                                setTimeout(() => setToastMessage(null), 3500);
+                                return;
+                              }
+                              handleOpenBatchFromPending('all');
+                            }}
+                            className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold shadow-md transition-all cursor-pointer ${
+                              pendingAllItems.length > 0
+                                ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white hover:shadow-lg hover:scale-102 ring-2 ring-blue-500/30'
+                                : 'bg-neutral-200 dark:bg-slate-700 text-neutral-600 dark:text-slate-300 hover:bg-neutral-300 dark:hover:bg-slate-600'
+                            }`}
+                            title="Enviar todas las notificaciones pendientes de la clase"
+                          >
+                            <Send className="w-4 h-4" />
+                            <span>Mandar a todos</span>
+                            {pendingAllItems.length > 0 && (
+                              <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white text-blue-700 shadow-xs">
+                                {pendingAllItems.length}
+                              </span>
+                            )}
+                          </button>
+                        </>
                       )}
-
-                      <button
-                        type="button"
-                        id="btn-enviar-notificaciones-todos-historial"
-                        onClick={() => {
-                          if (pendingAllItems.length === 0) {
-                            setToastMessage('Todos los avisos de la clase ya han sido enviados (o no hay incidencias pendientes).');
-                            setTimeout(() => setToastMessage(null), 3500);
-                            return;
-                          }
-                          handleOpenBatchFromPending('all');
-                        }}
-                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold shadow-md transition-all cursor-pointer ${
-                          pendingAllItems.length > 0
-                            ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white hover:shadow-lg hover:scale-102 ring-2 ring-blue-500/30'
-                            : 'bg-neutral-200 dark:bg-slate-700 text-neutral-600 dark:text-slate-300 hover:bg-neutral-300 dark:hover:bg-slate-600'
-                        }`}
-                        title="Enviar todas las notificaciones de ausencias y conductas acumuladas a lo largo de la clase a todos los alumnos correspondientes"
-                      >
-                        <Send className="w-4 h-4" />
-                        <span>Mandar a todos</span>
-                        {pendingAllItems.length > 0 && (
-                          <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-white text-blue-700 shadow-xs">
-                            {pendingAllItems.length}
-                          </span>
-                        )}
-                      </button>
                     </div>
                   </div>
                 </div>
@@ -7166,7 +7093,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   </div>
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h4 className="font-bold text-sm text-neutral-900 dark:text-white">
+                      <h4 className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
                         Google Sheets: {activeCourse.name}
                       </h4>
                       {isSyncingSheet ? (
@@ -7186,10 +7113,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         </span>
                       )}
                     </div>
-                    <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      Se sincroniza en tiempo real al registrar ausencias o notas de conducta, y se borra del Sheet cuando quitas un registro.
-                      {sheetConfig?.lastSyncedAt && ` Última actualización: ${sheetConfig.lastSyncedAt}.`}
-                    </p>
+                    {sheetConfig?.lastSyncedAt && (
+                      <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                        Última actualización: {sheetConfig.lastSyncedAt}.
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -12365,7 +12293,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               >
                 <Info className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
                 <div>
-                  <p className="font-semibold text-neutral-900 dark:text-white mb-0.5">
+                  <p className={`font-semibold mb-0.5 ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
                     Planilla de Google Sheets para {activeCourse.name}
                   </p>
                   <p className="leading-relaxed">
@@ -12431,7 +12359,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5 font-bold text-neutral-900 dark:text-white">
+                  <div className={`flex items-center gap-1.5 font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
                     <FolderClosed className="w-4 h-4 text-amber-500" />
                     <span>Carpeta en Google Drive</span>
                   </div>
@@ -12449,7 +12377,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 
                 <div className="text-[11px] text-neutral-600 dark:text-slate-400 leading-relaxed">
                   Ubicación actual:{' '}
-                  <strong className="text-neutral-800 dark:text-slate-200">
+                  <strong className={isDarkMode ? 'text-slate-200' : 'text-neutral-800'}>
                     {activeCourse.name} / Asistencia y Disposición
                   </strong>
                 </div>
@@ -12484,7 +12412,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-neutral-900 dark:text-white">
+                  <span className={`font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
                     Vincular Hoja Existente de Google Sheets
                   </span>
                   <span className="text-[10px] text-neutral-500 dark:text-slate-400">Pega el link o ID</span>

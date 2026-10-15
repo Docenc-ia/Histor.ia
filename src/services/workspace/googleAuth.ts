@@ -495,3 +495,46 @@ export const logoutUser = async (): Promise<void> => {
   cachedAccessToken = null;
   await api.logoutAuth();
 };
+
+// Attempt silent background token refresh without user interaction (prompt: '')
+export const renewGoogleSessionSilently = (): Promise<string | null> => {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') {
+      return resolve(null);
+    }
+    const google = (window as any).google;
+    const clientId = firebaseConfig.oAuthClientId;
+    if (!google?.accounts?.oauth2 || !clientId) {
+      return resolve(null);
+    }
+
+    try {
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: WORKSPACE_SCOPES.join(' '),
+        prompt: '',
+        callback: async (tokenResponse: any) => {
+          if (tokenResponse?.error || !tokenResponse?.access_token) {
+            return resolve(null);
+          }
+          const accessToken = tokenResponse.access_token;
+          if (isValidGoogleAccessToken(accessToken)) {
+            cachedAccessToken = accessToken;
+            tokenIssuedAt = Date.now();
+            resolve(accessToken);
+          } else {
+            resolve(null);
+          }
+        },
+        error_callback: () => {
+          resolve(null);
+        },
+      });
+
+      client.requestAccessToken({ prompt: '' });
+    } catch {
+      resolve(null);
+    }
+  });
+};
+

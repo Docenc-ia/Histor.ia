@@ -20,6 +20,7 @@ import {
   WORKSPACE_SCOPES,
   isGoogleSessionExpired,
   isValidGoogleAccessToken,
+  renewGoogleSessionSilently,
 } from '../services/workspace/googleAuth';
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
@@ -123,10 +124,16 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
 
-  // Proactive Google OAuth session expiration monitoring (~55-60 mins)
+  // Proactive Google OAuth session expiration monitoring (~55-60 mins) with silent background renewal
   useEffect(() => {
-    const handleExpiredEvent = () => {
+    const handleExpiredEvent = async () => {
       if (mode === 'connected') {
+        const silentToken = await renewGoogleSessionSilently();
+        if (silentToken && isValidGoogleAccessToken(silentToken)) {
+          setToken(silentToken);
+          setIsTokenExpired(false);
+          return;
+        }
         setIsTokenExpired(true);
       }
     };
@@ -136,8 +143,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     // Periodic check every 30 seconds
-    const intervalId = setInterval(() => {
+    const intervalId = setInterval(async () => {
       if (mode === 'connected' && isGoogleSessionExpired()) {
+        const silentToken = await renewGoogleSessionSilently();
+        if (silentToken && isValidGoogleAccessToken(silentToken)) {
+          setToken(silentToken);
+          setIsTokenExpired(false);
+          return;
+        }
         setIsTokenExpired(true);
       }
     }, 30000);
@@ -156,6 +169,12 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const renewGoogleSession = async (): Promise<boolean> => {
     try {
+      const silentToken = await renewGoogleSessionSilently();
+      if (silentToken && isValidGoogleAccessToken(silentToken)) {
+        setToken(silentToken);
+        setIsTokenExpired(false);
+        return true;
+      }
       const freshToken = await requestAccessToken();
       if (freshToken && isValidGoogleAccessToken(freshToken)) {
         setToken(freshToken);

@@ -86,7 +86,16 @@ import { AttendanceHeader } from './classes/AttendanceHeader';
 import { StudentAttendanceRow } from './classes/StudentAttendanceRow';
 import { GoogleSyncManager } from './classes/GoogleSyncManager';
 import { GoogleSessionExpiryBanner } from './classes/GoogleSessionExpiryBanner';
+import { AttendanceSettingsModal } from './classes/AttendanceSettingsModal';
+import { BackupRestoreModal } from './classes/BackupRestoreModal';
 import { useAttendanceSync } from '../../hooks/useAttendanceSync';
+import {
+  AttendanceSettings,
+  getCourseAttendanceSettings,
+  saveCourseAttendanceSettings,
+  computeStudentAttendanceTrafficLight,
+  computeCourseAttendanceSummary,
+} from '../../utils/attendanceCalculations';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -149,6 +158,30 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isSyncingClassroomRoster, setIsSyncingClassroomRoster] = useState(false);
   const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
+
+  // Semáforo de asistencia, semanas de clase y calendario escolar
+  const [isAttendanceSettingsModalOpen, setIsAttendanceSettingsModalOpen] = useState(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [attendanceSettings, setAttendanceSettings] = useState<AttendanceSettings>(() =>
+    getCourseAttendanceSettings(activeCourse?.id, activeCourse?.schedule)
+  );
+
+  useEffect(() => {
+    if (activeCourse) {
+      setAttendanceSettings(getCourseAttendanceSettings(activeCourse.id, activeCourse.schedule));
+    }
+  }, [activeCourse?.id, activeCourse?.schedule]);
+
+  // Listen to open attendance settings triggered from Sidebar
+  useEffect(() => {
+    const handleOpenSettingsEvent = () => {
+      setIsAttendanceSettingsModalOpen(true);
+    };
+    window.addEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
+    return () => {
+      window.removeEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
+    };
+  }, []);
 
   // Modal 1: Sincronizar / Seleccionar Horarios con Google Calendar (manual, sin auto-adivinar)
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
@@ -2118,6 +2151,40 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       totalLates,
       totalDisposition,
     };
+  };
+
+  // Course attendance summary and traffic light calculations
+  const currentAttendanceSummary = useMemo(() => {
+    if (!activeCourse) return undefined;
+    const studentMetricsList = courseStudents.map((s) => {
+      const m = getStudentMetrics(s.id, attendanceTerm);
+      return {
+        studentId: s.id,
+        totalAbsences: m.totalAbsences,
+        totalLates: m.totalLates || 0,
+      };
+    });
+    return computeCourseAttendanceSummary(
+      studentMetricsList,
+      attendanceTerm,
+      attendanceSettings
+    );
+  }, [activeCourse, courseStudents, dispositionMap, dispositionMap2c, historyList, attendanceTerm, attendanceSettings]);
+
+  const handleSaveAttendanceSettings = (newSettings: AttendanceSettings, updatedSchedule?: string) => {
+    if (!activeCourse) return;
+    saveCourseAttendanceSettings(activeCourse.id, newSettings);
+    setAttendanceSettings(newSettings);
+    if (updatedSchedule && updatedSchedule !== activeCourse.schedule) {
+      activeCourse.schedule = updatedSchedule;
+      fetch(`/api/courses/${encodeURIComponent(activeCourse.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule: updatedSchedule }),
+      }).catch(() => {});
+    }
+    setToastMessage('¡Parámetros del semáforo y semanas guardados exitosamente!');
+    setTimeout(() => setToastMessage(null), 3500);
   };
 
   const saveTermDisposition = (
@@ -4256,6 +4323,341 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setTimeout(() => setToastMessage(null), 2500);
   };
 
+  // Imprimir o descargar en PDF la ficha pedagógica individual del alumno
+  const handlePrintStudentProfile = (
+    student: Student,
+    tl: any,
+    disp: number,
+    m1: StudentDispositionData,
+    m2: StudentDispositionData
+  ) => {
+    if (!student) return;
+
+    const observations = studentObservations[student.id] || [];
+    const termLabel =
+      attendanceTerm === 'annual'
+        ? 'Ciclo Lectivo Anual'
+        : attendanceTerm === '1c'
+        ? '1° Cuatrimestre'
+        : '2° Cuatrimestre';
+
+    const currentDateStr = new Date().toLocaleDateString('es-AR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+
+    const statusBadgeColor =
+      tl.status === 'alert'
+        ? '#ef4444'
+        : tl.status === 'warning'
+        ? '#f59e0b'
+        : '#10b981';
+
+    const statusBg =
+      tl.status === 'alert'
+        ? '#fef2f2'
+        : tl.status === 'warning'
+        ? '#fffbeb'
+        : '#ecfdf5';
+
+    const printContent = `
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="utf-8" />
+        <title>Ficha del Estudiante - ${student.lastName}, ${student.firstName}</title>
+        <style>
+          @page {
+            size: A4;
+            margin: 1.5cm;
+          }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            color: #1f2937;
+            margin: 0;
+            padding: 0;
+            line-height: 1.5;
+            font-size: 13px;
+          }
+          .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+          }
+          .title-box h1 {
+            font-size: 18px;
+            margin: 0 0 4px 0;
+            color: #1e3a8a;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+          }
+          .title-box p {
+            margin: 0;
+            font-size: 11px;
+            color: #6b7280;
+          }
+          .meta-box {
+            text-align: right;
+            font-size: 11px;
+            color: #4b5563;
+          }
+          .section {
+            margin-bottom: 18px;
+          }
+          .section-title {
+            font-size: 12px;
+            font-weight: bold;
+            color: #1e40af;
+            text-transform: uppercase;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 4px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          }
+          .student-card {
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 10px 14px;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            gap: 12px;
+            font-size: 12px;
+          }
+          .data-item span {
+            display: block;
+            font-size: 10px;
+            color: #64748b;
+            text-transform: uppercase;
+          }
+          .data-item strong {
+            color: #0f172a;
+            font-size: 13px;
+          }
+          .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            margin-bottom: 12px;
+          }
+          .metric-cell {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 8px;
+            text-align: center;
+          }
+          .metric-cell .label {
+            font-size: 10px;
+            color: #64748b;
+            text-transform: uppercase;
+            display: block;
+            margin-bottom: 2px;
+          }
+          .metric-cell .value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #0f172a;
+          }
+          .metric-cell .sub {
+            font-size: 9px;
+            color: #94a3b8;
+            display: block;
+          }
+          .traffic-card {
+            background: ${statusBg};
+            border: 1px solid ${statusBadgeColor};
+            border-radius: 6px;
+            padding: 10px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+          }
+          .traffic-status {
+            font-size: 13px;
+            font-weight: bold;
+            color: ${statusBadgeColor};
+          }
+          .obs-list {
+            margin-top: 6px;
+          }
+          .obs-item {
+            border-left: 3px solid #6366f1;
+            background: #faf5ff;
+            padding: 8px 10px;
+            margin-bottom: 8px;
+            border-radius: 0 4px 4px 0;
+            font-size: 11.5px;
+          }
+          .obs-date {
+            font-size: 10px;
+            font-weight: bold;
+            color: #6366f1;
+            margin-bottom: 2px;
+          }
+          .signatures {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            margin-top: 40px;
+            padding-top: 20px;
+            page-break-inside: avoid;
+          }
+          .sig-box {
+            text-align: center;
+            border-top: 1px dashed #94a3b8;
+            padding-top: 8px;
+            font-size: 11px;
+            color: #475569;
+          }
+          .sig-box strong {
+            display: block;
+            font-size: 11px;
+            color: #1e293b;
+          }
+          @media print {
+            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <div class="title-box">
+            <h1>Ficha de Asistencia y Observaciones</h1>
+            <p>Docenc.IA • Sistema de Seguimiento Académico y Pedagógico</p>
+          </div>
+          <div class="meta-box">
+            <div><strong>Fecha:</strong> ${currentDateStr}</div>
+            <div><strong>Período:</strong> ${termLabel}</div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="student-card">
+            <div class="data-item">
+              <span>Estudiante</span>
+              <strong>${student.lastName}, ${student.firstName}</strong>
+            </div>
+            <div class="data-item">
+              <span>Materia / Espacio</span>
+              <strong>${activeCourse?.name || 'Materia'}</strong>
+            </div>
+            <div class="data-item">
+              <span>Aula / Horario</span>
+              <strong>${activeCourse?.room || activeCourse?.schedule || 'Turno Regular'}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">📊 Resumen de Asistencia y Semáforo de Regularidad</div>
+          
+          <div class="traffic-card">
+            <div>
+              <span style="font-size: 10px; text-transform: uppercase; color: #64748b; display: block;">Estado de Regularidad:</span>
+              <span class="traffic-status">● ${tl.statusLabel} (${tl.percentage}% de asistencia)</span>
+            </div>
+            <div style="text-align: right; font-size: 11px; color: #475569;">
+              <div><strong>Límite permitido:</strong> ${tl.maxAllowedAbsences} inasistencias máximas</div>
+              <div>${tl.remainingAbsences >= 0 ? `Margen disponible: <strong>${tl.remainingAbsences} faltas</strong>` : `<strong style="color:#ef4444;">Excedido por ${Math.abs(tl.remainingAbsences)} faltas</strong>`}</div>
+            </div>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-cell">
+              <span class="label">Clases Reales</span>
+              <span class="value">${tl.totalClasses}</span>
+              <span class="sub">${tl.attendedClasses} asistidas</span>
+            </div>
+            <div class="metric-cell">
+              <span class="label">Total Inasistencias</span>
+              <span class="value" style="color: ${tl.totalAbsences > 0 ? '#ef4444' : '#10b981'};">${tl.totalAbsences}</span>
+              <span class="sub">1°C: ${m1.totalAbsences} • 2°C: ${m2.totalAbsences}</span>
+            </div>
+            <div class="metric-cell">
+              <span class="label">Llegadas Tarde</span>
+              <span class="value" style="color: #f59e0b;">${(m1.totalLates || 0) + (m2.totalLates || 0)}</span>
+              <span class="sub">1°C: ${m1.totalLates || 0} • 2°C: ${m2.totalLates || 0}</span>
+            </div>
+            <div class="metric-cell">
+              <span class="label">Disposición / Conducta</span>
+              <span class="value" style="color: ${disp >= 8 ? '#10b981' : disp >= 6 ? '#f59e0b' : '#ef4444'};">${disp} / 10</span>
+              <span class="sub">Puntaje actual</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">📝 Observaciones Pedagógicas y Seguimiento</div>
+          ${
+            observations.length === 0
+              ? '<p style="color: #64748b; font-style: italic; margin-top: 6px;">No se registran observaciones adicionales a la fecha.</p>'
+              : `<div class="obs-list">
+                  ${observations
+                    .map(
+                      (obs: any) => `
+                    <div class="obs-item">
+                      <div class="obs-date">📅 ${obs.date}</div>
+                      <div>${obs.text || 'Sin texto'}</div>
+                      ${obs.reportUrl ? `<div style="font-size: 10px; color: #2563eb; margin-top: 2px;">Enlace adjunto: ${obs.reportUrl}</div>` : ''}
+                    </div>
+                  `
+                    )
+                    .join('')}
+                </div>`
+          }
+        </div>
+
+        <div class="signatures">
+          <div class="sig-box">
+            <strong>Firma y Sello del Docente</strong>
+            Aclaración
+          </div>
+          <div class="sig-box">
+            <strong>Firma del Padre / Madre / Tutor</strong>
+            Notificado
+          </div>
+          <div class="sig-box">
+            <strong>Preceptoría / Equipo Directivo</strong>
+            Recepción
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(printContent);
+      doc.close();
+
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => {
+          document.body.removeChild(iframe);
+        }, 1500);
+      }, 300);
+    }
+  };
+
   // 7b. Reiniciar / Borrar disposición por alumno individual
   const handleResetSingleStudentDisposition = async (student: Student, clearHistory: boolean = false) => {
     if (!activeCourse || !student) return;
@@ -5254,6 +5656,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               onOpenGoogleSheet={handleOpenGoogleSheet}
               attendanceTerm={attendanceTerm}
               onSelectTerm={setAttendanceTermHandler}
+              attendanceSummary={currentAttendanceSummary}
+              onOpenAttendanceSettings={() => setIsAttendanceSettingsModalOpen(true)}
+              onOpenBackupModal={() => setIsBackupModalOpen(true)}
               isDarkMode={isDarkMode}
             />
           )}
@@ -5403,7 +5808,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       });
                       const count = Math.max(1, courseStudents.length);
                       const avgDispGlobal = Number((sumDisp / count).toFixed(1));
-                      const avgAttendanceRate = Math.max(0, Math.min(100, Math.round(100 - (totalAbs / count * 2.5) - (totalLats / count * 0.8))));
+                      const avgAttendanceRate = currentAttendanceSummary?.avgAttendanceRate ?? 95;
 
                       return (
                         <>
@@ -5442,13 +5847,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                           <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
                             <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
-                              <span>Asistencia Promedio</span>
+                              <span>Alumnos Sin Riesgo</span>
                               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                             </div>
                             <div className="text-2xl font-black mt-1 text-emerald-600 dark:text-emerald-400">
-                              {avgAttendanceRate}%
+                              {currentAttendanceSummary?.regularCount ?? courseStudents.length}
+                              <span className="text-xs font-normal text-neutral-400"> /{count}</span>
                             </div>
-                            <span className="text-[11px] text-neutral-400">Tasa estimada del curso</span>
+                            <span className="text-[11px] text-neutral-400">
+                              {currentAttendanceSummary?.warningCount ? `${currentAttendanceSummary.warningCount} al límite • ` : ''}
+                              {currentAttendanceSummary?.alertCount ? `${currentAttendanceSummary.alertCount} en riesgo` : 'Regularidad óptima'}
+                            </span>
                           </div>
                         </>
                       );
@@ -5492,8 +5901,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               const tAbs = m1.totalAbsences + m2.totalAbsences;
                               const tLat = (m1.totalLates || 0) + (m2.totalLates || 0);
                               const aDisp = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
-                              const est = Math.max(0, Math.min(100, Math.round(100 - (tAbs * 2.5) - (tLat * 0.8))));
-                              const cond = est < 75 || aDisp < 6 ? 'Alerta' : aDisp >= 8 && est >= 85 ? 'Excelente' : 'Regular';
+                              const tl = computeStudentAttendanceTrafficLight(s.id, tAbs, tLat, 'annual', attendanceSettings);
+                              const est = tl.percentage;
+                              const cond = tl.status === 'alert' || aDisp < 6 ? 'Alerta' : aDisp >= 8 && tl.percentage >= 85 ? 'Excelente' : 'Regular';
                               return [
                                 `${s.lastName}, ${s.firstName}`,
                                 s.email,
@@ -5569,7 +5979,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                 <span className="text-[10px] font-normal lowercase opacity-70">escala 10</span>
                               </div>
                             </th>
-                            <th className="py-3 px-3 text-center">% Asistencia</th>
+                            <th className="py-3 px-3 text-center">Semáforo</th>
                             <th className="py-3 px-3 text-center">Condición</th>
                             <th className="py-3 px-3 text-center">Historial</th>
                           </tr>
@@ -5588,8 +5998,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               const totalAbs = m1.totalAbsences + m2.totalAbsences;
                               const totalLat = (m1.totalLates || 0) + (m2.totalLates || 0);
                               const avgDisp = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
-                              const estAtt = Math.max(0, Math.min(100, Math.round(100 - (totalAbs * 2.5) - (totalLat * 0.8))));
-                              const isAlert = estAtt < 75 || avgDisp < 6;
+                              const tlAnnual = computeStudentAttendanceTrafficLight(
+                                student.id,
+                                totalAbs,
+                                totalLat,
+                                'annual',
+                                attendanceSettings
+                              );
+                              const estAtt = tlAnnual.percentage;
+                              const isAlert = tlAnnual.status === 'alert' || avgDisp < 6;
 
                               return (
                                 <tr
@@ -5689,11 +6106,36 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     </div>
                                   </td>
 
-                                  {/* Totales Anuales */}
+                                  {/* Totales Anuales con Semáforo en la cantidad de faltas */}
                                   <td className="py-3 px-3 text-center bg-purple-500/5">
-                                    <span className="font-bold text-red-600 dark:text-red-400">{totalAbs} faltas</span>
-                                    <span className="text-neutral-400 mx-1">•</span>
-                                    <span className="font-bold text-amber-600 dark:text-amber-400">{totalLat} tard.</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenEditAbsences(student)}
+                                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 ${
+                                        tlAnnual.status === 'alert'
+                                          ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800'
+                                          : tlAnnual.status === 'warning'
+                                          ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800'
+                                          : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                                      }`}
+                                      title={`Inasistencias anuales: ${totalAbs}. Semáforo: ${tlAnnual.statusLabel}. Hacé clic para editar faltas o clic en el nombre para ver el total detallado.`}
+                                    >
+                                      <span
+                                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                                          tlAnnual.status === 'alert'
+                                            ? 'bg-red-500 animate-pulse'
+                                            : tlAnnual.status === 'warning'
+                                            ? 'bg-amber-500'
+                                            : 'bg-emerald-500'
+                                        }`}
+                                      />
+                                      <span>{totalAbs} {totalAbs === 1 ? 'falta' : 'faltas'}</span>
+                                    </button>
+                                    {totalLat > 0 && (
+                                      <span className="font-semibold text-amber-600 dark:text-amber-400 text-xs ml-1.5">
+                                        • {totalLat} tard.
+                                      </span>
+                                    )}
                                   </td>
 
                                   {/* Promedio Disposición */}
@@ -5711,11 +6153,27 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                     </span>
                                   </td>
 
-                                  {/* % Asistencia */}
+                                  {/* % Asistencia con Semáforo */}
                                   <td className="py-3 px-3 text-center font-bold">
-                                    <span className={estAtt < 75 ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}>
-                                      {estAtt}%
-                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => setIsAttendanceSettingsModalOpen(true)}
+                                      className="inline-flex items-center justify-center gap-1.5 hover:underline cursor-pointer group"
+                                      title={`Semáforo Anual: ${tlAnnual.statusLabel} • Asistió a ${tlAnnual.attendedClasses} de ${tlAnnual.totalClasses} clases anuales (${attendanceSettings.weeks1c + attendanceSettings.weeks2c} semanas • ${attendanceSettings.classesPerWeek} clases/sem.). Faltas computadas: ${tlAnnual.computedAbsences}. Máximo permitido: ${tlAnnual.maxAllowedAbsences} faltas. Hacé clic para configurar semanas o parámetros.`}
+                                    >
+                                      <span
+                                        className={`w-2 h-2 rounded-full shrink-0 ${
+                                          tlAnnual.status === 'regular'
+                                            ? 'bg-emerald-500'
+                                            : tlAnnual.status === 'warning'
+                                            ? 'bg-amber-500'
+                                            : 'bg-red-500 animate-pulse'
+                                        }`}
+                                      />
+                                      <span className={`text-xs ${tlAnnual.status === 'alert' ? 'text-red-600 dark:text-red-400' : tlAnnual.status === 'warning' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                                        {tlAnnual.status === 'alert' ? 'Riesgo' : tlAnnual.status === 'warning' ? 'Al límite' : 'Sin riesgo'}
+                                      </span>
+                                    </button>
                                   </td>
 
                                   {/* Condición */}
@@ -5993,6 +6451,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       ) : (
                         filteredStudents.map((student) => {
                           const metrics = getStudentMetrics(student.id);
+                          const trafficLight = computeStudentAttendanceTrafficLight(
+                            student.id,
+                            metrics.totalAbsences,
+                            metrics.totalLates || 0,
+                            attendanceTerm,
+                            attendanceSettings
+                          );
                           const studentHistory = historyList.filter((h) => h.studentId === student.id);
                           const hasPendingAbsence = historyList.some(
                             (h) => h.courseId === activeCourse.id && h.studentId === student.id && h.category === 'Ausencia' && !h.messageSent
@@ -6006,6 +6471,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               isSelected={isSelected}
                               onToggleSelect={toggleSelectStudent}
                               metrics={metrics}
+                              trafficLight={trafficLight}
                               observationsCount={studentObservations[student.id]?.length || 0}
                               hasPendingAbsence={hasPendingAbsence}
                               studentHistory={studentHistory}
@@ -6014,6 +6480,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               onOpenProfile={handleOpenStudentProfile}
                               onOpenEditAbsences={handleOpenEditAbsences}
                               onOpenEditDisposition={handleOpenEditDisposition}
+                              onOpenTrafficLightSettings={() => setIsAttendanceSettingsModalOpen(true)}
                               onAddAbsence={handleAddAbsence}
                               onRecordLateArrival={handleRecordLateArrival}
                               onDeleteLatestAbsence={handleDeleteLatestAbsence}
@@ -8957,56 +9424,156 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             </div>
 
             {/* Resumen rápido de asistencia y conducta */}
+            {/* Resumen completo de asistencia, semáforo y conducta (al hacer clic en el nombre) */}
             {(() => {
               const metrics1c = getStudentMetrics(selectedStudentForProfile.id, '1c');
               const metrics2c = getStudentMetrics(selectedStudentForProfile.id, '2c');
-              const currentDisp = getStudentMetrics(selectedStudentForProfile.id, attendanceTerm).totalDisposition;
+              const currentMetrics = getStudentMetrics(selectedStudentForProfile.id, attendanceTerm);
+              const currentDisp = currentMetrics.totalDisposition;
+
+              const totalAbsAnnual = metrics1c.totalAbsences + metrics2c.totalAbsences;
+              const totalLatesAnnual = (metrics1c.totalLates || 0) + (metrics2c.totalLates || 0);
+
+              const tlCurrent = computeStudentAttendanceTrafficLight(
+                selectedStudentForProfile.id,
+                currentMetrics.totalAbsences,
+                currentMetrics.totalLates || 0,
+                attendanceTerm,
+                attendanceSettings
+              );
+
+              const tlAnnual = computeStudentAttendanceTrafficLight(
+                selectedStudentForProfile.id,
+                totalAbsAnnual,
+                totalLatesAnnual,
+                'annual',
+                attendanceSettings
+              );
+
+              const activeTl = attendanceTerm === 'annual' ? tlAnnual : tlCurrent;
+
+              const statusColor =
+                activeTl.status === 'alert'
+                  ? {
+                      bg: isDarkMode ? 'bg-red-950/40' : 'bg-red-50',
+                      border: isDarkMode ? 'border-red-900/60' : 'border-red-200',
+                      text: isDarkMode ? 'text-red-300' : 'text-red-700',
+                      dot: 'bg-red-500 animate-pulse',
+                      badge: isDarkMode ? 'bg-red-900/60 text-red-200 border-red-800' : 'bg-red-100 text-red-800 border-red-300',
+                    }
+                  : activeTl.status === 'warning'
+                  ? {
+                      bg: isDarkMode ? 'bg-amber-950/40' : 'bg-amber-50',
+                      border: isDarkMode ? 'border-amber-900/60' : 'border-amber-200',
+                      text: isDarkMode ? 'text-amber-300' : 'text-amber-700',
+                      dot: 'bg-amber-500',
+                      badge: isDarkMode ? 'bg-amber-900/60 text-amber-200 border-amber-800' : 'bg-amber-100 text-amber-800 border-amber-300',
+                    }
+                  : {
+                      bg: isDarkMode ? 'bg-emerald-950/40' : 'bg-emerald-50',
+                      border: isDarkMode ? 'border-emerald-900/60' : 'border-emerald-200',
+                      text: isDarkMode ? 'text-emerald-300' : 'text-emerald-700',
+                      dot: 'bg-emerald-500',
+                      badge: isDarkMode ? 'bg-emerald-900/60 text-emerald-200 border-emerald-800' : 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                    };
 
               return (
-                <div className={`px-5 py-3 border-b grid grid-cols-3 gap-2 text-center text-xs ${
-                  isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-100 bg-white'
-                }`}>
-                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60 flex flex-col items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Inasistencias</span>
-                      <span className="text-sm font-bold text-red-600 dark:text-red-400">
-                        {metrics1c.totalAbsences + metrics2c.totalAbsences}
-                      </span>
-                      <span className="text-[10px] text-neutral-400 block">
-                        (1°C: {metrics1c.totalAbsences} • 2°C: {metrics2c.totalAbsences})
-                      </span>
+                <div className={`px-5 py-4 border-b space-y-3 ${isDarkMode ? 'border-slate-800 bg-slate-900/90' : 'border-neutral-200 bg-white'}`}>
+                  {/* Semáforo y Total Asistencia Card */}
+                  <div className={`p-3.5 rounded-2xl border transition-all ${statusColor.bg} ${statusColor.border}`}>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2 border-b border-black/5 dark:border-white/10">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-3 h-3 rounded-full shrink-0 ${statusColor.dot}`} />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={`font-bold text-sm ${statusColor.text}`}>
+                              Asistencia: {activeTl.percentage}%
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${statusColor.badge}`}>
+                              {activeTl.statusLabel}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                            Período: {attendanceTerm === 'annual' ? 'Ciclo Lectivo Completo' : attendanceTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditAbsences(selectedStudentForProfile)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 hover:bg-neutral-100 dark:hover:bg-slate-700 border border-neutral-300 dark:border-slate-700 text-neutral-700 dark:text-slate-200 shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                          title="Editar ausencias o llegadas tarde de este alumno"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          <span>Editar Faltas</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setIsAttendanceSettingsModalOpen(true)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-white dark:bg-slate-800 hover:bg-neutral-100 dark:hover:bg-slate-700 border border-neutral-300 dark:border-slate-700 text-neutral-700 dark:text-slate-200 shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                          title="Ajustar semanas del calendario y parámetros"
+                        >
+                          <Settings className="w-3 h-3 text-blue-500" />
+                          <span>Semanas</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handlePrintStudentProfile(selectedStudentForProfile, activeTl, currentDisp, metrics1c, metrics2c)}
+                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                          title="Generar vista de impresión oficial o descargar en PDF la ficha pedagógica y asistencia del estudiante"
+                        >
+                          <Printer className="w-3 h-3" />
+                          <span>Imprimir / PDF</span>
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEditAbsences(selectedStudentForProfile)}
-                      className="mt-1 px-2 py-0.5 rounded text-[10px] font-semibold text-red-700 hover:bg-red-100 dark:text-red-300 dark:hover:bg-red-900/50 border border-red-200 dark:border-red-800 cursor-pointer shadow-2xs transition-colors inline-flex items-center gap-1"
-                      title="Editar cantidad de faltas (pasar de papel, marcar fecha y enviar aviso)"
-                    >
-                      <Pencil className="w-2.5 h-2.5" />
-                      <span>Editar faltas</span>
-                    </button>
-                  </div>
 
-                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
-                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Llegadas Tarde</span>
-                    <span className="text-sm font-bold text-amber-600 dark:text-amber-400">
-                      {(metrics1c.totalLates || 0) + (metrics2c.totalLates || 0)}
-                    </span>
-                    <span className="text-[10px] text-neutral-400 block">
-                      (1°C: {metrics1c.totalLates || 0} • 2°C: {metrics2c.totalLates || 0})
-                    </span>
-                  </div>
+                    {/* Breakdown de totales */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2.5 text-center">
+                      <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5">
+                        <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Clases Totales</span>
+                        <span className="text-base font-bold text-neutral-900 dark:text-slate-100">
+                          {activeTl.totalClasses}
+                        </span>
+                        <span className="text-[10px] text-neutral-400 block">
+                          {activeTl.attendedClasses} asistidas
+                        </span>
+                      </div>
 
-                  <div className="p-2 rounded-xl bg-neutral-100/70 dark:bg-slate-800/60">
-                    <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Disposición ({attendanceTerm === '2c' ? '2°C' : attendanceTerm === '1c' ? '1°C' : 'Anual'})</span>
-                    <span className={`text-sm font-bold ${
-                      currentDisp >= 8 ? 'text-emerald-600 dark:text-emerald-400' : currentDisp >= 6 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
-                    }`}>
-                      {currentDisp} / 10
-                    </span>
-                    <span className="text-[10px] text-neutral-400 block">
-                      (1°C: {metrics1c.totalDisposition} • 2°C: {metrics2c.totalDisposition})
-                    </span>
+                      <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5">
+                        <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Inasistencias Totales</span>
+                        <span className={`text-base font-bold ${activeTl.status === 'alert' ? 'text-red-600 dark:text-red-400' : activeTl.status === 'warning' ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {totalAbsAnnual}
+                        </span>
+                        <span className="text-[10px] text-neutral-400 block">
+                          1°C: {metrics1c.totalAbsences} • 2°C: {metrics2c.totalAbsences}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5">
+                        <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Límite Permitido</span>
+                        <span className="text-base font-bold text-neutral-800 dark:text-slate-200">
+                          {activeTl.maxAllowedAbsences}
+                        </span>
+                        <span className={`text-[10px] font-semibold block ${activeTl.remainingAbsences >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {activeTl.remainingAbsences >= 0 ? `Quedan ${activeTl.remainingAbsences} faltas` : `Excedido por ${Math.abs(activeTl.remainingAbsences)}`}
+                        </span>
+                      </div>
+
+                      <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-800/70 border border-black/5 dark:border-white/5">
+                        <span className="text-[10px] text-neutral-500 dark:text-slate-400 block font-medium">Disposición</span>
+                        <span className={`text-base font-bold ${currentDisp >= 8 ? 'text-emerald-600 dark:text-emerald-400' : currentDisp >= 6 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'}`}>
+                          {currentDisp} / 10
+                        </span>
+                        <span className="text-[10px] text-neutral-400 block">
+                          1°C: {metrics1c.totalDisposition} • 2°C: {metrics2c.totalDisposition}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -12742,6 +13309,45 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           driveFolderUrl={activeCourse.driveFolderUrl}
           initialTab={courseReportModalTab}
           initialStudentId={courseReportModalStudentId}
+        />
+      )}
+
+      {/* Attendance & Calendar Weeks Settings Modal (Semáforo de Asistencia) */}
+      {isAttendanceSettingsModalOpen && activeCourse && (
+        <AttendanceSettingsModal
+          isOpen={isAttendanceSettingsModalOpen}
+          onClose={() => setIsAttendanceSettingsModalOpen(false)}
+          course={activeCourse}
+          currentSettings={attendanceSettings}
+          onSaveSettings={handleSaveAttendanceSettings}
+          students={courseStudents}
+          studentMetricsMap={(() => {
+            const map: Record<string, StudentDispositionData> = {};
+            courseStudents.forEach((s) => {
+              map[s.id] = getStudentMetrics(s.id, attendanceTerm);
+            });
+            return map;
+          })()}
+          currentTerm={attendanceTerm}
+          isDarkMode={isDarkMode}
+        />
+      )}
+
+      {/* Backup and Restore Modal (Copia de Seguridad JSON 1 Clic) */}
+      {isBackupModalOpen && activeCourse && (
+        <BackupRestoreModal
+          isOpen={isBackupModalOpen}
+          onClose={() => setIsBackupModalOpen(false)}
+          course={activeCourse}
+          students={courseStudents}
+          courseHistory={courseHistory}
+          studentObservations={studentObservations}
+          onRestoreSuccess={(msg) => {
+            setToastMessage(msg);
+            setTimeout(() => setToastMessage(null), 4000);
+            onRefreshData();
+          }}
+          isDarkMode={isDarkMode}
         />
       )}
     </div>

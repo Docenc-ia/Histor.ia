@@ -22,6 +22,7 @@ import {
   LayoutGrid,
   List,
   Mail,
+  Share2,
 } from 'lucide-react';
 import { Course } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -30,6 +31,7 @@ import { classroomService } from '../../services/workspace/classroomService';
 import { api } from '../../services/api';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { ImportClassroomModal } from './ImportClassroomModal';
+import { TeacherGuideModal } from '../common/TeacherGuideModal';
 
 interface TeacherCoursesPanelProps {
   courses: Course[];
@@ -58,6 +60,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [courseToDelete, setCourseToDelete] = useState<Course | null>(null);
   const [isConfirmClearAllOpen, setIsConfirmClearAllOpen] = useState(false);
   const [isClearingAll, setIsClearingAll] = useState(false);
@@ -319,6 +322,20 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
             >
               <RefreshCw className={`w-4 h-4 ${isSyncingRoster ? 'animate-spin' : ''}`} />
               <span>{isSyncingRoster ? 'Sincronizando...' : 'Sincronizar'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsGuideOpen(true)}
+              className={`px-3.5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-2 border cursor-pointer ${
+                isDarkMode
+                  ? 'bg-blue-950/70 hover:bg-blue-900 text-blue-200 border-blue-700/60 shadow-md shadow-blue-950/40'
+                  : 'bg-white/20 hover:bg-white/30 text-white border-white/40 shadow-xs'
+              }`}
+              title="Compartir enlace con colegas y ver guía de uso de Docenc.IA"
+            >
+              <Share2 className="w-4 h-4 text-blue-200" />
+              <span>Compartir con Colegas</span>
             </button>
 
             <button
@@ -1138,6 +1155,13 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
             onRefreshData();
           }
         }}
+      />
+
+      {/* Modal: Guía Docente y Compartir con Colegas */}
+      <TeacherGuideModal
+        isOpen={isGuideOpen}
+        onClose={() => setIsGuideOpen(false)}
+        onOpenClassroomSync={() => setIsImportModalOpen(true)}
       />
     </div>
   );

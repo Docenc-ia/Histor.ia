@@ -10,6 +10,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { LandingPage } from './components/landing/LandingPage';
 import { TeacherCoursesPanel } from './components/dashboard/TeacherCoursesPanel';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
+import { CalendarModule } from './components/modules/CalendarModule';
 import { ImportClassroomModal } from './components/dashboard/ImportClassroomModal';
 import { CreateModal } from './components/common/CreateModal';
 import { Course, Student } from './types';
@@ -20,8 +21,8 @@ import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSe
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
 
-  // Navigation: 'courses' (TeacherCoursesPanel) | 'course_detail' (CourseWorkspaceView -> ClassesModule)
-  const [currentView, setCurrentView] = useState<'courses' | 'course_detail'>('courses');
+  // Navigation: 'courses' | 'course_detail' | 'calendar'
+  const [currentView, setCurrentView] = useState<'courses' | 'course_detail' | 'calendar'>('courses');
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -186,6 +187,13 @@ function AppContent() {
       setCurrentView('courses');
     } else if (tab === 'classroom_sync' || tab === 'classroom') {
       setIsImportClassroomOpen(true);
+    } else if (tab === 'calendar') {
+      setCurrentView('calendar');
+    } else if (tab === 'calendar_schedule') {
+      setCurrentView('course_detail');
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('docencia_open_attendance_settings'));
+      }, 120);
     } else {
       // Any other tab (classes, alumnos, students, etc.) navigates to course_detail
       setCurrentView('course_detail');
@@ -217,7 +225,7 @@ function AppContent() {
   };
 
   const currentActiveSidebarTab =
-    currentView === 'courses' ? 'courses' : 'classes';
+    currentView === 'courses' ? 'courses' : currentView === 'calendar' ? 'calendar' : 'course_detail';
 
   return (
     <div
@@ -241,6 +249,15 @@ function AppContent() {
           onSelectTab={(tab, courseId) => {
             if (tab === 'classroom_sync') {
               setIsImportClassroomOpen(true);
+            } else if (tab === 'calendar') {
+              setCurrentView('calendar');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            } else if (tab === 'calendar_schedule') {
+              setCurrentView('course_detail');
+              setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('docencia_open_attendance_settings'));
+              }, 120);
+              window.scrollTo({ top: 0, behavior: 'smooth' });
             } else if (courseId) {
               setSelectedCourseId(courseId);
               setCurrentView('course_detail');
@@ -309,6 +326,24 @@ function AppContent() {
                   onNavigate={handleNavigate}
                   onOpenNewModal={handleOpenCreateModal}
                 />
+              )}
+
+              {/* 3. Módulo de Google Calendar Oficial y Horarios */}
+              {currentView === 'calendar' && (
+                <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+                  <CalendarModule
+                    courses={courses}
+                    selectedCourseId={selectedCourseId}
+                    onSelectCourse={(id) => {
+                      setSelectedCourseId(id);
+                      setCurrentView('course_detail');
+                    }}
+                    onNavigateToCourseDetail={(id) => {
+                      setSelectedCourseId(id);
+                      setCurrentView('course_detail');
+                    }}
+                  />
+                </div>
               )}
             </>
           )}

@@ -17,7 +17,8 @@ import {
   X,
   Eye,
   EyeOff,
-  LogIn
+  LogIn,
+  Sparkles,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
@@ -31,6 +32,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
   const {
     loginWithGoogle,
     loginWithEmail,
+    loginSimulated,
     isLoggingIn,
     isDarkMode,
     toggleDarkMode,
@@ -133,6 +135,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
       } else {
         setAuthError(err?.message || 'No se pudo completar el inicio de sesión con Google. Puedes ingresar con tu correo abajo.');
       }
+    } finally {
+      setIsSubmittingAccount(false);
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    try {
+      setIsSubmittingAccount(true);
+      setAuthError(null);
+      await loginSimulated();
+      onLoginSuccess();
+    } catch (err: any) {
+      console.warn('Error en login demo:', err);
+      setAuthError(err?.message || 'Error al ingresar en modo demostración');
     } finally {
       setIsSubmittingAccount(false);
     }
@@ -505,6 +521,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                     </span>
                   </>
                 )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleGuestLogin}
+                disabled={isLoggingIn || isSubmittingAccount}
+                className={`w-full py-2.5 px-4 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shadow-2xs ${
+                  isDarkMode
+                    ? 'bg-blue-950/40 hover:bg-blue-900/60 text-blue-300 border-blue-800/60'
+                    : 'bg-blue-50/80 hover:bg-blue-100 text-blue-700 border-blue-200'
+                }`}
+                title="Acceso inmediato de prueba con materias y alumnos de demostración"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+                <span>Explorar en Modo Demostración (Colega Invitado)</span>
               </button>
             </div>
 

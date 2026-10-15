@@ -10,7 +10,12 @@ import {
   FileSpreadsheet,
   Calendar,
   Loader2,
+  Sliders,
+  Clock,
+  Database,
 } from 'lucide-react';
+
+import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
 
 interface AttendanceHeaderProps {
   searchQuery: string;
@@ -30,6 +35,9 @@ interface AttendanceHeaderProps {
   onOpenGoogleSheet: () => void;
   attendanceTerm: '1c' | '2c' | 'annual';
   onSelectTerm: (term: '1c' | '2c' | 'annual') => void;
+  attendanceSummary?: CourseAttendanceSummary;
+  onOpenAttendanceSettings?: () => void;
+  onOpenBackupModal?: () => void;
   isDarkMode: boolean;
 }
 
@@ -51,6 +59,9 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
   onOpenGoogleSheet,
   attendanceTerm,
   onSelectTerm,
+  attendanceSummary,
+  onOpenAttendanceSettings,
+  onOpenBackupModal,
   isDarkMode,
 }) => {
   const isSyncActive = isSyncingSheet || isPullingFromSheet;
@@ -182,6 +193,23 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
             )}
             <span>Abrir en Sheets</span>
           </button>
+
+          {/* Backup & Restore button */}
+          {onOpenBackupModal && (
+            <button
+              type="button"
+              onClick={onOpenBackupModal}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-slate-800 hover:bg-slate-750 text-indigo-300 border-indigo-900/60 hover:border-indigo-700'
+                  : 'bg-white hover:bg-indigo-50/60 text-indigo-700 border-indigo-200'
+              }`}
+              title="Copia de seguridad local: Descargar respaldo JSON o restaurar observaciones y ajustes del curso"
+            >
+              <Database className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Copia de Seguridad</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -279,6 +307,80 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Semáforo and Calendar Weeks Summary Bar */}
+      {attendanceSummary && (
+        <div
+          className={`px-3.5 py-2.5 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs transition-colors ${
+            isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-neutral-50/90 border-neutral-200'
+          }`}
+        >
+          {/* Calendar weeks and total classes details */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 font-semibold text-neutral-700 dark:text-slate-300">
+              <Clock className="w-3.5 h-3.5 text-blue-500" />
+              <span>
+                <strong>{attendanceSummary.weeksCount} semanas</strong> ({attendanceSummary.classesPerWeek} clases/sem.
+                {attendanceSummary.holidaysCount > 0 ? ` • -${attendanceSummary.holidaysCount} feriados` : ''} •{' '}
+                <strong>{attendanceSummary.totalClasses} clases reales</strong>)
+              </span>
+            </div>
+            <span className="text-neutral-400">•</span>
+            <span className="text-neutral-500 dark:text-slate-400 text-[11px]">
+              Límite regularidad: <strong>{attendanceSummary.maxAllowedAbsences} faltas máx.</strong>
+            </span>
+          </div>
+
+          {/* Traffic light counts and configuration button */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                title={`${attendanceSummary.regularCount} alumnos con asistencia regular (>= 85%)`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>{attendanceSummary.regularCount} Regulares</span>
+              </span>
+
+              {attendanceSummary.warningCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                  title={`${attendanceSummary.warningCount} alumnos en precaución (75%-84% o a <=2 faltas del límite)`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                  <span>{attendanceSummary.warningCount} Precaución</span>
+                </span>
+              )}
+
+              {attendanceSummary.alertCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 animate-pulse"
+                  title={`${attendanceSummary.alertCount} alumnos en riesgo de perder regularidad (< 75% o superaron límite)`}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                  <span>{attendanceSummary.alertCount} Riesgo</span>
+                </span>
+              )}
+            </div>
+
+            {onOpenAttendanceSettings && (
+              <button
+                type="button"
+                onClick={onOpenAttendanceSettings}
+                className={`inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold rounded-lg border transition-all cursor-pointer shadow-2xs ${
+                  isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                    : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                }`}
+                title="Configurar semanas del cuatrimestre, horario del calendario y parámetros del semáforo"
+              >
+                <Sliders className="w-3 h-3 text-blue-500" />
+                <span>Configurar Semáforo</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

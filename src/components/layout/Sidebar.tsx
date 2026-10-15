@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   LayoutDashboard,
-  Users,
   GraduationCap,
   FolderClosed,
   Calendar,
@@ -56,7 +55,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
       group: 'PANEL DOCENTE',
       items: [
         { id: 'courses', label: 'Mis materias', icon: LayoutDashboard, color: 'text-blue-600' },
-        { id: 'classes', label: 'Asistencia y Disposición', icon: Users, color: 'text-emerald-600' },
+      ],
+    },
+    {
+      group: 'VINCULACIÓN CALENDAR',
+      items: [
+        { id: 'calendar', label: 'Google Calendar Oficial', icon: Calendar, color: 'text-blue-500' },
+        { id: 'calendar_schedule', label: 'Horarios y Semanas de Clase', icon: Clock, color: 'text-amber-500' },
       ],
     },
     {

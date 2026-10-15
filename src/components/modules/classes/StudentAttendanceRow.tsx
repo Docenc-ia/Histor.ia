@@ -11,12 +11,17 @@ import {
   FileText,
 } from 'lucide-react';
 import { Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
+import {
+  StudentAttendanceTrafficLight,
+  getTrafficLightBadgeStyle,
+} from '../../../utils/attendanceCalculations';
 
 interface StudentAttendanceRowProps {
   student: Student;
   isSelected: boolean;
   onToggleSelect: (studentId: string) => void;
   metrics: StudentDispositionData;
+  trafficLight?: StudentAttendanceTrafficLight;
   observationsCount: number;
   hasPendingAbsence: boolean;
   studentHistory: StudentHistoryItem[];
@@ -32,6 +37,7 @@ interface StudentAttendanceRowProps {
   onRecordDispositionAction: (student: Student, cleanReason: string, date?: string, delta?: number) => void;
   onOpenConductModal: (student: Student, mode: 'add' | 'subtract') => void;
   onOpenStudentHistory: (student: Student) => void;
+  onOpenTrafficLightSettings?: () => void;
   isDarkMode: boolean;
 }
 
@@ -40,6 +46,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
   isSelected,
   onToggleSelect,
   metrics,
+  trafficLight,
   observationsCount,
   hasPendingAbsence,
   studentHistory,
@@ -55,6 +62,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
   onRecordDispositionAction,
   onOpenConductModal,
   onOpenStudentHistory,
+  onOpenTrafficLightSettings,
   isDarkMode,
 }) => {
   const score = metrics.totalDisposition;
@@ -164,28 +172,49 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
         </div>
       </td>
 
-      {/* Attendance Metrics Column */}
+      {/* Attendance Metrics Column with Semáforo Traffic Light (Sin mostrar porcentaje) */}
       <td
-        className="py-2 px-3 text-center whitespace-nowrap cursor-pointer hover:bg-red-50/40 dark:hover:bg-slate-800/40 transition-colors"
+        className="py-2 px-3 text-center whitespace-nowrap cursor-pointer hover:bg-neutral-50 dark:hover:bg-slate-800/40 transition-colors"
         onClick={() => onOpenEditAbsences(student)}
       >
-        <div className="inline-flex items-center justify-center gap-1.5">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenEditAbsences(student);
-            }}
-            className={`inline-flex items-center gap-1 justify-center min-w-[32px] px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 shadow-2xs group ${
-              metrics.totalAbsences > 0
-                ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800/60 hover:bg-red-100 dark:hover:bg-red-900/60'
-                : 'bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border-neutral-200 dark:border-slate-700 hover:bg-neutral-200 dark:hover:bg-slate-700'
-            }`}
-            title={`Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar las faltas (pasar de papel, marcar fecha y enviar aviso).`}
-          >
-            <span>{metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}</span>
-            <Pencil className="w-2.5 h-2.5 opacity-50 group-hover:opacity-100 transition-opacity ml-0.5" />
-          </button>
+        <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
+          {(() => {
+            const status = trafficLight?.status || (metrics.totalAbsences === 0 ? 'regular' : 'regular');
+            
+            const badgeClasses =
+              status === 'alert'
+                ? 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800/80 hover:bg-red-100 dark:hover:bg-red-900/60 shadow-xs'
+                : status === 'warning'
+                ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800/80 hover:bg-amber-100 dark:hover:bg-amber-900/60 shadow-xs'
+                : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800/80 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 shadow-xs';
+
+            const dotClasses =
+              status === 'alert'
+                ? 'bg-red-500 animate-pulse'
+                : status === 'warning'
+                ? 'bg-amber-500'
+                : 'bg-emerald-500';
+
+            const tooltipText = trafficLight
+              ? `Inasistencias: ${metrics.totalAbsences}. Semáforo: ${trafficLight.statusLabel}. Hacé clic para editar faltas o clic en el nombre del alumno para ver el total detallado.`
+              : `Total inasistencias: ${metrics.totalAbsences}. Hacé clic para editar las faltas.`;
+
+            return (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenEditAbsences(student);
+                }}
+                className={`inline-flex items-center gap-1.5 justify-center min-w-[36px] px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer hover:scale-105 active:scale-95 group ${badgeClasses}`}
+                title={tooltipText}
+              >
+                <span className={`w-2 h-2 rounded-full shrink-0 ${dotClasses}`} />
+                <span>{metrics.totalAbsences} {metrics.totalAbsences === 1 ? 'falta' : 'faltas'}</span>
+                <Pencil className="w-2.5 h-2.5 opacity-40 group-hover:opacity-100 transition-opacity ml-0.5" />
+              </button>
+            );
+          })()}
 
           {(metrics.totalLates || 0) > 0 && (
             <button

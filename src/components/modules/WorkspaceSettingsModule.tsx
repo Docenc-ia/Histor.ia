@@ -102,8 +102,6 @@ export const WorkspaceSettingsModule: React.FC = () => {
               <p className="text-xs text-neutral-500 mt-0.5">
                 {mode === 'connected'
                   ? 'Autenticado con Google Workspace. Tokens en memoria preparados para llamadas a la API.'
-                  : mode === 'simulation'
-                  ? 'Modo estructuras preparadas activo. Puedes interactuar con todos los módulos y probar exportaciones.'
                   : 'Desconectado. Inicia sesión con tu cuenta institucional para sincronizar.'}
               </p>
             </div>

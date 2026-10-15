@@ -37,7 +37,7 @@ export interface ServiceStatus {
 
 interface WorkspaceAuthContextType {
   user: TeacherProfile | null;
-  mode: 'connected' | 'simulation' | 'disconnected';
+  mode: 'connected' | 'disconnected';
   token: string | null;
   services: ServiceStatus[];
   scopes: string[];
@@ -53,10 +53,9 @@ interface WorkspaceAuthContextType {
   requestAccessToken: () => Promise<string>;
   loginWithGoogleIdToken: (idToken: string) => Promise<TeacherProfile>;
   loginWithEmail: (email: string, password?: string, name?: string) => Promise<void>;
-  loginSimulated: () => Promise<void>;
   updateUserProfile: (profile: Partial<TeacherProfile>) => Promise<void>;
   logout: () => Promise<void>;
-  setMode: (mode: 'connected' | 'simulation' | 'disconnected') => void;
+  setMode: (mode: 'connected' | 'disconnected') => void;
   testConnection: () => Promise<boolean>;
 }
 
@@ -110,7 +109,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     return null;
   });
-  const [mode, setMode] = useState<'connected' | 'simulation' | 'disconnected'>(() => {
+  const [mode, setMode] = useState<'connected' | 'disconnected'>(() => {
     if (typeof window !== 'undefined') {
       const isLogged =
         sessionStorage.getItem('docencia_session_active') === 'true' ||
@@ -484,38 +483,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   };
 
-  const loginSimulated = async () => {
-    const storedEmail = (typeof window !== 'undefined' ? sessionStorage.getItem('docencia_teacher_email') : null) || 'docente@colegio.edu.ar';
-    const cleanName = storedEmail.includes('@') ? storedEmail.split('@')[0].replace(/[._-]/g, ' ') : 'Docente Titular';
-    const formattedName = cleanName.charAt(0).toUpperCase() + cleanName.slice(1);
-    const mockToken = `ya29.simulated_oauth_${Date.now().toString(36)}`;
-    const simulatedProfile: TeacherProfile = {
-      id: 'user-docente',
-      name: `Prof. ${formattedName}`,
-      email: storedEmail,
-      avatar: getTeacherAvatar(formattedName, storedEmail),
-      role: 'Docente Titular',
-      school: 'Colegio FDS Esc',
-      permissions: DEFAULT_TEACHER.permissions,
-      scopes: WORKSPACE_SCOPES,
-    };
-    setCachedAccessToken(mockToken);
-    setToken(mockToken);
-    setMode('simulation');
-    setUser(simulatedProfile);
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('docencia_session_active', 'true');
-      sessionStorage.setItem('docencia_user_profile', JSON.stringify(simulatedProfile));
-    }
-    await api.syncAuthSession({
-      uid: simulatedProfile.id || 'user-docente',
-      email: simulatedProfile.email,
-      name: simulatedProfile.name,
-      avatar: simulatedProfile.avatar,
-      token: mockToken,
-      scopes: WORKSPACE_SCOPES,
-    });
-  };
+
 
   const logout = async () => {
     if (typeof window !== 'undefined') {
@@ -564,7 +532,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         requestAccessToken,
         loginWithGoogleIdToken,
         loginWithEmail,
-        loginSimulated,
         updateUserProfile,
         logout,
         setMode,

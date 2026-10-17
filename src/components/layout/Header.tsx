@@ -350,18 +350,17 @@ export const Header: React.FC<HeaderProps> = ({
 
                 <button
                   onClick={() => {
-                    if (mode === 'connected') logout();
-                    else loginWithGoogle();
+                    loginWithGoogle('jorge.cano@fds-esc.edu.ar');
                     setShowProfileMenu(false);
                   }}
                   className={`w-full flex items-center justify-between px-2 py-2 text-left rounded-lg transition-colors ${
                     isDarkMode
-                      ? 'text-slate-200 hover:bg-slate-800'
-                      : 'text-neutral-700 hover:bg-neutral-100'
+                      ? 'text-blue-300 hover:bg-slate-800'
+                      : 'text-blue-700 hover:bg-blue-50'
                   }`}
                 >
-                  <span>{mode === 'connected' ? 'Desconectar cuenta Google' : 'Forzar Sincronización Google'}</span>
-                  <RefreshCw className="w-3.5 h-3.5 text-neutral-400" />
+                  <span className="font-semibold">Conectar / Cambiar cuenta Google</span>
+                  <RefreshCw className="w-3.5 h-3.5 text-blue-500" />
                 </button>
 
                 <button

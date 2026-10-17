@@ -445,9 +445,8 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         scopes: WORKSPACE_SCOPES,
       };
 
-      const mockToken = `ya29.inst_${Date.now().toString(36)}`;
-      setCachedAccessToken(mockToken);
-      setToken(mockToken);
+      setCachedAccessToken(null);
+      setToken(null);
       setUser(teacherProfile);
       setMode('connected');
 
@@ -465,7 +464,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         email: teacherProfile.email,
         name: teacherProfile.name,
         avatar: teacherProfile.avatar,
-        token: mockToken,
+        token: null,
         scopes: WORKSPACE_SCOPES,
         school: teacherProfile.school,
       });
@@ -481,7 +480,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const updateUserProfile = async (updated: Partial<TeacherProfile>) => {
     if (!user) return;
     const cleanName = updated.name || user.name;
-    const cleanEmail = updated.email || user.email;
+    const cleanEmail = (updated.email || user.email).trim().toLowerCase();
     const newAvatar = updated.avatar || getTeacherAvatar(cleanName, cleanEmail);
     const newProfile: TeacherProfile = {
       ...user,
@@ -494,6 +493,8 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
       sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+      localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
+      localStorage.setItem('docencia_teacher_email', cleanEmail);
     }
     await api.syncAuthSession({
       uid: newProfile.id || 'user-docente',

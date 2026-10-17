@@ -75,11 +75,24 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     isLiveGoogle: boolean;
     folderName: string;
   } | null>(null);
-  const [courseObservation, setCourseObservation] = useState<string>(
-    'El grupo de estudiantes ha completado las actividades curriculares correspondientes al ciclo lectivo 2026. Se detallan a continuación las calificaciones definitivas, registros de asistencia y condiciones de acreditación conforme a las normativas pedagógicas vigentes.'
-  );
+  const [courseObservation, setCourseObservation] = useState<string>(() => {
+    try {
+      return localStorage.getItem(`fds_report_course_observation_${courseId}`) || '';
+    } catch {
+      return '';
+    }
+  });
 
-  // Customization of report elements (Docente puede elegir qué poner según motivo de informe/citación)
+  const handleUpdateCourseObservation = (text: string) => {
+    setCourseObservation(text);
+    try {
+      localStorage.setItem(`fds_report_course_observation_${courseId}`, text);
+    } catch (err) {
+      console.error('Error saving course report observation:', err);
+    }
+  };
+
+  // Customization of report elements (Docente puede elegir qué poner clickeando las opciones)
   const [includeGrades, setIncludeGrades] = useState<boolean>(
     initialPreset === 'attendance' || initialPreset === 'disposition' ? false : true
   );
@@ -93,53 +106,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [includeFamilySignature, setIncludeFamilySignature] = useState<boolean>(
     initialPreset !== 'all'
   );
-  const [reportReason, setReportReason] = useState<string>(
-    initialPreset === 'attendance'
-      ? 'Citación a Familias por Inasistencias y Puntualidad'
-      : initialPreset === 'grades'
-      ? 'Citación a Familias por Rendimiento y Calificaciones'
-      : initialPreset === 'disposition'
-      ? 'Citación a Familias por Convivencia y Disposición en Clase'
-      : 'Informe Oficial de Trayectoria y Calificaciones'
-  );
-  const [isCustomReason, setIsCustomReason] = useState<boolean>(false);
-  const [customReasonInput, setCustomReasonInput] = useState<string>('');
-  const effectiveReason =
-    isCustomReason && customReasonInput.trim() ? customReasonInput.trim() : reportReason;
-
-  // Preset quick applier
-  const applyPreset = (preset: 'all' | 'attendance' | 'grades' | 'disposition') => {
-    setIsCustomReason(false);
-    if (preset === 'all') {
-      setIncludeGrades(true);
-      setIncludeAttendance(true);
-      setIncludeDisposition(true);
-      setIncludeObservations(true);
-      setIncludeFamilySignature(false);
-      setReportReason('Informe Oficial de Trayectoria y Calificaciones');
-    } else if (preset === 'attendance') {
-      setIncludeGrades(false);
-      setIncludeAttendance(true);
-      setIncludeDisposition(false);
-      setIncludeObservations(true);
-      setIncludeFamilySignature(true);
-      setReportReason('Citación a Familias por Inasistencias y Puntualidad');
-    } else if (preset === 'grades') {
-      setIncludeGrades(true);
-      setIncludeAttendance(false);
-      setIncludeDisposition(false);
-      setIncludeObservations(true);
-      setIncludeFamilySignature(true);
-      setReportReason('Citación a Familias por Rendimiento y Calificaciones');
-    } else if (preset === 'disposition') {
-      setIncludeGrades(false);
-      setIncludeAttendance(false);
-      setIncludeDisposition(true);
-      setIncludeObservations(true);
-      setIncludeFamilySignature(true);
-      setReportReason('Citación a Familias por Convivencia y Disposición en Clase');
-    }
-  };
+  const effectiveReason = 'Informe';
 
   const selectedElementsCount =
     (includeGrades ? 1 : 0) +
@@ -302,14 +269,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
       // Dedicated observation for official report / certificate (strictly separated from private course notes)
       const customReportObs = reportObservations[st.id];
-      const defaultReportObs =
-        finalNum !== null && finalNum >= 7
-          ? 'Demostró un desempeño favorable y constante cumplimiento en las tareas y actividades propuestas.'
-          : finalNum !== null && finalNum >= 6
-          ? 'Alcanzó los contenidos prioritarios con regularidad. Se sugiere profundizar lecturas y repaso de temas clave.'
-          : 'Requiere instancia de intensificación de aprendizajes en los contenidos pendientes del ciclo.';
-
-      const observation = customReportObs !== undefined ? customReportObs : defaultReportObs;
+      const observation = customReportObs !== undefined ? customReportObs : '';
 
       return {
         student: st,
@@ -389,11 +349,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Generate self-contained standalone HTML document for download or Drive upload
   const generateHtmlDocument = (type: 'course' | 'individual') => {
     const isCourse = type === 'course';
-    const effectiveReason =
-      isCustomReason && customReasonInput.trim() ? customReasonInput.trim() : reportReason;
-    const title = isCourse
-      ? `Informe Consolidado — ${courseName}`
-      : `${effectiveReason} — ${courseName}`;
+    const title = `Informe — ${courseName}`;
 
     let bodyContent = '';
 
@@ -595,15 +551,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   : ''
               }
             </div>
-            ${
-              effectiveReason
-                ? `
-              <div style="margin-top: 8px; font-size: 11px; font-weight: 600; color: #1e40af; background: #e0e7ff; display: inline-block; padding: 3px 10px; border-radius: 4px;">
-                📌 Convocatoria / Motivo: ${effectiveReason}
-              </div>
-            `
-                : ''
-            }
           </div>
 
           ${
@@ -732,8 +679,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             includeObservations
               ? `
             <div class="observations-box" style="margin-top: 14px;">
-              <h4>${includeGrades && (includeAttendance || includeDisposition) ? '3' : includeGrades || includeAttendance || includeDisposition ? '2' : '1'}. Observación Pedagógica del Docente / Motivo de Citación:</h4>
-              <p>${row.observation || 'Sin observaciones adicionales registradas.'}</p>
+              <h4>${includeGrades && (includeAttendance || includeDisposition) ? '3' : includeGrades || includeAttendance || includeDisposition ? '2' : '1'}. Observaciones Pedagógicas y Síntesis:</h4>
+              <p style="white-space: pre-wrap;">${row.observation || '—'}</p>
             </div>
           `
               : ''
@@ -939,6 +886,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       font-size: 12px;
       color: #78350f;
       line-height: 1.5;
+      white-space: pre-wrap;
     }
     .signatures-row {
       display: flex;
@@ -1073,7 +1021,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base sm:text-lg font-bold">
-                  Reportes e Informes de Cierre de Materia
+                  Informe
                 </h2>
                 <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 dark:bg-blue-950/70 dark:text-blue-300 border border-blue-300 dark:border-blue-800">
                   {courseName}
@@ -1082,9 +1030,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   • Ciclo 2026
                 </span>
               </div>
-              <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                Genera el informe consolidado de la materia o las fichas individuales de 1 página por alumno para imprimir o guardar en Google Drive.
-              </p>
             </div>
           </div>
 
@@ -1228,88 +1173,12 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           )}
         </div>
 
-        {/* Panel de selección interactiva de elementos y citación a padres */}
+        {/* Panel de selección interactiva de elementos */}
         <div
           className={`px-5 py-3 border-b text-xs transition-colors shrink-0 ${
             isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
           }`}
         >
-          {/* Top row: Titulo y Plantillas Rápidas para Citaciones */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5">
-            <div className="flex items-center gap-2">
-              <span className="font-bold flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200">
-                <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                Elementos del informe:
-              </span>
-              <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
-                {selectedElementsCount} de 4 activos
-              </span>
-            </div>
-
-            {/* Quick Presets for Parent Citations & Reports */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[11px] text-neutral-500 dark:text-slate-400 mr-1">
-                Plantillas rápidas:
-              </span>
-              <button
-                type="button"
-                onClick={() => applyPreset('all')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
-                  includeGrades && includeAttendance && includeDisposition && includeObservations && !includeFamilySignature
-                    ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
-                    : isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
-                    : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-300'
-                }`}
-                title="Incluir calificaciones, asistencia, disposición y observaciones"
-              >
-                Completo (Todo)
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('grades')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
-                  includeGrades && !includeAttendance && !includeDisposition
-                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
-                    : isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300 border-slate-700'
-                    : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
-                }`}
-                title="Citación a familias por calificaciones y rendimiento"
-              >
-                <span>Citación por Notas</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('attendance')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
-                  !includeGrades && includeAttendance && !includeDisposition
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                    : isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-emerald-300 border-slate-700'
-                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
-                }`}
-                title="Citación a familias por inasistencias y faltas reiteradas"
-              >
-                <span>Citación por Asistencia</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPreset('disposition')}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
-                  !includeGrades && !includeAttendance && includeDisposition
-                    ? 'bg-purple-600 text-white border-purple-600 shadow-2xs'
-                    : isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-700 text-purple-300 border-slate-700'
-                    : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
-                }`}
-                title="Citación a familias por conducta, disposición y convivencia escolar"
-              >
-                <span>Citación por Disposición</span>
-              </button>
-            </div>
-          </div>
-
           {/* Botones / Checkboxes interactivos con clic directo */}
           <div className="flex flex-wrap items-center gap-2">
             {/* 1. Calificaciones */}
@@ -1392,7 +1261,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               ) : (
                 <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               )}
-              <span>Observaciones / Citación</span>
+              <span>Observaciones</span>
             </button>
 
             {/* 5. Talón de firma de familias */}
@@ -1415,61 +1284,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               )}
               <span>Talón de Firma Familias</span>
             </button>
-          </div>
-
-          {/* Motivo de la citación / encabezado */}
-          <div className="mt-2.5 pt-2 border-t border-neutral-200/80 dark:border-slate-800 flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-medium text-neutral-600 dark:text-slate-400">
-              Motivo o título del informe:
-            </span>
-            <select
-              value={isCustomReason ? 'custom' : reportReason}
-              onChange={(e) => {
-                if (e.target.value === 'custom') {
-                  setIsCustomReason(true);
-                  if (!customReasonInput) setCustomReasonInput(reportReason);
-                } else {
-                  setIsCustomReason(false);
-                  setReportReason(e.target.value);
-                }
-              }}
-              className={`text-xs px-2.5 py-1 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                isDarkMode
-                  ? 'bg-slate-800 border-slate-700 text-slate-200'
-                  : 'bg-white border-neutral-300 text-neutral-800'
-              }`}
-            >
-              <option value="Informe Oficial de Trayectoria y Calificaciones">
-                Informe Oficial de Trayectoria y Calificaciones
-              </option>
-              <option value="Citación a Familias por Inasistencias y Puntualidad">
-                Citación a Familias por Inasistencias y Puntualidad
-              </option>
-              <option value="Citación a Familias por Rendimiento y Calificaciones">
-                Citación a Familias por Rendimiento y Calificaciones
-              </option>
-              <option value="Citación a Familias por Convivencia y Disposición en Clase">
-                Citación a Familias por Convivencia y Disposición en Clase
-              </option>
-              <option value="Entrevista con Familia / Notificación Escolar">
-                Entrevista con Familia / Notificación Escolar
-              </option>
-              <option value="custom">✏️ Escribir motivo personalizado...</option>
-            </select>
-
-            {isCustomReason && (
-              <input
-                type="text"
-                value={customReasonInput}
-                onChange={(e) => setCustomReasonInput(e.target.value)}
-                placeholder="Ej: Citación por entrega de trabajos prácticos"
-                className={`text-xs px-2.5 py-1 rounded-lg border font-medium flex-1 min-w-[200px] focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                  isDarkMode
-                    ? 'bg-slate-800 border-blue-500 text-white'
-                    : 'bg-white border-blue-400 text-neutral-900'
-                }`}
-              />
-            )}
           </div>
         </div>
 
@@ -1719,16 +1533,23 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 {/* Course Pedagogical Observations (Conditional) */}
                 {includeObservations && (
                   <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-8">
-                    <h4 className="text-xs font-bold text-amber-900 mb-1">
-                      Observaciones Pedagógicas y Síntesis del Curso:
+                    <h4 className="text-xs font-bold text-amber-900 mb-2">
+                      Observaciones Pedagógicas y Síntesis:
                     </h4>
-                    <textarea
-                      value={courseObservation}
-                      onChange={(e) => setCourseObservation(e.target.value)}
-                      rows={3}
-                      className="w-full text-xs bg-transparent border-0 focus:outline-none text-neutral-800 leading-relaxed resize-none"
-                      placeholder="Escribe comentarios institucionales sobre el curso..."
-                    />
+                    <div className="print:hidden">
+                      <textarea
+                        value={courseObservation}
+                        onChange={(e) => handleUpdateCourseObservation(e.target.value)}
+                        rows={4}
+                        className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
+                        placeholder="Escribí acá las observaciones pedagógicas y síntesis del curso..."
+                      />
+                    </div>
+                    <div className="hidden print:block">
+                      <p className="text-xs text-neutral-800 leading-relaxed whitespace-pre-wrap">
+                        {courseObservation || '—'}
+                      </p>
+                    </div>
                   </div>
                 )}
 
@@ -1812,13 +1633,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                           </div>
                         )}
                       </div>
-
-                      {effectiveReason && (
-                        <div className="mt-2.5 text-xs font-semibold text-blue-800 bg-blue-50/90 dark:bg-blue-950/40 px-2.5 py-1 rounded inline-flex items-center gap-1.5 border border-blue-200 dark:border-blue-800">
-                          <span>📌 Convocatoria / Asunto:</span>
-                          <strong>{effectiveReason}</strong>
-                        </div>
-                      )}
                     </div>
 
                     {/* 1. Academics Block (Conditional) */}
@@ -2029,7 +1843,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                       </div>
                     ) : null}
 
-                    {/* 3. Pedagogical Observations for Report / Citación (Conditional) */}
+                    {/* 3. Pedagogical Observations for Report (Conditional) */}
                     {includeObservations && (
                       <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-5">
                         <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
@@ -2040,112 +1854,27 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                               : includeGrades || includeAttendance || includeDisposition
                               ? '2'
                               : '1'}
-                            . Observación Pedagógica del Docente / Motivo de Citación:
+                            . Observaciones Pedagógicas y Síntesis:
                           </h4>
-                          <span className="text-[10px] text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 font-medium print:hidden">
-                            🔒 Exclusivo de este informe (no modifica notas privadas de la lista)
-                          </span>
                         </div>
 
-                        {/* Screen View: Editable Textarea with Quick Presets */}
-                        <div className="print:hidden space-y-2">
+                        {/* Screen View: Editable Textarea */}
+                        <div className="print:hidden">
                           <textarea
                             value={row.observation}
                             onChange={(e) =>
                               handleUpdateStudentReportObservation(row.student.id, e.target.value)
                             }
-                            rows={3}
+                            rows={4}
                             className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
-                            placeholder="Escribe la observación oficial o acuerdos de la citación para este alumno..."
+                            placeholder="Escribí acá las observaciones pedagógicas y síntesis para este estudiante..."
                           />
-                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
-                            <span className="text-emerald-700 font-medium flex items-center gap-1">
-                              <Check className="w-3.5 h-3.5" /> Guardado para Drive y versión impresa
-                            </span>
-
-                            {/* Plantillas rápidas para citación docente */}
-                            <div className="flex flex-wrap items-center gap-1">
-                              <span className="text-[10px] text-neutral-400 mr-0.5">Plantilla:</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(
-                                    row.student.id,
-                                    'Se convoca a la familia a reunión informativa para dialogar sobre las inasistencias acumuladas y acordar un plan de asistencia regular y entrega de trabajos prácticos.'
-                                  )
-                                }
-                                className="px-2 py-0.5 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 rounded border border-emerald-200 text-[10px] font-semibold transition"
-                                title="Cargar texto de citación por inasistencias"
-                              >
-                                Faltas
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(
-                                    row.student.id,
-                                    'Se cita a los adultos responsables para notificar el estado académico del estudiante y coordinar pautas pedagógicas de estudio y recuperación de contenidos.'
-                                  )
-                                }
-                                className="px-2 py-0.5 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 rounded border border-indigo-200 text-[10px] font-semibold transition"
-                                title="Cargar texto de citación por calificaciones"
-                              >
-                                Notas
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(
-                                    row.student.id,
-                                    'Se solicita entrevista con la familia a fin de dialogar sobre la actitud en clase, disposición para el trabajo escolar y cumplimiento de pautas de convivencia.'
-                                  )
-                                }
-                                className="px-2 py-0.5 bg-purple-50 text-purple-800 hover:bg-purple-100 rounded border border-purple-200 text-[10px] font-semibold transition"
-                                title="Cargar texto de citación por conducta o disposición"
-                              >
-                                Disposición
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(
-                                    row.student.id,
-                                    'Demostró un desempeño favorable y constante cumplimiento en las tareas y actividades propuestas.'
-                                  )
-                                }
-                                className="px-2 py-0.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded border border-blue-200 text-[10px] font-medium transition"
-                              >
-                                Favorable
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(
-                                    row.student.id,
-                                    'Requiere instancia de intensificación de aprendizajes en los contenidos prioritarios pendientes del ciclo.'
-                                  )
-                                }
-                                className="px-2 py-0.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded border border-rose-200 text-[10px] font-medium transition"
-                              >
-                                Intensif.
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleUpdateStudentReportObservation(row.student.id, '')
-                                }
-                                className="px-1.5 py-0.5 bg-neutral-100 text-neutral-500 hover:bg-neutral-200 rounded text-[10px] transition"
-                              >
-                                Borrar
-                              </button>
-                            </div>
-                          </div>
                         </div>
 
                         {/* Print View: Clean printed text without input controls */}
                         <div className="hidden print:block">
-                          <p className="text-xs text-neutral-800 leading-relaxed font-sans">
-                            {row.observation || 'Sin observaciones adicionales registradas.'}
+                          <p className="text-xs text-neutral-800 leading-relaxed font-sans whitespace-pre-wrap">
+                            {row.observation || '—'}
                           </p>
                         </div>
                       </div>

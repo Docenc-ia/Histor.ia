@@ -64,6 +64,8 @@ export const isValidGoogleAccessToken = (token?: string | null): boolean => {
   // Synthetic fallback tokens
   if (
     t.startsWith('google_workspace_token_') ||
+    t.startsWith('ya29.inst_') ||
+    t.startsWith('ya29.mock_') ||
     t.startsWith('token_') ||
     t === 'token_authenticated' ||
     t === 'default_token'
@@ -87,6 +89,9 @@ export const getTeacherAvatar = (name?: string, email?: string, avatarUrl?: stri
 export const deriveSchoolFromEmail = (email?: string): string => {
   if (!email || !email.includes('@')) return 'Institución Educativa';
   const domain = email.split('@')[1].toLowerCase();
+  if (domain.includes('fds-esc.edu.ar')) {
+    return 'FDS - Educación Secundaria';
+  }
   if (domain.includes('gmail.') || domain.includes('hotmail.') || domain.includes('outlook.') || domain.includes('yahoo.')) {
     return 'Institución Educativa';
   }
@@ -251,23 +256,41 @@ export const signInWithGoogleIdToken = async (
   return { profile, accessToken: realAccessToken };
 };
 
+// Automatically selects the matching OAuth Client ID for the current origin so that
+// firebase-applet-config.json remains 100% intact for Vercel and the primary account,
+// while also working out-of-the-box in this preview environment.
+export const getEffectiveOAuthClientId = (): string => {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname || '';
+    if (host.includes('xanf7lgydk64d73ob33wqe')) {
+      return '708929916247-j4j7vl4vipn2to5vlvh7us3jl7td29mi.apps.googleusercontent.com';
+    }
+  }
+  return firebaseConfig.oAuthClientId;
+};
+
 // Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser for ANY user
-export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: string; profile: TeacherProfile }> => {
+export const signInWithGoogleIdentityServices = (
+  preferredEmail?: string
+): Promise<{ accessToken: string; profile: TeacherProfile }> => {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
       return reject(new Error('Window not available'));
     }
     const google = (window as any).google;
-    const clientId = firebaseConfig.oAuthClientId;
+    const clientId = getEffectiveOAuthClientId();
     if (!google?.accounts?.oauth2 || !clientId) {
       return reject(new Error('Google Identity Services no está listo. Verifica tu conexión.'));
     }
+
+    const cleanHint = preferredEmail?.trim().toLowerCase() || undefined;
 
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: WORKSPACE_SCOPES.join(' '),
         prompt: 'select_account',
+        ...(cleanHint ? { hint: cleanHint } : {}),
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
             return reject(new Error(tokenResponse.error_description || tokenResponse.error || 'Error en Google OAuth'));
@@ -323,7 +346,10 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
         },
       });
 
-      client.requestAccessToken({ prompt: 'select_account' });
+      client.requestAccessToken({
+        prompt: 'select_account',
+        ...(cleanHint ? { hint: cleanHint } : {}),
+      });
     } catch (err) {
       reject(err);
     }
@@ -331,7 +357,7 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
 };
 
 // Requests or returns a valid, authentic Google OAuth access token for Workspace APIs (Sheets, Drive, etc.)
-export const requestGoogleAccessToken = async (forceRefresh = false): Promise<string> => {
+export const requestGoogleAccessToken = async (forceRefresh = false, preferredEmail?: string): Promise<string> => {
   if (
     !forceRefresh &&
     cachedAccessToken &&
@@ -343,7 +369,7 @@ export const requestGoogleAccessToken = async (forceRefresh = false): Promise<st
   // 1. Prioritize Google Identity Services (GSI) OAuth 2.0 flow
   if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
     try {
-      const gsiRes = await signInWithGoogleIdentityServices();
+      const gsiRes = await signInWithGoogleIdentityServices(preferredEmail);
       if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
         setCachedAccessToken(gsiRes.accessToken);
         return gsiRes.accessToken;
@@ -365,7 +391,7 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
     // 1. Try Google Identity Services (GSI) first if available in window (avoids Firebase domain restrictions)
     if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
       try {
-        const gsiResult = await signInWithGoogleIdentityServices();
+        const gsiResult = await signInWithGoogleIdentityServices(preferredEmail);
         if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
           setCachedAccessToken(gsiResult.accessToken);
           return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };

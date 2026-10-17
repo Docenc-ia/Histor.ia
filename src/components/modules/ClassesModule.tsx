@@ -169,6 +169,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   useEffect(() => {
     if (activeCourse) {
       setAttendanceSettings(getCourseAttendanceSettings(activeCourse.id, activeCourse.schedule));
+      let mounted = true;
+      loadCourseAttendanceSettingsFromCloud(activeCourse.id, activeCourse.schedule)
+        .then((cloudSettings) => {
+          if (mounted && cloudSettings) {
+            setAttendanceSettings(cloudSettings);
+          }
+        })
+        .catch(() => {});
+      return () => {
+        mounted = false;
+      };
     }
   }, [activeCourse?.id, activeCourse?.schedule]);
 
@@ -190,7 +201,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [syncToGoogleFromModal, setSyncToGoogleFromModal] = useState(true);
   const [isSavingCalendarSelection, setIsSavingCalendarSelection] = useState(false);
 
-  // Fast Slot Picker from Calendar
+  // Fast Slot Picker from Calendar (defaults only to primary Classroom-linked calendar, with selector)
+  const [selectedCalendarForSlots, setSelectedCalendarForSlots] = useState<string>('primary');
+  const [availableCalendarsForSlots, setAvailableCalendarsForSlots] = useState<
+    { id: string; summary: string; primary?: boolean }[]
+  >([
+    { id: 'primary', summary: 'Calendario Principal (Cuenta Classroom)', primary: true },
+  ]);
   const [calendarSlots, setCalendarSlots] = useState<{
     id: string;
     title: string;
@@ -1950,32 +1967,44 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   };
 
-  // Abre el modal de Sincronización con Calendar y carga los eventos inmediatamente
-  const handleOpenCalendarSyncModal = async (course: Course) => {
+  // Abre el modal de Sincronización con Calendar y carga los eventos del calendario vinculado a Classroom (primary por defecto)
+  const handleOpenCalendarSyncModal = async (course: Course, overrideCalId?: string) => {
     setCalendarModalCourse(course);
-    setCalendarScheduleSelection(
-      course.schedule &&
-        course.schedule !== 'Lunes y Miércoles' &&
-        !course.schedule.toLowerCase().includes('coordinar')
-        ? course.schedule
-        : ''
-    );
-    setIsCalendarModalOpen(true);
+    const defaultCalId = course.preferredCalendarId || 'primary';
+    if (!overrideCalId) {
+      setSelectedCalendarForSlots(defaultCalId);
+      setCalendarScheduleSelection(
+        course.schedule &&
+          course.schedule !== 'Lunes y Miércoles' &&
+          !course.schedule.toLowerCase().includes('coordinar')
+          ? course.schedule
+          : ''
+      );
+      setIsCalendarModalOpen(true);
+    }
 
-    // Cargar automáticamente y en ultra-rápido (< 500ms) los bloques de eventos de la semana
-    const activeToken = token || getCachedAccessToken();
-    if (activeToken) {
-      try {
-        setIsLoadingSlots(true);
-        const res = await calendarService.getWeeklyCalendarSlots('primary');
-        if (res.success) {
-          setCalendarSlots(res.slots);
-        }
-      } catch (err) {
-        console.warn('Error loading calendar slots:', err);
-      } finally {
-        setIsLoadingSlots(false);
+    const calIdToFetch = overrideCalId || defaultCalId;
+
+    // Cargar automáticamente los bloques de eventos del calendario seleccionado
+    try {
+      setIsLoadingSlots(true);
+      const [calListRes, res] = await Promise.all([
+        calendarService.listCalendars(),
+        calendarService.getWeeklyCalendarSlots(calIdToFetch),
+      ]);
+      if (calListRes.success && calListRes.calendars.length > 0) {
+        setAvailableCalendarsForSlots(calListRes.calendars);
       }
+      if (res.success) {
+        setCalendarSlots(res.slots);
+      } else {
+        setToastMessage(res.message);
+        setTimeout(() => setToastMessage(null), 4000);
+      }
+    } catch (err) {
+      console.warn('Error loading calendar slots:', err);
+    } finally {
+      setIsLoadingSlots(false);
     }
   };
 
@@ -1988,8 +2017,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     try {
       setIsSavingCalendarSelection(true);
-      // 1. Guardar en la base de datos
-      await api.updateCourse(calendarModalCourse.id, { schedule: cleanSchedule });
+      // 1. Guardar en la base de datos y Firestore (horario + calendario preferido)
+      await api.updateCourse(calendarModalCourse.id, {
+        schedule: cleanSchedule,
+        preferredCalendarId: selectedCalendarForSlots || 'primary',
+      });
 
       // 2. Sincronizar bloques de cursada en el calendario interno de la app
       await fetch('/api/calendar/sync-course-schedules', {
@@ -2007,7 +2039,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             const gRes = await calendarService.syncCourseScheduleToGoogle(
               calendarModalCourse,
               cleanSchedule,
-              'primary'
+              selectedCalendarForSlots || 'primary'
             );
             if (gRes.success) {
               googleMsg = ' y actualizado en tu Google Calendar con repetición semanal';
@@ -9876,6 +9908,48 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
             {/* Form */}
             <form onSubmit={handleSaveCalendarSelection} className="p-5 space-y-4">
+              {/* Selector de Calendario */}
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1.5">
+                  Calendario de origen (por defecto el principal de tu cuenta de Classroom):
+                </label>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={selectedCalendarForSlots}
+                    onChange={(e) => {
+                      const nextCalId = e.target.value;
+                      setSelectedCalendarForSlots(nextCalId);
+                      handleOpenCalendarSyncModal(calendarModalCourse, nextCalId);
+                    }}
+                    className={`flex-1 px-3 py-2 text-xs rounded-xl border font-medium focus:outline-hidden ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-white'
+                        : 'bg-white border-neutral-300 text-neutral-800'
+                    }`}
+                  >
+                    {availableCalendarsForSlots.map((cal) => (
+                      <option key={cal.id} value={cal.id}>
+                        {cal.summary}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenCalendarSyncModal(calendarModalCourse, selectedCalendarForSlots)}
+                    disabled={isLoadingSlots}
+                    className={`px-3 py-2 rounded-xl border text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer ${
+                      isDarkMode
+                        ? 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200'
+                        : 'border-neutral-200 bg-neutral-50 hover:bg-neutral-100 text-neutral-700'
+                    }`}
+                    title="Actualizar módulos de este calendario"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSlots ? 'animate-spin' : ''}`} />
+                    <span>Recargar</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Eventos detectados en Google Calendar */}
               <div className={`p-3.5 rounded-xl border ${
                 isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-blue-50/50 border-blue-100'
@@ -9884,7 +9958,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   <div className="flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-blue-500" />
                     <span className="text-xs font-bold text-blue-900 dark:text-blue-300">
-                      Módulos de tu Google Calendar
+                      Módulos del calendario seleccionado
                     </span>
                   </div>
                   {isLoadingSlots && (

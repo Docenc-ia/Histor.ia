@@ -13,38 +13,65 @@ import { CalendarEventItem, GoogleCalendarInfo, Course, CalendarEventCategory } 
 
 export const calendarService = {
   /**
-   * Fetch calendars list from user's Google account
+   * Fetch calendars list from user's Google account (excludes generic holiday/contact calendars by default)
    */
   async listCalendars(): Promise<{ success: boolean; calendars: GoogleCalendarInfo[]; isLive: boolean; message?: string }> {
-    const token = getCachedAccessToken();
+    let token = await this.ensureValidToken();
     if (!token) {
       return {
         success: false,
         calendars: [
-          { id: 'primary', summary: 'Calendario Principal (Local)', primary: true, backgroundColor: '#2563eb' },
-          { id: 'school', summary: 'Calendario Institucional Colegio', backgroundColor: '#0284c7' },
+          { id: 'primary', summary: 'Mi Calendario Principal (Cuenta vinculada a Classroom)', primary: true, backgroundColor: '#2563eb' },
         ],
         isLive: false,
         message: 'Sesión de Google no conectada. Conecta tu cuenta de Google Workspace para sincronizar en tiempo real.',
       };
     }
 
-    try {
-      const res = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
-        headers: { Authorization: `Bearer ${token}` },
+    const fetchCalList = async (activeToken: string) => {
+      const res = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader', {
+        headers: { Authorization: `Bearer ${activeToken}` },
       });
+      if (res.status === 401) return { unauthorized: true, items: [] };
+      if (!res.ok) return { unauthorized: false, items: null };
+      const data = await res.json();
+      return { unauthorized: false, items: data.items || [] };
+    };
 
-      if (res.ok) {
-        const data = await res.json();
-        const calendars: GoogleCalendarInfo[] = (data.items || []).map((c: any) => ({
-          id: c.id,
-          summary: c.summary || 'Calendario sin título',
-          description: c.description || '',
-          primary: !!c.primary,
-          backgroundColor: c.backgroundColor || '#2563eb',
-          foregroundColor: c.foregroundColor || '#ffffff',
-          selected: !!c.selected,
-        }));
+    try {
+      let attempt = await fetchCalList(token);
+      if (attempt.unauthorized) {
+        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
+        setCachedAccessToken(null);
+        token = await requestAccessToken();
+        if (token) {
+          attempt = await fetchCalList(token);
+        }
+      }
+
+      if (attempt.items) {
+        const calendars: GoogleCalendarInfo[] = attempt.items
+          .filter(
+            (c: any) =>
+              !c.deleted &&
+              !String(c.id || '').includes('#holiday@group') &&
+              !String(c.id || '').includes('#contacts@group')
+          )
+          .map((c: any) => ({
+            id: c.primary ? 'primary' : c.id,
+            summary: c.primary
+              ? `${c.summaryOverride || c.summary || 'Calendario Principal'} (Cuenta Classroom)`
+              : c.summaryOverride || c.summary || 'Calendario sin título',
+            description: c.description || '',
+            primary: !!c.primary,
+            backgroundColor: c.backgroundColor || '#2563eb',
+            foregroundColor: c.foregroundColor || '#ffffff',
+            selected: !!c.selected,
+          }));
+
+        // Sort so primary is always first
+        calendars.sort((a, b) => (a.primary === b.primary ? 0 : a.primary ? -1 : 1));
+
         return { success: true, calendars, isLive: true };
       }
     } catch (err: any) {
@@ -54,10 +81,10 @@ export const calendarService = {
     return {
       success: false,
       calendars: [
-        { id: 'primary', summary: 'Calendario Principal Docente', primary: true, backgroundColor: '#2563eb' },
+        { id: 'primary', summary: 'Mi Calendario Principal (Cuenta Classroom)', primary: true, backgroundColor: '#2563eb' },
       ],
       isLive: false,
-      message: 'No se pudo conectar directamente con Google Calendar. Mostrando datos locales.',
+      message: 'No se pudo conectar directamente con Google Calendar.',
     };
   },
 
@@ -474,8 +501,25 @@ export const calendarService = {
   },
 
   /**
-   * Ultra-fast helper: returns all weekly class slots detected in Google Calendar this week
-   * Allows the teacher to click and pick their class block instantly without waiting or fuzzy guessing.
+   * Helper to ensure a valid Google OAuth token, requesting one interactively if missing or expired
+   */
+  async ensureValidToken(): Promise<string | null> {
+    let token = getCachedAccessToken();
+    if (!token) {
+      try {
+        const { requestAccessToken } = await import('./googleAuth');
+        token = await requestAccessToken();
+      } catch (err) {
+        console.warn('Could not obtain fresh Google OAuth token:', err);
+        return null;
+      }
+    }
+    return token;
+  },
+
+  /**
+   * Ultra-fast helper: returns all weekly class slots detected in the selected Google Calendar
+   * Defaults to 'primary' (the calendar linked to the user's Classroom/Google account).
    */
   async getWeeklyCalendarSlots(
     calendarId: string = 'primary'
@@ -493,13 +537,15 @@ export const calendarService = {
     }[];
     message: string;
   }> {
-    const token = getCachedAccessToken();
+    let token = await this.ensureValidToken();
     if (!token) {
-      return { success: false, slots: [], message: 'Inicia sesión con Google Workspace para ver tu calendario.' };
+      return { success: false, slots: [], message: 'Inicia sesión con Google Workspace para ver los módulos de tu calendario.' };
     }
 
-    try {
-      // Current week: Monday 00:00 to Sunday 23:59
+    const targetCalendarId = !calendarId || calendarId === 'all' ? 'primary' : calendarId;
+
+    const fetchSlotsWithToken = async (activeToken: string) => {
+      // Scan 14-day window starting from current week's Monday (to catch bi-weekly or next-week modules if current week had a holiday)
       const now = new Date();
       const currentDay = now.getDay(); // 0 is Sunday
       const mondayDiff = currentDay === 0 ? -6 : 1 - currentDay;
@@ -508,34 +554,59 @@ export const calendarService = {
       monday.setDate(now.getDate() + mondayDiff);
       monday.setHours(0, 0, 0, 0);
 
-      const sunday = new Date(monday);
-      sunday.setDate(monday.getDate() + 6);
-      sunday.setHours(23, 59, 59, 999);
+      const twoWeeksEnd = new Date(monday);
+      twoWeeksEnd.setDate(monday.getDate() + 13);
+      twoWeeksEnd.setHours(23, 59, 59, 999);
 
       const params = new URLSearchParams();
       params.set('singleEvents', 'true');
       params.set('orderBy', 'startTime');
-      params.set('maxResults', '150');
+      params.set('maxResults', '250');
       params.set('timeMin', monday.toISOString());
-      params.set('timeMax', sunday.toISOString());
+      params.set('timeMax', twoWeeksEnd.toISOString());
 
-      // Parallel fetch for primary + any immediate secondary calendar if present
-      const res = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+      try {
+        const res = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events?${params.toString()}`,
+          { headers: { Authorization: `Bearer ${activeToken}` } }
+        );
+        if (res.status === 401) {
+          return { unauthorized: true, rawEntries: [] };
+        }
+        if (!res.ok) {
+          return { unauthorized: false, rawEntries: [] };
+        }
+        const data = await res.json();
+        const calSummary = data.summary || (targetCalendarId === 'primary' ? 'Calendario Principal (Cuenta Classroom)' : targetCalendarId);
+        const rawEntries = (data.items || []).map((item: any) => ({
+          item,
+          calName: calSummary,
+        }));
+        return { unauthorized: false, rawEntries };
+      } catch (_) {
+        return { unauthorized: false, rawEntries: [] };
+      }
+    };
 
-      if (!res.ok) {
-        return { success: false, slots: [], message: 'No se pudo conectar a Google Calendar.' };
+    try {
+      let attempt = await fetchSlotsWithToken(token);
+      if (attempt.unauthorized) {
+        // Token expired -> clear and request a fresh one automatically
+        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
+        setCachedAccessToken(null);
+        token = await requestAccessToken();
+        if (!token) {
+          return { success: false, slots: [], message: 'Tu sesión de Google expiró. Vuelve a intentar para autorizar.' };
+        }
+        attempt = await fetchSlotsWithToken(token);
       }
 
-      const data = await res.json();
       const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-      const rawItems = data.items || [];
       const slots: any[] = [];
       const seen = new Set<string>();
 
-      for (const item of rawItems) {
+      for (const { item, calName } of attempt.rawEntries) {
+        if (item.status === 'cancelled') continue;
         const title = (item.summary || '').trim();
         if (!title) continue;
         if (!item.start?.dateTime || !item.end?.dateTime) continue; // skip all-day notes
@@ -557,25 +628,29 @@ export const calendarService = {
         if (!seen.has(key)) {
           seen.add(key);
           slots.push({
-            id: item.id,
+            id: item.id || key,
             title,
             dayOfWeek: dow,
             dayName,
             startTime,
             endTime,
             displayText,
+            calendarName: calName,
           });
         }
       }
 
-      // Sort by day of week (Mon to Fri) then time
+      // Sort by day of week (Mon to Sun) then time
       const daySortOrder = (d: number) => (d === 0 ? 7 : d);
       slots.sort((a, b) => daySortOrder(a.dayOfWeek) - daySortOrder(b.dayOfWeek) || a.startTime.localeCompare(b.startTime));
 
       return {
         success: true,
         slots,
-        message: `Se encontraron ${slots.length} bloques horarios en tu calendario esta semana.`,
+        message:
+          slots.length > 0
+            ? `Se encontraron ${slots.length} módulos horarios en el calendario seleccionado.`
+            : 'No se encontraron bloques con horario específico en el calendario seleccionado.',
       };
     } catch (err: any) {
       return { success: false, slots: [], message: err.message || 'Error al obtener bloques de Calendar.' };
@@ -583,8 +658,7 @@ export const calendarService = {
   },
 
   /**
-   * Ultra-fast Auto Sync: inspects current week + 1 week in parallel (< 800ms)
-   * instead of scanning past 120 days across endless calendars.
+   * Ultra-fast Auto Sync: inspects current week + 1 week in the selected Google Calendar (defaults to 'primary')
    */
   async importSchedulesFromGoogleCalendar(
     courses: Course[],
@@ -600,7 +674,7 @@ export const calendarService = {
     schedulesMap: Record<string, string>;
     message: string;
   }> {
-    const token = getCachedAccessToken();
+    let token = await this.ensureValidToken();
     if (!token) {
       return {
         success: false,
@@ -610,12 +684,14 @@ export const calendarService = {
         updatedCoursesCount: 0,
         events: [],
         schedulesMap: {},
-        message: 'Debes iniciar sesión con Google Workspace para importar desde Google Calendar.',
+        message: 'Debes autorizar tu cuenta de Google para importar desde Google Calendar.',
       };
     }
 
+    const targetCalendarId = !calendarId || calendarId === 'all' ? 'primary' : calendarId;
+
     try {
-      // 1. Scan only the current full 7-day week (Monday to Sunday) - Ultra Fast
+      // 1. Scan 2-week window (Monday of current week to Sunday of next week)
       const now = new Date();
       const currentDay = now.getDay();
       const mondayDiff = currentDay === 0 ? -6 : 1 - currentDay;
@@ -625,7 +701,7 @@ export const calendarService = {
       timeMin.setHours(0, 0, 0, 0);
 
       const timeMax = new Date(timeMin);
-      timeMax.setDate(timeMin.getDate() + 13); // 2 weeks window is sufficient to catch every repeating class
+      timeMax.setDate(timeMin.getDate() + 13);
       timeMax.setHours(23, 59, 59, 999);
 
       const params = new URLSearchParams();
@@ -635,20 +711,33 @@ export const calendarService = {
       params.set('timeMin', timeMin.toISOString());
       params.set('timeMax', timeMax.toISOString());
 
-      // Fetch primary calendar instantly in 1 quick call
-      const res = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
+      const fetchItemsFromSelectedCalendar = async (activeToken: string) => {
+        try {
+          const r = await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events?${params.toString()}`,
+            { headers: { Authorization: `Bearer ${activeToken}` } }
+          );
+          if (r.status === 401) return { unauthorized: true, items: [] };
+          if (!r.ok) return { unauthorized: false, items: [] };
+          const d = await r.json();
+          return { unauthorized: false, items: d.items || [] };
+        } catch (_) {
+          return { unauthorized: false, items: [] };
         }
-      );
+      };
 
-      if (!res.ok) {
-        throw new Error(`Google Calendar API respondió con status ${res.status}`);
+      let fetchAttempt = await fetchItemsFromSelectedCalendar(token);
+      if (fetchAttempt.unauthorized) {
+        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
+        setCachedAccessToken(null);
+        token = await requestAccessToken();
+        if (!token) {
+          throw new Error('La sesión de Google Calendar expiró. Intenta nuevamente.');
+        }
+        fetchAttempt = await fetchItemsFromSelectedCalendar(token);
       }
 
-      const data = await res.json();
-      const rawItems: any[] = data.items || [];
+      const rawItems: any[] = fetchAttempt.items || [];
 
       let matchedClassesCount = 0;
       let importedSchoolEventsCount = 0;

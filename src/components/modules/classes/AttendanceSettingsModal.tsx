@@ -95,6 +95,26 @@ export const AttendanceSettingsModal: React.FC<AttendanceSettingsModalProps> = (
 
   const [isSyncingCalendar, setIsSyncingCalendar] = useState<boolean>(false);
   const [calendarSyncMsg, setCalendarSyncMsg] = useState<string | null>(null);
+  const [selectedCalendarId, setSelectedCalendarId] = useState<string>(
+    (course as any).preferredCalendarId || 'primary'
+  );
+  const [availableCalendars, setAvailableCalendars] = useState<
+    { id: string; summary: string; primary?: boolean }[]
+  >([
+    { id: 'primary', summary: 'Calendario Principal (Cuenta vinculada a Classroom)', primary: true },
+  ]);
+  const [detectedCalendarSlots, setDetectedCalendarSlots] = useState<
+    {
+      id: string;
+      title: string;
+      dayOfWeek: number;
+      dayName: string;
+      startTime: string;
+      endTime: string;
+      displayText: string;
+      calendarName?: string;
+    }[]
+  >([]);
 
   // Compute detected holidays reactively
   const detectedInfo = useMemo(() => {
@@ -118,6 +138,7 @@ export const AttendanceSettingsModal: React.FC<AttendanceSettingsModalProps> = (
       setMaxAbsencePercent(currentSettings.maxAbsencePercent);
       setHalfLatePenalty(currentSettings.halfLatePenalty);
       setSchedule(course.schedule || '');
+      setSelectedCalendarId((course as any).preferredCalendarId || 'primary');
       setStartDate1c(currentSettings.termStartDate1c || '2026-03-02');
       setEndDate1c(currentSettings.termEndDate1c || '2026-07-10');
       setStartDate2c(currentSettings.termStartDate2c || '2026-08-03');
@@ -285,43 +306,58 @@ export const AttendanceSettingsModal: React.FC<AttendanceSettingsModalProps> = (
     setHolidays2c(res.holidays2cCount);
   };
 
-  // Sync timetable from Google Calendar
-  const handleSyncWithCalendar = async () => {
+  // Sync timetable and detect modules from the selected Google Calendar (defaults to primary linked to Classroom)
+  const handleSyncWithCalendar = async (overrideCalId?: string) => {
+    const calIdToUse = overrideCalId || selectedCalendarId || 'primary';
     setIsSyncingCalendar(true);
     setCalendarSyncMsg(null);
     try {
-      const res = await calendarService.importSchedulesFromGoogleCalendar([course], 'primary', false);
-      if (res.success && res.schedulesMap[course.id]) {
-        const foundSchedule = res.schedulesMap[course.id];
-        setSchedule(foundSchedule);
-        const derived = deriveClassesPerWeekFromSchedule(foundSchedule);
-        setClassesPerWeek(derived);
+      const [calListRes, slotsRes, matchRes] = await Promise.all([
+        calendarService.listCalendars(),
+        calendarService.getWeeklyCalendarSlots(calIdToUse),
+        calendarService.importSchedulesFromGoogleCalendar([course], calIdToUse, false),
+      ]);
 
-        const extractedWd = extractWeekdaysFromSchedule(foundSchedule);
-        if (extractedWd.length > 0) {
-          setCourseWeekdays(extractedWd);
-          const auto = detectHolidaysForCourse({
-            schedule: foundSchedule,
-            explicitWeekdays: extractedWd,
-            termStartDate1c: startDate1c,
-            termEndDate1c: endDate1c,
-            termStartDate2c: startDate2c,
-            termEndDate2c: endDate2c,
-            customHolidays,
-            excludedHolidayIds,
-          });
-          setHolidays1c(auto.holidays1cCount);
-          setHolidays2c(auto.holidays2cCount);
-        }
-        setCalendarSyncMsg(`¡Horario detectado en Google Calendar! (${derived} clases/semana)`);
+      if (calListRes.success && calListRes.calendars.length > 0) {
+        setAvailableCalendars(calListRes.calendars);
+      }
+
+      if (slotsRes.success) {
+        setDetectedCalendarSlots(slotsRes.slots);
+      }
+
+      if (matchRes.success && matchRes.schedulesMap[course.id]) {
+        const foundSchedule = matchRes.schedulesMap[course.id];
+        handleScheduleChange(foundSchedule);
+        setCalendarSyncMsg(
+          `¡Módulos de "${course.name}" detectados en el calendario seleccionado! También podés hacer clic en cualquier módulo de abajo para agregarlo o quitarlo.`
+        );
+      } else if (slotsRes.success && slotsRes.slots.length > 0) {
+        setCalendarSyncMsg(
+          `Se detectaron ${slotsRes.slots.length} módulos en el calendario seleccionado. Hacé clic en los que correspondan a esta clase para elegirlos como horarios predeterminados.`
+        );
       } else {
-        setCalendarSyncMsg(res.message || 'No se encontraron eventos coincidentes para este curso en Google Calendar.');
+        setCalendarSyncMsg(
+          slotsRes.message || matchRes.message || 'No se encontraron módulos en el calendario seleccionado.'
+        );
       }
     } catch (err: any) {
       setCalendarSyncMsg('Error al conectar con Google Calendar.');
     } finally {
       setIsSyncingCalendar(false);
     }
+  };
+
+  const handleToggleDetectedSlot = (slotDisplayText: string) => {
+    const currentParts = schedule
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const exists = currentParts.includes(slotDisplayText);
+    const nextParts = exists
+      ? currentParts.filter((p) => p !== slotDisplayText)
+      : [...currentParts, slotDisplayText];
+    handleScheduleChange(nextParts.join(', '));
   };
 
   const handleScheduleChange = (text: string) => {
@@ -462,16 +498,38 @@ export const AttendanceSettingsModal: React.FC<AttendanceSettingsModalProps> = (
                   Días de Clase y Horario de la Materia
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={handleSyncWithCalendar}
-                disabled={isSyncingCalendar}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50"
-                title="Detectar clases automáticamente desde Google Calendar"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCalendar ? 'animate-spin' : ''}`} />
-                <span>{isSyncingCalendar ? 'Buscando en Calendar...' : 'Sincronizar con Google Calendar'}</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={selectedCalendarId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setSelectedCalendarId(nextId);
+                    handleSyncWithCalendar(nextId);
+                  }}
+                  className={`px-2.5 py-1 text-xs rounded-lg border font-medium focus:outline-none ${
+                    isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-slate-200'
+                      : 'bg-white border-blue-200 text-neutral-700'
+                  }`}
+                  title="Seleccionar el calendario del cual extraer los módulos"
+                >
+                  {availableCalendars.map((cal) => (
+                    <option key={cal.id} value={cal.id}>
+                      {cal.summary}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => handleSyncWithCalendar(selectedCalendarId)}
+                  disabled={isSyncingCalendar}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                  title="Detectar clases desde el calendario seleccionado"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCalendar ? 'animate-spin' : ''}`} />
+                  <span>{isSyncingCalendar ? 'Buscando en Calendar...' : 'Sincronizar con Google Calendar'}</span>
+                </button>
+              </div>
             </div>
 
             {/* Quick Weekday Selector */}
@@ -539,6 +597,64 @@ export const AttendanceSettingsModal: React.FC<AttendanceSettingsModalProps> = (
                 <p className="text-[11px] font-medium text-blue-600 dark:text-blue-400 mt-1 animate-in fade-in">
                   {calendarSyncMsg}
                 </p>
+              )}
+
+              {detectedCalendarSlots.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-blue-200/60 dark:border-slate-700">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-blue-800 dark:text-blue-300 mb-2">
+                    Módulos detectados en el calendario seleccionado (hacé clic para elegir como predeterminados):
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-44 overflow-y-auto pr-1">
+                    {detectedCalendarSlots.map((slot) => {
+                      const isSelected = schedule.includes(slot.displayText);
+                      const courseKeyword = (course.name.split(' ')[0] || '').toLowerCase();
+                      const isRecommended =
+                        courseKeyword.length >= 3 && slot.title.toLowerCase().includes(courseKeyword);
+
+                      return (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          onClick={() => handleToggleDetectedSlot(slot.displayText)}
+                          className={`text-left px-2.5 py-2 rounded-lg border text-xs transition-all flex items-center justify-between gap-2 cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-600 text-white border-blue-600 font-semibold shadow-xs'
+                              : isRecommended
+                              ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-500/20'
+                              : isDarkMode
+                              ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
+                              : 'bg-white border-neutral-200 text-neutral-700 hover:bg-blue-50/60'
+                          }`}
+                        >
+                          <div className="truncate">
+                            <div className="font-bold truncate flex items-center gap-1.5">
+                              {isRecommended && !isSelected && (
+                                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                              )}
+                              <span>{slot.title}</span>
+                            </div>
+                            <div
+                              className={`text-[10px] ${
+                                isSelected ? 'text-blue-100' : 'text-neutral-500 dark:text-slate-400'
+                              }`}
+                            >
+                              {slot.displayText}
+                            </div>
+                          </div>
+                          <div
+                            className={`w-4 h-4 rounded flex items-center justify-center shrink-0 border ${
+                              isSelected
+                                ? 'bg-white text-blue-600 border-white'
+                                : 'border-neutral-300 dark:border-slate-600'
+                            }`}
+                          >
+                            {isSelected && <CheckCircle2 className="w-3.5 h-3.5" />}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </div>
           </div>

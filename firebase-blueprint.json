@@ -5,13 +5,13 @@
       "description": "Teacher profile in the platform",
       "type": "object",
       "properties": {
-        "uid": { "type": "string" },
-        "email": { "type": "string" },
-        "name": { "type": "string" },
-        "avatar": { "type": "string" },
-        "role": { "type": "string" },
-        "school": { "type": "string" },
-        "updatedAt": { "type": "string" }
+        "uid": { "type": "string", "maxLength": 128 },
+        "email": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "maxLength": 256 },
+        "avatar": { "type": "string", "maxLength": 1024 },
+        "role": { "type": "string", "maxLength": 128 },
+        "school": { "type": "string", "maxLength": 256 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["uid", "email"]
     },
@@ -20,21 +20,21 @@
       "description": "Academic course or subject assigned to the teacher",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "name": { "type": "string" },
-        "subject": { "type": "string" },
-        "grade": { "type": "string" },
-        "section": { "type": "string" },
-        "room": { "type": "string" },
-        "schedule": { "type": "string" },
-        "color": { "type": "string" },
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 256 },
+        "subject": { "type": "string", "maxLength": 256 },
+        "grade": { "type": "string", "maxLength": 128 },
+        "section": { "type": "string", "maxLength": 128 },
+        "room": { "type": "string", "maxLength": 128 },
+        "schedule": { "type": "string", "maxLength": 512 },
+        "color": { "type": "string", "maxLength": 64 },
         "studentsCount": { "type": "number" },
         "classroomSynced": { "type": "boolean" },
-        "classroomCourseId": { "type": "string" },
-        "code": { "type": "string" },
-        "schoolYear": { "type": "string" },
-        "driveFolderId": { "type": "string" },
-        "updatedAt": { "type": "string" }
+        "classroomCourseId": { "type": "string", "maxLength": 128 },
+        "code": { "type": "string", "maxLength": 64 },
+        "schoolYear": { "type": "string", "maxLength": 32 },
+        "driveFolderId": { "type": "string", "maxLength": 256 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "name"]
     },
@@ -43,15 +43,16 @@
       "description": "Student enrolled in a course",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "courseId": { "type": "string" },
-        "firstName": { "type": "string" },
-        "lastName": { "type": "string" },
-        "email": { "type": "string" },
-        "avatar": { "type": "string" },
+        "id": { "type": "string", "maxLength": 128 },
+        "courseId": { "type": "string", "maxLength": 128 },
+        "firstName": { "type": "string", "maxLength": 256 },
+        "lastName": { "type": "string", "maxLength": 256 },
+        "email": { "type": "string", "maxLength": 256 },
+        "avatar": { "type": "string", "maxLength": 1024 },
         "attendanceRate": { "type": "number" },
         "averageGrade": { "type": "number" },
-        "notes": { "type": "string" }
+        "notes": { "type": "string", "maxLength": 2048 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "courseId", "firstName"]
     },
@@ -60,10 +61,10 @@
       "description": "Daily attendance record for a course",
       "type": "object",
       "properties": {
-        "courseId": { "type": "string" },
-        "date": { "type": "string" },
-        "records": { "type": "string" },
-        "updatedAt": { "type": "string" }
+        "courseId": { "type": "string", "maxLength": 128 },
+        "date": { "type": "string", "maxLength": 64 },
+        "records": { "type": "string", "maxLength": 50000 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["courseId", "date"]
     },
@@ -72,30 +73,43 @@
       "description": "Student behavior, absence or tardiness record",
       "type": "object",
       "properties": {
-        "id": { "type": "string" },
-        "studentId": { "type": "string" },
-        "studentName": { "type": "string" },
-        "courseId": { "type": "string" },
-        "action": { "type": "string" },
-        "category": { "type": "string" },
-        "detail": { "type": "string" },
-        "date": { "type": "string" },
+        "id": { "type": "string", "maxLength": 128 },
+        "studentId": { "type": "string", "maxLength": 128 },
+        "studentName": { "type": "string", "maxLength": 256 },
+        "courseId": { "type": "string", "maxLength": 128 },
+        "action": { "type": "string", "maxLength": 1024 },
+        "category": { "type": "string", "maxLength": 128 },
+        "detail": { "type": "string", "maxLength": 2048 },
+        "date": { "type": "string", "maxLength": 64 },
         "timestamp": { "type": "number" },
         "messageSent": { "type": "boolean" },
-        "messageText": { "type": "string" },
-        "notificationMethod": { "type": "string" }
+        "messageText": { "type": "string", "maxLength": 5000 },
+        "notificationMethod": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["id", "studentId", "category"]
+    },
+    "TermSnapshot": {
+      "title": "TermSnapshot",
+      "description": "Gradebook categories, grades map, and preliminary valuations per course and term",
+      "type": "object",
+      "properties": {
+        "courseId": { "type": "string", "maxLength": 128 },
+        "term": { "type": "string", "maxLength": 32 },
+        "termLabel": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["courseId", "term"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
-      "description": "Teacher profile document"
+      "description": "Teacher profile document and global workspace root"
     },
     "/users/{userId}/courses/{courseId}": {
       "schema": "Course",
-      "description": "Courses belonging to the teacher"
+      "description": "Courses belonging to the teacher or global workspace"
     },
     "/users/{userId}/students/{studentId}": {
       "schema": "Student",
@@ -108,6 +122,10 @@
     "/users/{userId}/disposition/{dispositionId}": {
       "schema": "DispositionRecord",
       "description": "Disposition records for the teacher's students"
+    },
+    "/users/{userId}/snapshots/{snapshotId}": {
+      "schema": "TermSnapshot",
+      "description": "Gradebook snapshots for each course and term"
     }
   }
 }

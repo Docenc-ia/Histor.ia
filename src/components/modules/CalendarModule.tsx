@@ -99,12 +99,47 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     ];
   });
 
-  // Save to localStorage whenever calendars state changes
+  const [hasHydratedFromCloud, setHasHydratedFromCloud] = useState<boolean>(false);
+
+  // Hydrate configured calendars from Firestore cloud on mount
+  useEffect(() => {
+    let mounted = true;
+    import('../../services/firestoreSync')
+      .then(async ({ firestoreSync, getActiveUserId }) => {
+        const uid = getActiveUserId();
+        if (!uid) return;
+        const cloudCals = await firestoreSync.loadUserSetting<ConfiguredCalendar[]>(uid, 'google_calendars_configured');
+        if (mounted && Array.isArray(cloudCals) && cloudCals.length > 0) {
+          setCalendars(cloudCals);
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudCals));
+          } catch (_) {}
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setHasHydratedFromCloud(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id, user?.email]);
+
+  // Save to localStorage and Firestore whenever calendars state changes
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(calendars));
     } catch (_) {}
-  }, [calendars]);
+    if (!hasHydratedFromCloud) return;
+    import('../../services/firestoreSync')
+      .then(({ firestoreSync, getActiveUserId }) => {
+        const uid = getActiveUserId();
+        if (uid) {
+          firestoreSync.saveUserSetting(uid, 'google_calendars_configured', calendars).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, [calendars, hasHydratedFromCloud]);
 
   const [viewMode, setViewMode] = useState<GCalViewMode>('WEEK');
   const [refreshKey, setRefreshKey] = useState<number>(Date.now());
@@ -121,12 +156,35 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   // Quick guide modal
   const [showIdGuide, setShowIdGuide] = useState<boolean>(false);
 
-  // Auto-detection state
+  // Auto-detection & specific calendar selector state
   const [isAutoDetecting, setIsAutoDetecting] = useState<boolean>(false);
   const [autoDetectMsg, setAutoDetectMsg] = useState<string | null>(null);
+  const [availableGoogleCalendars, setAvailableGoogleCalendars] = useState<GoogleCalendarInfo[]>([]);
+  const [selectedGoogleCalendarId, setSelectedGoogleCalendarId] = useState<string>('primary');
 
   // Edit Calendar state
   const [editingCalendar, setEditingCalendar] = useState<ConfiguredCalendar | null>(null);
+
+  // Load available calendars from the user's Google account when token is present
+  useEffect(() => {
+    if (!token) return;
+    let mounted = true;
+    calendarService
+      .listCalendars()
+      .then((res) => {
+        if (mounted && res.success && res.calendars.length > 0) {
+          setAvailableGoogleCalendars(res.calendars);
+          const primaryCal = res.calendars.find((c) => c.primary) || res.calendars[0];
+          if (primaryCal) {
+            setSelectedGoogleCalendarId(primaryCal.id);
+          }
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [token]);
 
   // Active calendars for the iframe
   const enabledCalendars = useMemo(() => {
@@ -217,54 +275,79 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   // Handle Delete Calendar
   const handleDeleteCalendar = (id: string) => {
     if (calendars.length <= 1) {
-      alert('Debes conservar al menos tu calendario principal.');
+      setAutoDetectMsg('Debes conservar al menos tu calendario principal.');
+      setTimeout(() => setAutoDetectMsg(null), 4000);
       return;
     }
     setCalendars((prev) => prev.filter((c) => c.id !== id));
     setRefreshKey(Date.now());
   };
 
-  // Auto-detect calendars from Google Workspace API (optional helper)
-  const handleAutoDetect = async () => {
+  // Fetch available Google Calendars into the dropdown (or sync only the selected one)
+  const handleSyncSelectedCalendar = async (overrideCalendarId?: string) => {
     setIsAutoDetecting(true);
     setAutoDetectMsg(null);
 
     try {
-      const result = await calendarService.listCalendars();
-
-      if (result.success && result.calendars && result.calendars.length > 0) {
-        setCalendars((prev) => {
-          const currentIds = new Set(prev.map((c) => c.id.toLowerCase()));
-          const newOnes: ConfiguredCalendar[] = [];
-
-          result.calendars.forEach((gCal: GoogleCalendarInfo, idx: number) => {
-            if (!currentIds.has(gCal.id.toLowerCase())) {
-              newOnes.push({
-                id: gCal.id,
-                name: gCal.summary,
-                color: gCal.backgroundColor || PRESET_COLORS[(idx + 1) % PRESET_COLORS.length].hex,
-                enabled: true,
-                isPrimary: !!gCal.primary,
-                description: gCal.description || undefined,
-              });
-            }
-          });
-
-          return [...prev, ...newOnes];
-        });
-
-        setAutoDetectMsg(`¡Se incorporaron los calendarios disponibles de tu cuenta de Google!`);
-        setRefreshKey(Date.now());
-      } else {
-        setAutoDetectMsg(
-          result.message || 'No se detectaron calendarios adicionales. Puedes agregarlos por ID directamente.'
-        );
+      let list = availableGoogleCalendars;
+      if (list.length === 0) {
+        const result = await calendarService.listCalendars();
+        if (result.success && result.calendars && result.calendars.length > 0) {
+          list = result.calendars;
+          setAvailableGoogleCalendars(result.calendars);
+        } else {
+          setAutoDetectMsg(
+            result.message || 'No se pudieron obtener los calendarios de tu cuenta de Google.'
+          );
+          return;
+        }
       }
+
+      const targetId = overrideCalendarId || selectedGoogleCalendarId || 'primary';
+      const chosenCal =
+        list.find((c) => c.id === targetId || (targetId === 'primary' && c.primary)) || list[0];
+
+      if (!chosenCal) {
+        setAutoDetectMsg('Selecciona un calendario válido de la lista.');
+        return;
+      }
+
+      const effectiveId = chosenCal.primary ? userEmail : chosenCal.id;
+
+      setCalendars((prev) => {
+        const exists = prev.some(
+          (c) =>
+            c.id.toLowerCase() === effectiveId.toLowerCase() ||
+            c.id.toLowerCase() === chosenCal.id.toLowerCase()
+        );
+        if (exists) {
+          return prev.map((c) =>
+            c.id.toLowerCase() === effectiveId.toLowerCase() ||
+            c.id.toLowerCase() === chosenCal.id.toLowerCase()
+              ? { ...c, enabled: true, name: chosenCal.summary || c.name }
+              : c
+          );
+        }
+        return [
+          ...prev,
+          {
+            id: effectiveId,
+            name: chosenCal.summary,
+            color: chosenCal.backgroundColor || PRESET_COLORS[(prev.length + 1) % PRESET_COLORS.length].hex,
+            enabled: true,
+            isPrimary: !!chosenCal.primary,
+            description: chosenCal.description || undefined,
+          },
+        ];
+      });
+
+      setAutoDetectMsg(`¡Calendario "${chosenCal.summary}" sincronizado y activado!`);
+      setRefreshKey(Date.now());
     } catch (err: any) {
-      setAutoDetectMsg('Puedes agregar directamente el ID de cualquier calendario de Google.');
+      setAutoDetectMsg('Error al sincronizar el calendario seleccionado.');
     } finally {
       setIsAutoDetecting(false);
-      setTimeout(() => setAutoDetectMsg(null), 6000);
+      setTimeout(() => setAutoDetectMsg(null), 5000);
     }
   };
 
@@ -472,20 +555,49 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
           </button>
         </div>
 
-        {/* Right side helper links */}
-        <div className="flex items-center gap-3 shrink-0 self-end md:self-auto">
-          {token && (
+        {/* Right side: Dropdown selector for choosing a specific Google Calendar + helper link */}
+        <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
+          <div className="flex items-center gap-1.5">
+            <select
+              value={selectedGoogleCalendarId}
+              onChange={(e) => setSelectedGoogleCalendarId(e.target.value)}
+              onFocus={async () => {
+                if (availableGoogleCalendars.length === 0) {
+                  const res = await calendarService.listCalendars();
+                  if (res.success && res.calendars.length > 0) {
+                    setAvailableGoogleCalendars(res.calendars);
+                  }
+                }
+              }}
+              className={`px-2.5 py-1.5 rounded-xl border text-[11px] font-medium focus:outline-none max-w-[230px] truncate ${
+                isDarkMode
+                  ? 'bg-slate-800 border-slate-700 text-slate-200'
+                  : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+              }`}
+              title="Seleccionar un calendario específico de tu cuenta de Google"
+            >
+              {availableGoogleCalendars.length > 0 ? (
+                availableGoogleCalendars.map((gCal) => (
+                  <option key={gCal.id} value={gCal.id}>
+                    {gCal.summary}
+                  </option>
+                ))
+              ) : (
+                <option value="primary">Mi Calendario Principal (Cuenta Classroom)</option>
+              )}
+            </select>
+
             <button
               type="button"
-              onClick={handleAutoDetect}
+              onClick={() => handleSyncSelectedCalendar(selectedGoogleCalendarId)}
               disabled={isAutoDetecting}
-              className="text-[11px] font-medium text-neutral-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-1"
-              title="Detectar automáticamente otros calendarios que ya tengas en tu cuenta de Google"
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-blue-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
+              title="Sincronizar únicamente el calendario seleccionado en el desplegable"
             >
               <Sparkles className={`w-3 h-3 text-blue-500 ${isAutoDetecting ? 'animate-spin' : ''}`} />
-              <span>{isAutoDetecting ? 'Detectando...' : 'Detectar de mi cuenta'}</span>
+              <span>{isAutoDetecting ? 'Sincronizando...' : 'Sincronizar seleccionado'}</span>
             </button>
-          )}
+          </div>
 
           <button
             type="button"

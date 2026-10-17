@@ -13,5 +13,22 @@ service cloud.firestore {
         allow read, write: if true;
       }
     }
+
+    // Support collectionGroup queries across user subcollections for global multi-account sync
+    match /{path=**}/courses/{courseId} {
+      allow read, write: if true;
+    }
+    match /{path=**}/students/{studentId} {
+      allow read, write: if true;
+    }
+    match /{path=**}/disposition/{dispositionId} {
+      allow read, write: if true;
+    }
+    match /{path=**}/snapshots/{snapshotId} {
+      allow read, write: if true;
+    }
+    match /{path=**}/attendance/{attendanceId} {
+      allow read, write: if true;
+    }
   }
 }

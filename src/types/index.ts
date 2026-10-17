@@ -27,6 +27,7 @@ export interface Course {
   description?: string;
   section?: string;
   schoolYear?: string;
+  preferredCalendarId?: string;
 }
 
 export interface Student {

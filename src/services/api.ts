@@ -1,391 +1,58 @@
-import { Course, Student, LessonPlan, GradeEntry, DriveResource, ClassroomTask, TeacherTask, StudentSubmission, TeacherProfile, CustomGem } from '../types';
-import { firestoreSync, getActiveUserId } from './firestoreSync';
+import {
+  Course,
+  Student,
+  LessonPlan,
+  GradeEntry,
+  DriveResource,
+  ClassroomTask,
+  TeacherTask,
+  StudentSubmission,
+  TeacherProfile,
+  CustomGem,
+} from '../types';
+import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
 import { isSameCalendarDay } from '../utils/dateUtils';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
+import {
+  STORAGE_KEYS,
+  getUserStorageKey,
+  normalizeCourseCanonicalKey,
+  areCoursesSame,
+  deduplicateCourses,
+  deduplicateStudents,
+  getLocalCourses,
+  saveLocalCourses,
+  getLocalStudents,
+  saveLocalStudents,
+  PRIMARY_DISPOSITION_KEY,
+  PRIMARY_HISTORY_KEY,
+  DELETED_HISTORY_IDS_KEY,
+  getDeletedHistoryIds,
+  markHistoryIdDeleted,
+  deduplicateHistoryItems,
+  saveAllDispositionStorage,
+  getAllDispositionStorage,
+} from './storageHelpers';
 
-// LocalStorage keys for client-side persistence (Vercel & static deployment support)
-const STORAGE_KEYS = {
-  COURSES: 'docencia_courses_data',
-  STUDENTS: 'docencia_students_data',
-  TASKS: 'docencia_tasks_data',
-  ATTENDANCE: 'docencia_attendance_data',
-  DISPOSITION: 'docencia_disposition_data',
-  DISPOSITION_HISTORY: 'docencia_disposition_history',
+export {
+  normalizeCourseCanonicalKey,
+  areCoursesSame,
+  deduplicateCourses,
+  deduplicateStudents,
+  getLocalCourses,
+  saveLocalCourses,
+  getLocalStudents,
+  saveLocalStudents,
+  PRIMARY_DISPOSITION_KEY,
+  PRIMARY_HISTORY_KEY,
+  DELETED_HISTORY_IDS_KEY,
+  getDeletedHistoryIds,
+  markHistoryIdDeleted,
+  deduplicateHistoryItems,
+  saveAllDispositionStorage,
+  getAllDispositionStorage,
 };
 
-function getUserStorageKey(baseKey: string): string {
-  const userId = getActiveUserId();
-  return userId ? `${baseKey}_${userId}` : baseKey;
-}
-
-export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
-  if (!c) return '';
-  if (c.classroomCourseId && !c.classroomCourseId.startsWith('gc-') && !isNaN(Number(c.classroomCourseId))) {
-    return `classroom:${String(c.classroomCourseId).trim()}`;
-  }
-  const name = (c.name || '').trim().toLowerCase();
-  const sub = (c.subject || '').trim().toLowerCase();
-  const sec = (c.section || c.grade || c.division || '').trim().toLowerCase();
-  const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
-  if (paren) {
-    return `name:${paren[1].trim()}:${paren[2].trim()}`;
-  }
-  return `name:${sub || name}:${sec || 'main'}`;
-}
-
-export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolean {
-  if (!c1 || !c2) return false;
-  if (c1.id && c2.id && String(c1.id).trim() === String(c2.id).trim()) return true;
-
-  const id1 = c1.classroomCourseId ? String(c1.classroomCourseId).trim() : null;
-  const id2 = c2.classroomCourseId ? String(c2.classroomCourseId).trim() : null;
-
-  if (id1 && id2 && id1 === id2) return true;
-  if (id1 && (c2.id === id1 || c2.classroomCourseId === id1)) return true;
-  if (id2 && (c1.id === id2 || c1.classroomCourseId === id2)) return true;
-
-  const k1 = normalizeCourseCanonicalKey(c1);
-  const k2 = normalizeCourseCanonicalKey(c2);
-  if (k1 && k2 && k1 === k2) return true;
-
-  return false;
-}
-
-export function deduplicateCourses(coursesList: Course[]): Course[] {
-  if (!Array.isArray(coursesList)) return [];
-  const result: Course[] = [];
-
-  for (const c of coursesList) {
-    if (!c || (!c.name && !c.subject)) continue;
-
-    const existingIdx = result.findIndex((existing) => areCoursesSame(existing, c));
-    if (existingIdx >= 0) {
-      const existing = result[existingIdx];
-      const preferredId =
-        (existing.classroomCourseId && existing.id === existing.classroomCourseId)
-          ? existing.id
-          : (c.classroomCourseId && c.id === c.classroomCourseId)
-          ? c.id
-          : existing.id || c.id;
-
-      result[existingIdx] = {
-        ...existing,
-        ...c,
-        id: preferredId,
-        classroomCourseId: existing.classroomCourseId || c.classroomCourseId,
-        classroomSynced: existing.classroomSynced || c.classroomSynced,
-        studentsCount: Math.max(Number(existing.studentsCount) || 0, Number(c.studentsCount) || 0),
-        name: existing.name || c.name,
-        subject: existing.subject || c.subject,
-        grade: existing.grade || c.grade,
-        section: existing.section || c.section,
-        schoolYear: existing.schoolYear || c.schoolYear || '2026',
-      };
-    } else {
-      result.push(c);
-    }
-  }
-
-  return result;
-}
-
-export function deduplicateStudents(studentsList: Student[]): Student[] {
-  if (!Array.isArray(studentsList)) return [];
-  const result: Student[] = [];
-
-  for (const st of studentsList) {
-    if (!st || (!st.firstName && !st.lastName)) continue;
-    const cleanEmail = (st.email || '').trim().toLowerCase();
-    const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.toLowerCase();
-    const cId = st.courseId || '';
-
-    const existingIdx = result.findIndex((existing) => {
-      if (existing.id && st.id && existing.id === st.id) return true;
-      if (cId && existing.courseId && cId === existing.courseId) {
-        if (cleanEmail && existing.email && existing.email.trim().toLowerCase() === cleanEmail) return true;
-        const exName = `${(existing.firstName || '').trim()} ${(existing.lastName || '').trim()}`.toLowerCase();
-        if (exName && cleanName && exName === cleanName) return true;
-      }
-      return false;
-    });
-
-    if (existingIdx >= 0) {
-      result[existingIdx] = {
-        ...result[existingIdx],
-        ...st,
-        id: result[existingIdx].id || st.id,
-      };
-    } else {
-      result.push(st);
-    }
-  }
-
-  return result;
-}
-
-export function getLocalCourses(): Course[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const explicitlyCleared = localStorage.getItem('docencia_courses_explicitly_cleared') === 'true';
-    const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    const candidateKeys = [key, STORAGE_KEYS.COURSES, 'docencia_persisted_courses'];
-
-    for (const k of candidateKeys) {
-      const raw = localStorage.getItem(k);
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            return deduplicateCourses(parsed);
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (!explicitlyCleared) {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
-          try {
-            const item = localStorage.getItem(k);
-            if (item) {
-              const p = JSON.parse(item);
-              if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
-                return deduplicateCourses(p);
-              }
-            }
-          } catch (_) {}
-        }
-      }
-    }
-  } catch (_) {}
-  return [];
-}
-
-export function saveLocalCourses(coursesList: Course[], forceClear = false): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const cleanList = deduplicateCourses(coursesList);
-    if (cleanList.length === 0 && !forceClear) {
-      // Never accidentally wipe existing saved courses during transient empty loads
-      return;
-    }
-    const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    const dataStr = JSON.stringify(cleanList);
-    localStorage.setItem(key, dataStr);
-    localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
-    localStorage.setItem('docencia_persisted_courses', dataStr);
-    if (cleanList.length > 0) {
-      localStorage.removeItem('docencia_courses_explicitly_cleared');
-    } else if (forceClear) {
-      localStorage.setItem('docencia_courses_explicitly_cleared', 'true');
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
-          localStorage.setItem(k, '[]');
-        }
-      }
-    }
-  } catch (_) {}
-}
-
-export function getLocalStudents(courseId?: string): Student[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
-    let raw = localStorage.getItem(key);
-    if (!raw && key !== STORAGE_KEYS.STUDENTS) {
-      raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
-    }
-    if (!raw) {
-      raw = localStorage.getItem('docencia_persisted_students');
-    }
-    if (raw) {
-      const parsed: Student[] = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const clean = deduplicateStudents(parsed);
-        return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
-      }
-    }
-    // Deep fallback: scan localStorage keys
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && (k.startsWith('docencia_students') || k.includes('students'))) {
-        try {
-          const item = localStorage.getItem(k);
-          if (item) {
-            const p = JSON.parse(item);
-            if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
-              const clean = deduplicateStudents(p);
-              return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
-            }
-          }
-        } catch (_) {}
-      }
-    }
-  } catch (_) {}
-  return [];
-}
-
-export function saveLocalStudents(courseId: string, studentsList: Student[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
-    const all = getLocalStudents();
-    const rest = all.filter((s) => s.courseId !== courseId);
-    const updated = deduplicateStudents([...rest, ...studentsList]);
-    const dataStr = JSON.stringify(updated);
-    localStorage.setItem(key, dataStr);
-    localStorage.setItem(STORAGE_KEYS.STUDENTS, dataStr);
-    localStorage.setItem('docencia_persisted_students', dataStr);
-  } catch (_) {}
-}
-
-export const PRIMARY_DISPOSITION_KEY = 'fds_disposition_data_v2';
-export const PRIMARY_HISTORY_KEY = 'fds_disposition_history_v2';
-export const DELETED_HISTORY_IDS_KEY = 'docencia_deleted_history_ids';
-
-export function getDeletedHistoryIds(): Set<string> {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    const raw = localStorage.getItem(DELETED_HISTORY_IDS_KEY);
-    if (raw) return new Set(JSON.parse(raw));
-  } catch (_) {}
-  return new Set();
-}
-
-export function markHistoryIdDeleted(id: string): void {
-  if (typeof window === 'undefined' || !id) return;
-  try {
-    const set = getDeletedHistoryIds();
-    set.add(id);
-    localStorage.setItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
-  } catch (_) {}
-}
-
-export function deduplicateHistoryItems(list: any[]): any[] {
-  const result: any[] = [];
-  const seenIds = new Set<string>();
-  const deleted = getDeletedHistoryIds();
-  for (const item of list) {
-    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
-    seenIds.add(item.id);
-    result.push(item);
-  }
-  return result;
-}
-
-export function saveAllDispositionStorage(disposition: Record<string, any>, history: any[], options?: { silent?: boolean }): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const deleted = getDeletedHistoryIds();
-    const cleanHistory = (history || []).filter((h) => h?.id && !deleted.has(h.id));
-    const dispJson = JSON.stringify(disposition || {});
-    const histJson = JSON.stringify(cleanHistory);
-
-    const userId = getActiveUserId();
-    const keysDisp = [
-      PRIMARY_DISPOSITION_KEY,
-      'docencia_disposition_data',
-      STORAGE_KEYS.DISPOSITION,
-    ];
-    const keysHist = [
-      PRIMARY_HISTORY_KEY,
-      'docencia_disposition_history',
-      STORAGE_KEYS.DISPOSITION_HISTORY,
-    ];
-    if (userId) {
-      keysDisp.push(`docencia_disposition_data_${userId}`);
-      keysHist.push(`docencia_disposition_history_${userId}`);
-    }
-
-    const uniqueDispKeys = Array.from(new Set(keysDisp));
-    const uniqueHistKeys = Array.from(new Set(keysHist));
-
-    for (const k of uniqueDispKeys) {
-      localStorage.setItem(k, dispJson);
-    }
-    for (const k of uniqueHistKeys) {
-      localStorage.setItem(k, histJson);
-    }
-
-    // Only dispatch when not silenced (e.g. during mutations, not during read/fetch)
-    if (!options?.silent) {
-      window.dispatchEvent(
-        new CustomEvent('docencia_disposition_storage_change', {
-          detail: { disposition, history: cleanHistory },
-        })
-      );
-    }
-  } catch (err) {
-    console.warn('Error saving disposition to storage:', err);
-  }
-}
-
-export function getAllDispositionStorage(): { disposition: Record<string, any>; history: any[] } {
-  if (typeof window === 'undefined') return { disposition: {}, history: [] };
-  const deleted = getDeletedHistoryIds();
-  let disposition: Record<string, any> = {};
-  let history: any[] = [];
-
-  const userId = getActiveUserId();
-  const keysDisp = new Set<string>([
-    PRIMARY_DISPOSITION_KEY,
-    ...(userId ? [`docencia_disposition_data_${userId}`] : []),
-    'docencia_disposition_data',
-    STORAGE_KEYS.DISPOSITION,
-  ]);
-
-  const keysHist = new Set<string>([
-    PRIMARY_HISTORY_KEY,
-    ...(userId ? [`docencia_disposition_history_${userId}`] : []),
-    'docencia_disposition_history',
-    STORAGE_KEYS.DISPOSITION_HISTORY,
-  ]);
-
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k) continue;
-      if (k.startsWith('docencia_disposition_data_') || k.startsWith('fds_disposition_data')) {
-        keysDisp.add(k);
-      } else if (k.startsWith('docencia_disposition_history_') || k.startsWith('fds_disposition_history')) {
-        keysHist.add(k);
-      }
-    }
-  } catch (_) {}
-
-  // 1. Load disposition map across all candidate keys
-  for (const k of Array.from(keysDisp)) {
-    try {
-      const raw = localStorage.getItem(k);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-          disposition = { ...parsed, ...disposition };
-        }
-      }
-    } catch (_) {}
-  }
-
-  // 2. Load and merge history list across all candidate keys (respecting deleted tombstones)
-  const mergedHistory: any[] = [];
-  for (const k of Array.from(keysHist)) {
-    try {
-      const raw = localStorage.getItem(k);
-      if (raw) {
-        const list = JSON.parse(raw);
-        if (Array.isArray(list)) {
-          const clean = list.filter((item: any) => item?.id && !deleted.has(item.id));
-          mergedHistory.push(...clean);
-        }
-      }
-    } catch (_) {}
-  }
-  history = deduplicateHistoryItems(mergedHistory);
-
-  return { disposition, history };
-}
 
 export const api = {
   // Auth API
@@ -408,6 +75,17 @@ export const api = {
     scopes?: string[];
     school?: string;
   }): Promise<{ success: boolean; user: TeacherProfile }> {
+    // Persist teacher profile in Firestore globally across accounts
+    firestoreSync
+      .saveTeacherProfile({
+        id: userData.uid,
+        email: userData.email,
+        name: userData.name,
+        avatar: userData.avatar,
+        school: userData.school,
+      })
+      .catch(() => {});
+
     try {
       const res = await fetch('/api/auth/session', {
         method: 'POST',
@@ -526,18 +204,21 @@ export const api = {
   // Courses
   async getCourses(): Promise<Course[]> {
     const userId = getActiveUserId();
+    const isOwner = isPrimaryOwnerAccount();
 
     // 1. Immediately get deduplicated local courses
     const local = deduplicateCourses(getLocalCourses());
 
-    // 2. Fetch server courses and cloud Firestore courses in parallel
-    const serverPromise = fetch('/api/courses')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => (data && Array.isArray(data.courses) ? (data.courses as Course[]) : []))
-      .catch((e) => {
-        console.warn('Backend /api/courses unavailable:', e);
-        return [] as Course[];
-      });
+    // 2. Fetch server courses (only for primary owner) and cloud Firestore courses in parallel
+    const serverPromise = isOwner
+      ? fetch('/api/courses')
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => (data && Array.isArray(data.courses) ? (data.courses as Course[]) : []))
+          .catch((e) => {
+            console.warn('Backend /api/courses unavailable:', e);
+            return [] as Course[];
+          })
+      : Promise.resolve([] as Course[]);
 
     const cloudPromise = userId
       ? firestoreSync.loadCourses(userId).catch((err) => {
@@ -831,16 +512,19 @@ export const api = {
 
     // 1. Immediately get deduplicated local students
     const local = deduplicateStudents(getLocalStudents(courseId));
+    const isOwner = isPrimaryOwnerAccount();
 
-    // 2. Fetch server students & cloud students in parallel
+    // 2. Fetch server students (only for primary owner) & cloud students in parallel
     const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
-    const serverPromise = fetch(url)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => (data && Array.isArray(data.students) ? (data.students as Student[]) : []))
-      .catch((e) => {
-        console.warn('Backend /api/students unavailable:', e);
-        return [] as Student[];
-      });
+    const serverPromise = isOwner
+      ? fetch(url)
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => (data && Array.isArray(data.students) ? (data.students as Student[]) : []))
+          .catch((e) => {
+            console.warn('Backend /api/students unavailable:', e);
+            return [] as Student[];
+          })
+      : Promise.resolve([] as Student[]);
 
     const userId = getActiveUserId();
     const cloudPromise = userId
@@ -852,12 +536,28 @@ export const api = {
 
     const [serverStudents, cloudStudents] = await Promise.all([serverPromise, cloudPromise]);
 
-    const mergedStudents = enrichStudents(deduplicateStudents([...local, ...serverStudents, ...cloudStudents]));
+    const mergedStudents = enrichStudents(deduplicateStudents([...local, ...cloudStudents, ...serverStudents]));
 
-    if (courseId && mergedStudents.length > 0) {
-      saveLocalStudents(courseId, mergedStudents);
-      if (userId) {
-        firestoreSync.saveStudents(userId, courseId, mergedStudents).catch(() => {});
+    if (mergedStudents.length > 0) {
+      if (courseId) {
+        saveLocalStudents(courseId, mergedStudents);
+        if (userId) {
+          firestoreSync.saveStudents(userId, courseId, mergedStudents).catch(() => {});
+        }
+      } else {
+        const byCourse = new Map<string, Student[]>();
+        for (const st of mergedStudents) {
+          if (!st.courseId) continue;
+          const arr = byCourse.get(st.courseId) || [];
+          arr.push(st);
+          byCourse.set(st.courseId, arr);
+        }
+        byCourse.forEach((courseList, cid) => {
+          saveLocalStudents(cid, courseList);
+          if (userId) {
+            firestoreSync.saveStudents(userId, cid, courseList).catch(() => {});
+          }
+        });
       }
     }
 
@@ -1048,8 +748,9 @@ export const api = {
         }
 
         if (cleanCloudHistory.length > 0 || Object.keys(cloud.disposition || {}).length > 0) {
-          const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanCloudHistory]).filter((h) => !deleted.has(h.id));
-          const mergedDisp = { ...(cloud.disposition || {}), ...local.disposition };
+          const mergedHistory = deduplicateHistoryItems([...cleanCloudHistory, ...local.history]).filter((h) => !deleted.has(h.id));
+          mergedHistory.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+          const mergedDisp = { ...local.disposition, ...(cloud.disposition || {}) };
           saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
           return { disposition: mergedDisp, history: mergedHistory };
         }
@@ -1058,23 +759,25 @@ export const api = {
       }
     }
 
-    try {
-      const params = new URLSearchParams();
-      if (courseId) params.append('courseId', courseId);
-      if (studentId) params.append('studentId', studentId);
-      const res = await fetch(`/api/disposition?${params.toString()}`);
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const serverData = await res.json();
-        if (serverData?.history || serverData?.disposition) {
-          const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
-          const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter((h) => !deleted.has(h.id));
-          const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
-          saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
-          return { disposition: mergedDisp, history: mergedHistory };
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const params = new URLSearchParams();
+        if (courseId) params.append('courseId', courseId);
+        if (studentId) params.append('studentId', studentId);
+        const res = await fetch(`/api/disposition?${params.toString()}`);
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const serverData = await res.json();
+          if (serverData?.history || serverData?.disposition) {
+            const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
+            const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter((h) => !deleted.has(h.id));
+            const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
+            saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
+            return { disposition: mergedDisp, history: mergedHistory };
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     return local as any;
   },
@@ -1501,17 +1204,15 @@ export const api = {
     history: any[];
     replaceHistory?: boolean;
   }): Promise<{ success: boolean; count: number; disposition?: Record<string, any>; history?: any[] }> {
+    const deleted = getDeletedHistoryIds();
+    const cleanHistory = (data?.history || []).filter((h) => h?.id && !deleted.has(h.id));
     if (data?.disposition || data?.history) {
-      const deleted = getDeletedHistoryIds();
-      const cleanHistory = (data.history || []).filter((h) => h?.id && !deleted.has(h.id));
       saveAllDispositionStorage(data.disposition || {}, cleanHistory);
     }
 
     const userId = getActiveUserId();
-    if (userId && data.history && data.history.length > 0) {
-      for (const item of data.history.slice(0, 15)) {
-        firestoreSync.saveDisposition(userId, item).catch(() => {});
-      }
+    if (userId && cleanHistory.length > 0) {
+      firestoreSync.saveDispositionBatch(userId, cleanHistory).catch(() => {});
     }
 
     try {
@@ -1528,9 +1229,9 @@ export const api = {
 
     return {
       success: true,
-      count: data.history?.length || 0,
+      count: cleanHistory.length,
       disposition: data.disposition,
-      history: data.history,
+      history: cleanHistory,
     };
   },
 
@@ -1540,8 +1241,8 @@ export const api = {
     lastSyncedAt?: string;
     isLiveGoogle?: boolean;
   }> {
+    const userId = getActiveUserId();
     const localKey = `fds_course_disposition_sheet_${courseId}`;
-    const POISONED_S2_NAT_SHEET_ID = "12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4";
 
     let cached: any = null;
     if (typeof window !== 'undefined') {
@@ -1549,35 +1250,74 @@ export const api = {
         const raw = localStorage.getItem(localKey);
         if (raw) {
           cached = JSON.parse(raw);
-          // Purge inherited/poisoned s2-nat sheet ID from any course
-          if (cached?.spreadsheetId === POISONED_S2_NAT_SHEET_ID) {
-            localStorage.removeItem(localKey);
-            cached = null;
+        }
+      } catch (_) {}
+    }
+
+    // 1. Check course object in local store / Firestore for dispositionSheetId
+    try {
+      const localCourses = this.getLocalCourses();
+      const matched = localCourses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
+      if (matched?.dispositionSheetId && isRealGoogleSpreadsheetId(matched.dispositionSheetId)) {
+        const sheetInfo = {
+          spreadsheetId: matched.dispositionSheetId,
+          url: matched.dispositionSheetUrl || `https://docs.google.com/spreadsheets/d/${matched.dispositionSheetId}/edit`,
+          isLiveGoogle: true,
+          lastSyncedAt: cached?.lastSyncedAt || new Date().toISOString(),
+        };
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(localKey, JSON.stringify(sheetInfo));
+          } catch (_) {}
+        }
+        return sheetInfo;
+      }
+    } catch (_) {}
+
+    // 2. Check localStorage cache for this course
+    if (cached?.spreadsheetId && isRealGoogleSpreadsheetId(cached.spreadsheetId)) {
+      return {
+        ...cached,
+        isLiveGoogle: true,
+        url: cached.url || `https://docs.google.com/spreadsheets/d/${cached.spreadsheetId}/edit`,
+      };
+    }
+
+    // 3. Fallback to server config for primary owner
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`);
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data?.spreadsheetId && isRealGoogleSpreadsheetId(data.spreadsheetId)) {
+            const sanitized = {
+              ...data,
+              isLiveGoogle: true,
+              url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
+            };
+            if (typeof window !== 'undefined') {
+              try {
+                localStorage.setItem(localKey, JSON.stringify(sanitized));
+              } catch (_) {}
+            }
+            return sanitized;
           }
         }
       } catch (_) {}
     }
 
-    try {
-      const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`);
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const data = await res.json();
-        if (data?.spreadsheetId) {
-          // If server still had the old poisoned sheet id, purge it
-          if (data.spreadsheetId === POISONED_S2_NAT_SHEET_ID) {
-            if (typeof window !== 'undefined') {
-              try { localStorage.removeItem(localKey); } catch (_) {}
-            }
-            await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, { method: 'DELETE' }).catch(() => {});
-            return {};
-          }
-
-          const isReal = isRealGoogleSpreadsheetId(data.spreadsheetId);
+    if (userId) {
+      try {
+        const cloudSheet = await firestoreSync.loadUserSetting<{ spreadsheetId?: string; url?: string; lastSyncedAt?: string }>(
+          userId,
+          `sheet_${courseId}`
+        );
+        if (cloudSheet?.spreadsheetId && isRealGoogleSpreadsheetId(cloudSheet.spreadsheetId)) {
           const sanitized = {
-            ...data,
-            isLiveGoogle: isReal,
-            url: isReal ? (data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`) : '',
+            ...cloudSheet,
+            isLiveGoogle: true,
+            url: cloudSheet.url || `https://docs.google.com/spreadsheets/d/${cloudSheet.spreadsheetId}/edit`,
           };
           if (typeof window !== 'undefined') {
             try {
@@ -1585,40 +1325,9 @@ export const api = {
             } catch (_) {}
           }
           return sanitized;
-        } else {
-          // No spreadsheet on server for this course: clear local cache
-          if (typeof window !== 'undefined') {
-            try {
-              localStorage.removeItem(localKey);
-            } catch (_) {}
-          }
-          return {};
         }
-      }
-    } catch (_) {}
-
-    if (cached?.spreadsheetId && cached.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) {
-      const isReal = isRealGoogleSpreadsheetId(cached.spreadsheetId);
-      return {
-        ...cached,
-        isLiveGoogle: isReal,
-        url: isReal ? cached.url : '',
-      };
+      } catch (_) {}
     }
-
-    // Check course object in local store for dispositionSheetId
-    try {
-      const localCourses = this.getLocalCourses();
-      const matched = localCourses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
-      if (matched?.dispositionSheetId && isRealGoogleSpreadsheetId(matched.dispositionSheetId)) {
-        return {
-          spreadsheetId: matched.dispositionSheetId,
-          url: matched.dispositionSheetUrl || `https://docs.google.com/spreadsheets/d/${matched.dispositionSheetId}/edit`,
-          isLiveGoogle: true,
-          lastSyncedAt: new Date().toISOString(),
-        };
-      }
-    } catch (_) {}
 
     return {};
   },
@@ -1630,6 +1339,31 @@ export const api = {
         localStorage.removeItem(localKey);
       } catch (_) {}
     }
+
+    // Clear dispositionSheetId on the course in localStorage and Firestore
+    try {
+      const courses = getLocalCourses();
+      let changed = false;
+      const updated = courses.map((c) => {
+        if (c.id === courseId || c.classroomCourseId === courseId) {
+          changed = true;
+          const next = { ...c };
+          delete next.dispositionSheetId;
+          delete next.dispositionSheetUrl;
+          return next;
+        }
+        return c;
+      });
+      if (changed) {
+        saveLocalCourses(updated);
+        const userId = getActiveUserId();
+        if (userId) {
+          firestoreSync.saveCourses(userId, updated).catch(() => {});
+          firestoreSync.saveUserSetting(userId, `sheet_${courseId}`, {}).catch(() => {});
+        }
+      }
+    } catch (_) {}
+
     try {
       await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
         method: 'DELETE',
@@ -1653,6 +1387,34 @@ export const api = {
         localStorage.setItem(localKey, JSON.stringify(sanitizedData));
       } catch (_) {}
     }
+
+    // Persist dispositionSheetId directly on the Course object in localStorage and Firestore
+    try {
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync.saveUserSetting(userId, `sheet_${courseId}`, sanitizedData).catch(() => {});
+      }
+      const courses = getLocalCourses();
+      let changed = false;
+      const updated = courses.map((c) => {
+        if (c.id === courseId || c.classroomCourseId === courseId) {
+          changed = true;
+          return {
+            ...c,
+            dispositionSheetId: data.spreadsheetId,
+            dispositionSheetUrl: sanitizedData.url,
+          };
+        }
+        return c;
+      });
+      if (changed) {
+        saveLocalCourses(updated);
+        if (userId) {
+          firestoreSync.saveCourses(userId, updated).catch(() => {});
+        }
+      }
+    } catch (_) {}
+
     try {
       const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
         method: 'POST',
@@ -1671,6 +1433,30 @@ export const api = {
 
   // Custom Conduct Options
   async getConductOptions(teacher?: string): Promise<string[]> {
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_conduct_options');
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem(localKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (_) {}
+    }
+
+    if (userId) {
+      const cloud = await firestoreSync.loadUserSetting<string[]>(userId, 'conduct_options');
+      if (Array.isArray(cloud) && cloud.length > 0) {
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(localKey, JSON.stringify(cloud));
+          } catch (_) {}
+        }
+        return cloud;
+      }
+    }
+
     try {
       const url = teacher ? `/api/conduct-options?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-options';
       const res = await fetch(url);
@@ -1683,6 +1469,16 @@ export const api = {
   },
 
   async saveConductOptions(teacher: string, options: string[]): Promise<boolean> {
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_conduct_options');
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(localKey, JSON.stringify(options));
+      } catch (_) {}
+    }
+    if (userId) {
+      firestoreSync.saveUserSetting(userId, 'conduct_options', options).catch(() => {});
+    }
     try {
       const res = await fetch('/api/conduct-options', {
         method: 'POST',
@@ -1691,23 +1487,57 @@ export const api = {
       });
       return res.ok;
     } catch {
-      return false;
+      return true;
     }
   },
 
   async getConductTemplates(teacher?: string): Promise<Record<string, string>> {
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_conduct_templates');
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem(localKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) return parsed;
+        }
+      } catch (_) {}
+    }
+
+    if (userId) {
+      const cloud = await firestoreSync.loadUserSetting<Record<string, string>>(userId, 'conduct_templates');
+      if (cloud && typeof cloud === 'object' && Object.keys(cloud).length > 0) {
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(localKey, JSON.stringify(cloud));
+          } catch (_) {}
+        }
+        return cloud;
+      }
+    }
+
     try {
       const url = teacher ? `/api/conduct-templates?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-templates';
       const res = await fetch(url);
       if (!res.ok) return {};
       const data = await res.json();
-      return (data.templates && typeof data.templates === 'object') ? data.templates : {};
+      return data.templates && typeof data.templates === 'object' ? data.templates : {};
     } catch {
       return {};
     }
   },
 
   async saveConductTemplates(teacher: string, templates: Record<string, string>): Promise<boolean> {
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_conduct_templates');
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(localKey, JSON.stringify(templates));
+      } catch (_) {}
+    }
+    if (userId) {
+      firestoreSync.saveUserSetting(userId, 'conduct_templates', templates).catch(() => {});
+    }
     try {
       const res = await fetch('/api/conduct-templates', {
         method: 'POST',
@@ -1716,7 +1546,7 @@ export const api = {
       });
       return res.ok;
     } catch {
-      return false;
+      return true;
     }
   },
 
@@ -1980,29 +1810,103 @@ export const api = {
 
   // Custom Gems Management API
   async getCustomGems(): Promise<CustomGem[]> {
-    const res = await fetch('/api/custom-gems');
-    if (!res.ok) throw new Error('Error al obtener lista de Gems personalizados');
-    const data = await res.json();
-    return data.gems || [];
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_custom_gems');
+    let localGems: CustomGem[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(localKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) localGems = parsed;
+        }
+      } catch (_) {}
+    }
+
+    const cloudGems = userId ? await firestoreSync.loadCustomGems(userId).catch(() => [] as CustomGem[]) : [];
+    let serverGems: CustomGem[] = [];
+    try {
+      const res = await fetch('/api/custom-gems');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.gems)) serverGems = data.gems;
+      }
+    } catch (_) {}
+
+    const map = new Map<string, CustomGem>();
+    for (const g of [...serverGems, ...cloudGems, ...localGems]) {
+      if (g && g.id && g.name) {
+        map.set(g.id, g);
+      }
+    }
+    const merged = Array.from(map.values());
+    if (merged.length > 0 && typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(localKey, JSON.stringify(merged));
+      } catch (_) {}
+    }
+    return merged;
   },
 
   async saveCustomGem(params: { name: string; description?: string; directives: string }): Promise<CustomGem> {
-    const res = await fetch('/api/custom-gems', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Error al guardar Gem personalizado');
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_custom_gems');
+    let savedGem: CustomGem | null = null;
+
+    try {
+      const res = await fetch('/api/custom-gems', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.gem) savedGem = data.gem;
+      }
+    } catch (_) {}
+
+    if (!savedGem) {
+      savedGem = {
+        id: `gem-${Date.now()}`,
+        name: params.name,
+        description: params.description || '',
+        directives: params.directives,
+        createdAt: new Date().toISOString(),
+      };
     }
-    const data = await res.json();
-    return data.gem;
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(localKey);
+        const existing: CustomGem[] = raw ? JSON.parse(raw) : [];
+        const updated = [savedGem, ...existing.filter((g) => g.id !== savedGem!.id)];
+        localStorage.setItem(localKey, JSON.stringify(updated));
+      } catch (_) {}
+    }
+    if (userId) {
+      firestoreSync.saveCustomGem(userId, savedGem).catch(() => {});
+    }
+    return savedGem;
   },
 
   async deleteCustomGem(id: string): Promise<boolean> {
-    const res = await fetch(`/api/custom-gems/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Error al eliminar Gem');
+    const userId = getActiveUserId();
+    const localKey = getUserStorageKey('docencia_custom_gems');
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(localKey);
+        if (raw) {
+          const existing: CustomGem[] = JSON.parse(raw);
+          localStorage.setItem(localKey, JSON.stringify(existing.filter((g) => g.id !== id)));
+        }
+      } catch (_) {}
+    }
+    if (userId) {
+      firestoreSync.deleteCustomGem(userId, id).catch(() => {});
+    }
+    try {
+      await fetch(`/api/custom-gems/${id}`, { method: 'DELETE' });
+    } catch (_) {}
     return true;
   },
 

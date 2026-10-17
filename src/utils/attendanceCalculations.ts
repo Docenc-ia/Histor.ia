@@ -181,14 +181,50 @@ export function getCourseAttendanceSettings(courseId?: string, schedule?: string
 }
 
 /**
- * Saves course attendance settings
+ * Saves course attendance settings locally and persists to Firestore cloud
  */
 export function saveCourseAttendanceSettings(courseId: string, settings: AttendanceSettings): void {
   if (typeof window !== 'undefined' && courseId) {
     try {
       localStorage.setItem(`fds_attendance_settings_${courseId}`, JSON.stringify(settings));
     } catch (_) {}
+    import('../services/firestoreSync')
+      .then(({ firestoreSync, getActiveUserId }) => {
+        const uid = getActiveUserId();
+        if (uid) {
+          firestoreSync.saveUserSetting(uid, `attendance_settings_${courseId}`, settings).catch(() => {});
+        }
+      })
+      .catch(() => {});
   }
+}
+
+/**
+ * Loads course attendance settings from Firestore cloud and updates local cache if found
+ */
+export async function loadCourseAttendanceSettingsFromCloud(
+  courseId: string,
+  schedule?: string
+): Promise<AttendanceSettings | null> {
+  if (!courseId) return null;
+  try {
+    const { firestoreSync, getActiveUserId } = await import('../services/firestoreSync');
+    const uid = getActiveUserId();
+    if (!uid) return null;
+    const cloudSettings = await firestoreSync.loadUserSetting<AttendanceSettings>(
+      uid,
+      `attendance_settings_${courseId}`
+    );
+    if (cloudSettings && typeof cloudSettings === 'object') {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(`fds_attendance_settings_${courseId}`, JSON.stringify(cloudSettings));
+        } catch (_) {}
+      }
+      return getCourseAttendanceSettings(courseId, schedule);
+    }
+  } catch (_) {}
+  return null;
 }
 
 /**

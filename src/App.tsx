@@ -3,20 +3,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { WorkspaceAuthProvider, useWorkspaceAuth } from './context/WorkspaceAuthContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { LandingPage } from './components/landing/LandingPage';
 import { TeacherCoursesPanel } from './components/dashboard/TeacherCoursesPanel';
-import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
-import { CalendarModule } from './components/modules/CalendarModule';
-import { ImportClassroomModal } from './components/dashboard/ImportClassroomModal';
-import { CreateModal } from './components/common/CreateModal';
 import { Course, Student } from './types';
 import { api } from './services/api';
 import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
+
+const CourseWorkspaceView = lazy(() =>
+  import('./components/modules/CourseWorkspaceView').then((m) => ({ default: m.CourseWorkspaceView }))
+);
+const CalendarModule = lazy(() =>
+  import('./components/modules/CalendarModule').then((m) => ({ default: m.CalendarModule }))
+);
+const ImportClassroomModal = lazy(() =>
+  import('./components/dashboard/ImportClassroomModal').then((m) => ({ default: m.ImportClassroomModal }))
+);
+const CreateModal = lazy(() =>
+  import('./components/common/CreateModal').then((m) => ({ default: m.CreateModal }))
+);
 
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
@@ -353,35 +362,51 @@ function AppContent() {
 
               {/* 2. Módulo de Estudiantes: Asistencia, Disposición y Classroom */}
               {currentView === 'course_detail' && (
-                <CourseWorkspaceView
-                  course={selectedCourse}
-                  courses={courses}
-                  students={students}
-                  onBackToCourses={() => setCurrentView('courses')}
-                  onSelectCourse={(id) => setSelectedCourseId(id)}
-                  onDeleteCourse={handleDeleteCourse}
-                  onRefreshData={loadData}
-                  onNavigate={handleNavigate}
-                  onOpenNewModal={handleOpenCreateModal}
-                />
+                <Suspense
+                  fallback={
+                    <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
+                      Cargando espacio de materia...
+                    </div>
+                  }
+                >
+                  <CourseWorkspaceView
+                    course={selectedCourse}
+                    courses={courses}
+                    students={students}
+                    onBackToCourses={() => setCurrentView('courses')}
+                    onSelectCourse={(id) => setSelectedCourseId(id)}
+                    onDeleteCourse={handleDeleteCourse}
+                    onRefreshData={loadData}
+                    onNavigate={handleNavigate}
+                    onOpenNewModal={handleOpenCreateModal}
+                  />
+                </Suspense>
               )}
 
               {/* 3. Módulo de Google Calendar Oficial y Horarios */}
               {currentView === 'calendar' && (
-                <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-                  <CalendarModule
-                    courses={courses}
-                    selectedCourseId={selectedCourseId}
-                    onSelectCourse={(id) => {
-                      setSelectedCourseId(id);
-                      setCurrentView('course_detail');
-                    }}
-                    onNavigateToCourseDetail={(id) => {
-                      setSelectedCourseId(id);
-                      setCurrentView('course_detail');
-                    }}
-                  />
-                </div>
+                <Suspense
+                  fallback={
+                    <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
+                      Cargando agenda y horarios...
+                    </div>
+                  }
+                >
+                  <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+                    <CalendarModule
+                      courses={courses}
+                      selectedCourseId={selectedCourseId}
+                      onSelectCourse={(id) => {
+                        setSelectedCourseId(id);
+                        setCurrentView('course_detail');
+                      }}
+                      onNavigateToCourseDetail={(id) => {
+                        setSelectedCourseId(id);
+                        setCurrentView('course_detail');
+                      }}
+                    />
+                  </div>
+                </Suspense>
               )}
             </>
           )}
@@ -389,27 +414,35 @@ function AppContent() {
       </div>
 
       {/* Global Creation Modal (for creating courses) */}
-      <CreateModal
-        isOpen={isCreateModalOpen}
-        type={createModalType}
-        courses={courses}
-        onClose={() => setIsCreateModalOpen(false)}
-        onCreated={handleCreated}
-        onOpenImportClassroom={() => setIsImportClassroomOpen(true)}
-      />
+      {isCreateModalOpen && (
+        <Suspense fallback={null}>
+          <CreateModal
+            isOpen={isCreateModalOpen}
+            type={createModalType}
+            courses={courses}
+            onClose={() => setIsCreateModalOpen(false)}
+            onCreated={handleCreated}
+            onOpenImportClassroom={() => setIsImportClassroomOpen(true)}
+          />
+        </Suspense>
+      )}
 
       {/* Google Classroom Import / Sync Modal */}
-      <ImportClassroomModal
-        isOpen={isImportClassroomOpen}
-        existingCourses={courses}
-        onClose={() => setIsImportClassroomOpen(false)}
-        onSuccess={(msg) => {
-          loadData();
-          setIsImportClassroomOpen(false);
-          setToast({ message: msg, type: 'success' });
-          setTimeout(() => setToast(null), 4000);
-        }}
-      />
+      {isImportClassroomOpen && (
+        <Suspense fallback={null}>
+          <ImportClassroomModal
+            isOpen={isImportClassroomOpen}
+            existingCourses={courses}
+            onClose={() => setIsImportClassroomOpen(false)}
+            onSuccess={(msg) => {
+              loadData();
+              setIsImportClassroomOpen(false);
+              setToast({ message: msg, type: 'success' });
+              setTimeout(() => setToast(null), 4000);
+            }}
+          />
+        </Suspense>
+      )}
 
       {/* Global Toast Notification */}
       {toast && (

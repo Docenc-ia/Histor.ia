@@ -326,6 +326,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
+  const cloudSyncTimerRef = useRef<Record<string, any>>({});
+  const getTermUpdatedAtKey = (term: '1c' | '2c') => `fds_grades_updated_at_${courseId}_${term}`;
+
   const persistTermSnapshotToCloud = (
     term: '1c' | '2c',
     cats: GradeCategory[],
@@ -334,17 +337,29 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   ) => {
     const userId = getActiveUserId();
     if (!userId || !courseId) return;
-    firestoreSync
-      .saveTermSnapshot(userId, courseId, term, {
-        courseId,
-        term,
-        termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-        categories: cats,
-        gradesMap: gMap,
-        ...(extra || {}),
-        updatedAt: new Date().toISOString(),
-      })
-      .catch(() => {});
+    const nowIso = new Date().toISOString();
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(getTermUpdatedAtKey(term), nowIso);
+      } catch (_) {}
+    }
+    const timerKey = `${courseId}_${term}`;
+    if (cloudSyncTimerRef.current[timerKey]) {
+      clearTimeout(cloudSyncTimerRef.current[timerKey]);
+    }
+    cloudSyncTimerRef.current[timerKey] = setTimeout(() => {
+      firestoreSync
+        .saveTermSnapshot(userId, courseId, term, {
+          courseId,
+          term,
+          termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+          categories: cats,
+          gradesMap: gMap,
+          ...(extra || {}),
+          updatedAt: nowIso,
+        })
+        .catch(() => {});
+    }, 400);
   };
 
   // Save changes to localStorage and Firestore for active term
@@ -436,10 +451,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
         const snap1c = snapshots['1c'];
         if (snap1c) {
+          const local1cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('1c')) || '' : '';
+          const isCloud1cNewer = !local1cUpdated || !snap1c.updatedAt || snap1c.updatedAt >= local1cUpdated;
+
           if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
             setCategories1c((prev) => {
               const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('1c'));
-              if (!hasLocal || prev === DEFAULT_CATEGORIES) {
+              if (!hasLocal || prev === DEFAULT_CATEGORIES || isCloud1cNewer) {
                 if (typeof window !== 'undefined') {
                   localStorage.setItem(getCatKey('1c'), JSON.stringify(snap1c.categories));
                 }
@@ -450,7 +468,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           }
           if (snap1c.gradesMap && typeof snap1c.gradesMap === 'object' && Object.keys(snap1c.gradesMap).length > 0) {
             setGradesMap1c((prev) => {
-              const merged = { ...snap1c.gradesMap, ...prev };
+              const merged = isCloud1cNewer ? { ...prev, ...snap1c.gradesMap } : { ...snap1c.gradesMap, ...prev };
               if (typeof window !== 'undefined') {
                 localStorage.setItem(getGradesKey('1c'), JSON.stringify(merged));
               }
@@ -459,7 +477,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           }
           if (snap1c.preliminaryValuation) {
             setPreliminaryValuation1c((prev) => {
-              const val = prev || snap1c.preliminaryValuation;
+              const val = isCloud1cNewer ? snap1c.preliminaryValuation : prev || snap1c.preliminaryValuation;
               if (typeof window !== 'undefined' && val) {
                 localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(val));
               }
@@ -468,21 +486,31 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           }
           if (snap1c.annualOverrides && typeof snap1c.annualOverrides === 'object') {
             setAnnualOverrides((prev) => {
-              const merged = { ...snap1c.annualOverrides, ...prev };
+              const merged = isCloud1cNewer
+                ? { ...prev, ...snap1c.annualOverrides }
+                : { ...snap1c.annualOverrides, ...prev };
               if (typeof window !== 'undefined') {
                 localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
               }
               return merged;
             });
           }
+          if (snap1c.updatedAt && isCloud1cNewer && typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(getTermUpdatedAtKey('1c'), snap1c.updatedAt);
+            } catch (_) {}
+          }
         }
 
         const snap2c = snapshots['2c'];
         if (snap2c) {
+          const local2cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('2c')) || '' : '';
+          const isCloud2cNewer = !local2cUpdated || !snap2c.updatedAt || snap2c.updatedAt >= local2cUpdated;
+
           if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
             setCategories2c((prev) => {
               const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('2c'));
-              if (!hasLocal) {
+              if (!hasLocal || isCloud2cNewer) {
                 if (typeof window !== 'undefined') {
                   localStorage.setItem(getCatKey('2c'), JSON.stringify(snap2c.categories));
                 }
@@ -493,7 +521,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           }
           if (snap2c.gradesMap && typeof snap2c.gradesMap === 'object' && Object.keys(snap2c.gradesMap).length > 0) {
             setGradesMap2c((prev) => {
-              const merged = { ...snap2c.gradesMap, ...prev };
+              const merged = isCloud2cNewer ? { ...prev, ...snap2c.gradesMap } : { ...snap2c.gradesMap, ...prev };
               if (typeof window !== 'undefined') {
                 localStorage.setItem(getGradesKey('2c'), JSON.stringify(merged));
               }
@@ -502,12 +530,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           }
           if (snap2c.preliminaryValuation) {
             setPreliminaryValuation2c((prev) => {
-              const val = prev || snap2c.preliminaryValuation;
+              const val = isCloud2cNewer ? snap2c.preliminaryValuation : prev || snap2c.preliminaryValuation;
               if (typeof window !== 'undefined' && val) {
                 localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(val));
               }
               return val;
             });
+          }
+          if (snap2c.updatedAt && isCloud2cNewer && typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(getTermUpdatedAtKey('2c'), snap2c.updatedAt);
+            } catch (_) {}
           }
         }
       })

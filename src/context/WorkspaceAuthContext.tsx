@@ -434,8 +434,21 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const derivedSchool = deriveSchoolFromEmail(cleanEmail);
 
+      let consistentId = 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+      if (typeof window !== 'undefined') {
+        try {
+          const prevRaw = localStorage.getItem('docencia_user_profile');
+          if (prevRaw) {
+            const prev = JSON.parse(prevRaw);
+            if (prev?.email === cleanEmail && prev?.id && !String(prev.id).startsWith('user-')) {
+              consistentId = prev.id;
+            }
+          }
+        } catch (_) {}
+      }
+
       const teacherProfile: TeacherProfile = {
-        id: `user-${Date.now().toString(36)}`,
+        id: consistentId,
         name: teacherName.startsWith('Prof.') ? teacherName : `Prof. ${teacherName}`,
         email: cleanEmail,
         avatar: getTeacherAvatar(teacherName, cleanEmail),

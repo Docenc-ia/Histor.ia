@@ -126,22 +126,23 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
 export function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
+    const explicitlyCleared = localStorage.getItem('docencia_courses_explicitly_cleared') === 'true';
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    let raw = localStorage.getItem(key);
-    if (!raw && key !== STORAGE_KEYS.COURSES) {
-      raw = localStorage.getItem(STORAGE_KEYS.COURSES);
+    const candidateKeys = [key, STORAGE_KEYS.COURSES, 'docencia_persisted_courses'];
+
+    for (const k of candidateKeys) {
+      const raw = localStorage.getItem(k);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            return deduplicateCourses(parsed);
+          }
+        } catch (_) {}
+      }
     }
-    if (!raw) {
-      raw = localStorage.getItem('docencia_persisted_courses');
-    }
-    if (raw !== null && raw !== undefined) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return deduplicateCourses(parsed);
-      } catch (_) {}
-    }
-    // Deep fallback only if raw was never saved before (null)
-    if (raw === null || raw === undefined) {
+
+    if (!explicitlyCleared) {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
@@ -161,17 +162,23 @@ export function getLocalCourses(): Course[] {
   return [];
 }
 
-export function saveLocalCourses(coursesList: Course[]): void {
+export function saveLocalCourses(coursesList: Course[], forceClear = false): void {
   if (typeof window === 'undefined') return;
   try {
     const cleanList = deduplicateCourses(coursesList);
+    if (cleanList.length === 0 && !forceClear) {
+      // Never accidentally wipe existing saved courses during transient empty loads
+      return;
+    }
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
     const dataStr = JSON.stringify(cleanList);
     localStorage.setItem(key, dataStr);
     localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
     localStorage.setItem('docencia_persisted_courses', dataStr);
-    if (cleanList.length === 0) {
-      // Invalidate legacy or alternate keys so deleted courses never resurrect
+    if (cleanList.length > 0) {
+      localStorage.removeItem('docencia_courses_explicitly_cleared');
+    } else if (forceClear) {
+      localStorage.setItem('docencia_courses_explicitly_cleared', 'true');
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
@@ -322,52 +329,60 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
   let history: any[] = [];
 
   const userId = getActiveUserId();
-  const keysDisp = [
+  const keysDisp = new Set<string>([
     PRIMARY_DISPOSITION_KEY,
-    userId ? `docencia_disposition_data_${userId}` : null,
+    ...(userId ? [`docencia_disposition_data_${userId}`] : []),
     'docencia_disposition_data',
     STORAGE_KEYS.DISPOSITION,
-  ].filter(Boolean) as string[];
+  ]);
 
-  const keysHist = [
+  const keysHist = new Set<string>([
     PRIMARY_HISTORY_KEY,
-    userId ? `docencia_disposition_history_${userId}` : null,
+    ...(userId ? [`docencia_disposition_history_${userId}`] : []),
     'docencia_disposition_history',
     STORAGE_KEYS.DISPOSITION_HISTORY,
-  ].filter(Boolean) as string[];
+  ]);
 
-  // 1. Load disposition map - PRIMARY has priority, fallback to user/legacy
-  for (const k of keysDisp) {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (k.startsWith('docencia_disposition_data_') || k.startsWith('fds_disposition_data')) {
+        keysDisp.add(k);
+      } else if (k.startsWith('docencia_disposition_history_') || k.startsWith('fds_disposition_history')) {
+        keysHist.add(k);
+      }
+    }
+  } catch (_) {}
+
+  // 1. Load disposition map across all candidate keys
+  for (const k of Array.from(keysDisp)) {
     try {
       const raw = localStorage.getItem(k);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-          disposition = { ...disposition, ...parsed };
-          if (k === PRIMARY_DISPOSITION_KEY) break;
+          disposition = { ...parsed, ...disposition };
         }
       }
     } catch (_) {}
   }
 
-  // 2. Load history list - PRIMARY has priority so deletions are immediately respected
-  for (const k of keysHist) {
+  // 2. Load and merge history list across all candidate keys (respecting deleted tombstones)
+  const mergedHistory: any[] = [];
+  for (const k of Array.from(keysHist)) {
     try {
       const raw = localStorage.getItem(k);
       if (raw) {
         const list = JSON.parse(raw);
         if (Array.isArray(list)) {
           const clean = list.filter((item: any) => item?.id && !deleted.has(item.id));
-          if (k === PRIMARY_HISTORY_KEY) {
-            history = clean;
-            break;
-          } else if (history.length === 0 && clean.length > 0) {
-            history = clean;
-          }
+          mergedHistory.push(...clean);
         }
       }
     } catch (_) {}
   }
+  history = deduplicateHistoryItems(mergedHistory);
 
   return { disposition, history };
 }
@@ -533,13 +548,8 @@ export const api = {
 
     const [serverCourses, cloudCourses] = await Promise.all([serverPromise, cloudPromise]);
 
-    // If both server and local are empty, respect the zero-courses state
-    if (serverCourses.length === 0 && local.length === 0) {
-      saveLocalCourses([]);
-      return [];
-    }
-
-    const mergedList = deduplicateCourses([...local, ...serverCourses, ...cloudCourses]);
+    // Merge local, cloud (Firestore), and server courses so data is never lost on Vercel serverless
+    const mergedList = deduplicateCourses([...local, ...cloudCourses, ...serverCourses]);
 
     if (mergedList.length > 0) {
       saveLocalCourses(mergedList);
@@ -549,7 +559,6 @@ export const api = {
       return mergedList;
     }
 
-    saveLocalCourses([]);
     return [];
   },
 
@@ -770,7 +779,7 @@ export const api = {
   },
 
   async clearAllCourses(): Promise<{ success: boolean; message: string }> {
-    saveLocalCourses([]);
+    saveLocalCourses([], true);
     const userId = getActiveUserId();
     if (userId) {
       firestoreSync.clearAllCourses(userId).catch(() => {});

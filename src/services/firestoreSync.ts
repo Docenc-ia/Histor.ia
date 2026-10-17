@@ -75,7 +75,7 @@ function getDeletedHistoryIdsSet(): Set<string> {
   return new Set();
 }
 
-// Helper to get active user ID
+// Helper to get active user ID (deterministic and consistent across sessions)
 export function getActiveUserId(): string {
   if (auth.currentUser?.uid) return auth.currentUser.uid;
   if (typeof window !== 'undefined') {
@@ -83,13 +83,66 @@ export function getActiveUserId(): string {
       const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed?.id) return parsed.id;
+        // Only use parsed.id if it is NOT a random ephemeral timestamp id ('user-...')
+        if (parsed?.id && !String(parsed.id).startsWith('user-')) {
+          return parsed.id;
+        }
+        if (parsed?.email) {
+          return 'teacher_' + String(parsed.email).trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
+        }
       }
       const email = sessionStorage.getItem('docencia_teacher_email') || localStorage.getItem('docencia_teacher_email');
-      if (email) return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
+      if (email) return 'teacher_' + email.trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
     } catch (_) {}
   }
   return 'default_teacher';
+}
+
+// Helper to gather all candidate user IDs that may hold this teacher's historical data in Firestore
+export function getCandidateUserIds(primaryId?: string): string[] {
+  const ids = new Set<string>();
+  if (primaryId) ids.add(primaryId);
+  if (auth.currentUser?.uid) ids.add(auth.currentUser.uid);
+
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.id) ids.add(String(parsed.id));
+        if (parsed?.email) {
+          const cleanEmail = String(parsed.email).trim().toLowerCase();
+          ids.add('teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_'));
+        }
+      }
+      const email = sessionStorage.getItem('docencia_teacher_email') || localStorage.getItem('docencia_teacher_email');
+      if (email) {
+        const cleanEmail = email.trim().toLowerCase();
+        ids.add('teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_'));
+      }
+      // Also check any userId suffixes previously used in localStorage on this browser
+      const prefixes = [
+        'docencia_courses_data_',
+        'docencia_students_data_',
+        'docencia_disposition_data_',
+        'docencia_disposition_history_',
+      ];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (!key) continue;
+        for (const prefix of prefixes) {
+          if (key.startsWith(prefix)) {
+            const suffix = key.slice(prefix.length).trim();
+            if (suffix) ids.add(suffix);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  ids.add('default_teacher');
+  ids.add('user-docente');
+  return Array.from(ids).filter(Boolean);
 }
 
 export const firestoreSync = {
@@ -115,17 +168,24 @@ export const firestoreSync = {
   },
 
   /**
-   * Load courses from Firestore
+   * Load courses from Firestore (checking all candidate user IDs so data is never lost across login methods)
    */
   async loadCourses(userId: string): Promise<Course[]> {
     if (!userId || Date.now() < firestoreUnavailableUntil) return [];
+    const candidateIds = getCandidateUserIds(userId);
     try {
-      const snap = await executeWithTimeout(getDocs(collection(db, 'users', userId, 'courses')));
-      if (!snap) return [];
+      const snaps = await Promise.all(
+        candidateIds.map((uid) =>
+          executeWithTimeout(getDocs(collection(db, 'users', uid, 'courses'))).catch(() => null)
+        )
+      );
       const courses: Course[] = [];
-      snap.forEach((docSnap: any) => {
-        courses.push(docSnap.data() as Course);
-      });
+      for (const snap of snaps) {
+        if (!snap) continue;
+        snap.forEach((docSnap: any) => {
+          courses.push(docSnap.data() as Course);
+        });
+      }
       return courses;
     } catch (err) {
       firestoreUnavailableUntil = Date.now() + 45000;
@@ -190,20 +250,27 @@ export const firestoreSync = {
   },
 
   /**
-   * Load students from Firestore
+   * Load students from Firestore (checking all candidate user IDs)
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
     if (!userId || Date.now() < firestoreUnavailableUntil) return [];
+    const candidateIds = getCandidateUserIds(userId);
     try {
-      const snap = await executeWithTimeout(getDocs(collection(db, 'users', userId, 'students')));
-      if (!snap) return [];
+      const snaps = await Promise.all(
+        candidateIds.map((uid) =>
+          executeWithTimeout(getDocs(collection(db, 'users', uid, 'students'))).catch(() => null)
+        )
+      );
       const students: Student[] = [];
-      snap.forEach((docSnap: any) => {
-        const data = docSnap.data() as Student;
-        if (!courseId || data.courseId === courseId) {
-          students.push(data);
-        }
-      });
+      for (const snap of snaps) {
+        if (!snap) continue;
+        snap.forEach((docSnap: any) => {
+          const data = docSnap.data() as Student;
+          if (!courseId || data.courseId === courseId) {
+            students.push(data);
+          }
+        });
+      }
       return students;
     } catch (err) {
       firestoreUnavailableUntil = Date.now() + 45000;
@@ -363,65 +430,76 @@ export const firestoreSync = {
   },
 
   /**
-   * Load disposition history from Firestore
+   * Load disposition history from Firestore (checking all candidate user IDs)
    */
   async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
     if (!userId) return { disposition: {}, history: [] };
+    const candidateIds = getCandidateUserIds(userId);
     try {
-      const col = collection(db, 'users', userId, 'disposition');
-      const snap = await getDocs(col);
+      const snaps = await Promise.all(
+        candidateIds.map((uid) =>
+          executeWithTimeout(getDocs(collection(db, 'users', uid, 'disposition'))).catch(() => null)
+        )
+      );
       const history: any[] = [];
+      const seenRecordIds = new Set<string>();
       const disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
       const deleted = getDeletedHistoryIdsSet();
 
-      snap.forEach((docSnap) => {
-        const docId = docSnap.id;
-        const data = docSnap.data();
-        const recordId = data.id || docId;
+      for (const snap of snaps) {
+        if (!snap) continue;
+        snap.forEach((docSnap: any) => {
+          const docId = docSnap.id;
+          const data = docSnap.data();
+          const recordId = data.id || docId;
 
-        // Permanently purge and skip if deleted by tombstone
-        if (deleted.has(docId) || deleted.has(recordId)) {
-          deleteDoc(docSnap.ref).catch(() => {});
-          return;
-        }
-
-        const item: any = { id: recordId, ...data };
-        if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
-          item.pointsChange = 0;
-        }
-        history.push(item);
-
-        const studentId = data.studentId;
-        if (studentId && studentId !== 'all') {
-          if (!disposition[studentId]) {
-            disposition[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+          // Permanently purge and skip if deleted by tombstone
+          if (deleted.has(docId) || deleted.has(recordId)) {
+            deleteDoc(docSnap.ref).catch(() => {});
+            return;
           }
-          const isAbsence =
-            data.category === 'Ausencia' ||
-            data.action === 'Ausencia' ||
-            data.action?.toLowerCase().includes('ausencia') ||
-            data.action?.toLowerCase().includes('falta');
 
-          const isLate =
-            data.category === 'Llegada tarde' ||
-            data.action === 'Llegada tarde' ||
-            data.action?.toLowerCase().includes('llegada tarde') ||
-            data.action?.toLowerCase().includes('tardanza') ||
-            data.action?.toLowerCase().includes('tarde');
+          if (seenRecordIds.has(recordId)) return;
+          seenRecordIds.add(recordId);
 
-          if (isAbsence) {
-            disposition[studentId].totalAbsences += 1;
-          } else if (isLate) {
-            disposition[studentId].totalLates = (disposition[studentId].totalLates || 0) + 1;
-          } else if (
-            data.category === 'Disposición' ||
-            (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
-          ) {
-            const pts = data.pointsChange && data.pointsChange < 0 ? Math.abs(data.pointsChange) : 1;
-            disposition[studentId].totalDisposition = Math.max(0, disposition[studentId].totalDisposition - pts);
+          const item: any = { id: recordId, ...data };
+          if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
+            item.pointsChange = 0;
           }
-        }
-      });
+          history.push(item);
+
+          const studentId = data.studentId;
+          if (studentId && studentId !== 'all') {
+            if (!disposition[studentId]) {
+              disposition[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            }
+            const isAbsence =
+              data.category === 'Ausencia' ||
+              data.action === 'Ausencia' ||
+              data.action?.toLowerCase().includes('ausencia') ||
+              data.action?.toLowerCase().includes('falta');
+
+            const isLate =
+              data.category === 'Llegada tarde' ||
+              data.action === 'Llegada tarde' ||
+              data.action?.toLowerCase().includes('llegada tarde') ||
+              data.action?.toLowerCase().includes('tardanza') ||
+              data.action?.toLowerCase().includes('tarde');
+
+            if (isAbsence) {
+              disposition[studentId].totalAbsences += 1;
+            } else if (isLate) {
+              disposition[studentId].totalLates = (disposition[studentId].totalLates || 0) + 1;
+            } else if (
+              data.category === 'Disposición' ||
+              (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
+            ) {
+              const pts = data.pointsChange && data.pointsChange < 0 ? Math.abs(data.pointsChange) : 1;
+              disposition[studentId].totalDisposition = Math.max(0, disposition[studentId].totalDisposition - pts);
+            }
+          }
+        });
+      }
 
       history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
@@ -457,23 +535,33 @@ export const firestoreSync = {
   },
 
   /**
-   * Load cuatrimestre closure snapshots for a course
+   * Load cuatrimestre closure snapshots for a course (checking all candidate user IDs)
    */
   async loadTermSnapshots(
     userId: string,
     courseId: string
   ): Promise<Record<string, any>> {
     if (!userId || !courseId) return {};
+    const candidateIds = getCandidateUserIds(userId);
     try {
-      const col = collection(db, 'users', userId, 'snapshots');
-      const snap = await getDocs(col);
+      const snaps = await Promise.all(
+        candidateIds.map((uid) =>
+          executeWithTimeout(getDocs(collection(db, 'users', uid, 'snapshots'))).catch(() => null)
+        )
+      );
       const snapshots: Record<string, any> = {};
-      snap.forEach((docSnap) => {
-        const data = docSnap.data();
-        if (data.courseId === courseId && data.term) {
-          snapshots[data.term] = data;
-        }
-      });
+      for (const snap of snaps) {
+        if (!snap) continue;
+        snap.forEach((docSnap: any) => {
+          const data = docSnap.data();
+          if (data.courseId === courseId && data.term) {
+            const existing = snapshots[data.term];
+            if (!existing || (data.updatedAt && (!existing.updatedAt || data.updatedAt > existing.updatedAt))) {
+              snapshots[data.term] = data;
+            }
+          }
+        });
+      }
       return snapshots;
     } catch (err) {
       console.warn('Error loading term snapshots from Firestore:', err);

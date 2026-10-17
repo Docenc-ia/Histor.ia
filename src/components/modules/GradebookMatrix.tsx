@@ -326,19 +326,42 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
-  // Save changes to localStorage for active term
+  const persistTermSnapshotToCloud = (
+    term: '1c' | '2c',
+    cats: GradeCategory[],
+    gMap: StudentGradesMap,
+    extra?: Record<string, any>
+  ) => {
+    const userId = getActiveUserId();
+    if (!userId || !courseId) return;
+    firestoreSync
+      .saveTermSnapshot(userId, courseId, term, {
+        courseId,
+        term,
+        termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+        categories: cats,
+        gradesMap: gMap,
+        ...(extra || {}),
+        updatedAt: new Date().toISOString(),
+      })
+      .catch(() => {});
+  };
+
+  // Save changes to localStorage and Firestore for active term
   const saveCategories = (newCategories: GradeCategory[]) => {
     if (is2c) {
       setCategories2c(newCategories);
       if (typeof window !== 'undefined') {
         localStorage.setItem(getCatKey('2c'), JSON.stringify(newCategories));
       }
+      persistTermSnapshotToCloud('2c', newCategories, gradesMap2c);
     } else {
       setCategories1c(newCategories);
       if (typeof window !== 'undefined') {
         localStorage.setItem(getCatKey('1c'), JSON.stringify(newCategories));
         localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(newCategories));
       }
+      persistTermSnapshotToCloud('1c', newCategories, gradesMap1c);
     }
   };
 
@@ -348,12 +371,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       if (typeof window !== 'undefined') {
         localStorage.setItem(getGradesKey('2c'), JSON.stringify(newGrades));
       }
+      persistTermSnapshotToCloud('2c', categories2c, newGrades);
     } else {
       setGradesMap1c(newGrades);
       if (typeof window !== 'undefined') {
         localStorage.setItem(getGradesKey('1c'), JSON.stringify(newGrades));
         localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(newGrades));
       }
+      persistTermSnapshotToCloud('1c', categories1c, newGrades);
     }
   };
 
@@ -383,6 +408,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     if (typeof window !== 'undefined') {
       localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(updated));
     }
+    persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { annualOverrides: updated });
   };
 
   const handleCopyCategoriesFrom1c = () => {
@@ -396,6 +422,101 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }));
     saveCategories(cloned);
   };
+
+  // Auto-load & recover saved gradebook snapshots from Firestore on mount or course switch
+  useEffect(() => {
+    let isMounted = true;
+    const userId = getActiveUserId();
+    if (!userId || !courseId) return;
+
+    firestoreSync
+      .loadTermSnapshots(userId, courseId)
+      .then((snapshots) => {
+        if (!isMounted || !snapshots) return;
+
+        const snap1c = snapshots['1c'];
+        if (snap1c) {
+          if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
+            setCategories1c((prev) => {
+              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('1c'));
+              if (!hasLocal || prev === DEFAULT_CATEGORIES) {
+                if (typeof window !== 'undefined') {
+                  localStorage.setItem(getCatKey('1c'), JSON.stringify(snap1c.categories));
+                }
+                return snap1c.categories;
+              }
+              return prev;
+            });
+          }
+          if (snap1c.gradesMap && typeof snap1c.gradesMap === 'object' && Object.keys(snap1c.gradesMap).length > 0) {
+            setGradesMap1c((prev) => {
+              const merged = { ...snap1c.gradesMap, ...prev };
+              if (typeof window !== 'undefined') {
+                localStorage.setItem(getGradesKey('1c'), JSON.stringify(merged));
+              }
+              return merged;
+            });
+          }
+          if (snap1c.preliminaryValuation) {
+            setPreliminaryValuation1c((prev) => {
+              const val = prev || snap1c.preliminaryValuation;
+              if (typeof window !== 'undefined' && val) {
+                localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(val));
+              }
+              return val;
+            });
+          }
+          if (snap1c.annualOverrides && typeof snap1c.annualOverrides === 'object') {
+            setAnnualOverrides((prev) => {
+              const merged = { ...snap1c.annualOverrides, ...prev };
+              if (typeof window !== 'undefined') {
+                localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
+              }
+              return merged;
+            });
+          }
+        }
+
+        const snap2c = snapshots['2c'];
+        if (snap2c) {
+          if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
+            setCategories2c((prev) => {
+              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('2c'));
+              if (!hasLocal) {
+                if (typeof window !== 'undefined') {
+                  localStorage.setItem(getCatKey('2c'), JSON.stringify(snap2c.categories));
+                }
+                return snap2c.categories;
+              }
+              return prev;
+            });
+          }
+          if (snap2c.gradesMap && typeof snap2c.gradesMap === 'object' && Object.keys(snap2c.gradesMap).length > 0) {
+            setGradesMap2c((prev) => {
+              const merged = { ...snap2c.gradesMap, ...prev };
+              if (typeof window !== 'undefined') {
+                localStorage.setItem(getGradesKey('2c'), JSON.stringify(merged));
+              }
+              return merged;
+            });
+          }
+          if (snap2c.preliminaryValuation) {
+            setPreliminaryValuation2c((prev) => {
+              const val = prev || snap2c.preliminaryValuation;
+              if (typeof window !== 'undefined' && val) {
+                localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(val));
+              }
+              return val;
+            });
+          }
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [courseId]);
 
   // Listen for external grades or category updates (e.g. disposition notes sent from ClassesModule)
   useEffect(() => {
@@ -460,11 +581,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       if (typeof window !== 'undefined') {
         localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(record));
       }
+      persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { preliminaryValuation: record });
     } else {
       setPreliminaryValuation1c(record);
       if (typeof window !== 'undefined') {
         localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(record));
       }
+      persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { preliminaryValuation: record });
     }
   };
 

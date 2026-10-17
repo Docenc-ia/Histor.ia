@@ -16,6 +16,15 @@ import {
   Folder,
   Loader2,
   UserCheck,
+  SlidersHorizontal,
+  CheckSquare,
+  Square,
+  PenLine,
+  Sparkles,
+  MessageSquare,
+  HeartHandshake,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -35,6 +44,7 @@ export interface CourseReportModalProps {
   driveFolderUrl?: string;
   initialTab?: 'course' | 'individual';
   initialStudentId?: string;
+  initialPreset?: 'all' | 'attendance' | 'grades' | 'disposition';
 }
 
 export const CourseReportModal: React.FC<CourseReportModalProps> = ({
@@ -51,11 +61,13 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   driveFolderUrl,
   initialTab = 'course',
   initialStudentId,
+  initialPreset = 'all',
 }) => {
   const { user } = useWorkspaceAuth();
   const [activeTab, setActiveTab] = useState<'course' | 'individual'>(initialTab);
   const [selectedStudentId, setSelectedStudentId] = useState<string>(initialStudentId || 'all');
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
   const [driveSavedResult, setDriveSavedResult] = useState<{
     success: boolean;
     name: string;
@@ -66,6 +78,74 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [courseObservation, setCourseObservation] = useState<string>(
     'El grupo de estudiantes ha completado las actividades curriculares correspondientes al ciclo lectivo 2026. Se detallan a continuación las calificaciones definitivas, registros de asistencia y condiciones de acreditación conforme a las normativas pedagógicas vigentes.'
   );
+
+  // Customization of report elements (Docente puede elegir qué poner según motivo de informe/citación)
+  const [includeGrades, setIncludeGrades] = useState<boolean>(
+    initialPreset === 'attendance' || initialPreset === 'disposition' ? false : true
+  );
+  const [includeAttendance, setIncludeAttendance] = useState<boolean>(
+    initialPreset === 'grades' || initialPreset === 'disposition' ? false : true
+  );
+  const [includeDisposition, setIncludeDisposition] = useState<boolean>(
+    initialPreset === 'grades' || initialPreset === 'attendance' ? false : true
+  );
+  const [includeObservations, setIncludeObservations] = useState<boolean>(true);
+  const [includeFamilySignature, setIncludeFamilySignature] = useState<boolean>(
+    initialPreset !== 'all'
+  );
+  const [reportReason, setReportReason] = useState<string>(
+    initialPreset === 'attendance'
+      ? 'Citación a Familias por Inasistencias y Puntualidad'
+      : initialPreset === 'grades'
+      ? 'Citación a Familias por Rendimiento y Calificaciones'
+      : initialPreset === 'disposition'
+      ? 'Citación a Familias por Convivencia y Disposición en Clase'
+      : 'Informe Oficial de Trayectoria y Calificaciones'
+  );
+  const [isCustomReason, setIsCustomReason] = useState<boolean>(false);
+  const [customReasonInput, setCustomReasonInput] = useState<string>('');
+  const effectiveReason =
+    isCustomReason && customReasonInput.trim() ? customReasonInput.trim() : reportReason;
+
+  // Preset quick applier
+  const applyPreset = (preset: 'all' | 'attendance' | 'grades' | 'disposition') => {
+    setIsCustomReason(false);
+    if (preset === 'all') {
+      setIncludeGrades(true);
+      setIncludeAttendance(true);
+      setIncludeDisposition(true);
+      setIncludeObservations(true);
+      setIncludeFamilySignature(false);
+      setReportReason('Informe Oficial de Trayectoria y Calificaciones');
+    } else if (preset === 'attendance') {
+      setIncludeGrades(false);
+      setIncludeAttendance(true);
+      setIncludeDisposition(false);
+      setIncludeObservations(true);
+      setIncludeFamilySignature(true);
+      setReportReason('Citación a Familias por Inasistencias y Puntualidad');
+    } else if (preset === 'grades') {
+      setIncludeGrades(true);
+      setIncludeAttendance(false);
+      setIncludeDisposition(false);
+      setIncludeObservations(true);
+      setIncludeFamilySignature(true);
+      setReportReason('Citación a Familias por Rendimiento y Calificaciones');
+    } else if (preset === 'disposition') {
+      setIncludeGrades(false);
+      setIncludeAttendance(false);
+      setIncludeDisposition(true);
+      setIncludeObservations(true);
+      setIncludeFamilySignature(true);
+      setReportReason('Citación a Familias por Convivencia y Disposición en Clase');
+    }
+  };
+
+  const selectedElementsCount =
+    (includeGrades ? 1 : 0) +
+    (includeAttendance ? 1 : 0) +
+    (includeDisposition ? 1 : 0) +
+    (includeObservations ? 1 : 0);
 
   // Load attendance, disposition and observations maps
   const disp1cMap = useMemo(() => {
@@ -305,27 +385,71 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       ? consolidatedStudents
       : consolidatedStudents.filter((s) => s.student.id === selectedStudentId);
 
-  // Print handler
-  const handlePrint = () => {
-    window.print();
-  };
 
   // Generate self-contained standalone HTML document for download or Drive upload
   const generateHtmlDocument = (type: 'course' | 'individual') => {
     const isCourse = type === 'course';
+    const effectiveReason =
+      isCustomReason && customReasonInput.trim() ? customReasonInput.trim() : reportReason;
     const title = isCourse
       ? `Informe Consolidado — ${courseName}`
-      : `Boletines de Rendimiento (1 Pág.) — ${courseName}`;
+      : `${effectiveReason} — ${courseName}`;
 
     let bodyContent = '';
 
     if (isCourse) {
+      // Build course KPIs conditionally
+      let kpiBoxes = '';
+      if (includeGrades) {
+        kpiBoxes += `
+          <div class="stat-box">
+            <div class="stat-label">Aprobados</div>
+            <div class="stat-val text-green">${stats.approvedCount} (${stats.approvedPercent}%)</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">En Compensación</div>
+            <div class="stat-val text-red">${stats.compCount}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Promedio General</div>
+            <div class="stat-val text-purple">${stats.avgScore}</div>
+          </div>
+        `;
+      }
+      if (includeAttendance) {
+        kpiBoxes += `
+          <div class="stat-box">
+            <div class="stat-label">Asistencia Promedio</div>
+            <div class="stat-val">${stats.avgAttendance}%</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Total Inasistencias</div>
+            <div class="stat-val text-red">${stats.totalCourseAbsences}</div>
+          </div>
+        `;
+      }
+      if (includeDisposition) {
+        const avgDispTotal =
+          consolidatedStudents.length > 0
+            ? (
+                consolidatedStudents.reduce((acc, s) => acc + s.avgDisp, 0) /
+                consolidatedStudents.length
+              ).toFixed(1)
+            : '10';
+        kpiBoxes += `
+          <div class="stat-box">
+            <div class="stat-label">Disposición Promedio</div>
+            <div class="stat-val text-purple">${avgDispTotal} / 10</div>
+          </div>
+        `;
+      }
+
       bodyContent = `
         <div class="report-page">
           <div class="header">
             <div class="school-brand">
               <h2>${schoolName}</h2>
-              <p class="subtitle">INFORME INSTITUCIONAL DE RENDIMIENTO ACADÉMICO Y ASISTENCIA — CICLO LECTIVO 2026</p>
+              <p class="subtitle">${effectiveReason.toUpperCase()} — CICLO LECTIVO 2026</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${courseName}</div>
@@ -335,37 +459,34 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             </div>
           </div>
 
-          <div class="stats-row">
-            <div class="stat-box">
-              <div class="stat-label">Aprobados</div>
-              <div class="stat-val text-green">${stats.approvedCount} (${stats.approvedPercent}%)</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">En Compensación</div>
-              <div class="stat-val text-red">${stats.compCount}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Promedio General</div>
-              <div class="stat-val text-purple">${stats.avgScore}</div>
-            </div>
-            <div class="stat-box">
-              <div class="stat-label">Asistencia Promedio</div>
-              <div class="stat-val">${stats.avgAttendance}%</div>
-            </div>
-          </div>
+          ${kpiBoxes ? `<div class="stats-row">${kpiBoxes}</div>` : ''}
 
           <table class="data-table">
             <thead>
               <tr>
                 <th style="width: 30px;">#</th>
                 <th>Estudiante</th>
-                <th style="text-align: center;">1° Cuatr.</th>
-                <th style="text-align: center;">2° Cuatr.</th>
-                <th style="text-align: center;">Promedio</th>
-                <th style="text-align: center;">Nota Definitiva</th>
-                <th style="text-align: center;">Faltas Anuales</th>
-                <th style="text-align: center;">Disposición</th>
-                <th style="text-align: center;">Condición Final</th>
+                ${
+                  includeGrades
+                    ? `
+                  <th style="text-align: center;">1° Cuatr.</th>
+                  <th style="text-align: center;">2° Cuatr.</th>
+                  <th style="text-align: center;">Promedio</th>
+                  <th style="text-align: center;">Nota Definitiva</th>
+                `
+                    : ''
+                }
+                ${
+                  includeAttendance
+                    ? `
+                  <th style="text-align: center;">Faltas 1°C</th>
+                  <th style="text-align: center;">Faltas 2°C</th>
+                  <th style="text-align: center;">Faltas Anuales</th>
+                `
+                    : ''
+                }
+                ${includeDisposition ? `<th style="text-align: center;">Disposición</th>` : ''}
+                ${includeGrades ? `<th style="text-align: center;">Condición Final</th>` : ''}
               </tr>
             </thead>
             <tbody>
@@ -375,19 +496,39 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 <tr>
                   <td style="text-align: center; color: #666;">${idx + 1}</td>
                   <td><strong>${row.student.lastName}, ${row.student.firstName}</strong></td>
-                  <td style="text-align: center;">${row.score1c || '—'}</td>
-                  <td style="text-align: center;">${row.score2c || '—'}</td>
-                  <td style="text-align: center; font-weight: bold;">${row.calcAvgStr || '—'}</td>
-                  <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${row.finalVal || '—'}</td>
-                  <td style="text-align: center;">${row.totalAbs}</td>
-                  <td style="text-align: center;">${row.avgDisp}/10</td>
-                  <td style="text-align: center;">
-                    <span class="badge ${
-                      row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
-                    }">
-                      ${row.condition}
-                    </span>
-                  </td>
+                  ${
+                    includeGrades
+                      ? `
+                    <td style="text-align: center;">${row.score1c || '—'}</td>
+                    <td style="text-align: center;">${row.score2c || '—'}</td>
+                    <td style="text-align: center; font-weight: bold;">${row.calcAvgStr || '—'}</td>
+                    <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${row.finalVal || '—'}</td>
+                  `
+                      : ''
+                  }
+                  ${
+                    includeAttendance
+                      ? `
+                    <td style="text-align: center;">${row.abs1}</td>
+                    <td style="text-align: center;">${row.abs2}</td>
+                    <td style="text-align: center; font-weight: bold;">${row.totalAbs}</td>
+                  `
+                      : ''
+                  }
+                  ${includeDisposition ? `<td style="text-align: center;">${row.avgDisp}/10</td>` : ''}
+                  ${
+                    includeGrades
+                      ? `
+                    <td style="text-align: center;">
+                      <span class="badge ${
+                        row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
+                      }">
+                        ${row.condition}
+                      </span>
+                    </td>
+                  `
+                      : ''
+                  }
                 </tr>
               `
                 )
@@ -395,13 +536,19 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             </tbody>
           </table>
 
-          <div class="observations-box">
-            <h4>Observaciones Pedagógicas y Síntesis del Curso:</h4>
-            <p>${courseObservation}</p>
-          </div>
+          ${
+            includeObservations
+              ? `
+            <div class="observations-box">
+              <h4>Observaciones Pedagógicas y Síntesis del Curso:</h4>
+              <p>${courseObservation}</p>
+            </div>
+          `
+              : ''
+          }
 
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
-            <div><strong>Documento Oficial de Cierre Institucional</strong> — Ciclo Lectivo 2026</div>
+            <div><strong>Documento Oficial Institucional</strong> — Ciclo Lectivo 2026</div>
             <div>Docente responsable: <strong>${teacherName}</strong> — ${schoolName}</div>
           </div>
         </div>
@@ -410,92 +557,212 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       // Individual student reports (1 page per student)
       bodyContent = displayedStudents
         .map(
-          (row, idx) => `
+          (row) => `
         <div class="student-page">
           <div class="header">
             <div class="school-brand">
               <h2>${schoolName}</h2>
-              <p class="subtitle">INFORME INDIVIDUAL DE TRAYECTORIA Y CALIFICACIONES — CICLO 2026</p>
+              <p class="subtitle">${effectiveReason.toUpperCase()} — CICLO 2026</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${courseName}</div>
               <div><strong>Docente:</strong> ${teacherName}</div>
-              <div><strong>Fecha de emisión:</strong> ${currentDate}</div>
+              <div><strong>Fecha:</strong> ${currentDate}</div>
             </div>
           </div>
 
           <div class="student-card-info">
-            <div style="font-size: 16px; font-weight: bold; color: #1e293b;">
-              Estudiante: ${row.student.lastName}, ${row.student.firstName}
-            </div>
-            <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
-              Email institucional: ${row.student.email || '—'}
-            </div>
-          </div>
-
-          <div class="section-title">1. Rendimiento Académico y Calificaciones</div>
-          <table class="data-table" style="margin-bottom: 16px;">
-            <thead>
-              <tr>
-                <th style="text-align: center;">1° Cuatrimestre</th>
-                <th style="text-align: center;">2° Cuatrimestre</th>
-                <th style="text-align: center;">Promedio Ponderado</th>
-                <th style="text-align: center; background: #e0e7ff;">Calificación Final Definitiva</th>
-                <th style="text-align: center;">Condición de Acreditación</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score1c || '—'}</td>
-                <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score2c || '—'}</td>
-                <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.calcAvgStr || '—'}</td>
-                <td style="text-align: center; font-size: 18px; font-weight: bold; color: #1e40af; background: #eef2ff;">
-                  ${row.finalVal || '—'}
-                </td>
-                <td style="text-align: center;">
-                  <span class="badge ${row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'}" style="font-size: 12px; padding: 4px 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-size: 16px; font-weight: bold; color: #1e293b;">
+                  Estudiante: ${row.student.lastName}, ${row.student.firstName}
+                </div>
+                <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
+                  Email institucional: ${row.student.email || '—'}
+                </div>
+              </div>
+              ${
+                includeGrades
+                  ? `
+                <div style="text-align: right;">
+                  <span class="badge ${
+                    row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
+                  }" style="font-size: 12px; padding: 4px 10px;">
                     ${row.condition}
                   </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div class="section-title">2. Asistencia, Puntualidad y Convivencia Escolar</div>
-          <table class="data-table" style="margin-bottom: 16px;">
-            <thead>
-              <tr>
-                <th style="text-align: center;">Faltas 1° Cuatr.</th>
-                <th style="text-align: center;">Faltas 2° Cuatr.</th>
-                <th style="text-align: center;">Total Inasistencias</th>
-                <th style="text-align: center;">Tardanzas</th>
-                <th style="text-align: center;">% Asistencia Estimada</th>
-                <th style="text-align: center;">Nota de Disposición y Trabajo</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td style="text-align: center;">${row.abs1}</td>
-                <td style="text-align: center;">${row.abs2}</td>
-                <td style="text-align: center; font-weight: bold;">${row.totalAbs}</td>
-                <td style="text-align: center;">${row.totalLat}</td>
-                <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
-                  ${row.estimatedAttendance}%
-                </td>
-                <td style="text-align: center; font-weight: bold; color: #7c3aed;">
-                  ${row.avgDisp} / 10
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <div class="observations-box" style="margin-top: 14px;">
-            <h4>3. Observación Pedagógica del Docente (Constancia / Informe):</h4>
-            <p>${row.observation || 'Sin observaciones adicionales registradas.'}</p>
+                </div>
+              `
+                  : ''
+              }
+            </div>
+            ${
+              effectiveReason
+                ? `
+              <div style="margin-top: 8px; font-size: 11px; font-weight: 600; color: #1e40af; background: #e0e7ff; display: inline-block; padding: 3px 10px; border-radius: 4px;">
+                📌 Convocatoria / Motivo: ${effectiveReason}
+              </div>
+            `
+                : ''
+            }
           </div>
 
+          ${
+            includeGrades
+              ? `
+            <div class="section-title">1. Rendimiento Académico y Calificaciones</div>
+            <table class="data-table" style="margin-bottom: 16px;">
+              <thead>
+                <tr>
+                  <th style="text-align: center;">1° Cuatrimestre</th>
+                  <th style="text-align: center;">2° Cuatrimestre</th>
+                  <th style="text-align: center;">Promedio Ponderado</th>
+                  <th style="text-align: center; background: #e0e7ff;">Calificación Final Definitiva</th>
+                  <th style="text-align: center;">Condición de Acreditación</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score1c || '—'}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score2c || '—'}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.calcAvgStr || '—'}</td>
+                  <td style="text-align: center; font-size: 18px; font-weight: bold; color: #1e40af; background: #eef2ff;">
+                    ${row.finalVal || '—'}
+                  </td>
+                  <td style="text-align: center;">
+                    <span class="badge ${row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'}" style="font-size: 12px; padding: 4px 10px;">
+                      ${row.condition}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          `
+              : ''
+          }
+
+          ${
+            includeAttendance && includeDisposition
+              ? `
+            <div class="section-title">${includeGrades ? '2' : '1'}. Asistencia, Puntualidad y Convivencia Escolar</div>
+            <table class="data-table" style="margin-bottom: 16px;">
+              <thead>
+                <tr>
+                  <th style="text-align: center;">Faltas 1° Cuatr.</th>
+                  <th style="text-align: center;">Faltas 2° Cuatr.</th>
+                  <th style="text-align: center;">Total Inasistencias</th>
+                  <th style="text-align: center;">Tardanzas</th>
+                  <th style="text-align: center;">% Asistencia Estimada</th>
+                  <th style="text-align: center;">Nota de Disposición y Trabajo</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="text-align: center;">${row.abs1}</td>
+                  <td style="text-align: center;">${row.abs2}</td>
+                  <td style="text-align: center; font-weight: bold;">${row.totalAbs}</td>
+                  <td style="text-align: center;">${row.totalLat}</td>
+                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
+                    ${row.estimatedAttendance}%
+                  </td>
+                  <td style="text-align: center; font-weight: bold; color: #7c3aed;">
+                    ${row.avgDisp} / 10
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          `
+              : includeAttendance && !includeDisposition
+              ? `
+            <div class="section-title">${includeGrades ? '2' : '1'}. Registro de Asistencia y Puntualidad Escolar</div>
+            <table class="data-table" style="margin-bottom: 16px;">
+              <thead>
+                <tr>
+                  <th style="text-align: center;">Faltas 1° Cuatrimestre</th>
+                  <th style="text-align: center;">Faltas 2° Cuatrimestre</th>
+                  <th style="text-align: center; background: #fee2e2;">Total Inasistencias Acumuladas</th>
+                  <th style="text-align: center;">Tardanzas Registradas</th>
+                  <th style="text-align: center;">% Asistencia Presencial</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="text-align: center;">${row.abs1}</td>
+                  <td style="text-align: center;">${row.abs2}</td>
+                  <td style="text-align: center; font-weight: bold; font-size: 15px; color: #b91c1c; background: #fff1f2;">
+                    ${row.totalAbs} inasistencias
+                  </td>
+                  <td style="text-align: center;">${row.totalLat}</td>
+                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
+                    ${row.estimatedAttendance}%
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          `
+              : !includeAttendance && includeDisposition
+              ? `
+            <div class="section-title">${includeGrades ? '2' : '1'}. Disposición para el Trabajo y Convivencia Áulica</div>
+            <table class="data-table" style="margin-bottom: 16px;">
+              <thead>
+                <tr>
+                  <th style="text-align: center;">Disposición 1° Cuatrimestre</th>
+                  <th style="text-align: center;">Disposición 2° Cuatrimestre</th>
+                  <th style="text-align: center; background: #ede9fe;">Puntaje Promedio de Disposición</th>
+                  <th style="text-align: center;">Valoración de Compromiso y Tareas</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="text-align: center;">${row.disp1} / 10</td>
+                  <td style="text-align: center;">${row.disp2} / 10</td>
+                  <td style="text-align: center; font-weight: bold; font-size: 16px; color: #6d28d9; background: #f5f3ff;">
+                    ${row.avgDisp} / 10
+                  </td>
+                  <td style="text-align: center; font-weight: 600; color: ${row.avgDisp >= 8 ? '#15803d' : row.avgDisp >= 6 ? '#d97706' : '#b91c1c'};">
+                    ${row.avgDisp >= 8 ? 'Favorable y participativo' : row.avgDisp >= 6 ? 'Regular / Ajustar entrega de tareas' : 'Requiere mayor compromiso en clase'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          `
+              : ''
+          }
+
+          ${
+            includeObservations
+              ? `
+            <div class="observations-box" style="margin-top: 14px;">
+              <h4>${includeGrades && (includeAttendance || includeDisposition) ? '3' : includeGrades || includeAttendance || includeDisposition ? '2' : '1'}. Observación Pedagógica del Docente / Motivo de Citación:</h4>
+              <p>${row.observation || 'Sin observaciones adicionales registradas.'}</p>
+            </div>
+          `
+              : ''
+          }
+
+          ${
+            includeFamilySignature
+              ? `
+            <div style="margin-top: 30px; padding: 14px; border: 1px dashed #94a3b8; border-radius: 8px; background: #f8fafc;">
+              <div style="font-size: 11px; font-weight: bold; color: #1e3a8a; margin-bottom: 12px; text-transform: uppercase;">
+                Acta de Notificación Institucional y Firma de Conformidad
+              </div>
+              <div style="display: flex; justify-content: space-between; gap: 30px; font-size: 11px;">
+                <div style="flex: 1; padding-top: 28px; border-top: 1px solid #475569; text-align: center;">
+                  <div><strong>Firma del Docente</strong></div>
+                  <div style="color: #64748b; margin-top: 2px;">${teacherName} — ${schoolName}</div>
+                </div>
+                <div style="flex: 1; padding-top: 28px; border-top: 1px solid #475569; text-align: center;">
+                  <div><strong>Firma del Adulto Responsable / Tutor</strong></div>
+                  <div style="color: #64748b; margin-top: 2px;">Aclaración: _____________________ DNI: _______________</div>
+                </div>
+              </div>
+            </div>
+          `
+              : ''
+          }
+
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
-            <div><strong>Constancia Oficial de Situación Aúlica y Trayectoria</strong> — ${courseName}</div>
+            <div><strong>Constancia Oficial de Trayectoria</strong> — ${courseName}</div>
             <div>Docente a cargo: <strong>${teacherName}</strong> — Ciclo Lectivo 2026</div>
           </div>
         </div>
@@ -702,6 +969,21 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 </html>`;
   };
 
+  // Robust Print Handler using native browser print and download fallback
+  const handlePrint = () => {
+    setIsPrinting(true);
+    setTimeout(() => {
+      try {
+        window.print();
+      } catch (err) {
+        console.warn('Native window.print failed, falling back to download:', err);
+        handleDownloadHtml();
+      } finally {
+        setIsPrinting(false);
+      }
+    }, 100);
+  };
+
   // Download locally (.html printable file)
   const handleDownloadHtml = () => {
     const html = generateHtmlDocument(activeTab);
@@ -811,11 +1093,16 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <button
               type="button"
               onClick={handlePrint}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer"
+              disabled={isPrinting}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer disabled:opacity-70"
               title="Imprimir o guardar como PDF en tu navegador"
             >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Imprimir / PDF</span>
+              {isPrinting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Printer className="w-3.5 h-3.5" />
+              )}
+              <span>{isPrinting ? 'Generando...' : 'Imprimir / PDF'}</span>
             </button>
 
             <button
@@ -840,15 +1127,31 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <button
               type="button"
               onClick={handleDownloadHtml}
-              className={`p-1.5 rounded-lg border text-xs font-medium transition-colors cursor-pointer ${
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
                 isDarkMode
                   ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
                   : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-300'
               }`}
-              title="Descargar copia (.html)"
+              title="Descargar copia del informe en HTML independiente para abrir e imprimir en tu navegador"
             >
-              <Download className="w-4 h-4" />
+              <Download className="w-3.5 h-3.5 text-blue-500" />
+              <span>Descargar HTML</span>
             </button>
+
+            <a
+              href={`?course=${courseId}&view=course_detail&openReport=true&reportTab=${activeTab}${selectedStudentId !== 'all' ? `&studentId=${selectedStudentId}` : ''}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'bg-slate-800 hover:bg-slate-750 text-blue-300 border-slate-700'
+                  : 'bg-white hover:bg-blue-50 text-blue-700 border-neutral-300 shadow-2xs'
+              }`}
+              title="Abrir este informe en una pestaña o ventana independiente"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
+              <span className="hidden sm:inline">Abrir en otra pestaña</span>
+            </a>
 
             <button
               type="button"
@@ -925,6 +1228,251 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           )}
         </div>
 
+        {/* Panel de selección interactiva de elementos y citación a padres */}
+        <div
+          className={`px-5 py-3 border-b text-xs transition-colors shrink-0 ${
+            isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
+          }`}
+        >
+          {/* Top row: Titulo y Plantillas Rápidas para Citaciones */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 mb-2.5">
+            <div className="flex items-center gap-2">
+              <span className="font-bold flex items-center gap-1.5 text-neutral-800 dark:text-neutral-200">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                Elementos del informe:
+              </span>
+              <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                {selectedElementsCount} de 4 activos
+              </span>
+            </div>
+
+            {/* Quick Presets for Parent Citations & Reports */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-neutral-500 dark:text-slate-400 mr-1">
+                Plantillas rápidas:
+              </span>
+              <button
+                type="button"
+                onClick={() => applyPreset('all')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                  includeGrades && includeAttendance && includeDisposition && includeObservations && !includeFamilySignature
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+                    : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-300'
+                }`}
+                title="Incluir calificaciones, asistencia, disposición y observaciones"
+              >
+                Completo (Todo)
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('grades')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
+                  includeGrades && !includeAttendance && !includeDisposition
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300 border-slate-700'
+                    : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                }`}
+                title="Citación a familias por calificaciones y rendimiento"
+              >
+                <span>Citación por Notas</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('attendance')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
+                  !includeGrades && includeAttendance && !includeDisposition
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-emerald-300 border-slate-700'
+                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200'
+                }`}
+                title="Citación a familias por inasistencias y faltas reiteradas"
+              >
+                <span>Citación por Asistencia</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset('disposition')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer flex items-center gap-1 ${
+                  !includeGrades && !includeAttendance && includeDisposition
+                    ? 'bg-purple-600 text-white border-purple-600 shadow-2xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 hover:bg-slate-700 text-purple-300 border-slate-700'
+                    : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border-purple-200'
+                }`}
+                title="Citación a familias por conducta, disposición y convivencia escolar"
+              >
+                <span>Citación por Disposición</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Botones / Checkboxes interactivos con clic directo */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 1. Calificaciones */}
+            <button
+              type="button"
+              onClick={() => setIncludeGrades(!includeGrades)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                includeGrades
+                  ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700 shadow-2xs font-bold'
+                  : isDarkMode
+                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+              }`}
+            >
+              {includeGrades ? (
+                <CheckSquare className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+              <span>Calificaciones</span>
+              <span className="text-[10px] opacity-75 font-normal">(1°C, 2°C, Final)</span>
+            </button>
+
+            {/* 2. Asistencia */}
+            <button
+              type="button"
+              onClick={() => setIncludeAttendance(!includeAttendance)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                includeAttendance
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 shadow-2xs font-bold'
+                  : isDarkMode
+                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+              }`}
+            >
+              {includeAttendance ? (
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+              <span>Asistencia</span>
+              <span className="text-[10px] opacity-75 font-normal">(Faltas y %)</span>
+            </button>
+
+            {/* 3. Disposición */}
+            <button
+              type="button"
+              onClick={() => setIncludeDisposition(!includeDisposition)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                includeDisposition
+                  ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700 shadow-2xs font-bold'
+                  : isDarkMode
+                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+              }`}
+            >
+              {includeDisposition ? (
+                <CheckSquare className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+              <span>Disposición</span>
+              <span className="text-[10px] opacity-75 font-normal">(Puntaje y actitud)</span>
+            </button>
+
+            {/* 4. Observaciones */}
+            <button
+              type="button"
+              onClick={() => setIncludeObservations(!includeObservations)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                includeObservations
+                  ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 shadow-2xs font-bold'
+                  : isDarkMode
+                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+              }`}
+            >
+              {includeObservations ? (
+                <CheckSquare className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+              <span>Observaciones / Citación</span>
+            </button>
+
+            {/* 5. Talón de firma de familias */}
+            <button
+              type="button"
+              onClick={() => setIncludeFamilySignature(!includeFamilySignature)}
+              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                includeFamilySignature
+                  ? 'bg-neutral-800 text-white dark:bg-slate-700 dark:text-white border-neutral-800 dark:border-slate-600 shadow-2xs font-bold'
+                  : isDarkMode
+                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                  : 'bg-neutral-100 text-neutral-500 border-neutral-200 opacity-75'
+              }`}
+              title="Incluye talón con línea para firma del docente y notificación/firma del padre, madre o tutor"
+            >
+              {includeFamilySignature ? (
+                <CheckSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+              ) : (
+                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+              )}
+              <span>Talón de Firma Familias</span>
+            </button>
+          </div>
+
+          {/* Motivo de la citación / encabezado */}
+          <div className="mt-2.5 pt-2 border-t border-neutral-200/80 dark:border-slate-800 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-neutral-600 dark:text-slate-400">
+              Motivo o título del informe:
+            </span>
+            <select
+              value={isCustomReason ? 'custom' : reportReason}
+              onChange={(e) => {
+                if (e.target.value === 'custom') {
+                  setIsCustomReason(true);
+                  if (!customReasonInput) setCustomReasonInput(reportReason);
+                } else {
+                  setIsCustomReason(false);
+                  setReportReason(e.target.value);
+                }
+              }}
+              className={`text-xs px-2.5 py-1 rounded-lg border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                isDarkMode
+                  ? 'bg-slate-800 border-slate-700 text-slate-200'
+                  : 'bg-white border-neutral-300 text-neutral-800'
+              }`}
+            >
+              <option value="Informe Oficial de Trayectoria y Calificaciones">
+                Informe Oficial de Trayectoria y Calificaciones
+              </option>
+              <option value="Citación a Familias por Inasistencias y Puntualidad">
+                Citación a Familias por Inasistencias y Puntualidad
+              </option>
+              <option value="Citación a Familias por Rendimiento y Calificaciones">
+                Citación a Familias por Rendimiento y Calificaciones
+              </option>
+              <option value="Citación a Familias por Convivencia y Disposición en Clase">
+                Citación a Familias por Convivencia y Disposición en Clase
+              </option>
+              <option value="Entrevista con Familia / Notificación Escolar">
+                Entrevista con Familia / Notificación Escolar
+              </option>
+              <option value="custom">✏️ Escribir motivo personalizado...</option>
+            </select>
+
+            {isCustomReason && (
+              <input
+                type="text"
+                value={customReasonInput}
+                onChange={(e) => setCustomReasonInput(e.target.value)}
+                placeholder="Ej: Citación por entrega de trabajos prácticos"
+                className={`text-xs px-2.5 py-1 rounded-lg border font-medium flex-1 min-w-[200px] focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-blue-500 text-white'
+                    : 'bg-white border-blue-400 text-neutral-900'
+                }`}
+              />
+            )}
+          </div>
+        </div>
+
         {/* Live Drive Result Notification Banner */}
         {driveSavedResult && (
           <div
@@ -974,7 +1522,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                       {schoolName}
                     </h1>
                     <p className="text-xs font-semibold text-neutral-500 uppercase tracking-wide mt-1">
-                      Informe Institucional de Rendimiento Académico y Asistencia — Ciclo Lectivo 2026
+                      {effectiveReason} — Ciclo Lectivo 2026
                     </p>
                   </div>
                   <div className="text-xs text-neutral-600 sm:text-right space-y-0.5">
@@ -993,61 +1541,117 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   </div>
                 </div>
 
-                {/* KPI Strip */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-                  <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                    <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                      Aprobados
-                    </span>
-                    <span className="text-lg font-bold text-emerald-600">
-                      {stats.approvedCount}{' '}
-                      <span className="text-xs font-medium text-neutral-500">
-                        ({stats.approvedPercent}%)
-                      </span>
+                {/* Warning if no elements are selected */}
+                {selectedElementsCount === 0 && (
+                  <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Has desmarcado todos los elementos. Marcá al menos <strong>Calificaciones</strong>, <strong>Asistencia</strong> o <strong>Disposición</strong> en la barra superior para generar el reporte.
                     </span>
                   </div>
-                  <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                    <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                      En Compensación
-                    </span>
-                    <span className="text-lg font-bold text-rose-600">
-                      {stats.compCount}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                    <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                      Promedio Anual Curso
-                    </span>
-                    <span className="text-lg font-bold text-purple-600">
-                      {stats.avgScore}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                    <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                      Asistencia Promedio
-                    </span>
-                    <span className="text-lg font-bold text-blue-600">
-                      {stats.avgAttendance}%
-                    </span>
-                  </div>
-                </div>
+                )}
 
-                {/* Table */}
+                {/* KPI Strip (Conditional) */}
+                {(includeGrades || includeAttendance || includeDisposition) && (
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                    {includeGrades && (
+                      <>
+                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                            Aprobados
+                          </span>
+                          <span className="text-lg font-bold text-emerald-600">
+                            {stats.approvedCount}{' '}
+                            <span className="text-xs font-medium text-neutral-500">
+                              ({stats.approvedPercent}%)
+                            </span>
+                          </span>
+                        </div>
+                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                            En Compensación
+                          </span>
+                          <span className="text-lg font-bold text-rose-600">
+                            {stats.compCount}
+                          </span>
+                        </div>
+                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                            Promedio Anual Curso
+                          </span>
+                          <span className="text-lg font-bold text-purple-600">
+                            {stats.avgScore}
+                          </span>
+                        </div>
+                      </>
+                    )}
+                    {includeAttendance && (
+                      <>
+                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                            Asistencia Promedio
+                          </span>
+                          <span className="text-lg font-bold text-blue-600">
+                            {stats.avgAttendance}%
+                          </span>
+                        </div>
+                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                            Total Inasistencias
+                          </span>
+                          <span className="text-lg font-bold text-rose-600">
+                            {stats.totalCourseAbsences}
+                          </span>
+                        </div>
+                      </>
+                    )}
+                    {includeDisposition && (
+                      <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
+                        <span className="text-[10px] uppercase font-bold text-neutral-500 block">
+                          Disposición Promedio
+                        </span>
+                        <span className="text-lg font-bold text-purple-600">
+                          {(
+                            consolidatedStudents.reduce((acc, s) => acc + s.avgDisp, 0) /
+                            (consolidatedStudents.length || 1)
+                          ).toFixed(1)}{' '}
+                          / 10
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Table with conditional columns */}
                 <div className="overflow-x-auto mb-6">
                   <table className="w-full text-left text-xs border border-neutral-300">
                     <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                       <tr>
                         <th className="py-2.5 px-2 text-center border-r border-neutral-300 w-8">#</th>
                         <th className="py-2.5 px-3 border-r border-neutral-300">Estudiante</th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300">1° Cuatr.</th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300">2° Cuatr.</th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
-                          Nota Definitiva
-                        </th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas</th>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300">Disp.</th>
-                        <th className="py-2.5 px-3 text-center">Condición Final</th>
+                        {includeGrades && (
+                          <>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">1° Cuatr.</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">2° Cuatr.</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
+                              Nota Definitiva
+                            </th>
+                          </>
+                        )}
+                        {includeAttendance && (
+                          <>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas 1°C</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas 2°C</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas Totales</th>
+                          </>
+                        )}
+                        {includeDisposition && (
+                          <th className="py-2.5 px-2 text-center border-r border-neutral-300">Disposición</th>
+                        )}
+                        {includeGrades && (
+                          <th className="py-2.5 px-3 text-center">Condición Final</th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-200">
@@ -1059,59 +1663,79 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                           <td className="py-2 px-3 border-r border-neutral-200 font-medium text-neutral-900">
                             {row.student.lastName}, {row.student.firstName}
                           </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200">
-                            {row.score1c || '—'}
-                          </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200">
-                            {row.score2c || '—'}
-                          </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200 font-bold text-neutral-800">
-                            {row.calcAvgStr || '—'}
-                          </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
-                            {row.finalVal || '—'}
-                          </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200">
-                            {row.totalAbs}
-                          </td>
-                          <td className="py-2 px-2 text-center border-r border-neutral-200">
-                            {row.avgDisp}/10
-                          </td>
-                          <td className="py-2 px-3 text-center">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                row.condition.includes('Aprobado')
-                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                  : 'bg-rose-100 text-rose-800 border-rose-300'
-                              }`}
-                            >
-                              {row.condition}
-                            </span>
-                          </td>
+                          {includeGrades && (
+                            <>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200">
+                                {row.score1c || '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200">
+                                {row.score2c || '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200 font-bold text-neutral-800">
+                                {row.calcAvgStr || '—'}
+                              </td>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
+                                {row.finalVal || '—'}
+                              </td>
+                            </>
+                          )}
+                          {includeAttendance && (
+                            <>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200">
+                                {row.abs1}
+                              </td>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200">
+                                {row.abs2}
+                              </td>
+                              <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-neutral-900">
+                                {row.totalAbs}
+                              </td>
+                            </>
+                          )}
+                          {includeDisposition && (
+                            <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-purple-700">
+                              {row.avgDisp}/10
+                            </td>
+                          )}
+                          {includeGrades && (
+                            <td className="py-2 px-3 text-center">
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                                  row.condition.includes('Aprobado')
+                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                    : 'bg-rose-100 text-rose-800 border-rose-300'
+                                }`}
+                              >
+                                {row.condition}
+                              </span>
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
 
-                {/* Course Pedagogical Observations */}
-                <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-8">
-                  <h4 className="text-xs font-bold text-amber-900 mb-1">
-                    Observaciones Pedagógicas y Síntesis del Curso:
-                  </h4>
-                  <textarea
-                    value={courseObservation}
-                    onChange={(e) => setCourseObservation(e.target.value)}
-                    rows={3}
-                    className="w-full text-xs bg-transparent border-0 focus:outline-none text-neutral-800 leading-relaxed resize-none"
-                    placeholder="Escribe comentarios institucionales sobre el curso..."
-                  />
-                </div>
+                {/* Course Pedagogical Observations (Conditional) */}
+                {includeObservations && (
+                  <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-8">
+                    <h4 className="text-xs font-bold text-amber-900 mb-1">
+                      Observaciones Pedagógicas y Síntesis del Curso:
+                    </h4>
+                    <textarea
+                      value={courseObservation}
+                      onChange={(e) => setCourseObservation(e.target.value)}
+                      rows={3}
+                      className="w-full text-xs bg-transparent border-0 focus:outline-none text-neutral-800 leading-relaxed resize-none"
+                      placeholder="Escribe comentarios institucionales sobre el curso..."
+                    />
+                  </div>
+                )}
 
-                {/* Official Institutional Verification Footer (Sin firmas manuscritas) */}
+                {/* Official Institutional Verification Footer */}
                 <div className="pt-6 mt-6 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between text-xs text-neutral-500 gap-2">
                   <p>
-                    <strong className="text-neutral-700">Informe Consolidado Oficial del Curso</strong> — {courseName}
+                    <strong className="text-neutral-700">Informe Institucional del Curso</strong> — {courseName}
                   </p>
                   <p>
                     Docente responsable: <strong className="text-neutral-700">{teacherName}</strong> — {schoolName}
@@ -1123,7 +1747,16 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               /* BOLETINES INDIVIDUALES DE 1 PÁGINA POR ESTUDIANTE         */
               /* ========================================================= */
               <div>
-                {displayedStudents.map((row, idx) => (
+                {selectedElementsCount === 0 && (
+                  <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      Has desmarcado todos los bloques. Activá al menos <strong>Calificaciones</strong>, <strong>Asistencia</strong> o <strong>Disposición</strong> en la barra superior para ver la ficha del alumno.
+                    </span>
+                  </div>
+                )}
+
+                {displayedStudents.map((row) => (
                   <div
                     key={row.student.id}
                     className="print-page-break bg-white text-neutral-900 p-6 sm:p-8 rounded-xl border border-neutral-300 shadow-sm print:border-none print:shadow-none print:p-0 mb-8"
@@ -1135,7 +1768,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                           {schoolName}
                         </h2>
                         <p className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide mt-0.5">
-                          Informe Individual de Trayectoria y Calificaciones — Ciclo 2026
+                          {effectiveReason} — Ciclo 2026
                         </p>
                       </div>
                       <div className="text-xs text-neutral-600 text-right space-y-0.5">
@@ -1152,206 +1785,408 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     </div>
 
                     {/* Student Info Card */}
-                    <div className="bg-slate-100 p-3 rounded-lg border-l-4 border-blue-600 mb-4 flex justify-between items-center">
-                      <div>
-                        <h3 className="text-base font-bold text-neutral-900">
-                          {row.student.lastName}, {row.student.firstName}
-                        </h3>
-                        <p className="text-xs text-neutral-500 font-mono">
-                          {row.student.email || 'Estudiante Regular'}
-                        </p>
+                    <div className="bg-slate-100 p-3.5 rounded-lg border-l-4 border-blue-600 mb-4">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h3 className="text-base font-bold text-neutral-900">
+                            {row.student.lastName}, {row.student.firstName}
+                          </h3>
+                          <p className="text-xs text-neutral-500 font-mono">
+                            {row.student.email || 'Estudiante Regular'}
+                          </p>
+                        </div>
+                        {includeGrades && (
+                          <div className="text-right">
+                            <span className="text-[10px] uppercase font-bold text-neutral-400 block">
+                              Condición
+                            </span>
+                            <span
+                              className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold border ${
+                                row.condition.includes('Aprobado')
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : 'bg-rose-100 text-rose-800 border-rose-300'
+                              }`}
+                            >
+                              {row.condition}
+                            </span>
+                          </div>
+                        )}
                       </div>
-                      <div className="text-right">
-                        <span className="text-[10px] uppercase font-bold text-neutral-400 block">
-                          Condición
-                        </span>
-                        <span
-                          className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                            row.condition.includes('Aprobado')
-                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                              : 'bg-rose-100 text-rose-800 border-rose-300'
-                          }`}
-                        >
-                          {row.condition}
-                        </span>
-                      </div>
+
+                      {effectiveReason && (
+                        <div className="mt-2.5 text-xs font-semibold text-blue-800 bg-blue-50/90 dark:bg-blue-950/40 px-2.5 py-1 rounded inline-flex items-center gap-1.5 border border-blue-200 dark:border-blue-800">
+                          <span>📌 Convocatoria / Asunto:</span>
+                          <strong>{effectiveReason}</strong>
+                        </div>
+                      )}
                     </div>
 
-                    {/* Academics Block */}
-                    <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                      1. Rendimiento Académico y Calificaciones
-                    </h4>
-                    <table className="w-full text-xs border border-neutral-300 mb-4">
-                      <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                        <tr>
-                          <th className="py-2 px-3 text-center border-r border-neutral-300">
-                            1° Cuatrimestre
-                          </th>
-                          <th className="py-2 px-3 text-center border-r border-neutral-300">
-                            2° Cuatrimestre
-                          </th>
-                          <th className="py-2 px-3 text-center border-r border-neutral-300">
-                            Promedio Ponderado
-                          </th>
-                          <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
-                            Calificación Final Definitiva
-                          </th>
-                          <th className="py-2 px-3 text-center">Condición de Acreditación</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                            {row.score1c || '—'}
-                          </td>
-                          <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                            {row.score2c || '—'}
-                          </td>
-                          <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                            {row.calcAvgStr || '—'}
-                          </td>
-                          <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
-                            {row.finalVal || '—'}
-                          </td>
-                          <td className="py-3 px-3 text-center font-bold text-xs">
-                            {row.condition}
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-
-                    {/* Attendance & Disposition Block */}
-                    <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                      2. Asistencia, Puntualidad y Convivencia Escolar
-                    </h4>
-                    <table className="w-full text-xs border border-neutral-300 mb-4">
-                      <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                        <tr>
-                          <th className="py-2 px-2 text-center border-r border-neutral-300">
-                            Faltas 1°C
-                          </th>
-                          <th className="py-2 px-2 text-center border-r border-neutral-300">
-                            Faltas 2°C
-                          </th>
-                          <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
-                            Total Inasistencias
-                          </th>
-                          <th className="py-2 px-2 text-center border-r border-neutral-300">
-                            Tardanzas
-                          </th>
-                          <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
-                            % Asistencia Estimada
-                          </th>
-                          <th className="py-2 px-2 text-center font-bold text-purple-700">
-                            Disposición y Trabajo
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                            {row.abs1}
-                          </td>
-                          <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                            {row.abs2}
-                          </td>
-                          <td className="py-2.5 px-2 text-center border-r border-neutral-200 font-bold text-neutral-900">
-                            {row.totalAbs}
-                          </td>
-                          <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                            {row.totalLat}
-                          </td>
-                          <td
-                            className={`py-2.5 px-2 text-center border-r border-neutral-200 font-bold ${
-                              row.estimatedAttendance < 75 ? 'text-rose-600' : 'text-emerald-600'
-                            }`}
-                          >
-                            {row.estimatedAttendance}%
-                          </td>
-                          <td className="py-2.5 px-2 text-center font-bold text-purple-700">
-                            {row.avgDisp} / 10
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-
-                    {/* Pedagogical Observations for Report / Constancia */}
-                    <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-6">
-                      <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
-                        <h4 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
-                          <FileText className="w-3.5 h-3.5 text-amber-700" />
-                          3. Observación Pedagógica del Docente (Constancia / Informe):
+                    {/* 1. Academics Block (Conditional) */}
+                    {includeGrades && (
+                      <div className="mb-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
+                          1. Rendimiento Académico y Calificaciones
                         </h4>
-                        <span className="text-[10px] text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 font-medium print:hidden">
-                          🔒 Exclusivo de este informe (no modifica notas privadas de la lista)
-                        </span>
+                        <table className="w-full text-xs border border-neutral-300">
+                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                            <tr>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                1° Cuatrimestre
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                2° Cuatrimestre
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Promedio Ponderado
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
+                                Calificación Final Definitiva
+                              </th>
+                              <th className="py-2 px-3 text-center">Condición de Acreditación</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                                {row.score1c || '—'}
+                              </td>
+                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                                {row.score2c || '—'}
+                              </td>
+                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                                {row.calcAvgStr || '—'}
+                              </td>
+                              <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
+                                {row.finalVal || '—'}
+                              </td>
+                              <td className="py-3 px-3 text-center font-bold text-xs">
+                                {row.condition}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
                       </div>
+                    )}
 
-                      {/* Screen View: Editable Textarea with Quick Presets */}
-                      <div className="print:hidden space-y-2">
-                        <textarea
-                          value={row.observation}
-                          onChange={(e) =>
-                            handleUpdateStudentReportObservation(row.student.id, e.target.value)
-                          }
-                          rows={3}
-                          className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
-                          placeholder="Escribe la observación oficial que figurará en el informe o constancia para el alumno/directivo..."
-                        />
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
-                          <span className="text-emerald-700 font-medium flex items-center gap-1">
-                            <Check className="w-3.5 h-3.5" /> Guardado para Drive y versión impresa
+                    {/* 2. Attendance & Disposition Blocks (Conditional) */}
+                    {includeAttendance && includeDisposition ? (
+                      <div className="mb-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
+                          {includeGrades ? '2' : '1'}. Asistencia, Puntualidad y Convivencia Escolar
+                        </h4>
+                        <table className="w-full text-xs border border-neutral-300">
+                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                            <tr>
+                              <th className="py-2 px-2 text-center border-r border-neutral-300">
+                                Faltas 1°C
+                              </th>
+                              <th className="py-2 px-2 text-center border-r border-neutral-300">
+                                Faltas 2°C
+                              </th>
+                              <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
+                                Total Inasistencias
+                              </th>
+                              <th className="py-2 px-2 text-center border-r border-neutral-300">
+                                Tardanzas
+                              </th>
+                              <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
+                                % Asistencia Estimada
+                              </th>
+                              <th className="py-2 px-2 text-center font-bold text-purple-700">
+                                Disposición y Trabajo
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
+                                {row.abs1}
+                              </td>
+                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
+                                {row.abs2}
+                              </td>
+                              <td className="py-2.5 px-2 text-center border-r border-neutral-200 font-bold text-neutral-900">
+                                {row.totalAbs}
+                              </td>
+                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
+                                {row.totalLat}
+                              </td>
+                              <td
+                                className={`py-2.5 px-2 text-center border-r border-neutral-200 font-bold ${
+                                  row.estimatedAttendance < 75 ? 'text-rose-600' : 'text-emerald-600'
+                                }`}
+                              >
+                                {row.estimatedAttendance}%
+                              </td>
+                              <td className="py-2.5 px-2 text-center font-bold text-purple-700">
+                                {row.avgDisp} / 10
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : includeAttendance && !includeDisposition ? (
+                      <div className="mb-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
+                          {includeGrades ? '2' : '1'}. Registro de Asistencia y Puntualidad Escolar
+                        </h4>
+                        <table className="w-full text-xs border border-neutral-300">
+                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                            <tr>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Faltas 1° Cuatrimestre
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Faltas 2° Cuatrimestre
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-rose-50 font-bold text-rose-900">
+                                Total Inasistencias Acumuladas
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Tardanzas Registradas
+                              </th>
+                              <th className="py-2 px-3 text-center font-bold">
+                                % Asistencia Presencial
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
+                                {row.abs1}
+                              </td>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
+                                {row.abs2}
+                              </td>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 font-bold text-base text-rose-700 bg-rose-50/50">
+                                {row.totalAbs} faltas
+                              </td>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
+                                {row.totalLat}
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-center font-bold text-sm ${
+                                  row.estimatedAttendance < 75 ? 'text-rose-600' : 'text-emerald-600'
+                                }`}
+                              >
+                                {row.estimatedAttendance}%
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : !includeAttendance && includeDisposition ? (
+                      <div className="mb-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
+                          {includeGrades ? '2' : '1'}. Disposición para el Trabajo y Convivencia Áulica
+                        </h4>
+                        <table className="w-full text-xs border border-neutral-300">
+                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                            <tr>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Disposición 1° Cuatr.
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300">
+                                Disposición 2° Cuatr.
+                              </th>
+                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-purple-50 font-bold text-purple-900">
+                                Puntaje Promedio de Disposición
+                              </th>
+                              <th className="py-2 px-3 text-center font-bold">
+                                Valoración de Compromiso Áulico
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
+                                {row.disp1} / 10
+                              </td>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
+                                {row.disp2} / 10
+                              </td>
+                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 font-bold text-base text-purple-700 bg-purple-50/50">
+                                {row.avgDisp} / 10
+                              </td>
+                              <td
+                                className={`py-2.5 px-3 text-center font-semibold text-xs ${
+                                  row.avgDisp >= 8
+                                    ? 'text-emerald-700'
+                                    : row.avgDisp >= 6
+                                    ? 'text-amber-700'
+                                    : 'text-rose-700'
+                                }`}
+                              >
+                                {row.avgDisp >= 8
+                                  ? 'Favorable y participativo'
+                                  : row.avgDisp >= 6
+                                  ? 'Regular / Ajustar entrega de tareas'
+                                  : 'Requiere mayor compromiso en clase'}
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+
+                    {/* 3. Pedagogical Observations for Report / Citación (Conditional) */}
+                    {includeObservations && (
+                      <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-5">
+                        <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
+                          <h4 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                            <FileText className="w-3.5 h-3.5 text-amber-700" />
+                            {includeGrades && (includeAttendance || includeDisposition)
+                              ? '3'
+                              : includeGrades || includeAttendance || includeDisposition
+                              ? '2'
+                              : '1'}
+                            . Observación Pedagógica del Docente / Motivo de Citación:
+                          </h4>
+                          <span className="text-[10px] text-amber-800 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 font-medium print:hidden">
+                            🔒 Exclusivo de este informe (no modifica notas privadas de la lista)
                           </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleUpdateStudentReportObservation(
-                                  row.student.id,
-                                  'Demostró un desempeño favorable y constante cumplimiento en las tareas y actividades propuestas.'
-                                )
-                              }
-                              className="px-2 py-0.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded border border-emerald-200 text-[10px] font-medium transition"
-                            >
-                              Aprobado
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleUpdateStudentReportObservation(
-                                  row.student.id,
-                                  'Requiere instancia de intensificación de aprendizajes en los contenidos pendientes del ciclo.'
-                                )
-                              }
-                              className="px-2 py-0.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded border border-rose-200 text-[10px] font-medium transition"
-                            >
-                              Intensificación
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleUpdateStudentReportObservation(row.student.id, '')
-                              }
-                              className="px-2 py-0.5 bg-neutral-100 text-neutral-600 hover:bg-neutral-200 rounded text-[10px] transition"
-                            >
-                              Limpiar
-                            </button>
+                        </div>
+
+                        {/* Screen View: Editable Textarea with Quick Presets */}
+                        <div className="print:hidden space-y-2">
+                          <textarea
+                            value={row.observation}
+                            onChange={(e) =>
+                              handleUpdateStudentReportObservation(row.student.id, e.target.value)
+                            }
+                            rows={3}
+                            className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
+                            placeholder="Escribe la observación oficial o acuerdos de la citación para este alumno..."
+                          />
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
+                            <span className="text-emerald-700 font-medium flex items-center gap-1">
+                              <Check className="w-3.5 h-3.5" /> Guardado para Drive y versión impresa
+                            </span>
+
+                            {/* Plantillas rápidas para citación docente */}
+                            <div className="flex flex-wrap items-center gap-1">
+                              <span className="text-[10px] text-neutral-400 mr-0.5">Plantilla:</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(
+                                    row.student.id,
+                                    'Se convoca a la familia a reunión informativa para dialogar sobre las inasistencias acumuladas y acordar un plan de asistencia regular y entrega de trabajos prácticos.'
+                                  )
+                                }
+                                className="px-2 py-0.5 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 rounded border border-emerald-200 text-[10px] font-semibold transition"
+                                title="Cargar texto de citación por inasistencias"
+                              >
+                                Faltas
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(
+                                    row.student.id,
+                                    'Se cita a los adultos responsables para notificar el estado académico del estudiante y coordinar pautas pedagógicas de estudio y recuperación de contenidos.'
+                                  )
+                                }
+                                className="px-2 py-0.5 bg-indigo-50 text-indigo-800 hover:bg-indigo-100 rounded border border-indigo-200 text-[10px] font-semibold transition"
+                                title="Cargar texto de citación por calificaciones"
+                              >
+                                Notas
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(
+                                    row.student.id,
+                                    'Se solicita entrevista con la familia a fin de dialogar sobre la actitud en clase, disposición para el trabajo escolar y cumplimiento de pautas de convivencia.'
+                                  )
+                                }
+                                className="px-2 py-0.5 bg-purple-50 text-purple-800 hover:bg-purple-100 rounded border border-purple-200 text-[10px] font-semibold transition"
+                                title="Cargar texto de citación por conducta o disposición"
+                              >
+                                Disposición
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(
+                                    row.student.id,
+                                    'Demostró un desempeño favorable y constante cumplimiento en las tareas y actividades propuestas.'
+                                  )
+                                }
+                                className="px-2 py-0.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded border border-blue-200 text-[10px] font-medium transition"
+                              >
+                                Favorable
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(
+                                    row.student.id,
+                                    'Requiere instancia de intensificación de aprendizajes en los contenidos prioritarios pendientes del ciclo.'
+                                  )
+                                }
+                                className="px-2 py-0.5 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded border border-rose-200 text-[10px] font-medium transition"
+                              >
+                                Intensif.
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateStudentReportObservation(row.student.id, '')
+                                }
+                                className="px-1.5 py-0.5 bg-neutral-100 text-neutral-500 hover:bg-neutral-200 rounded text-[10px] transition"
+                              >
+                                Borrar
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Print View: Clean printed text without input controls */}
+                        <div className="hidden print:block">
+                          <p className="text-xs text-neutral-800 leading-relaxed font-sans">
+                            {row.observation || 'Sin observaciones adicionales registradas.'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. Family Signature Slip / Notificación Institucional (Conditional) */}
+                    {includeFamilySignature && (
+                      <div className="mt-6 pt-3 border-t border-dashed border-neutral-400 bg-neutral-50/50 p-3 rounded-lg">
+                        <div className="text-[11px] font-bold text-blue-900 uppercase tracking-wide mb-2">
+                          Acta de Notificación Institucional a la Familia
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-4">
+                          <div className="border border-neutral-300 rounded-lg p-3 bg-white">
+                            <div className="font-semibold text-neutral-700 mb-6">
+                              Constancia del Docente
+                            </div>
+                            <div className="border-t border-neutral-400 pt-1 text-[11px] text-neutral-600">
+                              Firma del Docente: <strong>{teacherName}</strong>
+                            </div>
+                            <div className="text-[10px] text-neutral-400 mt-0.5">{schoolName}</div>
+                          </div>
+                          <div className="border border-neutral-300 rounded-lg p-3 bg-white">
+                            <div className="font-semibold text-neutral-700 mb-6">
+                              Notificación del Adulto Responsable / Tutor
+                            </div>
+                            <div className="border-t border-neutral-400 pt-1 text-[11px] text-neutral-600">
+                              Firma: _________________________________________
+                            </div>
+                            <div className="text-[10px] text-neutral-500 mt-1 flex justify-between">
+                              <span>Aclaración: ___________________________</span>
+                              <span>DNI: _______________</span>
+                            </div>
                           </div>
                         </div>
                       </div>
+                    )}
 
-                      {/* Print View: Clean printed text without input controls */}
-                      <div className="hidden print:block">
-                        <p className="text-xs text-neutral-800 leading-relaxed font-sans">
-                          {row.observation || 'Sin observaciones adicionales registradas.'}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Official Document Footer (Sin firmas manuscritas) */}
-                    <div className="pt-6 mt-4 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between text-[11px] text-neutral-500 gap-2">
+                    {/* Official Document Footer */}
+                    <div className="pt-5 mt-4 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between text-[11px] text-neutral-500 gap-2">
                       <div>
-                        <strong className="text-neutral-700">Constancia Oficial de Situación Aúlica</strong> — {courseName}
+                        <strong className="text-neutral-700">Constancia Oficial de Trayectoria</strong> — {courseName}
                       </div>
                       <div>
                         Docente: <strong className="text-neutral-700">{teacherName}</strong> — Ciclo Lectivo 2026

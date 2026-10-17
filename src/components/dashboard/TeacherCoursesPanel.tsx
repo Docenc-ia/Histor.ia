@@ -710,6 +710,20 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
+                  <a
+                    href={`?course=${course.id}&view=course_detail${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`px-3 py-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer border ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-blue-300 border-slate-700'
+                        : 'bg-white hover:bg-blue-50 text-blue-700 border-neutral-200 shadow-2xs'
+                    }`}
+                    title={`Abrir ${formatCourseSidebarLabel(course)} en una pestaña o ventana aparte`}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
+                    <span className="hidden sm:inline">Nueva pestaña</span>
+                  </a>
                   <button
                     type="button"
                     onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}

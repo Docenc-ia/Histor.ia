@@ -37,10 +37,37 @@
 @media print {
   @page {
     size: A4 portrait;
-    margin: 12mm 15mm;
+    margin: 10mm 12mm;
+  }
+  html, body {
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 100% !important;
+    background: white !important;
+    color: black !important;
   }
   body * {
-    visibility: hidden !important;
+    visibility: hidden;
+  }
+  /* Remove overlay, backdrop, and overflow constraints on modal ancestors so multi-page printing works seamlessly */
+  .fixed,
+  [role="dialog"],
+  .overflow-hidden,
+  .overflow-y-auto,
+  .max-h-\[95vh\],
+  .max-h-\[94vh\],
+  .max-h-\[92vh\] {
+    position: static !important;
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    backdrop-filter: none !important;
+    filter: none !important;
   }
   #printable-trajectory-report,
   #printable-trajectory-report *,
@@ -60,6 +87,7 @@
     color: black !important;
     border: none !important;
     box-shadow: none !important;
+    overflow: visible !important;
   }
   .print-page-break {
     page-break-after: always !important;

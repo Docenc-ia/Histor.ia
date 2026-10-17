@@ -21,12 +21,31 @@ import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSe
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
 
+  // Read query params from URL (e.g. ?course=ID&view=course_detail)
+  const getInitialUrlState = () => {
+    if (typeof window === 'undefined') return { view: 'courses' as const, courseId: '' };
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlCourse = params.get('course') || '';
+      const urlView = params.get('view');
+      const validView = (urlView === 'course_detail' || urlView === 'calendar' || urlView === 'courses')
+        ? (urlView as 'courses' | 'course_detail' | 'calendar')
+        : (urlCourse ? 'course_detail' : 'courses');
+      return { view: validView, courseId: urlCourse };
+    } catch (_) {
+      return { view: 'courses' as const, courseId: '' };
+    }
+  };
+
+  const initialUrlState = getInitialUrlState();
+
   // Navigation: 'courses' | 'course_detail' | 'calendar'
-  const [currentView, setCurrentView] = useState<'courses' | 'course_detail' | 'calendar'>('courses');
+  const [currentView, setCurrentView] = useState<'courses' | 'course_detail' | 'calendar'>(initialUrlState.view);
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCourseId, setSelectedCourseId] = useState<string>(() => {
+    if (initialUrlState.courseId) return initialUrlState.courseId;
     const local = api.getLocalCourses();
     return local.length > 0 ? local[0].id : '';
   });
@@ -55,7 +74,7 @@ function AppContent() {
       const cleanStudents = api.deduplicateStudents(s);
       setCourses(cleanCourses);
       setStudents(cleanStudents);
-      if (cleanCourses.length > 0 && (!selectedCourseId || !cleanCourses.some((item) => item.id === selectedCourseId))) {
+      if (cleanCourses.length > 0 && (!selectedCourseId || !cleanCourses.some((item) => item.id === selectedCourseId || item.classroomCourseId === selectedCourseId))) {
         setSelectedCourseId(cleanCourses[0].id);
       }
     } catch (err) {
@@ -64,6 +83,25 @@ function AppContent() {
       setIsLoading(false);
     }
   };
+
+  // Keep URL parameters in sync with active course and view without full reload
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      if (currentView === 'course_detail' && selectedCourseId) {
+        url.searchParams.set('course', selectedCourseId);
+        url.searchParams.set('view', 'course_detail');
+      } else if (currentView === 'calendar') {
+        url.searchParams.set('view', 'calendar');
+        url.searchParams.delete('course');
+      } else {
+        url.searchParams.set('view', 'courses');
+        url.searchParams.delete('course');
+      }
+      window.history.replaceState(null, '', url.toString());
+    } catch (_) {}
+  }, [currentView, selectedCourseId]);
 
   useEffect(() => {
     loadData();
@@ -212,7 +250,7 @@ function AppContent() {
   }
 
   // Selected course object
-  const selectedCourse = courses.find((c) => c.id === selectedCourseId) || courses[0] || {
+  const selectedCourse = courses.find((c) => c.id === selectedCourseId || c.classroomCourseId === selectedCourseId) || courses[0] || {
     id: 'course-1',
     name: 'Materia Seleccionada',
     code: 'DOC-101',

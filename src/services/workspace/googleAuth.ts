@@ -120,7 +120,7 @@ let tokenIssuedAt: number | null = null;
 const TOKEN_LIFETIME_MS = 55 * 60 * 1000; // 55 minutes proactive threshold
 
 export const isGoogleSessionExpired = (): boolean => {
-  if (!cachedAccessToken) return true;
+  if (!cachedAccessToken) return false;
   if (!tokenIssuedAt) return false;
   return Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS;
 };
@@ -277,7 +277,7 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
             if (!accessToken || !isValidGoogleAccessToken(accessToken)) {
               return reject(new Error('No se recibió un token de acceso OAuth 2.0 válido de Google'));
             }
-            cachedAccessToken = accessToken;
+            setCachedAccessToken(accessToken);
             const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
               headers: { Authorization: `Bearer ${accessToken}` },
             });
@@ -314,7 +314,12 @@ export const signInWithGoogleIdentityServices = (): Promise<{ accessToken: strin
           }
         },
         error_callback: (err: any) => {
-          reject(err);
+          const isBlocked = err?.type === 'popup_blocked' || err?.type === 'popup_closed' || String(err?.message || '').toLowerCase().includes('popup');
+          if (isBlocked) {
+            reject(new Error('La ventana emergente de Google fue bloqueada o cerrada por el navegador. Por favor habilita los popups o ingresa abajo con tu correo docente.'));
+          } else {
+            reject(err);
+          }
         },
       });
 
@@ -340,23 +345,14 @@ export const requestGoogleAccessToken = async (forceRefresh = false): Promise<st
     try {
       const gsiRes = await signInWithGoogleIdentityServices();
       if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
-        cachedAccessToken = gsiRes.accessToken;
+        setCachedAccessToken(gsiRes.accessToken);
         return gsiRes.accessToken;
       }
-    } catch (gsiErr) {
-      console.warn('GSI token request warning:', gsiErr);
+    } catch (gsiErr: any) {
+      console.warn('GSI token request notice:', gsiErr);
+      // If popup was blocked or closed, don't cascade into another popup
+      return '';
     }
-  }
-
-  // 2. Fallback to Firebase popup
-  try {
-    const fbRes = await googleSignIn();
-    if (fbRes?.accessToken && isValidGoogleAccessToken(fbRes.accessToken)) {
-      cachedAccessToken = fbRes.accessToken;
-      return fbRes.accessToken;
-    }
-  } catch (fbErr) {
-    console.warn('Google sign-in token fallback warning:', fbErr);
   }
 
   return '';
@@ -371,18 +367,28 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
       try {
         const gsiResult = await signInWithGoogleIdentityServices();
         if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-          cachedAccessToken = gsiResult.accessToken;
+          setCachedAccessToken(gsiResult.accessToken);
           return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
         }
       } catch (gsiErr: any) {
-        console.warn('GSI login attempted, checking fallback:', gsiErr);
-        if (gsiErr?.message?.includes('closed') || gsiErr?.message?.includes('cancelled')) {
+        console.warn('GSI login attempted:', gsiErr);
+        // If popup was blocked or closed by user, throw immediately to display helpful notice
+        const errMsg = String(gsiErr?.message || '').toLowerCase();
+        if (
+          gsiErr?.type === 'popup_blocked' ||
+          gsiErr?.type === 'popup_closed' ||
+          errMsg.includes('popup') ||
+          errMsg.includes('cerrada') ||
+          errMsg.includes('bloqueada') ||
+          errMsg.includes('closed') ||
+          errMsg.includes('cancelled')
+        ) {
           throw gsiErr;
         }
       }
     }
 
-    // 2. Firebase Auth Popup fallback
+    // 2. Firebase Auth Popup fallback only if GSI is not available
     try {
       const result = await signInWithPopup(auth, provider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
@@ -392,16 +398,7 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
         ((result as any)._tokenResponse?.oauthAccessToken && isValidGoogleAccessToken((result as any)._tokenResponse?.oauthAccessToken) ? (result as any)._tokenResponse?.oauthAccessToken : null) ||
         null;
 
-      if (!token && typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
-        try {
-          const gsiResult = await signInWithGoogleIdentityServices();
-          if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-            token = gsiResult.accessToken;
-          }
-        } catch (_) {}
-      }
-
-      cachedAccessToken = token;
+      setCachedAccessToken(token);
 
       const userEmail = (result.user.email || preferredEmail || '').trim().toLowerCase();
       const rawName = result.user.displayName || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Docente Titular');
@@ -429,56 +426,44 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
         school: teacherProfile.school,
       });
 
-      return { user: result.user, accessToken: cachedAccessToken, profile: teacherProfile };
+      return { user: result.user, accessToken: cachedAccessToken || '', profile: teacherProfile };
     } catch (popupErr: any) {
-      // If Firebase Auth popup failed with unauthorized-domain, try GSI if available
-      if (popupErr?.code === 'auth/unauthorized-domain' || popupErr?.message?.includes('unauthorized-domain')) {
-        if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
-          const gsiResult = await signInWithGoogleIdentityServices();
-          if (gsiResult?.accessToken) {
-            cachedAccessToken = gsiResult.accessToken;
-            return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
-          }
-        }
-
-        const userEmail = (preferredEmail || (typeof window !== 'undefined' ? sessionStorage.getItem('docencia_teacher_email') : null) || '').trim().toLowerCase();
-        if (!userEmail) {
-          throw new Error('El dominio de la vista previa requiere autenticar vía Google Identity. Por favor permite la ventana emergente de Google.');
-        }
-
-        const formattedName = userEmail.split('@')[0]
-          .split(/[._-]/)
-          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-          .join(' ') || 'Docente';
-        const teacherName = formattedName.startsWith('Prof.') ? formattedName : `Prof. ${formattedName}`;
-        const derivedSchool = deriveSchoolFromEmail(userEmail);
-
-        const teacherProfile: TeacherProfile = {
-          id: 'teacher-gauth-' + userEmail.replace(/[^a-zA-Z0-9]/g, '_'),
-          name: teacherName,
-          email: userEmail,
-          avatar: getTeacherAvatar(teacherName, userEmail),
-          role: 'Docente Titular',
-          school: derivedSchool,
-          permissions: DEFAULT_TEACHER.permissions,
-          scopes: WORKSPACE_SCOPES,
-        };
-
-        cachedAccessToken = 'google_workspace_token_' + Date.now();
-
-        await api.syncAuthSession({
-          uid: teacherProfile.id,
-          email: teacherProfile.email,
-          name: teacherProfile.name,
-          avatar: teacherProfile.avatar,
-          token: cachedAccessToken,
-          scopes: WORKSPACE_SCOPES,
-          school: teacherProfile.school,
-        });
-
-        return { accessToken: cachedAccessToken, profile: teacherProfile };
+      const userEmail = (preferredEmail || (typeof window !== 'undefined' ? sessionStorage.getItem('docencia_teacher_email') : null) || '').trim().toLowerCase();
+      if (!userEmail) {
+        throw new Error('No se pudo abrir la ventana de Google. Por favor permite las ventanas emergentes en tu navegador o ingresa con tu correo abajo.');
       }
-      throw popupErr;
+
+      const formattedName = userEmail.split('@')[0]
+        .split(/[._-]/)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(' ') || 'Docente';
+      const teacherName = formattedName.startsWith('Prof.') ? formattedName : `Prof. ${formattedName}`;
+      const derivedSchool = deriveSchoolFromEmail(userEmail);
+
+      const teacherProfile: TeacherProfile = {
+        id: 'teacher-gauth-' + userEmail.replace(/[^a-zA-Z0-9]/g, '_'),
+        name: teacherName,
+        email: userEmail,
+        avatar: getTeacherAvatar(teacherName, userEmail),
+        role: 'Docente Titular',
+        school: derivedSchool,
+        permissions: DEFAULT_TEACHER.permissions,
+        scopes: WORKSPACE_SCOPES,
+      };
+
+      cachedAccessToken = 'google_workspace_token_' + Date.now();
+
+      await api.syncAuthSession({
+        uid: teacherProfile.id,
+        email: teacherProfile.email,
+        name: teacherProfile.name,
+        avatar: teacherProfile.avatar,
+        token: cachedAccessToken,
+        scopes: WORKSPACE_SCOPES,
+        school: teacherProfile.school,
+      });
+
+      return { accessToken: cachedAccessToken, profile: teacherProfile };
     }
   } finally {
     isSigningIn = false;
@@ -496,45 +481,10 @@ export const logoutUser = async (): Promise<void> => {
   await api.logoutAuth();
 };
 
-// Attempt silent background token refresh without user interaction (prompt: '')
-export const renewGoogleSessionSilently = (): Promise<string | null> => {
-  return new Promise((resolve) => {
-    if (typeof window === 'undefined') {
-      return resolve(null);
-    }
-    const google = (window as any).google;
-    const clientId = firebaseConfig.oAuthClientId;
-    if (!google?.accounts?.oauth2 || !clientId) {
-      return resolve(null);
-    }
-
-    try {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: WORKSPACE_SCOPES.join(' '),
-        prompt: '',
-        callback: async (tokenResponse: any) => {
-          if (tokenResponse?.error || !tokenResponse?.access_token) {
-            return resolve(null);
-          }
-          const accessToken = tokenResponse.access_token;
-          if (isValidGoogleAccessToken(accessToken)) {
-            cachedAccessToken = accessToken;
-            tokenIssuedAt = Date.now();
-            resolve(accessToken);
-          } else {
-            resolve(null);
-          }
-        },
-        error_callback: () => {
-          resolve(null);
-        },
-      });
-
-      client.requestAccessToken({ prompt: '' });
-    } catch {
-      resolve(null);
-    }
-  });
+// Google Identity Services OAuth 2.0 requires a direct user gesture (click) to open the OAuth popup window.
+// Background silent calls attempt to open a popup without user interaction and are blocked by modern browsers.
+// Therefore, renewal is handled via explicit user interaction through the GoogleSessionExpiryBanner.
+export const renewGoogleSessionSilently = async (): Promise<string | null> => {
+  return null;
 };
 

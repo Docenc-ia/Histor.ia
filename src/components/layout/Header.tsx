@@ -13,7 +13,6 @@ import {
   Sparkles,
   User,
   Check,
-  Share2,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
@@ -148,19 +147,6 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Right: Workspace Status, Dark Mode Toggle & Profile */}
       <div className="flex items-center gap-2 sm:gap-3">
-        {/* Share & Teacher Guide Button */}
-        <button
-          onClick={() => setIsGuideOpen(true)}
-          className={`px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs ${
-            isDarkMode
-              ? 'bg-blue-950/50 hover:bg-blue-900/70 border-blue-800 text-blue-300'
-              : 'bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-700'
-          }`}
-          title="Compartir enlace con colegas y ver guía de uso"
-        >
-          <Share2 className="w-3.5 h-3.5 text-blue-500" />
-          <span className="hidden sm:inline">Compartir y Guía</span>
-        </button>
 
         {/* Dark / Light Mode Toggle Button */}
         <button

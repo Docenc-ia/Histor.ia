@@ -8,7 +8,6 @@ import {
   getCachedAccessToken,
   setCachedAccessToken,
   isValidGoogleAccessToken,
-  requestGoogleAccessToken,
   notifyGoogleSessionExpired,
 } from './googleAuth';
 import { Student, GradeEntry, StudentHistoryItem, StudentDispositionData } from '../../types';
@@ -752,62 +751,6 @@ export const sheetsService = {
 
             if (errStatus === 401) {
               setCachedAccessToken(null);
-              // Attempt to recover automatically with a fresh OAuth access token
-              try {
-                const freshToken = await requestGoogleAccessToken(true);
-                if (freshToken && isValidGoogleAccessToken(freshToken)) {
-                  const retryRes = await fetch(
-                    `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values:batchUpdate`,
-                    {
-                      method: 'POST',
-                      headers: {
-                        Authorization: `Bearer ${freshToken}`,
-                        'Content-Type': 'application/json',
-                      },
-                      body: JSON.stringify({
-                        valueInputOption: 'USER_ENTERED',
-                        data: [
-                          {
-                            range: "'1° Cuatrimestre'!A1",
-                            values: [summaryHeaders1c, ...summaryRows1c],
-                          },
-                          {
-                            range: "'2° Cuatrimestre'!A1",
-                            values: [summaryHeaders2c, ...summaryRows2c],
-                          },
-                          {
-                            range: "'Resumen Anual'!A1",
-                            values: [annualHeaders, ...annualRows],
-                          },
-                          {
-                            range: "'Historial de Incidencias'!A1",
-                            values: [historyHeaders, ...historyPayload],
-                          },
-                        ],
-                      }),
-                    }
-                  );
-                  if (retryRes.ok) {
-                    const updatedAtStr = new Date().toLocaleTimeString();
-                    const sheetUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
-                    api
-                      .saveCourseDispositionSheet(course.id, {
-                        spreadsheetId: targetSpreadsheetId,
-                        url: sheetUrl,
-                        lastSyncedAt: updatedAtStr,
-                      })
-                      .catch(() => {});
-                    return {
-                      spreadsheetId: targetSpreadsheetId,
-                      url: sheetUrl,
-                      isLiveGoogle: true,
-                      updatedAt: updatedAtStr,
-                      summaryRowsCount: summaryRows1c.length,
-                      historyRowsCount: historyRows.length,
-                    };
-                  }
-                }
-              } catch (_) {}
 
               notifyGoogleSessionExpired('sheets_unauthorized');
               return {

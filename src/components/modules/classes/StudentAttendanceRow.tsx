@@ -9,12 +9,14 @@ import {
   Minus,
   History,
   FileText,
+  ExternalLink,
 } from 'lucide-react';
 import { Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
 import {
   StudentAttendanceTrafficLight,
   getTrafficLightBadgeStyle,
 } from '../../../utils/attendanceCalculations';
+import { useWorkspaceAuth } from '../../../context/WorkspaceAuthContext';
 
 interface StudentAttendanceRowProps {
   student: Student;
@@ -65,6 +67,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
   onOpenTrafficLightSettings,
   isDarkMode,
 }) => {
+  const { user } = useWorkspaceAuth();
   const score = metrics.totalDisposition;
   const scoreBadgeClass =
     score >= 8
@@ -81,7 +84,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
 
   return (
     <tr
-      className={`transition-colors ${
+      className={`group/row transition-colors ${
         isSelected
           ? isDarkMode
             ? 'bg-indigo-950/30'
@@ -146,6 +149,21 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
               >
                 <span>{student.lastName}, {student.firstName}</span>
               </button>
+
+              <a
+                href={`?course=${student.courseId}&view=course_detail&studentId=${student.id}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className={`p-1 rounded-md transition-opacity opacity-0 group-hover/row:opacity-100 ${
+                  isDarkMode
+                    ? 'text-slate-400 hover:text-indigo-400 hover:bg-slate-800'
+                    : 'text-neutral-400 hover:text-indigo-600 hover:bg-neutral-200/80'
+                }`}
+                title={`Abrir observaciones de ${student.lastName}, ${student.firstName} en otra pestaña`}
+              >
+                <ExternalLink className="w-3 h-3" />
+              </a>
 
               {observationsCount > 0 && (
                 <button

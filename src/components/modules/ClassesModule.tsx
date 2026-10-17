@@ -1007,6 +1007,32 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [courseReportModalTab, setCourseReportModalTab] = useState<'course' | 'individual'>('course');
   const [courseReportModalStudentId, setCourseReportModalStudentId] = useState<string>('all');
 
+  // Auto-open modal if specified in URL query params (?openReport=true or ?studentId=...)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlStudentId = params.get('studentId');
+      const urlOpenReport = params.get('openReport') === 'true' || params.get('report') === 'true';
+      const urlReportTab = params.get('reportTab');
+
+      if (urlOpenReport) {
+        if (urlReportTab === 'course' || urlReportTab === 'individual') {
+          setCourseReportModalTab(urlReportTab);
+        }
+        if (urlStudentId) {
+          setCourseReportModalStudentId(urlStudentId);
+        }
+        setCourseReportModalOpen(true);
+      } else if (urlStudentId && courseStudents.length > 0) {
+        const target = courseStudents.find((s) => s.id === urlStudentId);
+        if (target) {
+          setSelectedStudentForProfile(target);
+        }
+      }
+    } catch (_) {}
+  }, [courseStudents]);
+
   // Guaranteed two-way synchronization on startup to ensure long-term durability across days & months
   useEffect(() => {
     try {
@@ -4633,29 +4659,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       </html>
     `;
 
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    document.body.appendChild(iframe);
-
-    const doc = iframe.contentWindow?.document;
-    if (doc) {
-      doc.open();
-      doc.write(printContent);
-      doc.close();
-
-      setTimeout(() => {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-        setTimeout(() => {
-          document.body.removeChild(iframe);
-        }, 1500);
-      }, 300);
-    }
+    // Open the full interactive customizable report modal for this student
+    setCourseReportModalStudentId(student.id);
+    setCourseReportModalTab('individual');
+    setCourseReportModalOpen(true);
   };
 
   // 7b. Reiniciar / Borrar disposición por alumno individual
@@ -5402,23 +5409,38 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     <span>{isSettingUpDriveFolder ? 'Abriendo Drive...' : 'Carpeta Drive'}</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCourseReportModalStudentId('all');
-                      setCourseReportModalTab('course');
-                      setCourseReportModalOpen(true);
-                    }}
-                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-purple-950/40 hover:bg-purple-950/60 text-purple-300 border-purple-800/60'
-                        : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
-                    }`}
-                    title={`Generar informe oficial del curso "${activeCourse.name}" o constancias individuales de 1 página por alumno para guardar en Drive o imprimir`}
-                  >
-                    <FileText className="w-4 h-4 text-purple-500" />
-                    <span>Hacer Informe</span>
-                  </button>
+                  <div className="flex items-center gap-1.5 w-full">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCourseReportModalStudentId('all');
+                        setCourseReportModalTab('course');
+                        setCourseReportModalOpen(true);
+                      }}
+                      className={`flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-purple-950/40 hover:bg-purple-950/60 text-purple-300 border-purple-800/60'
+                          : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
+                      }`}
+                      title={`Generar informe oficial del curso "${activeCourse.name}" o constancias individuales de 1 página por alumno para guardar en Drive o imprimir`}
+                    >
+                      <FileText className="w-4 h-4 text-purple-500" />
+                      <span>Hacer Informe</span>
+                    </button>
+                    <a
+                      href={`?course=${activeCourse.id}&view=course_detail&openReport=true${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`p-2 rounded-lg border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
+                        isDarkMode
+                          ? 'bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 border-purple-800/60'
+                          : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
+                      }`}
+                      title="Abrir Hacer Informe en otra pestaña o ventana"
+                    >
+                      <ExternalLink className="w-4 h-4 text-purple-500" />
+                    </a>
+                  </div>
                 </div>
               </div>
 
@@ -5665,119 +5687,137 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
           {activeTab === 'history' && (
             <div
-              className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl border transition-colors ${
+              className={`p-3.5 rounded-xl border transition-colors ${
                 isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
               }`}
             >
-              <div className="flex items-center gap-2">
-                <span className={`text-xs font-semibold ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                  Bitácora de Sincronización e Historial ({courseHistory.length} registros)
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-bold text-neutral-800 dark:text-slate-100">
+                  Historial
+                </h3>
+                <span className="text-xs text-neutral-500 dark:text-slate-400 font-medium">
+                  {courseHistory.length} registros en la bitácora
                 </span>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleOpenGoogleSheet}
-                  disabled={isOpeningSheet}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg shadow-xs transition-all cursor-pointer"
-                  title="Abrir o crear hoja oficial en Google Sheets"
-                >
-                  {isOpeningSheet ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  )}
-                  <span>Abrir en Google Sheets</span>
-                </button>
 
-                <button
-                  type="button"
-                  onClick={handleManualSheetsSync}
-                  disabled={isSyncingSheet || isPullingFromSheet}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Sincronizar con Google Sheets de forma bidireccional"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin text-blue-500' : ''}`} />
-                  <span>{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
-                </button>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* COLUMNA 1: Informes y Reportes, Abrir en Google Sheets */}
+                <div className="flex flex-col gap-2 justify-center">
+                  <div className="flex items-center gap-1.5 w-full">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCourseReportModalTab('course');
+                        setCourseReportModalOpen(true);
+                      }}
+                      className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/60'
+                          : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
+                      }`}
+                      title="Generar informe oficial del curso o boletines individuales de 1 página para imprimir o guardar en Google Drive"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-500" />
+                      <span>Informes y Reportes</span>
+                    </button>
+                    <a
+                      href={`?course=${activeCourse.id}&view=course_detail&openReport=true${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
+                        isDarkMode
+                          ? 'bg-slate-800 hover:bg-slate-750 text-blue-300 border-slate-700'
+                          : 'bg-white hover:bg-blue-50 text-blue-700 border-neutral-200'
+                      }`}
+                      title="Abrir Informes y Reportes en otra pestaña o ventana"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
+                    </a>
+                  </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSheetsModalFeedback(null);
-                    setShowSheetsConnectModal(true);
-                  }}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Configurar y vincular hoja existente de Google Sheets"
-                >
-                  <Settings className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Vincular Sheet</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenGoogleSheet}
+                    disabled={isOpeningSheet}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Abrir o crear hoja oficial en Google Sheets"
+                  >
+                    {isOpeningSheet ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ExternalLink className="w-3.5 h-3.5 text-emerald-500" />
+                    )}
+                    <span>Abrir en Google Sheets</span>
+                  </button>
+                </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCourseReportModalTab('course');
-                    setCourseReportModalOpen(true);
-                  }}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-blue-900/40 hover:bg-blue-800/60 text-blue-300 border-blue-700/60'
-                      : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-                  }`}
-                  title="Generar informe oficial del curso o boletines individuales de 1 página para imprimir o guardar en Google Drive"
-                >
-                  <FileText className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Informes y Reportes</span>
-                </button>
+                {/* COLUMNA 2: Vincular Sheet y Copiar datos */}
+                <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-x border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:px-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSheetsModalFeedback(null);
+                      setShowSheetsConnectModal(true);
+                    }}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Configurar y vincular hoja existente de Google Sheets"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Vincular Sheet</span>
+                  </button>
 
-                <button
-                  onClick={handleCopyForGoogleSheets}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Copia los datos tabulados para pegar con Ctrl+V directamente en Google Sheets"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>Copiar datos</span>
-                </button>
+                  <button
+                    onClick={handleCopyForGoogleSheets}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Copia los datos tabulados para pegar con Ctrl+V directamente en Google Sheets"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Copiar datos</span>
+                  </button>
+                </div>
 
-                <button
-                  type="button"
-                  onClick={handleExportHistoryExcel}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Descargar historial en formato Excel (.xlsx) nativo"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Exportar Excel</span>
-                </button>
+                {/* COLUMNA 3: Exportar Excel y Descargar CSV */}
+                <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0">
+                  <button
+                    type="button"
+                    onClick={handleExportHistoryExcel}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Descargar historial en formato Excel (.xlsx) nativo"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Exportar Excel</span>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={handleExportHistoryCsv}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                  }`}
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Descargar CSV</span>
-                </button>
+                  <button
+                    type="button"
+                    onClick={handleExportHistoryCsv}
+                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                    }`}
+                    title="Descargar historial en formato CSV"
+                  >
+                    <Download className="w-3.5 h-3.5 text-purple-500" />
+                    <span>Descargar CSV</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -6011,7 +6051,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               return (
                                 <tr
                                   key={student.id}
-                                  className={`transition-colors ${
+                                  className={`group transition-colors ${
                                     isDarkMode ? 'hover:bg-slate-850/50' : 'hover:bg-neutral-50'
                                   }`}
                                 >
@@ -6021,7 +6061,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         {student.firstName[0]}
                                         {student.lastName[0]}
                                       </div>
-                                      <div>
+                                      <div className="flex items-center gap-1">
                                         <button
                                           type="button"
                                           onClick={() => handleOpenStudentProfile(student)}
@@ -6030,6 +6070,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                         >
                                           {student.lastName}, {student.firstName}
                                         </button>
+                                        <a
+                                          href={`?course=${activeCourse.id}&view=course_detail&studentId=${student.id}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="p-1 rounded-md text-neutral-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-all opacity-0 group-hover:opacity-100"
+                                          title={`Abrir ficha y observaciones de ${student.lastName}, ${student.firstName} en otra pestaña`}
+                                        >
+                                          <ExternalLink className="w-3 h-3" />
+                                        </a>
                                       </div>
                                     </div>
                                   </td>
@@ -9413,14 +9463,30 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   )}
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setSelectedStudentForProfile(null)}
-                className="p-1.5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-200/60 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                title="Cerrar ficha"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={`?course=${activeCourse.id}&view=course_detail&studentId=${selectedStudentForProfile.id}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shadow-2xs ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-750 text-indigo-300 border-indigo-700/60'
+                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border-indigo-200'
+                  }`}
+                  title="Abrir la ficha y observaciones de este estudiante en una pestaña o ventana aparte"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Abrir en otra pestaña</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setSelectedStudentForProfile(null)}
+                  className="p-1.5 rounded-xl text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-200/60 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  title="Cerrar ficha"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </div>
 
             {/* Resumen rápido de asistencia y conducta */}
@@ -9751,11 +9817,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         setCourseReportModalTab('individual');
                         setCourseReportModalOpen(true);
                       }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 dark:hover:bg-purple-900/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800 transition-colors cursor-pointer"
-                      title="Ver e imprimir boletín individual de 1 página"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 transition-colors cursor-pointer"
+                      title="Generar informe individual o citación a la familia (asistencia, calificaciones o disposición)"
                     >
-                      <Printer className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
-                      <span>Ficha 1 Pág.</span>
+                      <Printer className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>Informe / Citación</span>
                     </button>
 
                     <button

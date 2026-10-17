@@ -93,9 +93,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [user, setUser] = useState<TeacherProfile | null>(() => {
     if (typeof window !== 'undefined') {
       try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlAuthEmail = urlParams.get('authEmail');
+
         const isSessionActive =
           sessionStorage.getItem('docencia_session_active') === 'true' ||
-          localStorage.getItem('docencia_session_active') === 'true';
+          localStorage.getItem('docencia_session_active') === 'true' ||
+          Boolean(urlAuthEmail);
+
         if (isSessionActive) {
           const saved =
             sessionStorage.getItem('docencia_user_profile') ||
@@ -104,6 +109,29 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
             const parsed = JSON.parse(saved);
             if (parsed && (parsed.email || parsed.id)) return parsed;
           }
+
+          if (urlAuthEmail) {
+            const cleanEmail = urlAuthEmail.trim().toLowerCase();
+            const teacherName = cleanEmail.split('@')[0]
+              .split(/[._-]/)
+              .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+              .join(' ') || 'Docente';
+            const fallbackProfile: TeacherProfile = {
+              id: `user-${cleanEmail}`,
+              name: `Prof. ${teacherName}`,
+              email: cleanEmail,
+              avatar: getTeacherAvatar(teacherName, cleanEmail),
+              role: 'Docente Titular',
+              school: deriveSchoolFromEmail(cleanEmail),
+              permissions: DEFAULT_TEACHER.permissions,
+              scopes: WORKSPACE_SCOPES,
+            };
+            sessionStorage.setItem('docencia_session_active', 'true');
+            sessionStorage.setItem('docencia_user_profile', JSON.stringify(fallbackProfile));
+            localStorage.setItem('docencia_session_active', 'true');
+            localStorage.setItem('docencia_user_profile', JSON.stringify(fallbackProfile));
+            return fallbackProfile;
+          }
         }
       } catch (_) {}
     }
@@ -111,9 +139,11 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   });
   const [mode, setMode] = useState<'connected' | 'disconnected'>(() => {
     if (typeof window !== 'undefined') {
+      const urlParams = new URLSearchParams(window.location.search);
       const isLogged =
         sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true';
+        localStorage.getItem('docencia_session_active') === 'true' ||
+        Boolean(urlParams.get('authEmail'));
       return isLogged ? 'connected' : 'disconnected';
     }
     return 'disconnected';
@@ -123,16 +153,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
 
-  // Proactive Google OAuth session expiration monitoring (~55-60 mins) with silent background renewal
+  // Proactive Google OAuth session expiration monitoring (~55-60 mins)
   useEffect(() => {
-    const handleExpiredEvent = async () => {
-      if (mode === 'connected') {
-        const silentToken = await renewGoogleSessionSilently();
-        if (silentToken && isValidGoogleAccessToken(silentToken)) {
-          setToken(silentToken);
-          setIsTokenExpired(false);
-          return;
-        }
+    const handleExpiredEvent = () => {
+      if (mode === 'connected' && getCachedAccessToken()) {
         setIsTokenExpired(true);
       }
     };
@@ -142,14 +166,8 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
 
     // Periodic check every 30 seconds
-    const intervalId = setInterval(async () => {
+    const intervalId = setInterval(() => {
       if (mode === 'connected' && isGoogleSessionExpired()) {
-        const silentToken = await renewGoogleSessionSilently();
-        if (silentToken && isValidGoogleAccessToken(silentToken)) {
-          setToken(silentToken);
-          setIsTokenExpired(false);
-          return;
-        }
         setIsTokenExpired(true);
       }
     }, 30000);
@@ -168,12 +186,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const renewGoogleSession = async (): Promise<boolean> => {
     try {
-      const silentToken = await renewGoogleSessionSilently();
-      if (silentToken && isValidGoogleAccessToken(silentToken)) {
-        setToken(silentToken);
-        setIsTokenExpired(false);
-        return true;
-      }
       const freshToken = await requestAccessToken();
       if (freshToken && isValidGoogleAccessToken(freshToken)) {
         setToken(freshToken);
@@ -264,29 +276,23 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Check auth on startup
   useEffect(() => {
-    const hasActiveSession =
-      typeof window !== 'undefined' &&
-      (sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true');
-    if (hasActiveSession) {
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('docencia_session_active', 'true');
-        const savedProf =
-          sessionStorage.getItem('docencia_user_profile') ||
-          localStorage.getItem('docencia_user_profile');
-        if (savedProf) {
-          sessionStorage.setItem('docencia_user_profile', savedProf);
-        }
-      }
-      api.getAuthUser()
-        .then((data) => {
-          if (data.authenticated && data.user && data.user.email) {
-            setUser(data.user);
-            setMode('connected');
+    // Always check server session to restore active teacher profile seamlessly across tabs/windows
+    api.getAuthUser()
+      .then((data) => {
+        if (data.authenticated && data.user && data.user.email) {
+          setUser(data.user);
+          setMode('connected');
+          if (typeof window !== 'undefined') {
+            sessionStorage.setItem('docencia_session_active', 'true');
+            sessionStorage.setItem('docencia_user_profile', JSON.stringify(data.user));
+            sessionStorage.setItem('docencia_teacher_email', data.user.email);
+            localStorage.setItem('docencia_session_active', 'true');
+            localStorage.setItem('docencia_user_profile', JSON.stringify(data.user));
+            localStorage.setItem('docencia_teacher_email', data.user.email);
           }
-        })
-        .catch((err) => console.log('Session check:', err));
-    }
+        }
+      })
+      .catch((err) => console.log('Session check:', err));
 
     const unsubscribe = initAuth(
       (authUser, accessToken) => {
@@ -378,6 +384,19 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         localStorage.setItem('docencia_teacher_email', result.profile.email);
       }
+
+      try {
+        await api.syncAuthSession({
+          uid: result.profile.id || 'user-google',
+          email: result.profile.email,
+          name: result.profile.name,
+          avatar: result.profile.avatar,
+          token: result.accessToken,
+          scopes: result.profile.scopes || WORKSPACE_SCOPES,
+          school: result.profile.school,
+        });
+      } catch (_) {}
+
       return result.accessToken;
     } catch (err: any) {
       if (err?.code === 'auth/unauthorized-domain-needs-email' || err?.message?.includes('UNAUTHORIZED_DOMAIN_NEEDS_EMAIL')) {
@@ -436,6 +455,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
         sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+        localStorage.setItem('docencia_session_active', 'true');
+        localStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
+        localStorage.setItem('docencia_teacher_email', cleanEmail);
       }
 
       await api.syncAuthSession({

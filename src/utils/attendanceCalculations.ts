@@ -8,6 +8,12 @@
  * - Red (Alert / Riesgo Crítico): < 75% attendance or exceeded maximum allowed absences
  */
 
+import {
+  SchoolHolidayItem,
+  detectHolidaysForCourse,
+  extractWeekdaysFromSchedule,
+} from './schoolHolidays';
+
 export interface AttendanceSettings {
   weeks1c: number;          // Default: 16 weeks in 1st term
   weeks2c: number;          // Default: 16 weeks in 2nd term
@@ -20,6 +26,9 @@ export interface AttendanceSettings {
   termEndDate1c?: string;   // Optional end date for 1st term (e.g. "2026-07-10")
   termStartDate2c?: string; // Optional start date for 2nd term (e.g. "2026-08-03")
   termEndDate2c?: string;   // Optional end date for 2nd term (e.g. "2026-12-04")
+  courseWeekdays?: number[]; // Active class days of week (1=Lunes, ..., 5=Viernes)
+  customHolidays?: SchoolHolidayItem[]; // Custom school asuetos / jornadas
+  excludedHolidayIds?: string[]; // IDs of holidays deactivated by teacher
 }
 
 export const DEFAULT_ATTENDANCE_SETTINGS: AttendanceSettings = {
@@ -34,6 +43,9 @@ export const DEFAULT_ATTENDANCE_SETTINGS: AttendanceSettings = {
   termEndDate1c: '2026-07-10',
   termStartDate2c: '2026-08-03',
   termEndDate2c: '2026-12-04',
+  courseWeekdays: [1, 3],
+  customHolidays: [],
+  excludedHolidayIds: [],
 };
 
 /**
@@ -98,28 +110,62 @@ export function deriveClassesPerWeekFromSchedule(schedule?: string): number {
 }
 
 /**
- * Loads course attendance settings from localStorage or defaults
+ * Loads course attendance settings from localStorage or defaults, automatically
+ * detecting holidays and asuetos for the course schedule.
  */
 export function getCourseAttendanceSettings(courseId?: string, schedule?: string): AttendanceSettings {
   const fallbackClassesPerWeek = deriveClassesPerWeekFromSchedule(schedule);
+  const parsedWeekdays = extractWeekdaysFromSchedule(schedule);
+  const detectedDefaults = detectHolidaysForCourse({
+    schedule,
+    explicitWeekdays: parsedWeekdays.length > 0 ? parsedWeekdays : undefined,
+  });
 
   if (typeof window !== 'undefined' && courseId) {
     try {
       const stored = localStorage.getItem(`fds_attendance_settings_${courseId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
+        const storedWeekdays = Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0
+          ? parsed.courseWeekdays
+          : (parsedWeekdays.length > 0 ? parsedWeekdays : [1, 3]);
+
+        const customHolidays = Array.isArray(parsed.customHolidays) ? parsed.customHolidays : [];
+        const excludedHolidayIds = Array.isArray(parsed.excludedHolidayIds) ? parsed.excludedHolidayIds : [];
+
+        // If holidays were not explicitly set or were 0, recalculate using detected holidays
+        let holidays1c = Number(parsed.holidays1c);
+        let holidays2c = Number(parsed.holidays2c);
+        if (isNaN(holidays1c) || isNaN(holidays2c) || (holidays1c === 0 && holidays2c === 0)) {
+          const auto = detectHolidaysForCourse({
+            schedule,
+            explicitWeekdays: storedWeekdays,
+            termStartDate1c: parsed.termStartDate1c,
+            termEndDate1c: parsed.termEndDate1c,
+            termStartDate2c: parsed.termStartDate2c,
+            termEndDate2c: parsed.termEndDate2c,
+            customHolidays,
+            excludedHolidayIds,
+          });
+          if (isNaN(holidays1c) || holidays1c === 0) holidays1c = auto.holidays1cCount;
+          if (isNaN(holidays2c) || holidays2c === 0) holidays2c = auto.holidays2cCount;
+        }
+
         return {
           weeks1c: Number(parsed.weeks1c) || DEFAULT_ATTENDANCE_SETTINGS.weeks1c,
           weeks2c: Number(parsed.weeks2c) || DEFAULT_ATTENDANCE_SETTINGS.weeks2c,
           classesPerWeek: Number(parsed.classesPerWeek) || fallbackClassesPerWeek,
           maxAbsencePercent: Number(parsed.maxAbsencePercent) || DEFAULT_ATTENDANCE_SETTINGS.maxAbsencePercent,
           halfLatePenalty: parsed.halfLatePenalty !== false,
-          holidays1c: Number(parsed.holidays1c) || 0,
-          holidays2c: Number(parsed.holidays2c) || 0,
+          holidays1c: holidays1c || 0,
+          holidays2c: holidays2c || 0,
           termStartDate1c: parsed.termStartDate1c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate1c,
           termEndDate1c: parsed.termEndDate1c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate1c,
           termStartDate2c: parsed.termStartDate2c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate2c,
           termEndDate2c: parsed.termEndDate2c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate2c,
+          courseWeekdays: storedWeekdays,
+          customHolidays,
+          excludedHolidayIds,
         };
       }
     } catch (_) {}
@@ -128,6 +174,9 @@ export function getCourseAttendanceSettings(courseId?: string, schedule?: string
   return {
     ...DEFAULT_ATTENDANCE_SETTINGS,
     classesPerWeek: fallbackClassesPerWeek,
+    holidays1c: detectedDefaults.holidays1cCount,
+    holidays2c: detectedDefaults.holidays2cCount,
+    courseWeekdays: detectedDefaults.weekdays,
   };
 }
 

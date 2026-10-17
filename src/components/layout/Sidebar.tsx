@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
+  ExternalLink,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { Course } from '../../types';
@@ -47,7 +48,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   selectedCourseId,
   onSelectCourse,
 }) => {
-  const { isDarkMode } = useWorkspaceAuth();
+  const { user, isDarkMode } = useWorkspaceAuth();
   const [coursesExpanded, setCoursesExpanded] = useState<boolean>(true);
 
   const navItems: NavGroup[] = [
@@ -214,34 +215,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           const initial = displayLabel ? displayLabel.charAt(0).toUpperCase() : (course.name ? course.name.charAt(0).toUpperCase() : 'M');
 
                           return (
-                            <button
-                              key={course.id}
-                              onClick={() => {
-                                if (onSelectCourse) {
-                                  onSelectCourse(course.id);
-                                } else {
-                                  onSelectTab('courses', course.id);
-                                }
-                              }}
-                              className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all text-left ${
-                                isCourseActive
-                                  ? isDarkMode
-                                    ? 'bg-blue-600/30 text-blue-300 font-semibold border border-blue-500/30'
-                                    : 'bg-blue-50 text-blue-800 font-semibold border border-blue-200'
-                                  : isDarkMode
-                                  ? 'text-slate-300 hover:bg-slate-800/60'
-                                  : 'text-neutral-600 hover:bg-neutral-100'
-                              }`}
-                              title={displayLabel}
-                            >
-                              <span
-                                className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 shadow-2xs"
-                                style={{ backgroundColor: courseBg }}
+                            <div key={course.id} className="group/course flex items-center gap-1">
+                              <button
+                                onClick={() => {
+                                  if (onSelectCourse) {
+                                    onSelectCourse(course.id);
+                                  } else {
+                                    onSelectTab('courses', course.id);
+                                  }
+                                }}
+                                className={`flex-1 flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all text-left ${
+                                  isCourseActive
+                                    ? isDarkMode
+                                      ? 'bg-blue-600/30 text-blue-300 font-semibold border border-blue-500/30'
+                                      : 'bg-blue-50 text-blue-800 font-semibold border border-blue-200'
+                                    : isDarkMode
+                                    ? 'text-slate-300 hover:bg-slate-800/60'
+                                    : 'text-neutral-600 hover:bg-neutral-100'
+                                }`}
+                                title={displayLabel}
                               >
-                                {initial}
-                              </span>
-                              <span className="truncate flex-1">{displayLabel}</span>
-                            </button>
+                                <span
+                                  className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] text-white font-bold shrink-0 shadow-2xs"
+                                  style={{ backgroundColor: courseBg }}
+                                >
+                                  {initial}
+                                </span>
+                                <span className="truncate flex-1">{displayLabel}</span>
+                              </button>
+                              <a
+                                href={`?course=${course.id}&view=course_detail${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className={`p-1.5 rounded-lg opacity-0 group-hover/course:opacity-100 transition-opacity ${
+                                  isDarkMode
+                                    ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                                    : 'text-neutral-400 hover:text-neutral-900 hover:bg-neutral-200'
+                                }`}
+                                title={`Abrir ${displayLabel} en otra pestaña`}
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
                           );
                         })}
 

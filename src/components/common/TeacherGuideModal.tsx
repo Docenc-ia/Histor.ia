@@ -226,7 +226,7 @@ export const TeacherGuideModal: React.FC<TeacherGuideModalProps> = ({
                   <Users className="w-4 h-4 text-blue-500" />
                   <span>¿Cómo pueden ingresar tus compañeros docentes?</span>
                 </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div
                     className={`p-4 rounded-2xl border ${
                       isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
@@ -251,21 +251,7 @@ export const TeacherGuideModal: React.FC<TeacherGuideModalProps> = ({
                     </div>
                     <h4 className="text-xs font-bold mb-1">Correo Institucional</h4>
                     <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      Pueden ingresar escribiendo su correo y contraseña opcional sin necesidad de configuración previa.
-                    </p>
-                  </div>
-
-                  <div
-                    className={`p-4 rounded-2xl border ${
-                      isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
-                    }`}
-                  >
-                    <div className="w-7 h-7 rounded-lg bg-purple-500/10 text-purple-500 font-bold text-xs flex items-center justify-center mb-2">
-                      3
-                    </div>
-                    <h4 className="text-xs font-bold mb-1">Modo Demostración</h4>
-                    <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      Con un solo clic pueden explorar materias y alumnos de prueba para ver cómo funciona el semáforo y la planilla.
+                      Pueden ingresar escribiendo su correo y contraseña sin necesidad de configuración previa.
                     </p>
                   </div>
                 </div>

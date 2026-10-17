@@ -3,7 +3,8 @@ import {
   ArrowLeft,
   Users,
   Trash2,
-  Plus
+  Plus,
+  ExternalLink,
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -85,6 +86,21 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
                 </option>
               ))}
             </select>
+
+            <a
+              href={`?course=${course.id}&view=course_detail${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-all border flex items-center gap-1.5 cursor-pointer ${
+                isDarkMode
+                  ? 'bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border-slate-700'
+                  : 'bg-white hover:bg-blue-50 text-neutral-700 hover:text-blue-700 border-neutral-200 shadow-2xs'
+              }`}
+              title="Abrir esta materia en otra pestaña o ventana del navegador para trabajar en paralelo"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
+              <span className="hidden md:inline">Abrir en pestaña</span>
+            </a>
 
             {onOpenNewModal && (
               <button

@@ -2130,8 +2130,12 @@ export const api = {
 
   // Storage & deduplication helpers for instant local cache access
   getLocalCourses,
+  saveLocalCourses,
   getLocalStudents,
+  saveLocalStudents,
   deduplicateCourses,
   deduplicateStudents,
+  getAllDispositionStorage,
+  saveAllDispositionStorage,
 };
 

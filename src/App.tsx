@@ -13,11 +13,22 @@ import { Course, Student } from './types';
 import { api } from './services/api';
 import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
+import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 
-const CourseWorkspaceView = lazy(() =>
-  import('./components/modules/CourseWorkspaceView').then((m) => ({ default: m.CourseWorkspaceView }))
-);
-const CalendarModule = lazy(() =>
+// Safe lazy loading with retry for secondary modals and views
+const lazyWithRetry = (componentImport: () => Promise<any>) =>
+  lazy(async () => {
+    try {
+      return await componentImport();
+    } catch (error) {
+      console.warn('Retrying dynamic module load...', error);
+      // Wait 300ms and retry once
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return await componentImport();
+    }
+  });
+
+const CalendarModule = lazyWithRetry(() =>
   import('./components/modules/CalendarModule').then((m) => ({ default: m.CalendarModule }))
 );
 const ImportClassroomModal = lazy(() =>

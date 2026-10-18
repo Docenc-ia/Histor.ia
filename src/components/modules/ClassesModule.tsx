@@ -93,6 +93,7 @@ import {
   AttendanceSettings,
   getCourseAttendanceSettings,
   saveCourseAttendanceSettings,
+  loadCourseAttendanceSettingsFromCloud,
   computeStudentAttendanceTrafficLight,
   computeCourseAttendanceSummary,
 } from '../../utils/attendanceCalculations';
@@ -6053,13 +6054,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             </th>
                             <th className="py-3 px-3 text-center">Semáforo</th>
                             <th className="py-3 px-3 text-center">Condición</th>
-                            <th className="py-3 px-3 text-center">Historial</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-neutral-200 dark:divide-slate-800 font-medium">
                           {filteredStudents.length === 0 ? (
                             <tr>
-                              <td colSpan={8} className="py-8 text-center text-neutral-400">
+                              <td colSpan={7} className="py-8 text-center text-neutral-400">
                                 No se encontraron estudiantes en este curso.
                               </td>
                             </tr>
@@ -6272,18 +6272,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                                       {isAlert ? 'Alerta' : avgDisp >= 8 && estAtt >= 85 ? 'Excelente' : 'Regular'}
                                     </span>
                                   </td>
-
-                                  {/* Acciones */}
-                                  <td className="py-3 px-3 text-center">
-                                    <button
-                                      type="button"
-                                      onClick={() => setSelectedStudentForHistory(student)}
-                                      className="p-1 rounded hover:bg-neutral-100 dark:hover:bg-slate-800 text-blue-600 dark:text-blue-400 cursor-pointer"
-                                      title="Ver historial completo anual del estudiante"
-                                    >
-                                      <History className="w-4 h-4" />
-                                    </button>
-                                  </td>
                                 </tr>
                               );
                             })
@@ -6481,13 +6469,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             </button>
                           </div>
                         </th>
-                        <th className="py-3 px-4 text-center">Historial</th>
                       </tr>
                     </thead>
                     <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800 text-slate-300' : 'divide-neutral-100 text-neutral-700'}`}>
                       {filteredStudents.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="py-12 px-4 text-center">
+                          <td colSpan={6} className="py-12 px-4 text-center">
                             <div className="max-w-md mx-auto flex flex-col items-center gap-3">
                               <div
                                 className={`w-12 h-12 rounded-2xl flex items-center justify-center ${

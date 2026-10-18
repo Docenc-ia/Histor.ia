@@ -251,14 +251,20 @@ export function getLocalStudents(courseId?: string): Student[] {
   return [];
 }
 
-export function saveLocalStudents(courseId: string, studentsList: Student[]): void {
+export function saveLocalStudents(courseIdOrList: string | Student[], studentsList?: Student[]): void {
   if (typeof window === 'undefined') return;
   try {
     const isOwner = isPrimaryOwnerAccount();
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
-    const all = getLocalStudents();
-    const rest = all.filter((s) => s.courseId !== courseId);
-    const updated = deduplicateStudents([...rest, ...studentsList]);
+    let updated: Student[];
+    if (Array.isArray(courseIdOrList)) {
+      updated = deduplicateStudents(courseIdOrList);
+    } else {
+      const courseId = courseIdOrList;
+      const all = getLocalStudents();
+      const rest = all.filter((s) => s.courseId !== courseId);
+      updated = deduplicateStudents([...rest, ...(studentsList || [])]);
+    }
     const dataStr = JSON.stringify(updated);
     localStorage.setItem(key, dataStr);
     if (isOwner) {

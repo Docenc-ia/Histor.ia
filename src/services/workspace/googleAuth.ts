@@ -384,6 +384,8 @@ export const requestGoogleAccessToken = async (forceRefresh = false, preferredEm
   return '';
 };
 
+export const requestAccessToken = requestGoogleAccessToken;
+
 // Sign in with Google OAuth popup (prompting ANY user to select/log in to their Google account)
 export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;

@@ -394,27 +394,6 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
           </button>
         </div>
       </td>
-
-      {/* Student History Column */}
-      <td className="py-2 px-3 text-center">
-        <button
-          type="button"
-          onClick={() => onOpenStudentHistory(student)}
-          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer border ${
-            studentHistory.length > 0
-              ? isDarkMode
-                ? 'bg-blue-950/40 hover:bg-blue-950/70 text-blue-300 border-blue-800/60'
-                : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-              : isDarkMode
-              ? 'text-slate-500 border-transparent hover:border-slate-800'
-              : 'text-neutral-400 border-transparent hover:border-neutral-200'
-          }`}
-          title="Ver historial de este alumno"
-        >
-          <History className="w-3.5 h-3.5" />
-          <span>{studentHistory.length}</span>
-        </button>
-      </td>
     </tr>
   );
 };

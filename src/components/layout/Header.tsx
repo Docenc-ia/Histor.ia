@@ -19,6 +19,7 @@ import {
   Database,
   FileSpreadsheet,
   ShieldCheck,
+  Share2,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
@@ -28,8 +29,16 @@ import {
   CloudSyncStatusInfo,
   firestoreSync,
   getActiveUserId,
+  isPrimaryOwnerAccount,
+  flushAllPendingCloudSaves,
 } from '../../services/firestoreSync';
-import { api, saveLocalCourses, saveLocalStudents, saveAllDispositionStorage } from '../../services/api';
+import {
+  api,
+  getUserStorageKey,
+  saveLocalCourses,
+  saveLocalStudents,
+  saveAllDispositionStorage,
+} from '../../services/api';
 import { exportCourseDispositionToExcel } from '../../utils/excelExport';
 
 interface HeaderProps {
@@ -85,6 +94,7 @@ export const Header: React.FC<HeaderProps> = ({
     if (isManualSyncingCloud) return;
     setIsManualSyncingCloud(true);
     try {
+      flushAllPendingCloudSaves();
       const uid = getActiveUserId();
       const localCourses = api.getLocalCourses();
       const localStudents = api.getLocalStudents();
@@ -111,14 +121,24 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  // Export complete school-year backup in 1 click (JSON)
+  // Export complete school-year backup in 1 click (JSON) isolated to active teacher
   const handleDownloadFullBackupJson = () => {
     try {
+      flushAllPendingCloudSaves();
+      const uid = getActiveUserId();
+      const isOwner = isPrimaryOwnerAccount();
       const courses = api.getLocalCourses();
       const students = api.getLocalStudents();
       const dispStorage = api.getAllDispositionStorage();
-      const allLocalStorageKeys: Record<string, any> = {};
+      let disposition2c: Record<string, any> = {};
+      try {
+        const raw2c =
+          localStorage.getItem(getUserStorageKey('fds_disposition_data_2c')) ||
+          (isOwner ? localStorage.getItem('fds_disposition_data_2c') : null);
+        if (raw2c) disposition2c = JSON.parse(raw2c);
+      } catch (_) {}
 
+      const allLocalStorageKeys: Record<string, any> = {};
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (
@@ -126,6 +146,11 @@ export const Header: React.FC<HeaderProps> = ({
           (key.startsWith('fds_') || key.startsWith('docencia_')) &&
           !key.includes('token')
         ) {
+          // Only include keys belonging to this teacher (or un-suffixed keys if primary owner)
+          const belongsToTeacher = uid
+            ? key.endsWith(`_${uid}`) || (isOwner && !key.includes('_usr_'))
+            : true;
+          if (!belongsToTeacher) continue;
           try {
             const raw = localStorage.getItem(key);
             allLocalStorageKeys[key] = raw ? JSON.parse(raw) : raw;
@@ -137,10 +162,11 @@ export const Header: React.FC<HeaderProps> = ({
 
       const payload = {
         app: 'Docenc.IA - Respaldo Integral del Ciclo Lectivo',
-        version: '3.0',
+        version: '3.1',
         exportedAt: new Date().toISOString(),
         formattedDate: new Date().toLocaleString('es-AR'),
         teacher: {
+          uid: uid || '',
           name: user?.name || 'Docente',
           email: user?.email || '',
           school: user?.school || '',
@@ -148,6 +174,7 @@ export const Header: React.FC<HeaderProps> = ({
         courses,
         students,
         disposition: dispStorage.disposition,
+        disposition2c,
         history: dispStorage.history,
         settingsAndGradesSnapshot: allLocalStorageKeys,
       };
@@ -173,12 +200,15 @@ export const Header: React.FC<HeaderProps> = ({
   // Export unified Excel summary across courses in 1 click
   const handleDownloadFullExcelSummary = () => {
     try {
+      const isOwner = isPrimaryOwnerAccount();
       const courses = api.getLocalCourses();
       const students = api.getLocalStudents();
       const dispStorage = api.getAllDispositionStorage();
       let disp2c: Record<string, any> = {};
       try {
-        const raw2c = localStorage.getItem('fds_disposition_data_2c');
+        const raw2c =
+          localStorage.getItem(getUserStorageKey('fds_disposition_data_2c')) ||
+          (isOwner ? localStorage.getItem('fds_disposition_data_2c') : null);
         if (raw2c) disp2c = JSON.parse(raw2c);
       } catch (_) {}
 
@@ -200,7 +230,7 @@ export const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  // Restore full backup from JSON file and sync to Firestore
+  // Restore full backup from JSON file and sync to Firestore under the active teacher's account
   const handleRestoreFullBackupFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -216,15 +246,35 @@ export const Header: React.FC<HeaderProps> = ({
           throw new Error('El archivo seleccionado no es un respaldo válido de Docenc.IA.');
         }
 
+        const uid = getActiveUserId();
+        const oldUid = data?.teacher?.uid ? String(data.teacher.uid) : '';
+
         if (data.settingsAndGradesSnapshot && typeof data.settingsAndGradesSnapshot === 'object') {
-          Object.entries(data.settingsAndGradesSnapshot).forEach(([k, v]) => {
+          for (const [k, v] of Object.entries(data.settingsAndGradesSnapshot)) {
             if (k.startsWith('fds_') || k.startsWith('docencia_')) {
-              localStorage.setItem(k, typeof v === 'string' ? v : JSON.stringify(v));
+              let targetKey = k;
+              if (uid) {
+                if (oldUid && k.endsWith(`_${oldUid}`)) {
+                  targetKey = `${k.slice(0, -(`_${oldUid}`.length))}_${uid}`;
+                } else if (!k.endsWith(`_${uid}`)) {
+                  targetKey = `${k}_${uid}`;
+                }
+              }
+              const serialized = typeof v === 'string' ? v : JSON.stringify(v);
+              localStorage.setItem(targetKey, serialized);
+              if (isPrimaryOwnerAccount()) {
+                localStorage.setItem(k, serialized);
+              }
+              if (uid && targetKey.startsWith('fds_libro_temas_2026_') && v && typeof v === 'object') {
+                const basePart = targetKey.replace(`_${uid}`, '').replace('fds_libro_temas_2026_', '');
+                if (basePart) {
+                  firestoreSync.saveUserSetting(uid, `libro_temas_${basePart}`, v).catch(() => {});
+                }
+              }
             }
-          });
+          }
         }
 
-        const uid = getActiveUserId();
         if (Array.isArray(data.courses) && data.courses.length > 0) {
           saveLocalCourses(data.courses);
           if (uid) await firestoreSync.saveCourses(uid, data.courses);
@@ -243,6 +293,16 @@ export const Header: React.FC<HeaderProps> = ({
             for (const [cid, list] of byCourse.entries()) {
               await firestoreSync.saveStudents(uid, cid, list);
             }
+          }
+        }
+
+        if (data.disposition2c && typeof data.disposition2c === 'object') {
+          localStorage.setItem(
+            getUserStorageKey('fds_disposition_data_2c'),
+            JSON.stringify(data.disposition2c)
+          );
+          if (uid) {
+            await firestoreSync.saveUserSetting(uid, 'disposition_map_2c', data.disposition2c);
           }
         }
 
@@ -382,7 +442,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? isDarkMode
                 ? 'bg-blue-950/50 border-blue-800 text-blue-300'
                 : 'bg-blue-50 border-blue-200 text-blue-700'
-              : cloudStatus.state === 'error'
+              : cloudStatus.state === 'error' || cloudStatus.state === 'offline'
               ? isDarkMode
                 ? 'bg-amber-950/50 border-amber-800 text-amber-300'
                 : 'bg-amber-50 border-amber-200 text-amber-700'
@@ -391,8 +451,10 @@ export const Header: React.FC<HeaderProps> = ({
               : 'bg-emerald-50 border-emerald-200 text-emerald-700'
           }`}
           title={
-            cloudStatus.lastSyncedAt
-              ? `Respaldo en Firestore activo (última sincronización: ${cloudStatus.lastSyncedAt}). Hacé clic en el ícono de recarga para forzar sincronización o abrir Copia de Seguridad.`
+            cloudStatus.state === 'offline'
+              ? 'Sin conexión a internet: tus cambios se guardan en el dispositivo y se sincronizarán apenas vuelva la red.'
+              : cloudStatus.lastSyncedAt
+              ? `Respaldo en Firestore activo (última sincronización: ${cloudStatus.lastSyncedAt}). Hacé clic en el ícono de recarga para forzar sincronización.`
               : 'Sincronizado automáticamente con Firebase Firestore'
           }
         >
@@ -400,7 +462,9 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="hidden lg:inline">
             {cloudStatus.state === 'syncing' || isManualSyncingCloud
               ? 'Sincronizando nube...'
-              : 'Guardado en la nube'}
+              : cloudStatus.state === 'offline'
+              ? 'Guardado local (sin red)'
+              : `Guardado en la nube${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
           </span>
           <button
             type="button"
@@ -429,10 +493,25 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-indigo-300'
               : 'bg-indigo-50/80 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
           }`}
-          title="Copia de seguridad completa en 1 clic (JSON / Excel)"
+          title="Copia de seguridad completa de tu cuenta en 1 clic (JSON / Excel)"
         >
           <Database className="w-4 h-4" />
           <span className="hidden xl:inline text-[11px]">Respaldo</span>
+        </button>
+
+        {/* Share & Teacher Guide Quick Button */}
+        <button
+          type="button"
+          onClick={() => setIsGuideOpen(true)}
+          className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
+            isDarkMode
+              ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-blue-300'
+              : 'bg-blue-50/80 hover:bg-blue-100 border-blue-200 text-blue-700'
+          }`}
+          title="Guía rápida para docentes y enlace para compartir con colegas"
+        >
+          <Share2 className="w-4 h-4" />
+          <span className="hidden xl:inline text-[11px]">Guía / Compartir</span>
         </button>
 
         {/* Dark / Light Mode Toggle Button */}

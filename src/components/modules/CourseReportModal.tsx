@@ -32,6 +32,10 @@ import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { driveService } from '../../services/workspace/driveService';
+import {
+  getCourseAttendanceSettings,
+  computeStudentAttendanceTrafficLight,
+} from '../../utils/attendanceCalculations';
 
 export interface ExamGradeDetailItem {
   id: string;
@@ -221,10 +225,22 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Load Student Profile observations from Ficha del Alumno as default fallback
   const profileObservationsMap = useMemo<Record<string, StudentObservation[]>>(() => {
     try {
-      const raw =
-        localStorage.getItem(`fds_student_observations_${courseId}`) ||
-        localStorage.getItem('fds_student_observations');
-      return raw ? JSON.parse(raw) : {};
+      const merged: Record<string, StudentObservation[]> = {};
+      const keysToCheck = [
+        'fds_student_observations',
+        `fds_student_observations_${courseId}`,
+        'student_observations',
+      ];
+      for (const key of keysToCheck) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            Object.assign(merged, parsed);
+          }
+        }
+      }
+      return merged;
     } catch {
       return {};
     }
@@ -252,6 +268,14 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     });
   };
 
+  const parseScoreNumber = (val: unknown): number | null => {
+    if (val === undefined || val === null) return null;
+    const str = String(val).trim().replace(',', '.');
+    if (str === '') return null;
+    const num = Number(str);
+    return !isNaN(num) ? num : null;
+  };
+
   // Helper to compute term final score from GradebookMatrix data
   const computeTermScoreForStudent = (
     stId: string,
@@ -261,23 +285,23 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   ): { scoreStr: string; num: number | null } => {
     const stGrades = gradesMap[stId] || {};
     if (calcMode === 'manual_final' && stGrades['__final__'] !== undefined && stGrades['__final__'] !== '') {
-      const val = stGrades['__final__'];
-      const num = !isNaN(Number(val)) ? Number(val) : null;
+      const val = String(stGrades['__final__']).trim();
+      const num = parseScoreNumber(val);
       return { scoreStr: val, num };
     }
 
     const numericScores: number[] = [];
     cats.forEach((cat) => {
       if (cat.subcategories.length === 0) {
-        const val = stGrades[cat.id];
-        if (val !== undefined && val !== '' && !isNaN(Number(val))) {
-          numericScores.push(Number(val));
+        const num = parseScoreNumber(stGrades[cat.id]);
+        if (num !== null) {
+          numericScores.push(num);
         }
       } else {
         cat.subcategories.forEach((sub) => {
-          const val = stGrades[sub.id];
-          if (val !== undefined && val !== '' && !isNaN(Number(val))) {
-            numericScores.push(Number(val));
+          const num = parseScoreNumber(stGrades[sub.id]);
+          if (num !== null) {
+            numericScores.push(num);
           }
         });
       }
@@ -291,8 +315,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
     // Fallback if manual __final__ exists even when mode was average
     if (stGrades['__final__'] !== undefined && stGrades['__final__'] !== '') {
-      const val = stGrades['__final__'];
-      const num = !isNaN(Number(val)) ? Number(val) : null;
+      const val = String(stGrades['__final__']).trim();
+      const num = parseScoreNumber(val);
       return { scoreStr: val, num };
     }
 
@@ -366,6 +390,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }
   }, [annualOverrides, courseId]);
 
+  const courseAttendanceSettings = useMemo(
+    () => getCourseAttendanceSettings(courseId),
+    [courseId]
+  );
+
   // Consolidate full student annual data + detailed exam/TP grades
   const consolidatedStudents = useMemo(() => {
     return students.map((st) => {
@@ -391,7 +420,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       }
 
       const finalVal = override !== undefined && override !== '' ? override : calcAvgStr;
-      const finalNum = finalVal !== '' && !isNaN(Number(finalVal)) ? Number(finalVal) : null;
+      const finalNum = parseScoreNumber(finalVal);
 
       let condition = 'Pendiente';
       if (finalNum !== null) {
@@ -413,10 +442,14 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       const disp2 = disp2cMap[st.id]?.totalDisposition ?? 10;
       const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
 
-      const estimatedAttendance = Math.max(
-        0,
-        Math.min(100, Math.round(100 - totalAbs * 2.5 - totalLat * 0.8))
+      const trafficLight = computeStudentAttendanceTrafficLight(
+        st.id,
+        totalAbs,
+        totalLat,
+        'annual',
+        courseAttendanceSettings
       );
+      const estimatedAttendance = trafficLight.percentage;
 
       // Dedicated observation for official report / certificate (falls back to Student Profile observations if not customized yet)
       const customReportObs = reportObservations[st.id];
@@ -466,6 +499,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     gradesData2c,
     disp1cMap,
     disp2cMap,
+    courseAttendanceSettings,
     reportObservations,
     profileObservationsMap,
   ]);

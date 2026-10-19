@@ -30,6 +30,7 @@ import {
 import { driveService } from '../../../services/workspace/driveService';
 import { copyTableToClipboard } from '../../../utils/sheetsUtils';
 import { firestoreSync, getActiveUserId } from '../../../services/firestoreSync';
+import { getUserStorageKey } from '../../../services/api';
 
 export interface LibroDeTemasEntry {
   dateIso: string; // YYYY-MM-DD
@@ -121,8 +122,8 @@ export const LibroDeTemasView: React.FC<LibroDeTemasViewProps> = ({
   isDarkMode = false,
   onToast,
 }) => {
-  const storageKey = `fds_libro_temas_v1_${course.id}`;
-  const headerStorageKey = `fds_libro_temas_header_v1_${course.id}`;
+  const storageKey = getUserStorageKey(`fds_libro_temas_v1_${course.id}`);
+  const headerStorageKey = getUserStorageKey(`fds_libro_temas_header_v1_${course.id}`);
 
   // Load saved entries map: dateIso -> LibroDeTemasEntry
   const [entriesMap, setEntriesMap] = useState<Record<string, LibroDeTemasEntry>>(() => {

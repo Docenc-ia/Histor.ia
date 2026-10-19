@@ -16,6 +16,8 @@ import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 import {
   STORAGE_KEYS,
   getUserStorageKey,
+  getUserScopedItem,
+  setUserScopedItem,
   normalizeCourseCanonicalKey,
   areCoursesSame,
   deduplicateCourses,
@@ -35,6 +37,9 @@ import {
 } from './storageHelpers';
 
 export {
+  getUserStorageKey,
+  getUserScopedItem,
+  setUserScopedItem,
   normalizeCourseCanonicalKey,
   areCoursesSame,
   deduplicateCourses,
@@ -56,9 +61,13 @@ export {
 
 export const api = {
   // Auth API
-  async getAuthUser(): Promise<{ authenticated: boolean; user: TeacherProfile }> {
+  async getAuthUser(email?: string): Promise<{ authenticated: boolean; user: TeacherProfile }> {
     try {
-      const res = await fetch('/api/auth/user');
+      const targetEmail = (email || '').trim().toLowerCase();
+      if (!targetEmail) {
+        return { authenticated: false, user: null as any };
+      }
+      const res = await fetch(`/api/auth/user?email=${encodeURIComponent(targetEmail)}`);
       if (!res.ok) return { authenticated: false, user: null as any };
       return res.json();
     } catch {
@@ -123,8 +132,13 @@ export const api = {
     return { success: true, user: fallbackProfile };
   },
 
-  async logoutAuth(): Promise<void> {
-    await fetch('/api/auth/logout', { method: 'POST' });
+  async logoutAuth(email?: string): Promise<void> {
+    firestoreSync.clearMemoryCaches();
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    }).catch(() => {});
   },
 
   async getPermissions(): Promise<{ role: string; permissions: string[]; scopes: string[] }> {
@@ -241,24 +255,26 @@ export const api = {
   },
 
   async createCourse(courseData: Partial<Course>): Promise<Course> {
-    try {
-      const res = await fetch('/api/courses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(courseData),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.course) {
-          const list = deduplicateCourses([...getLocalCourses(), data.course]);
-          saveLocalCourses(list);
-          const userId = getActiveUserId();
-          if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
-          return data.course;
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/courses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(courseData),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.course) {
+            const list = deduplicateCourses([...getLocalCourses(), data.course]);
+            saveLocalCourses(list);
+            const userId = getActiveUserId();
+            if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
+            return data.course;
+          }
         }
+      } catch (e) {
+        console.warn('Backend /api/courses POST unavailable, saving locally:', e);
       }
-    } catch (e) {
-      console.warn('Backend /api/courses POST unavailable, saving locally:', e);
     }
 
     const newCourse: Course = {
@@ -288,29 +304,31 @@ export const api = {
   },
 
   async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
-    try {
-      const res = await fetch('/api/courses/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courses: coursesList }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const incoming = Array.isArray(data.courses) ? data.courses : [];
-        const local = getLocalCourses();
-        const fullList = deduplicateCourses([...local, ...incoming]);
-        if (fullList.length > 0) {
-          saveLocalCourses(fullList);
-          const uId = getActiveUserId();
-          if (uId) firestoreSync.saveCourses(uId, fullList).catch(() => {});
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/courses/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courses: coursesList }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const incoming = Array.isArray(data.courses) ? data.courses : [];
+          const local = getLocalCourses();
+          const fullList = deduplicateCourses([...local, ...incoming]);
+          if (fullList.length > 0) {
+            saveLocalCourses(fullList);
+            const uId = getActiveUserId();
+            if (uId) firestoreSync.saveCourses(uId, fullList).catch(() => {});
+          }
+          return { ...data, courses: fullList };
         }
-        return { ...data, courses: fullList };
+      } catch (e) {
+        console.warn('Backend /api/courses/bulk unavailable, importing to local storage:', e);
       }
-    } catch (e) {
-      console.warn('Backend /api/courses/bulk unavailable, importing to local storage:', e);
     }
 
-    // Client-side fallback for Vercel & static deployments:
+    // Client-side / isolated multi-teacher storage:
     const existing = getLocalCourses();
     const processed: Course[] = [...existing];
     let addedCount = 0;
@@ -375,14 +393,16 @@ export const api = {
   },
 
   async syncCourseStudents(updates: Array<{ id: string; studentsCount: number }>): Promise<{ success: boolean; message: string }> {
-    try {
-      const res = await fetch('/api/courses/sync-students', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      });
-      if (res.ok) return res.json();
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/courses/sync-students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates }),
+        });
+        if (res.ok) return res.json();
+      } catch (_) {}
+    }
 
     const courses = getLocalCourses();
     updates.forEach((u) => {
@@ -398,23 +418,25 @@ export const api = {
   },
 
   async updateCourse(id: string, patch: Partial<Course>): Promise<{ success: boolean; course: Course }> {
-    try {
-      const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.course) {
-          const list = getLocalCourses().map((c) => (c.id === id ? data.course : c));
-          saveLocalCourses(list);
-          const userId = getActiveUserId();
-          if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
-          return data;
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.course) {
+            const list = getLocalCourses().map((c) => (c.id === id ? data.course : c));
+            saveLocalCourses(list);
+            const userId = getActiveUserId();
+            if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
+            return data;
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     const list = getLocalCourses().map((c) => (c.id === id ? { ...c, ...patch } : c));
     saveLocalCourses(list);
@@ -434,7 +456,7 @@ export const api = {
     if (target?.classroomCourseId) idsToDelete.add(target.classroomCourseId);
 
     const list = localCourses.filter((c) => !idsToDelete.has(c.id) && (!c.classroomCourseId || !idsToDelete.has(c.classroomCourseId)));
-    saveLocalCourses(list);
+    saveLocalCourses(list, list.length === 0);
 
     const userId = getActiveUserId();
     if (userId) {
@@ -444,14 +466,16 @@ export const api = {
       firestoreSync.saveCourses(userId, list).catch(() => {});
     }
 
-    try {
-      const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        return res.json();
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+        if (res.ok) {
+          return res.json();
+        }
+      } catch (_) {}
+    }
 
     return { success: true, message: 'Materia eliminada correctamente', courseId: id };
   },
@@ -463,31 +487,35 @@ export const api = {
       firestoreSync.clearAllCourses(userId).catch(() => {});
       firestoreSync.saveCourses(userId, []).catch(() => {});
     }
-    try {
-      const res = await fetch('/api/courses/clear', {
-        method: 'POST',
-      });
-      if (res.ok) {
-        return res.json();
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/courses/clear', {
+          method: 'POST',
+        });
+        if (res.ok) {
+          return res.json();
+        }
+      } catch (_) {}
+    }
 
-    return { success: true, message: 'Materias de prueba eliminadas correctamente' };
+    return { success: true, message: 'Materias eliminadas correctamente' };
   },
 
   async restoreDemoCourses(): Promise<{ success: boolean; message: string; courses: Course[] }> {
-    try {
-      const res = await fetch('/api/courses/restore-demo', {
-        method: 'POST',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && Array.isArray(data.courses)) {
-          saveLocalCourses(data.courses);
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/courses/restore-demo', {
+          method: 'POST',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && Array.isArray(data.courses)) {
+            saveLocalCourses(data.courses);
+          }
+          return data;
         }
-        return data;
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     saveLocalCourses([]);
     return { success: true, message: 'Materias restauradas correctamente', courses: [] };
@@ -556,25 +584,27 @@ export const api = {
   },
 
   async createStudent(studentData: { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {
-    try {
-      const res = await fetch('/api/students', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(studentData),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.student) {
-          const current = getLocalStudents(studentData.courseId);
-          saveLocalStudents(studentData.courseId, [...current, data.student]);
-          const userId = getActiveUserId();
-          if (userId) {
-            firestoreSync.saveStudents(userId, studentData.courseId, [...current, data.student]).catch(() => {});
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/students', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(studentData),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.student) {
+            const current = getLocalStudents(studentData.courseId);
+            saveLocalStudents(studentData.courseId, [...current, data.student]);
+            const userId = getActiveUserId();
+            if (userId) {
+              firestoreSync.saveStudents(userId, studentData.courseId, [...current, data.student]).catch(() => {});
+            }
+            return data.student;
           }
-          return data.student;
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     const newStudent: Student = {
       id: `st-${studentData.courseId}-${Date.now().toString().slice(-4)}`,
@@ -657,17 +687,19 @@ export const api = {
       }
     }
 
-    try {
-      const res = await fetch('/api/students/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courseId, students }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        return data;
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/students/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courseId, students }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          return data;
+        }
+      } catch (_) {}
+    }
 
     return {
       success: true,
@@ -677,10 +709,12 @@ export const api = {
   },
 
   async cleanMockStudents(): Promise<{ success: boolean; remaining: number }> {
-    try {
-      const res = await fetch('/api/students/clear-mock', { method: 'POST' });
-      if (res.ok) return res.json();
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/students/clear-mock', { method: 'POST' });
+        if (res.ok) return res.json();
+      } catch (_) {}
+    }
     return { success: false, remaining: 0 };
   },
 
@@ -689,7 +723,7 @@ export const api = {
     if (typeof window !== 'undefined') {
       try {
         const key = getUserStorageKey(STORAGE_KEYS.ATTENDANCE);
-        const raw = localStorage.getItem(key) || (key !== STORAGE_KEYS.ATTENDANCE ? localStorage.getItem(STORAGE_KEYS.ATTENDANCE) : null) || '{}';
+        const raw = localStorage.getItem(key) || (isPrimaryOwnerAccount() && key !== STORAGE_KEYS.ATTENDANCE ? localStorage.getItem(STORAGE_KEYS.ATTENDANCE) : null) || '{}';
         const parsed = JSON.parse(raw);
         if (!parsed[courseId]) parsed[courseId] = {};
         parsed[courseId][date] = records;
@@ -702,15 +736,17 @@ export const api = {
       firestoreSync.saveAttendance(userId, courseId, date, records).catch((e) => console.warn('Firestore saveAttendance warning:', e));
     }
 
-    try {
-      const res = await fetch('/api/attendance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courseId, date, records }),
-      });
-      if (res.ok) return res.json();
-    } catch (e) {
-      console.warn('Backend /api/attendance unavailable:', e);
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/attendance', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ courseId, date, records }),
+        });
+        if (res.ok) return res.json();
+      } catch (e) {
+        console.warn('Backend /api/attendance unavailable:', e);
+      }
     }
 
     return { message: 'Asistencia registrada con éxito' };
@@ -905,18 +941,20 @@ export const api = {
       firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
     }
 
-    try {
-      const res = await fetch('/api/disposition/record', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const serverRes = await res.json();
-        return serverRes;
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/disposition/record', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const serverRes = await res.json();
+          return serverRes;
+        }
+      } catch (_) {}
+    }
 
     return {
       success: true,
@@ -954,17 +992,19 @@ export const api = {
       firestoreSync.saveDisposition(userId, targetItem).catch(() => {});
     }
 
-    try {
-      const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}/notification`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(notificationData),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}/notification`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(notificationData),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return await res.json();
+        }
+      } catch (_) {}
+    }
 
     return { success: true, record: targetItem };
   },
@@ -1076,19 +1116,21 @@ export const api = {
       firestoreSync.deleteDisposition(userId, id).catch((e) => console.warn('Firestore deleteDisposition error:', e));
     }
 
-    // 5. Delete on backend if available
-    try {
-      const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(extra || {}),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const serverData = await res.json();
-        return serverData;
-      }
-    } catch (_) {}
+    // 5. Delete on backend if primary owner
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/disposition/history/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(extra || {}),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const serverData = await res.json();
+          return serverData;
+        }
+      } catch (_) {}
+    }
 
     return { success: true, summary: currentSummary, disposition: allDisposition };
   },
@@ -1171,17 +1213,19 @@ export const api = {
       }
     }
 
-    try {
-      const res = await fetch('/api/disposition/reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/disposition/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return await res.json();
+        }
+      } catch (_) {}
+    }
 
     return {
       success: true,
@@ -1206,17 +1250,19 @@ export const api = {
       firestoreSync.saveDispositionBatch(userId, cleanHistory).catch(() => {});
     }
 
-    try {
-      const res = await fetch('/api/disposition/sync-full', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/disposition/sync-full', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return await res.json();
+        }
+      } catch (_) {}
+    }
 
     return {
       success: true,
@@ -1238,7 +1284,7 @@ export const api = {
     let cached: any = null;
     if (typeof window !== 'undefined') {
       try {
-        const raw = localStorage.getItem(localKey);
+        const raw = getUserScopedItem(localKey);
         if (raw) {
           cached = JSON.parse(raw);
         }
@@ -1256,11 +1302,7 @@ export const api = {
           isLiveGoogle: true,
           lastSyncedAt: cached?.lastSyncedAt || new Date().toISOString(),
         };
-        if (typeof window !== 'undefined') {
-          try {
-            localStorage.setItem(localKey, JSON.stringify(sheetInfo));
-          } catch (_) {}
-        }
+        setUserScopedItem(localKey, JSON.stringify(sheetInfo));
         return sheetInfo;
       }
     } catch (_) {}
@@ -1287,11 +1329,7 @@ export const api = {
               isLiveGoogle: true,
               url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
             };
-            if (typeof window !== 'undefined') {
-              try {
-                localStorage.setItem(localKey, JSON.stringify(sanitized));
-              } catch (_) {}
-            }
+            setUserScopedItem(localKey, JSON.stringify(sanitized));
             return sanitized;
           }
         }
@@ -1310,11 +1348,7 @@ export const api = {
             isLiveGoogle: true,
             url: cloudSheet.url || `https://docs.google.com/spreadsheets/d/${cloudSheet.spreadsheetId}/edit`,
           };
-          if (typeof window !== 'undefined') {
-            try {
-              localStorage.setItem(localKey, JSON.stringify(sanitized));
-            } catch (_) {}
-          }
+          setUserScopedItem(localKey, JSON.stringify(sanitized));
           return sanitized;
         }
       } catch (_) {}
@@ -1327,7 +1361,10 @@ export const api = {
     const localKey = `fds_course_disposition_sheet_${courseId}`;
     if (typeof window !== 'undefined') {
       try {
-        localStorage.removeItem(localKey);
+        localStorage.removeItem(getUserStorageKey(localKey));
+        if (isPrimaryOwnerAccount()) {
+          localStorage.removeItem(localKey);
+        }
       } catch (_) {}
     }
 
@@ -1355,11 +1392,13 @@ export const api = {
       }
     } catch (_) {}
 
-    try {
-      await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
-        method: 'DELETE',
-      });
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
+          method: 'DELETE',
+        });
+      } catch (_) {}
+    }
     return { success: true };
   },
 
@@ -1373,11 +1412,7 @@ export const api = {
       ...data,
       url: isReal ? (data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`) : '',
     };
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(localKey, JSON.stringify(sanitizedData));
-      } catch (_) {}
-    }
+    setUserScopedItem(localKey, JSON.stringify(sanitizedData));
 
     // Persist dispositionSheetId directly on the Course object in localStorage and Firestore
     try {
@@ -1406,20 +1441,23 @@ export const api = {
       }
     } catch (_) {}
 
-    try {
-      const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(sanitizedData),
-      });
-      const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        return await res.json();
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch(`/api/courses/${encodeURIComponent(courseId)}/disposition-sheet`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sanitizedData),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return await res.json();
+        }
+        return { success: true };
+      } catch {
+        return { success: true };
       }
-      return { success: true };
-    } catch {
-      return { success: true };
     }
+    return { success: true };
   },
 
   // Custom Conduct Options
@@ -1816,13 +1854,15 @@ export const api = {
 
     const cloudGems = userId ? await firestoreSync.loadCustomGems(userId).catch(() => [] as CustomGem[]) : [];
     let serverGems: CustomGem[] = [];
-    try {
-      const res = await fetch('/api/custom-gems');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.gems)) serverGems = data.gems;
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/custom-gems');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.gems)) serverGems = data.gems;
+        }
+      } catch (_) {}
+    }
 
     const map = new Map<string, CustomGem>();
     for (const g of [...serverGems, ...cloudGems, ...localGems]) {
@@ -1844,17 +1884,19 @@ export const api = {
     const localKey = getUserStorageKey('docencia_custom_gems');
     let savedGem: CustomGem | null = null;
 
-    try {
-      const res = await fetch('/api/custom-gems', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.gem) savedGem = data.gem;
-      }
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        const res = await fetch('/api/custom-gems', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.gem) savedGem = data.gem;
+        }
+      } catch (_) {}
+    }
 
     if (!savedGem) {
       savedGem = {
@@ -1895,9 +1937,11 @@ export const api = {
     if (userId) {
       firestoreSync.deleteCustomGem(userId, id).catch(() => {});
     }
-    try {
-      await fetch(`/api/custom-gems/${id}`, { method: 'DELETE' });
-    } catch (_) {}
+    if (isPrimaryOwnerAccount()) {
+      try {
+        await fetch(`/api/custom-gems/${id}`, { method: 'DELETE' });
+      } catch (_) {}
+    }
     return true;
   },
 

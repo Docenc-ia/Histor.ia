@@ -165,8 +165,8 @@ interface AuthUser {
   lastLogin: string;
 }
 
-// Initial active user state (null until user explicitly signs in)
-let activeUser: AuthUser | null = null;
+// Active user sessions isolated by email so multiple teachers do not share or leak sessions
+const activeUsersByEmail = new Map<string, AuthUser>();
 
 // Initial Datasets (persisted to disk so classes and students survive app closures)
 let courses: Course[] = [];
@@ -1075,11 +1075,13 @@ async function startServer() {
     res.json(WORKSPACE_INTEGRATION);
   });
 
-  // Authentication & Session endpoints
-  app.get("/api/auth/user", (_req, res) => {
+  // Authentication & Session endpoints (isolated per teacher email)
+  app.get("/api/auth/user", (req, res) => {
+    const requestedEmail = String(req.query.email || "").trim().toLowerCase();
+    const matchedUser = requestedEmail ? (activeUsersByEmail.get(requestedEmail) || null) : null;
     res.json({
-      authenticated: !!activeUser,
-      user: activeUser,
+      authenticated: !!matchedUser,
+      user: matchedUser,
     });
   });
 
@@ -1090,11 +1092,13 @@ async function startServer() {
       const cleanName = name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
       const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
 
-      activeUser = {
+      const sessionUser: AuthUser = {
         id: uid || `user-${Date.now()}`,
         email: cleanEmail,
         name: displayName,
-        avatar: avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
+        avatar: (avatar && !avatar.includes("photo-1534528741775"))
+          ? avatar
+          : `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
         role: "Docente Titular",
         school: school || (cleanEmail.includes("@") ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}` : "Institución Educativa"),
         scopes: Array.isArray(scopes) ? scopes : [
@@ -1123,9 +1127,13 @@ async function startServer() {
         lastLogin: new Date().toISOString(),
       };
 
+      if (cleanEmail) {
+        activeUsersByEmail.set(cleanEmail, sessionUser);
+      }
+
       res.json({
         success: true,
-        user: activeUser,
+        user: sessionUser,
       });
     } catch (err: any) {
       console.error("Error in /api/auth/session:", err);
@@ -1133,15 +1141,20 @@ async function startServer() {
     }
   });
 
-  app.post("/api/auth/logout", (_req, res) => {
-    activeUser = null;
+  app.post("/api/auth/logout", (req, res) => {
+    const cleanEmail = String(req.body?.email || req.query?.email || "").trim().toLowerCase();
+    if (cleanEmail) {
+      activeUsersByEmail.delete(cleanEmail);
+    }
     res.json({ success: true, message: "Sesión cerrada correctamente" });
   });
 
-  app.get("/api/auth/permissions", (_req, res) => {
+  app.get("/api/auth/permissions", (req, res) => {
+    const requestedEmail = String(req.query.email || "").trim().toLowerCase();
+    const matchedUser = requestedEmail ? activeUsersByEmail.get(requestedEmail) : undefined;
     res.json({
-      role: activeUser?.role || "Docente Titular",
-      permissions: activeUser?.permissions || [
+      role: matchedUser?.role || "Docente Titular",
+      permissions: matchedUser?.permissions || [
         "tasks.create",
         "tasks.assign",
         "tasks.grade",
@@ -1152,7 +1165,7 @@ async function startServer() {
         "students.view",
         "grades.manage",
       ],
-      scopes: activeUser?.scopes || [],
+      scopes: matchedUser?.scopes || [],
     });
   });
 
@@ -2228,20 +2241,11 @@ async function startServer() {
     const { teacher, templates } = req.body;
     const key = teacher || "default";
     if (templates && typeof templates === "object") {
-      teacherConductTemplatesMap[key] = templates;
-      saveTeacherSettingsToDisk();
-    }
-    res.json({ success: true, templates: teacherConductTemplatesMap[key] || {} });
-  });
-
-  app.post("/api/conduct-templates", (req, res) => {
-    const { teacher, templates } = req.body;
-    const key = teacher || "default";
-    if (templates && typeof templates === "object") {
       teacherConductTemplatesMap[key] = {
         ...(teacherConductTemplatesMap[key] || {}),
         ...templates,
       };
+      saveTeacherSettingsToDisk();
     }
     res.json({ success: true, templates: teacherConductTemplatesMap[key] || {} });
   });
@@ -2377,56 +2381,6 @@ async function startServer() {
     res.status(201).json({ task: newTask });
   });
 
-  // -------------------------------------------------------------
-  // AUTH & USER PERMISSIONS API (Google OAuth 2.0 Integration)
-  // -------------------------------------------------------------
-  app.get("/api/auth/user", (_req, res) => {
-    res.json({
-      authenticated: Boolean(activeUser),
-      user: activeUser,
-    });
-  });
-
-  app.post("/api/auth/session", (req, res) => {
-    const { uid, email, name, avatar, scopes, school } = req.body;
-    activeUser = {
-      id: uid || (activeUser ? activeUser.id : `user-${Date.now()}`),
-      email: email || (activeUser ? activeUser.email : ""),
-      name: name || (activeUser ? activeUser.name : "Docente"),
-      avatar: (avatar && !avatar.includes("photo-1534528741775"))
-        ? avatar
-        : `https://ui-avatars.com/api/?name=${encodeURIComponent(name || email || "Docente")}&background=1d4ed8&color=ffffff&bold=true&size=150`,
-      role: "Docente Titular",
-      school: school || (activeUser?.school ? activeUser.school : "Institución Educativa"),
-      scopes: scopes || (activeUser ? activeUser.scopes : []),
-      permissions: [
-        "tasks.create",
-        "tasks.assign",
-        "tasks.grade",
-        "tasks.delete",
-        "drive.read",
-        "drive.attach",
-        "classroom.sync",
-        "students.view",
-        "grades.manage",
-      ],
-      lastLogin: new Date().toISOString(),
-    };
-    res.json({ success: true, user: activeUser });
-  });
-
-  app.post("/api/auth/logout", (_req, res) => {
-    activeUser = null;
-    res.json({ success: true, message: "Sesión de docente finalizada correctamente." });
-  });
-
-  app.get("/api/auth/permissions", (_req, res) => {
-    res.json({
-      role: activeUser?.role || "Docente Titular",
-      permissions: activeUser?.permissions || [],
-      scopes: activeUser?.scopes || [],
-    });
-  });
 
   // -------------------------------------------------------------
   // TEACHER TASK & ASSIGNMENT MANAGEMENT API (Module 1)

@@ -22,6 +22,7 @@ import {
   Upload,
   History,
   RefreshCw,
+  Cloud,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
@@ -37,10 +38,17 @@ import {
   exportGradebookMatrixToExcel,
 } from '../../utils/excelExport';
 import { sheetsService } from '../../services/workspace/sheetsService';
-import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
+import {
+  firestoreSync,
+  getActiveUserId,
+  subscribeToCloudSyncStatus,
+  CloudSyncStatusInfo,
+  registerCloudFlushHandler,
+  notifyDebouncedSyncPending,
+} from '../../services/firestoreSync';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { copyTableToClipboard, isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
-import { api } from '../../services/api';
+import { api, getUserStorageKey } from '../../services/api';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -123,10 +131,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
-  const getCatKey = (t: '1c' | '2c') => `fds_grades_categories_${courseId}_${t}`;
-  const getGradesKey = (t: '1c' | '2c') => `fds_grades_data_${courseId}_${t}`;
-  const getCalcKey = (t: '1c' | '2c') => `fds_grades_final_calc_${courseId}_${t}`;
-  const STORAGE_KEY_ANNUAL_OVERRIDES = `fds_grades_annual_override_${courseId}`;
+  const getCatKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_categories_${courseId}_${t}`);
+  const getGradesKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_data_${courseId}_${t}`);
+  const getCalcKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_final_calc_${courseId}_${t}`);
+  const STORAGE_KEY_ANNUAL_OVERRIDES = getUserStorageKey(`fds_grades_annual_override_${courseId}`);
 
   // 1° Cuatrimestre Categories
   const [categories1c, setCategories1c] = useState<GradeCategory[]>(() => {
@@ -326,8 +334,19 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
+  const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
+    state: 'synced',
+    lastSyncedAt: null,
+    pendingCount: 0,
+  });
+
+  useEffect(() => {
+    return subscribeToCloudSyncStatus((st) => setCloudStatus(st));
+  }, []);
+
   const cloudSyncTimerRef = useRef<Record<string, any>>({});
-  const getTermUpdatedAtKey = (term: '1c' | '2c') => `fds_grades_updated_at_${courseId}_${term}`;
+  const pendingCloudPayloadsRef = useRef<Record<string, { userId: string; courseId: string; term: string; payload: any }>>({});
+  const getTermUpdatedAtKey = (term: '1c' | '2c') => getUserStorageKey(`fds_grades_updated_at_${courseId}_${term}`);
 
   const persistTermSnapshotToCloud = (
     term: '1c' | '2c',
@@ -343,24 +362,54 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(getTermUpdatedAtKey(term), nowIso);
       } catch (_) {}
     }
-    const timerKey = `${courseId}_${term}`;
+    const timerKey = `grades_${courseId}_${term}`;
     if (cloudSyncTimerRef.current[timerKey]) {
       clearTimeout(cloudSyncTimerRef.current[timerKey]);
     }
+    const payload = {
+      courseId,
+      term,
+      termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+      categories: cats,
+      gradesMap: gMap,
+      overallCalc: term === '2c' ? overallCalc2c : overallCalc1c,
+      ...(extra || {}),
+      updatedAt: nowIso,
+    };
+    pendingCloudPayloadsRef.current[timerKey] = { userId, courseId, term, payload };
+    notifyDebouncedSyncPending(timerKey, true);
     cloudSyncTimerRef.current[timerKey] = setTimeout(() => {
+      delete pendingCloudPayloadsRef.current[timerKey];
+      delete cloudSyncTimerRef.current[timerKey];
+      notifyDebouncedSyncPending(timerKey, false);
       firestoreSync
-        .saveTermSnapshot(userId, courseId, term, {
-          courseId,
-          term,
-          termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-          categories: cats,
-          gradesMap: gMap,
-          ...(extra || {}),
-          updatedAt: nowIso,
-        })
+        .saveTermSnapshot(userId, courseId, term, payload)
         .catch(() => {});
     }, 400);
   };
+
+  // Flush any pending gradebook cloud writes on unmount, tab close, or network restore
+  useEffect(() => {
+    const flushAllGradebook = () => {
+      Object.entries(pendingCloudPayloadsRef.current).forEach(([key, item]) => {
+        if (cloudSyncTimerRef.current[key]) {
+          clearTimeout(cloudSyncTimerRef.current[key]);
+          delete cloudSyncTimerRef.current[key];
+        }
+        delete pendingCloudPayloadsRef.current[key];
+        notifyDebouncedSyncPending(key, false);
+        firestoreSync
+          .saveTermSnapshot(item.userId, item.courseId, item.term, item.payload)
+          .catch(() => {});
+      });
+    };
+
+    const unregFlush = registerCloudFlushHandler(`gradebook_${courseId}`, flushAllGradebook);
+    return () => {
+      unregFlush();
+      flushAllGradebook();
+    };
+  }, [courseId]);
 
   // Save changes to localStorage and Firestore for active term
   const saveCategories = (newCategories: GradeCategory[]) => {
@@ -403,12 +452,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       if (typeof window !== 'undefined') {
         localStorage.setItem(getCalcKey('2c'), type);
       }
+      persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { overallCalc: type });
     } else {
       setOverallCalc1c(type);
       if (typeof window !== 'undefined') {
         localStorage.setItem(getCalcKey('1c'), type);
         localStorage.setItem(`fds_grades_final_calc_${courseId}`, type);
       }
+      persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { overallCalc: type });
     }
   };
 
@@ -582,7 +633,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   }, [courseId]);
 
   // Preliminary Valuation State (Valoración Preliminar: TEA / TEP)
-  const getPreliminaryValuationKey = (t: '1c' | '2c') => `fds_preliminary_valuation_${courseId}_${t}`;
+  const getPreliminaryValuationKey = (t: '1c' | '2c') => getUserStorageKey(`fds_preliminary_valuation_${courseId}_${t}`);
 
   const [preliminaryValuation1c, setPreliminaryValuation1c] = useState<PreliminaryValuationRecord | null>(() => {
     if (typeof window !== 'undefined') {
@@ -629,7 +680,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const [gradeHistory, setGradeHistory] = useState<GradeHistoryEntry[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(`fds_grade_history_${courseId}`);
+        const saved = localStorage.getItem(getUserStorageKey(`fds_grade_history_${courseId}`));
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -686,7 +737,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     const updatedHistory = [data.historyEntry, ...gradeHistory];
     setGradeHistory(updatedHistory);
     if (typeof window !== 'undefined') {
-      localStorage.setItem(`fds_grade_history_${courseId}`, JSON.stringify(updatedHistory));
+      localStorage.setItem(getUserStorageKey(`fds_grade_history_${courseId}`), JSON.stringify(updatedHistory));
     }
 
     // Persistir en Firestore
@@ -1150,9 +1201,36 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           >
             {/* Título: Planilla de Calificaciones y abajo 1º Cuatrimestre */}
             <div className="shrink-0">
-              <h3 className={`font-bold text-base lg:text-lg leading-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
-                Planilla de Calificaciones
-              </h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className={`font-bold text-base lg:text-lg leading-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
+                  Planilla de Calificaciones
+                </h3>
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-semibold border transition-colors ${
+                    cloudStatus.state === 'syncing'
+                      ? isDarkMode
+                        ? 'bg-blue-950/60 border-blue-800 text-blue-300'
+                        : 'bg-blue-50 border-blue-200 text-blue-700'
+                      : cloudStatus.state === 'offline'
+                      ? isDarkMode
+                        ? 'bg-amber-950/60 border-amber-800 text-amber-300'
+                        : 'bg-amber-50 border-amber-200 text-amber-800'
+                      : isDarkMode
+                      ? 'bg-emerald-950/50 border-emerald-800/70 text-emerald-300'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                  }`}
+                  title="Cada nota o categoría que edites se guarda automáticamente en el dispositivo y en tu cuenta en la nube"
+                >
+                  <Cloud className={`w-3 h-3 shrink-0 ${cloudStatus.state === 'syncing' ? 'animate-pulse' : ''}`} />
+                  <span>
+                    {cloudStatus.state === 'syncing'
+                      ? 'Guardando...'
+                      : cloudStatus.state === 'offline'
+                      ? 'Guardado local'
+                      : `✓ Guardado${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
+                  </span>
+                </span>
+              </div>
               <div className="flex items-center gap-2 mt-1">
                 <span className={`text-xs font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                   {currentTerm === '1c' ? '1º Cuatrimestre' : '2º Cuatrimestre'}

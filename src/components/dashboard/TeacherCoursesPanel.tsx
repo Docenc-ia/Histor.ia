@@ -555,7 +555,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
       {/* Courses Cards Grid or Empty State */}
       {uniqueCourses.length === 0 ? (
         <div
-          className={`rounded-3xl border-2 border-dashed p-8 sm:p-14 text-center space-y-6 max-w-2xl mx-auto transition-colors ${
+          className={`rounded-3xl border-2 border-dashed p-8 sm:p-12 text-center space-y-6 max-w-3xl mx-auto transition-colors ${
             isDarkMode
               ? 'bg-slate-900/60 border-slate-800 text-slate-200'
               : 'bg-white border-neutral-200 text-neutral-800'
@@ -568,10 +568,55 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-xl sm:text-2xl font-bold">Tu espacio está listo para tus materias</h3>
-            <p className={`text-sm max-w-md mx-auto leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-              No tienes ninguna materia de prueba cargada. Crea tus propias asignaturas o conéctate con Google Classroom para importar tus cursos y estudiantes reales:
+            <h3 className="text-xl sm:text-2xl font-bold">¡Bienvenido/a a tu espacio docente en Docenc.IA!</h3>
+            <p className={`text-sm max-w-lg mx-auto leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+              Tu cuenta es 100% privada e independiente. Todo lo que registres se guarda automáticamente en el dispositivo y en la nube:
             </p>
+          </div>
+
+          {/* Guía rápida en 3 pasos para docentes nuevos */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left pt-1">
+            <div
+              className={`p-4 rounded-2xl border ${
+                isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-blue-50/50 border-blue-100'
+              }`}
+            >
+              <div className="w-6 h-6 rounded-lg bg-blue-600 text-white text-xs font-bold flex items-center justify-center mb-2">
+                1
+              </div>
+              <p className="text-xs font-bold mb-1">Conectar o crear curso</p>
+              <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
+                Importá tus cursos y alumnos desde Google Classroom o creá tu primera materia manualmente.
+              </p>
+            </div>
+
+            <div
+              className={`p-4 rounded-2xl border ${
+                isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-emerald-50/50 border-emerald-100'
+              }`}
+            >
+              <div className="w-6 h-6 rounded-lg bg-emerald-600 text-white text-xs font-bold flex items-center justify-center mb-2">
+                2
+              </div>
+              <p className="text-xs font-bold mb-1">Asistencia y calificaciones</p>
+              <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
+                Registrá presentes, llegadas tarde, puntos de disposición y notas del 1° y 2° cuatrimestre.
+              </p>
+            </div>
+
+            <div
+              className={`p-4 rounded-2xl border ${
+                isDarkMode ? 'bg-slate-900/90 border-slate-800' : 'bg-amber-50/50 border-amber-100'
+              }`}
+            >
+              <div className="w-6 h-6 rounded-lg bg-amber-600 text-white text-xs font-bold flex items-center justify-center mb-2">
+                3
+              </div>
+              <p className="text-xs font-bold mb-1">Libro de Temas e informes</p>
+              <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
+                Completá las clases del ciclo lectivo y exportá a Google Sheets, Docs, Excel o Copia de Seguridad.
+              </p>
+            </div>
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-3 pt-2">

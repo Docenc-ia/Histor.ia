@@ -13,6 +13,7 @@ import {
   detectHolidaysForCourse,
   extractWeekdaysFromSchedule,
 } from './schoolHolidays';
+import { getUserScopedItem, setUserScopedItem } from '../services/storageHelpers';
 
 export interface AttendanceSettings {
   weeks1c: number;          // Default: 16 weeks in 1st term
@@ -123,7 +124,7 @@ export function getCourseAttendanceSettings(courseId?: string, schedule?: string
 
   if (typeof window !== 'undefined' && courseId) {
     try {
-      const stored = localStorage.getItem(`fds_attendance_settings_${courseId}`);
+      const stored = getUserScopedItem(`fds_attendance_settings_${courseId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         const storedWeekdays = Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0
@@ -185,9 +186,7 @@ export function getCourseAttendanceSettings(courseId?: string, schedule?: string
  */
 export function saveCourseAttendanceSettings(courseId: string, settings: AttendanceSettings): void {
   if (typeof window !== 'undefined' && courseId) {
-    try {
-      localStorage.setItem(`fds_attendance_settings_${courseId}`, JSON.stringify(settings));
-    } catch (_) {}
+    setUserScopedItem(`fds_attendance_settings_${courseId}`, JSON.stringify(settings));
     import('../services/firestoreSync')
       .then(({ firestoreSync, getActiveUserId }) => {
         const uid = getActiveUserId();
@@ -217,9 +216,7 @@ export async function loadCourseAttendanceSettingsFromCloud(
     );
     if (cloudSettings && typeof cloudSettings === 'object') {
       if (typeof window !== 'undefined') {
-        try {
-          localStorage.setItem(`fds_attendance_settings_${courseId}`, JSON.stringify(cloudSettings));
-        } catch (_) {}
+        setUserScopedItem(`fds_attendance_settings_${courseId}`, JSON.stringify(cloudSettings));
       }
       return getCourseAttendanceSettings(courseId, schedule);
     }

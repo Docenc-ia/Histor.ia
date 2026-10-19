@@ -68,6 +68,9 @@ import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/g
 import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate, StudentObservation } from '../../types';
 import {
   api,
+  getUserStorageKey,
+  getUserScopedItem,
+  setUserScopedItem,
   saveAllDispositionStorage,
   getAllDispositionStorage,
   getDeletedHistoryIds,
@@ -263,7 +266,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [dispositionMap2c, setDispositionMap2c] = useState<Record<string, StudentDispositionData>>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem('fds_disposition_data_2c');
+        const stored = getUserScopedItem('fds_disposition_data_2c');
         if (stored) return JSON.parse(stored);
       } catch (_) {}
     }
@@ -418,7 +421,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return DEFAULT_REASON_TEMPLATES;
   });
 
-  // Carga inicial y sincronización con el backend para plantillas de conducta
+  // Carga inicial y sincronización con el backend y Firestore para plantillas de conducta, presets, ajustes y 2°C
   useEffect(() => {
     let isMounted = true;
     api
@@ -436,6 +439,57 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         }
       })
       .catch(() => {});
+
+    const uid = getActiveUserId();
+    if (uid) {
+      firestoreSync
+        .loadUserSetting<AbsencePresetTemplate[]>(uid, 'notification_presets')
+        .then((cloudPresets) => {
+          if (!isMounted || !Array.isArray(cloudPresets) || cloudPresets.length === 0) return;
+          setSavedPresets((prev) => {
+            const byId = new Map<string, AbsencePresetTemplate>();
+            prev.forEach((p) => byId.set(p.id, p));
+            cloudPresets.forEach((p) => {
+              if (p && p.id && p.text) byId.set(p.id, p);
+            });
+            const merged = Array.from(byId.values());
+            try {
+              localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(merged));
+            } catch (_) {}
+            return merged;
+          });
+        })
+        .catch(() => {});
+
+      firestoreSync
+        .loadUserSetting<AbsenceNotificationSettings>(uid, 'notification_settings')
+        .then((cloudSettings) => {
+          if (!isMounted || !cloudSettings || typeof cloudSettings !== 'object') return;
+          setNotifSettings((prev) => {
+            const merged = { ...prev, ...cloudSettings };
+            try {
+              localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(merged));
+            } catch (_) {}
+            return merged;
+          });
+        })
+        .catch(() => {});
+
+      firestoreSync
+        .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
+        .then((cloud2c) => {
+          if (!isMounted || !cloud2c || typeof cloud2c !== 'object' || Object.keys(cloud2c).length === 0) return;
+          setDispositionMap2c((prev) => {
+            const merged = { ...cloud2c, ...prev };
+            try {
+              setUserScopedItem('fds_disposition_data_2c', JSON.stringify(merged));
+            } catch (_) {}
+            return merged;
+          });
+        })
+        .catch(() => {});
+    }
+
     return () => {
       isMounted = false;
     };
@@ -463,6 +517,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     try {
       localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
     } catch (_) {}
+    const uid = getActiveUserId();
+    if (uid) {
+      firestoreSync.saveUserSetting(uid, 'notification_presets', updated).catch(() => {});
+    }
     setToastMessage(`Mensaje preestablecido "${trimmed}" guardado correctamente.`);
     setTimeout(() => setToastMessage(null), 3500);
     return newPreset.id;
@@ -479,6 +537,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     try {
       localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
     } catch (_) {}
+    const uid = getActiveUserId();
+    if (uid) {
+      firestoreSync.saveUserSetting(uid, 'notification_presets', updated).catch(() => {});
+    }
     setToastMessage('Plantilla eliminada.');
     setTimeout(() => setToastMessage(null), 2500);
   };
@@ -671,6 +733,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     try {
       localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(newSettings));
     } catch (_) {}
+    const uid = getActiveUserId();
+    if (uid) {
+      firestoreSync.saveUserSetting(uid, 'notification_settings', newSettings).catch(() => {});
+    }
     setToastMessage('Configuración de avisos guardada correctamente.');
     setTimeout(() => setToastMessage(null), 3000);
   };
@@ -975,7 +1041,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [studentObservations, setStudentObservations] = useState<Record<string, StudentObservation[]>>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const stored = localStorage.getItem('fds_student_observations');
+        const stored = getUserScopedItem('fds_student_observations');
         if (stored) return JSON.parse(stored);
       } catch (_) {}
     }
@@ -1007,9 +1073,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               }
             }
             if (changed && typeof window !== 'undefined') {
-              try {
-                localStorage.setItem('fds_student_observations', JSON.stringify(merged));
-              } catch (_) {}
+              setUserScopedItem('fds_student_observations', JSON.stringify(merged));
             }
             return changed ? merged : prev;
           });
@@ -2319,16 +2383,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     if (term === '2c') {
       setDispositionMap2c(updatedMap);
       if (typeof window !== 'undefined') {
-        localStorage.setItem('fds_disposition_data_2c', JSON.stringify(updatedMap));
+        setUserScopedItem('fds_disposition_data_2c', JSON.stringify(updatedMap));
         if (activeCourse?.id) {
-          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
         }
+      }
+      const uid = getActiveUserId();
+      if (uid) {
+        firestoreSync.saveUserSetting(uid, 'disposition_map_2c', updatedMap).catch(() => {});
       }
       saveAllDispositionStorage(dispositionMap, updatedHistory);
     } else {
       setDispositionMap(updatedMap);
       if (typeof window !== 'undefined' && activeCourse?.id) {
-        localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
+        setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
       }
       saveAllDispositionStorage(updatedMap, updatedHistory);
     }
@@ -4454,9 +4522,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setStudentObservations(updatedMap);
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+        setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
         if (activeCourse?.id) {
-          localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+          setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
         }
         const uid = getActiveUserId();
         if (uid) {
@@ -4482,9 +4550,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setStudentObservations(updatedMap);
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+        setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
         if (activeCourse?.id) {
-          localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+          setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
         }
         const uid = getActiveUserId();
         if (uid) {
@@ -4925,9 +4993,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         };
         setStudentObservations(updatedMap);
         try {
-          localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+          setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
           if (activeCourse.id) {
-            localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+            setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
           }
           const uid = getActiveUserId();
           if (uid) {
@@ -5130,8 +5198,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const term: '1c' | '2c' = targetTermOverride || (attendanceTerm === '2c' ? '2c' : '1c');
     const courseId = activeCourse.id;
 
-    const catKey = `fds_grades_categories_${courseId}_${term}`;
-    const gradesKey = `fds_grades_data_${courseId}_${term}`;
+    const catKey = getUserStorageKey(`fds_grades_categories_${courseId}_${term}`);
+    const gradesKey = getUserStorageKey(`fds_grades_data_${courseId}_${term}`);
 
     // 1. Obtener o inicializar las categorías del cuatrimestre destino
     let categories: GradeCategory[] = [];
@@ -13977,6 +14045,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           students={courseStudents}
           courseHistory={courseHistory}
           studentObservations={studentObservations}
+          onRestoreObservations={(merged) => setStudentObservations(merged)}
           onRestoreSuccess={(msg) => {
             setToastMessage(msg);
             setTimeout(() => setToastMessage(null), 4000);
@@ -13993,7 +14062,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           onClose={() => setIsQuickRollCallOpen(false)}
           courseId={activeCourse.id}
           courseName={activeCourse.name}
-          students={filteredStudents.length > 0 ? filteredStudents : courseStudents}
+          students={courseStudents}
           attendanceTerm={attendanceTerm}
           attendanceSettings={attendanceSettings}
           historyList={historyList}

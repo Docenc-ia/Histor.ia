@@ -7,9 +7,9 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   doc,
+  getDoc,
   setDoc,
   collection,
-  collectionGroup,
   getDocs,
   deleteDoc,
   getDocFromServer,
@@ -40,7 +40,7 @@ export interface FirestoreErrorInfo {
     email?: string | null;
     emailVerified?: boolean | null;
     isAnonymous?: boolean | null;
-    tenantId?: string | null;
+    tenantId?: boolean | string | null;
     providerInfo?: {
       providerId?: string | null;
       email?: string | null;
@@ -147,7 +147,7 @@ const ALL_DBS: Firestore[] = [db];
 export const GLOBAL_WORKSPACE_ID = 'global_shared_workspace';
 
 // Cloud Sync Status emitter for UI indicator ("Guardado en la nube" / "Sincronizando...")
-export type CloudSyncState = 'synced' | 'syncing' | 'error';
+export type CloudSyncState = 'synced' | 'syncing' | 'error' | 'offline';
 
 export interface CloudSyncStatusInfo {
   state: CloudSyncState;
@@ -156,12 +156,14 @@ export interface CloudSyncStatusInfo {
 }
 
 let currentSyncStatus: CloudSyncStatusInfo = {
-  state: 'synced',
+  state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'synced',
   lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   pendingCount: 0,
 };
 
 const syncListeners = new Set<(status: CloudSyncStatusInfo) => void>();
+const flushHandlers = new Map<string, () => void>();
+const pendingDebouncedKeys = new Set<string>();
 
 function emitSyncStatus(partial: Partial<CloudSyncStatusInfo>) {
   currentSyncStatus = { ...currentSyncStatus, ...partial };
@@ -169,6 +171,79 @@ function emitSyncStatus(partial: Partial<CloudSyncStatusInfo>) {
     try {
       listener(currentSyncStatus);
     } catch (_) {}
+  });
+}
+
+export function registerCloudFlushHandler(id: string, flushFn: () => void): () => void {
+  flushHandlers.set(id, flushFn);
+  return () => {
+    flushHandlers.delete(id);
+    pendingDebouncedKeys.delete(id);
+  };
+}
+
+export function notifyDebouncedSyncPending(id: string, isPending: boolean): void {
+  if (isPending) {
+    pendingDebouncedKeys.add(id);
+    emitSyncStatus({
+      state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'syncing',
+    });
+  } else {
+    pendingDebouncedKeys.delete(id);
+    if (currentSyncStatus.pendingCount === 0 && pendingDebouncedKeys.size === 0) {
+      emitSyncStatus({
+        state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'synced',
+        lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      });
+    }
+  }
+}
+
+export function flushAllPendingCloudSaves(): boolean {
+  let flushedAny = false;
+  flushHandlers.forEach((fn) => {
+    try {
+      fn();
+      flushedAny = true;
+    } catch (_) {}
+  });
+  return flushedAny;
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushAllPendingCloudSaves();
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    flushAllPendingCloudSaves();
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    const hadPendingDebounce = pendingDebouncedKeys.size > 0;
+    if (hadPendingDebounce) {
+      flushAllPendingCloudSaves();
+    }
+    if (currentSyncStatus.pendingCount > 0 || hadPendingDebounce) {
+      e.preventDefault();
+      e.returnValue = 'Hay cambios guardándose en la nube. ¿Deseas salir de todos modos?';
+      return e.returnValue;
+    }
+  });
+
+  window.addEventListener('offline', () => {
+    emitSyncStatus({ state: 'offline' });
+  });
+
+  window.addEventListener('online', () => {
+    flushAllPendingCloudSaves();
+    emitSyncStatus({
+      state: currentSyncStatus.pendingCount > 0 ? 'syncing' : 'synced',
+      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+    window.dispatchEvent(new Event('docencia_network_restored'));
   });
 }
 
@@ -196,7 +271,7 @@ async function executeWithTimeout<T>(
   }
   if (trackAsWrite) {
     emitSyncStatus({
-      state: 'syncing',
+      state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'syncing',
       pendingCount: currentSyncStatus.pendingCount + 1,
     });
   }
@@ -211,8 +286,9 @@ async function executeWithTimeout<T>(
     clearTimeout(timer);
     if (trackAsWrite) {
       const nextPending = Math.max(0, currentSyncStatus.pendingCount - 1);
+      const hasMore = nextPending > 0 || pendingDebouncedKeys.size > 0;
       emitSyncStatus({
-        state: nextPending > 0 ? 'syncing' : 'synced',
+        state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : hasMore ? 'syncing' : 'synced',
         pendingCount: nextPending,
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       });
@@ -281,16 +357,6 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 testFirestoreConnection().catch(() => {});
 
-// Helper to get deleted history IDs from localStorage tombstones
-function getDeletedHistoryIdsSet(): Set<string> {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    const raw = localStorage.getItem('docencia_deleted_history_ids');
-    if (raw) return new Set(JSON.parse(raw));
-  } catch (_) {}
-  return new Set();
-}
-
 // Helper to get active teacher email
 export function getActiveUserEmail(): string {
   if (auth.currentUser?.email) return auth.currentUser.email.trim().toLowerCase();
@@ -346,6 +412,20 @@ export function getActiveUserId(): string {
   return GLOBAL_WORKSPACE_ID;
 }
 
+// Helper to get deleted history IDs from user-scoped localStorage tombstones
+function getDeletedHistoryIdsSet(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const uid = getActiveUserId();
+    const scopedKey = uid ? `docencia_deleted_history_ids_${uid}` : 'docencia_deleted_history_ids';
+    const raw =
+      localStorage.getItem(scopedKey) ||
+      (isPrimaryOwnerAccount() ? localStorage.getItem('docencia_deleted_history_ids') : null);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (_) {}
+  return new Set();
+}
+
 // Helper to gather all candidate user IDs for the current logged-in teacher
 // - For Jorge Cano (canomorenojj@gmail.com / jorge.cano@fds-esc.edu.ar): links both of his accounts together
 // - For any other teacher (colleagues): strictly isolates to their own Google UID and email ID
@@ -399,10 +479,12 @@ export function getCandidateUserIds(primaryId?: string): string[] {
   return Array.from(ids).filter(Boolean);
 }
 
-// Short-lived in-memory cache (3 seconds TTL) to avoid redundant parallel Firestore reads on rapid tab switches
-const READ_CACHE_TTL_MS = 3000;
+// Short-lived in-memory caches (4 seconds TTL) to avoid redundant parallel Firestore reads on rapid tab switches
+const READ_CACHE_TTL_MS = 4000;
 let coursesReadCache: { userId: string; timestamp: number; data: Course[] } | null = null;
 let studentsReadCache: { userId: string; timestamp: number; data: Student[] } | null = null;
+let dispositionReadCache: { userId: string; timestamp: number; data: { disposition: Record<string, any>; history: any[] } } | null = null;
+let snapshotsReadCache: { key: string; timestamp: number; data: Record<string, any> } | null = null;
 
 function invalidateCoursesCache() {
   coursesReadCache = null;
@@ -410,6 +492,21 @@ function invalidateCoursesCache() {
 
 function invalidateStudentsCache() {
   studentsReadCache = null;
+}
+
+function invalidateDispositionCache() {
+  dispositionReadCache = null;
+}
+
+function invalidateSnapshotsCache() {
+  snapshotsReadCache = null;
+}
+
+export function clearFirestoreMemoryCaches(): void {
+  coursesReadCache = null;
+  studentsReadCache = null;
+  dispositionReadCache = null;
+  snapshotsReadCache = null;
 }
 
 // Target user bucket to write to: single canonical target to avoid burning Firestore write quota
@@ -442,6 +539,8 @@ function sanitizeForFirestore<T>(input: T): T {
 }
 
 export const firestoreSync = {
+  clearMemoryCaches: clearFirestoreMemoryCaches,
+
   /**
    * Save teacher profile to Firestore under /users/{userId}
    */
@@ -612,7 +711,7 @@ export const firestoreSync = {
             );
           }
         }
-            await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+        await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${userId}/students`);
       }
@@ -620,7 +719,7 @@ export const firestoreSync = {
   },
 
   /**
-   * Load students from Firestore globally across linked accounts and database instances
+   * Load students from Firestore for the current teacher's candidate accounts
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
@@ -636,8 +735,6 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
-    const candidateSet = new Set<string>(candidateIds);
-    const isOwner = isPrimaryOwnerAccount();
     const students: Student[] = [];
 
     try {
@@ -646,20 +743,12 @@ export const firestoreSync = {
         for (const uid of candidateIds) {
           queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'students'))).catch(() => null));
         }
-        if (isOwner) {
-          queries.push(executeWithTimeout(getDocs(collectionGroup(targetDb, 'students'))).catch(() => null));
-        }
       }
 
       const snaps = await Promise.all(queries);
       for (const snap of snaps) {
         if (!snap) continue;
         snap.forEach((docSnap: any) => {
-          const pathParts = String(docSnap.ref?.path || '').split('/');
-          const ownerUid = pathParts[0] === 'users' ? pathParts[1] : '';
-          if (ownerUid && ownerUid.startsWith('teacher_') && !candidateSet.has(ownerUid)) {
-            return;
-          }
           const data = docSnap.data() as Student;
           if (data && data.id) {
             students.push(data);
@@ -714,6 +803,7 @@ export const firestoreSync = {
    */
   async saveDisposition(userId: string, record: any): Promise<void> {
     if (!userId || !record?.id || Date.now() < firestoreUnavailableUntil) return;
+    invalidateDispositionCache();
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
     const cleanPayload = sanitizeForFirestore({
@@ -740,6 +830,7 @@ export const firestoreSync = {
    */
   async deleteDisposition(userId: string, recordId: string): Promise<void> {
     if (!recordId) return;
+    invalidateDispositionCache();
     const candidateIds = getCandidateUserIds(userId);
     for (const targetDb of ALL_DBS) {
       for (const uid of candidateIds) {
@@ -753,6 +844,7 @@ export const firestoreSync = {
    */
   async deleteTodayAbsencesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
     if (!userId || !studentId) return [];
+    invalidateDispositionCache();
     const candidateIds = getCandidateUserIds(userId);
     const deletedIds: string[] = [];
 
@@ -790,6 +882,7 @@ export const firestoreSync = {
    */
   async deleteStudentDispositionDocs(userId: string, studentId: string, clearAll: boolean = false): Promise<string[]> {
     if (!userId || !studentId) return [];
+    invalidateDispositionCache();
     const candidateIds = getCandidateUserIds(userId);
     const deletedIds: string[] = [];
 
@@ -826,6 +919,7 @@ export const firestoreSync = {
    */
   async deleteCourseDispositionDocs(userId: string, courseId: string, clearAll: boolean = false): Promise<string[]> {
     if (!userId || !courseId) return [];
+    invalidateDispositionCache();
     const candidateIds = getCandidateUserIds(userId);
     const deletedIds: string[] = [];
 
@@ -858,23 +952,27 @@ export const firestoreSync = {
   },
 
   /**
-   * Load disposition history from Firestore globally across linked accounts and database instances
+   * Load disposition history from Firestore for the current teacher's candidate accounts
    */
   async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
     if (Date.now() < firestoreUnavailableUntil) {
       return { disposition: {}, history: [] };
     }
+    if (
+      dispositionReadCache &&
+      dispositionReadCache.userId === userId &&
+      Date.now() - dispositionReadCache.timestamp < READ_CACHE_TTL_MS &&
+      (dispositionReadCache.data.history.length > 0 || Object.keys(dispositionReadCache.data.disposition).length > 0)
+    ) {
+      return dispositionReadCache.data;
+    }
+
     const candidateIds = getCandidateUserIds(userId);
-    const candidateSet = new Set<string>(candidateIds);
-    const isOwner = isPrimaryOwnerAccount();
     try {
       const queries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
           queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'disposition'))).catch(() => null));
-        }
-        if (isOwner) {
-          queries.push(executeWithTimeout(getDocs(collectionGroup(targetDb, 'disposition'))).catch(() => null));
         }
       }
 
@@ -882,16 +980,12 @@ export const firestoreSync = {
       const history: any[] = [];
       const seenRecordIds = new Set<string>();
       const disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
+      const disposition2c: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
       const deleted = getDeletedHistoryIdsSet();
 
       for (const snap of snaps) {
         if (!snap) continue;
         snap.forEach((docSnap: any) => {
-          const pathParts = String(docSnap.ref?.path || '').split('/');
-          const ownerUid = pathParts[0] === 'users' ? pathParts[1] : '';
-          if (ownerUid && ownerUid.startsWith('teacher_') && !candidateSet.has(ownerUid)) {
-            return;
-          }
           const docId = docSnap.id;
           const data = docSnap.data();
           const recordId = data.id || docId;
@@ -912,8 +1006,9 @@ export const firestoreSync = {
 
           const studentId = data.studentId;
           if (studentId && studentId !== 'all') {
-            if (!disposition[studentId]) {
-              disposition[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            const targetMap = data.term === '2c' ? disposition2c : disposition;
+            if (!targetMap[studentId]) {
+              targetMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
             }
             const isAbsence =
               data.category === 'Ausencia' ||
@@ -929,15 +1024,18 @@ export const firestoreSync = {
               data.action?.toLowerCase().includes('tarde');
 
             if (isAbsence) {
-              disposition[studentId].totalAbsences += 1;
+              targetMap[studentId].totalAbsences += 1;
             } else if (isLate) {
-              disposition[studentId].totalLates = (disposition[studentId].totalLates || 0) + 1;
+              targetMap[studentId].totalLates = (targetMap[studentId].totalLates || 0) + 1;
             } else if (
               data.category === 'Disposición' ||
               (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
             ) {
-              const pts = data.pointsChange && data.pointsChange < 0 ? Math.abs(data.pointsChange) : 1;
-              disposition[studentId].totalDisposition = Math.max(0, disposition[studentId].totalDisposition - pts);
+              const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
+              targetMap[studentId].totalDisposition = Math.min(
+                10,
+                Math.max(0, targetMap[studentId].totalDisposition + delta)
+              );
             }
           }
         });
@@ -945,7 +1043,11 @@ export const firestoreSync = {
 
       history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
-      return { disposition, history };
+      const result = { disposition, disposition2c, history };
+      if (history.length > 0 || Object.keys(disposition).length > 0 || Object.keys(disposition2c).length > 0) {
+        dispositionReadCache = { userId, timestamp: Date.now(), data: result };
+      }
+      return result;
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, `users/${userId}/disposition`);
       return { disposition: {}, history: [] };
@@ -962,6 +1064,7 @@ export const firestoreSync = {
     snapshotData: any
   ): Promise<void> {
     if (!userId || !courseId || !term) return;
+    invalidateSnapshotsCache();
     const docId = `${courseId}_${term}`;
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
@@ -987,24 +1090,29 @@ export const firestoreSync = {
   },
 
   /**
-   * Load cuatrimestre closure snapshots for a course globally across linked accounts and database instances
+   * Load cuatrimestre closure snapshots for a course for the current teacher's candidate accounts
    */
   async loadTermSnapshots(
     userId: string,
     courseId: string
   ): Promise<Record<string, any>> {
-    if (!courseId) return {};
+    if (!courseId || Date.now() < firestoreUnavailableUntil) return {};
+    const cacheKey = `${userId}_${courseId}`;
+    if (
+      snapshotsReadCache &&
+      snapshotsReadCache.key === cacheKey &&
+      Date.now() - snapshotsReadCache.timestamp < READ_CACHE_TTL_MS &&
+      Object.keys(snapshotsReadCache.data).length > 0
+    ) {
+      return snapshotsReadCache.data;
+    }
+
     const candidateIds = getCandidateUserIds(userId);
-    const candidateSet = new Set<string>(candidateIds);
-    const isOwner = isPrimaryOwnerAccount();
     try {
       const queries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
           queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'snapshots'))).catch(() => null));
-        }
-        if (isOwner) {
-          queries.push(executeWithTimeout(getDocs(collectionGroup(targetDb, 'snapshots'))).catch(() => null));
         }
       }
 
@@ -1013,11 +1121,6 @@ export const firestoreSync = {
       for (const snap of snaps) {
         if (!snap) continue;
         snap.forEach((docSnap: any) => {
-          const pathParts = String(docSnap.ref?.path || '').split('/');
-          const ownerUid = pathParts[0] === 'users' ? pathParts[1] : '';
-          if (ownerUid && ownerUid.startsWith('teacher_') && !candidateSet.has(ownerUid)) {
-            return;
-          }
           const data = docSnap.data();
           if (data && data.courseId === courseId && data.term) {
             const existing = snapshots[data.term];
@@ -1026,6 +1129,9 @@ export const firestoreSync = {
             }
           }
         });
+      }
+      if (Object.keys(snapshots).length > 0) {
+        snapshotsReadCache = { key: cacheKey, timestamp: Date.now(), data: snapshots };
       }
       return snapshots;
     } catch (err) {
@@ -1039,6 +1145,7 @@ export const firestoreSync = {
    */
   async saveDispositionBatch(userId: string, records: any[]): Promise<void> {
     if (!userId || !Array.isArray(records) || records.length === 0 || Date.now() < firestoreUnavailableUntil) return;
+    invalidateDispositionCache();
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
     const validRecords = records.filter((r) => r && r.id);
@@ -1090,7 +1197,7 @@ export const firestoreSync = {
   },
 
   /**
-   * Load user setting (conduct options, templates, etc.) across candidate accounts
+   * Load user setting (conduct options, templates, etc.) across candidate accounts using direct document lookup
    */
   async loadUserSetting<T = any>(userId: string, settingKey: string): Promise<T | null> {
     if (!settingKey || Date.now() < firestoreUnavailableUntil) return null;
@@ -1099,25 +1206,23 @@ export const firestoreSync = {
       const queries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
-          queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'settings'))).catch(() => null));
+          queries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', settingKey))).catch(() => null)
+          );
         }
       }
       const snaps = await Promise.all(queries);
       let latestUpdatedAt = '';
       let latestValue: T | null = null;
-      for (const snap of snaps) {
-        if (!snap) continue;
-        snap.forEach((docSnap: any) => {
-          if (docSnap.id === settingKey) {
-            const data = docSnap.data();
-            if (data && data.value !== undefined) {
-              if (!latestUpdatedAt || (data.updatedAt && data.updatedAt >= latestUpdatedAt)) {
-                latestUpdatedAt = data.updatedAt || '';
-                latestValue = data.value as T;
-              }
-            }
+      for (const docSnap of snaps) {
+        if (!docSnap || typeof docSnap.exists !== 'function' || !docSnap.exists()) continue;
+        const data = docSnap.data();
+        if (data && data.value !== undefined) {
+          if (!latestUpdatedAt || (data.updatedAt && data.updatedAt >= latestUpdatedAt)) {
+            latestUpdatedAt = data.updatedAt || '';
+            latestValue = data.value as T;
           }
-        });
+        }
       }
       return latestValue;
     } catch (_) {
@@ -1198,7 +1303,10 @@ export const firestoreSync = {
     try {
       let mapToSave = fullMap;
       if (!mapToSave && typeof window !== 'undefined') {
-        const stored = localStorage.getItem('fds_student_observations');
+        const scopedKey = `fds_student_observations_${userId}`;
+        const stored =
+          localStorage.getItem(scopedKey) ||
+          (isPrimaryOwnerAccount() ? localStorage.getItem('fds_student_observations') : null);
         if (stored) {
           mapToSave = JSON.parse(stored);
         }
@@ -1237,6 +1345,7 @@ export const firestoreSync = {
    */
   async deleteTodayLatesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
     if (!userId || !studentId) return [];
+    invalidateDispositionCache();
     const candidateIds = getCandidateUserIds(userId);
     const deletedIds: string[] = [];
 

@@ -278,10 +278,42 @@ export const PRIMARY_DISPOSITION_KEY = 'fds_disposition_data_v2';
 export const PRIMARY_HISTORY_KEY = 'fds_disposition_history_v2';
 export const DELETED_HISTORY_IDS_KEY = 'docencia_deleted_history_ids';
 
+/**
+ * Reads a user-scoped key from localStorage, falling back to the legacy un-scoped key
+ * ONLY for the primary owner account so existing data is never lost while isolating other teachers.
+ */
+export function getUserScopedItem(baseKey: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const scopedKey = getUserStorageKey(baseKey);
+    const val = localStorage.getItem(scopedKey);
+    if (val !== null) return val;
+    if (isPrimaryOwnerAccount()) {
+      return localStorage.getItem(baseKey);
+    }
+  } catch (_) {}
+  return null;
+}
+
+/**
+ * Writes a user-scoped key to localStorage, and also mirrors to the legacy un-scoped key
+ * if the active account is the primary owner.
+ */
+export function setUserScopedItem(baseKey: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const scopedKey = getUserStorageKey(baseKey);
+    localStorage.setItem(scopedKey, value);
+    if (isPrimaryOwnerAccount() && scopedKey !== baseKey) {
+      localStorage.setItem(baseKey, value);
+    }
+  } catch (_) {}
+}
+
 export function getDeletedHistoryIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
-    const raw = localStorage.getItem(DELETED_HISTORY_IDS_KEY);
+    const raw = getUserScopedItem(DELETED_HISTORY_IDS_KEY);
     if (raw) return new Set(JSON.parse(raw));
   } catch (_) {}
   return new Set();
@@ -292,7 +324,7 @@ export function markHistoryIdDeleted(id: string): void {
   try {
     const set = getDeletedHistoryIds();
     set.add(id);
-    localStorage.setItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
+    setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
   } catch (_) {}
 }
 

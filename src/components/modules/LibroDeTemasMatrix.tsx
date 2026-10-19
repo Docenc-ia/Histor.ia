@@ -26,6 +26,7 @@ import {
   Unlock,
   X,
   AlertCircle,
+  Cloud,
 } from 'lucide-react';
 import {
   AttendanceSettings,
@@ -44,8 +45,15 @@ import {
   isValidGoogleAccessToken,
 } from '../../services/workspace/googleAuth';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
-import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
-import { api } from '../../services/api';
+import {
+  firestoreSync,
+  getActiveUserId,
+  subscribeToCloudSyncStatus,
+  CloudSyncStatusInfo,
+  registerCloudFlushHandler,
+  notifyDebouncedSyncPending,
+} from '../../services/firestoreSync';
+import { api, getUserStorageKey } from '../../services/api';
 
 export type NoClassCategory =
   | 'feriado'
@@ -192,7 +200,7 @@ const SHORT_WEEKDAYS: Record<number, string> = {
 const GLOBAL_CHARACTER_OPTIONS_KEY = 'fds_libro_temas_character_options_v1';
 
 function getStorageKey(courseId: string): string {
-  return `fds_libro_temas_${courseId}`;
+  return getUserStorageKey(`fds_libro_temas_${courseId}`);
 }
 
 function parseLocalDate(dateStr: string): Date {
@@ -312,6 +320,15 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   const [isSyncingSheet, setIsSyncingSheet] = useState(false);
   const [isOpeningSheet, setIsOpeningSheet] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
+    state: 'synced',
+    lastSyncedAt: null,
+    pendingCount: 0,
+  });
+
+  useEffect(() => {
+    return subscribeToCloudSyncStatus((st) => setCloudStatus(st));
+  }, []);
 
   const cloudSyncTimeoutRef = useRef<number | null>(null);
   const todayRowRef = useRef<HTMLTableRowElement | null>(null);
@@ -402,7 +419,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       setSheetInfo(null);
     }
 
-    // Cargar desde Firestore en segundo plano
+    // Cargar desde Firestore en segundo plano y fusionar inteligentemente para no perder ningún registro entre dispositivos
     let mounted = true;
     const uid = getActiveUserId();
     if (uid) {
@@ -410,45 +427,70 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         .loadUserSetting<LibroDeTemasStorageData>(uid, `libro_temas_${courseId}`)
         .then((cloudData) => {
           if (!mounted || !cloudData || typeof cloudData !== 'object') return;
-          // Si no había copia local o la copia de la nube tiene datos y la local está vacía
           const currentLocalRaw = localStorage.getItem(getStorageKey(courseId));
-          const shouldApplyCloud = !hasLocalData || !currentLocalRaw;
-          if (shouldApplyCloud) {
-            if (cloudData.metadata) {
-              const cloudWeekdays =
-                Array.isArray(cloudData.metadata.configuredWeekdays) &&
-                cloudData.metadata.configuredWeekdays.length > 0
-                  ? cloudData.metadata.configuredWeekdays
-                  : initialWeekdays;
+          let localParsed: Partial<LibroDeTemasStorageData> | null = null;
+          try {
+            if (currentLocalRaw) localParsed = JSON.parse(currentLocalRaw);
+          } catch (_) {}
 
-              const mergedMeta: LibroDeTemasMetadata = {
-                asignatura: cloudData.metadata.asignatura || defaultMetadata.asignatura,
-                profTitular: cloudData.metadata.profTitular || defaultMetadata.profTitular,
-                horario: cloudData.metadata.horario || defaultMetadata.horario,
-                folioNumero: cloudData.metadata.folioNumero || '1',
-                configuredWeekdays: cloudWeekdays,
-                isScheduleLocked: cloudData.metadata.isScheduleLocked ?? true,
-              };
-              setMetadata(mergedMeta);
-              setIsEditingScheduleConfig(!mergedMeta.isScheduleLocked);
-            }
-            if (cloudData.entries) {
-              setEntriesMap(cloudData.entries);
-            }
-            if (
-              Array.isArray(cloudData.characterOptions) &&
-              cloudData.characterOptions.length > 0
-            ) {
-              setCharacterOptions(cloudData.characterOptions);
-            }
-            if (cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)) {
-              setSheetInfo(cloudData.sheetInfo);
-            }
-            try {
-              localStorage.setItem(getStorageKey(courseId), JSON.stringify(cloudData));
-            } catch (_) {}
-          } else if (cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)) {
-            setSheetInfo((prev) => prev || cloudData.sheetInfo || null);
+          const localUpdatedAt = localParsed?.updatedAt ? String(localParsed.updatedAt) : '';
+          const cloudUpdatedAt = cloudData.updatedAt ? String(cloudData.updatedAt) : '';
+          const isCloudNewer = !hasLocalData || !currentLocalRaw || (cloudUpdatedAt && (!localUpdatedAt || cloudUpdatedAt >= localUpdatedAt));
+
+          if (cloudData.entries && typeof cloudData.entries === 'object' && Object.keys(cloudData.entries).length > 0) {
+            setEntriesMap((prev) => {
+              const mergedEntries = isCloudNewer
+                ? { ...prev, ...cloudData.entries }
+                : { ...cloudData.entries, ...prev };
+              try {
+                const updatedPayload: LibroDeTemasStorageData = {
+                  metadata: isCloudNewer && cloudData.metadata ? { ...latestStateRef.current.metadata, ...cloudData.metadata } : latestStateRef.current.metadata,
+                  entries: mergedEntries,
+                  characterOptions:
+                    isCloudNewer && Array.isArray(cloudData.characterOptions) && cloudData.characterOptions.length > 0
+                      ? cloudData.characterOptions
+                      : latestStateRef.current.characterOptions,
+                  sheetInfo:
+                    cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)
+                      ? cloudData.sheetInfo
+                      : latestStateRef.current.sheetInfo,
+                  updatedAt: isCloudNewer && cloudUpdatedAt ? cloudUpdatedAt : localUpdatedAt || new Date().toISOString(),
+                };
+                localStorage.setItem(getStorageKey(courseId), JSON.stringify(updatedPayload));
+              } catch (_) {}
+              return mergedEntries;
+            });
+          }
+
+          if (isCloudNewer && cloudData.metadata) {
+            const cloudWeekdays =
+              Array.isArray(cloudData.metadata.configuredWeekdays) &&
+              cloudData.metadata.configuredWeekdays.length > 0
+                ? cloudData.metadata.configuredWeekdays
+                : initialWeekdays;
+
+            const mergedMeta: LibroDeTemasMetadata = {
+              asignatura: cloudData.metadata.asignatura || defaultMetadata.asignatura,
+              profTitular: cloudData.metadata.profTitular || defaultMetadata.profTitular,
+              horario: cloudData.metadata.horario || defaultMetadata.horario,
+              folioNumero: cloudData.metadata.folioNumero || '1',
+              configuredWeekdays: cloudWeekdays,
+              isScheduleLocked: cloudData.metadata.isScheduleLocked ?? true,
+            };
+            setMetadata(mergedMeta);
+            setIsEditingScheduleConfig(!mergedMeta.isScheduleLocked);
+          }
+
+          if (
+            isCloudNewer &&
+            Array.isArray(cloudData.characterOptions) &&
+            cloudData.characterOptions.length > 0
+          ) {
+            setCharacterOptions(cloudData.characterOptions);
+          }
+
+          if (cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)) {
+            setSheetInfo((prev) => (isCloudNewer ? cloudData.sheetInfo! : prev || cloudData.sheetInfo || null));
           }
         })
         .catch(() => {});
@@ -470,9 +512,41 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     window.addEventListener('docencia_libro_temas_restored', handleBackupRestored);
 
+    const flushKey = `libro_temas_${courseId}`;
+    const flushNow = () => {
+      if (cloudSyncTimeoutRef.current) {
+        window.clearTimeout(cloudSyncTimeoutRef.current);
+        cloudSyncTimeoutRef.current = null;
+      }
+      notifyDebouncedSyncPending(flushKey, false);
+      const activeUid = getActiveUserId();
+      if (activeUid && courseId) {
+        firestoreSync
+          .saveUserSetting(activeUid, `libro_temas_${courseId}`, {
+            metadata: latestStateRef.current.metadata,
+            entries: latestStateRef.current.entries,
+            characterOptions: latestStateRef.current.characterOptions,
+            sheetInfo: latestStateRef.current.sheetInfo,
+            updatedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+    };
+
+    const unregFlush = registerCloudFlushHandler(flushKey, () => {
+      if (cloudSyncTimeoutRef.current) {
+        flushNow();
+      }
+    });
+
     return () => {
       mounted = false;
       window.removeEventListener('docencia_libro_temas_restored', handleBackupRestored);
+      unregFlush();
+      // Si había un guardado en la nube pendiente al cambiar de curso o pestaña, ejecutarlo inmediatamente
+      if (cloudSyncTimeoutRef.current) {
+        flushNow();
+      }
     };
   }, [courseId]);
 
@@ -485,6 +559,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     nextSheetInfo: LibroDeTemasSheetInfo | null = sheetInfo
   ) => {
     if (!courseId) return;
+    const flushKey = `libro_temas_${courseId}`;
     const payload: LibroDeTemasStorageData = {
       metadata: nextMetadata,
       entries: nextEntries,
@@ -499,9 +574,12 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     if (cloudSyncTimeoutRef.current) {
       window.clearTimeout(cloudSyncTimeoutRef.current);
+      cloudSyncTimeoutRef.current = null;
     }
 
     const syncToCloud = () => {
+      cloudSyncTimeoutRef.current = null;
+      notifyDebouncedSyncPending(flushKey, false);
       const uid = getActiveUserId();
       if (uid) {
         firestoreSync.saveUserSetting(uid, `libro_temas_${courseId}`, payload).catch(() => {});
@@ -511,7 +589,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     if (immediateCloud) {
       syncToCloud();
     } else {
-      cloudSyncTimeoutRef.current = window.setTimeout(syncToCloud, 1800);
+      notifyDebouncedSyncPending(flushKey, true);
+      cloudSyncTimeoutRef.current = window.setTimeout(syncToCloud, 1400);
     }
   };
 
@@ -1720,6 +1799,31 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   hasta hoy
                 </span>
               )}
+              <span
+                className={`ml-auto inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-semibold border transition-colors ${
+                  cloudStatus.state === 'syncing'
+                    ? isDarkMode
+                      ? 'bg-blue-950/60 border-blue-800 text-blue-300'
+                      : 'bg-blue-50 border-blue-200 text-blue-700'
+                    : cloudStatus.state === 'offline'
+                    ? isDarkMode
+                      ? 'bg-amber-950/60 border-amber-800 text-amber-300'
+                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                    : isDarkMode
+                    ? 'bg-emerald-950/50 border-emerald-800/70 text-emerald-300'
+                    : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                }`}
+                title="Todo cambio que escribas en el Libro de Temas se guarda automáticamente en el dispositivo y en tu cuenta en la nube"
+              >
+                <Cloud className={`w-3 h-3 shrink-0 ${cloudStatus.state === 'syncing' ? 'animate-pulse' : ''}`} />
+                <span>
+                  {cloudStatus.state === 'syncing'
+                    ? 'Guardando cambios...'
+                    : cloudStatus.state === 'offline'
+                    ? 'Guardado local (sin red)'
+                    : `✓ Guardado automático${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
+                </span>
+              </span>
             </div>
           </div>
 

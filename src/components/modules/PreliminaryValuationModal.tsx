@@ -172,8 +172,11 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 
       selectedAssessmentIds.forEach((assessId) => {
         const val = stGrades[assessId];
-        if (val !== undefined && val !== '' && !isNaN(Number(val))) {
-          numericScores.push(Number(val));
+        if (val !== undefined && val !== null) {
+          const normalized = String(val).trim().replace(',', '.');
+          if (normalized !== '' && !isNaN(Number(normalized))) {
+            numericScores.push(Number(normalized));
+          }
         }
       });
 

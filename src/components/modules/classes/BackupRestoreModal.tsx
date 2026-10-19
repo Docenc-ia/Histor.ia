@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Course, Student, StudentHistoryItem } from '../../../types';
 import { AttendanceSettings, getCourseAttendanceSettings, saveCourseAttendanceSettings } from '../../../utils/attendanceCalculations';
+import { firestoreSync, getActiveUserId } from '../../../services/firestoreSync';
 
 interface BackupRestoreModalProps {
   isOpen: boolean;
@@ -22,6 +23,7 @@ interface BackupRestoreModalProps {
   students: Student[];
   courseHistory: StudentHistoryItem[];
   studentObservations: Record<string, any[]>;
+  onRestoreObservations?: (merged: Record<string, any[]>) => void;
   onRestoreSuccess: (message: string) => void;
   isDarkMode: boolean;
 }
@@ -33,6 +35,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
   students,
   courseHistory,
   studentObservations,
+  onRestoreObservations,
   onRestoreSuccess,
   isDarkMode,
 }) => {
@@ -70,13 +73,35 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         }
       });
 
-      // Gradebook categories if present
-      let gradebookCategories = null;
-      try {
-        const catKey = `fds_gradebook_categories_${course.id}`;
-        const storedCats = localStorage.getItem(catKey);
-        if (storedCats) gradebookCategories = JSON.parse(storedCats);
-      } catch (_) {}
+      const parseJsonKey = (key: string) => {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : null;
+        } catch {
+          return null;
+        }
+      };
+
+      // Gradebook categories, grades, calc modes, annual overrides & preliminary valuations (1°C & 2°C)
+      const gradebook = {
+        categories1c:
+          parseJsonKey(`fds_grades_categories_${course.id}_1c`) ||
+          parseJsonKey(`fds_grades_categories_${course.id}`) ||
+          parseJsonKey(`fds_gradebook_categories_${course.id}`),
+        categories2c: parseJsonKey(`fds_grades_categories_${course.id}_2c`),
+        gradesData1c:
+          parseJsonKey(`fds_grades_data_${course.id}_1c`) ||
+          parseJsonKey(`fds_grades_data_${course.id}`),
+        gradesData2c: parseJsonKey(`fds_grades_data_${course.id}_2c`),
+        finalCalc1c:
+          localStorage.getItem(`fds_grades_final_calc_${course.id}_1c`) ||
+          localStorage.getItem(`fds_grades_final_calc_${course.id}`) ||
+          null,
+        finalCalc2c: localStorage.getItem(`fds_grades_final_calc_${course.id}_2c`) || null,
+        annualOverrides: parseJsonKey(`fds_grades_annual_override_${course.id}`),
+        preliminaryValuation1c: parseJsonKey(`fds_preliminary_valuation_${course.id}_1c`),
+        preliminaryValuation2c: parseJsonKey(`fds_preliminary_valuation_${course.id}_2c`),
+      };
 
       // Libro de Temas if present
       let libroDeTemas = null;
@@ -90,7 +115,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       // Backup payload
       const backupData = {
         app: 'Docenc.IA',
-        version: '2.0',
+        version: '2.1',
         exportDate: new Date().toISOString(),
         formattedDate: new Date().toLocaleString('es-AR'),
         course: {
@@ -110,7 +135,8 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         attendanceSettings,
         studentObservations: filteredObservations,
         courseHistory,
-        gradebookCategories,
+        gradebook,
+        gradebookCategories: gradebook.categories1c,
         libroDeTemas,
       };
 
@@ -157,7 +183,13 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           throw new Error('El archivo no contiene un JSON válido.');
         }
 
-        if (!data.course && !data.students && !data.studentObservations && !data.libroDeTemas) {
+        if (
+          !data.course &&
+          !data.students &&
+          !data.studentObservations &&
+          !data.libroDeTemas &&
+          !data.gradebook
+        ) {
           throw new Error('El archivo seleccionado no tiene la estructura de un respaldo de Docenc.IA.');
         }
 
@@ -174,6 +206,8 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
     if (!parsedBackup) return;
     setIsRestoring(true);
     try {
+      const uid = getActiveUserId();
+
       // 1. Restore attendance settings if present
       if (parsedBackup.attendanceSettings) {
         saveCourseAttendanceSettings(course.id, parsedBackup.attendanceSettings);
@@ -181,11 +215,13 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
 
       // 2. Restore student observations
       if (parsedBackup.studentObservations && typeof parsedBackup.studentObservations === 'object') {
-        const storedGlobal = localStorage.getItem('fds_student_observations');
-        let currentGlobal: Record<string, any[]> = {};
+        const storedGlobal =
+          localStorage.getItem('student_observations') ||
+          localStorage.getItem('fds_student_observations');
+        let currentGlobal: Record<string, any[]> = { ...studentObservations };
         if (storedGlobal) {
           try {
-            currentGlobal = JSON.parse(storedGlobal);
+            currentGlobal = { ...JSON.parse(storedGlobal), ...currentGlobal };
           } catch (_) {}
         }
 
@@ -203,18 +239,103 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           }
         });
 
+        localStorage.setItem('student_observations', JSON.stringify(mergedObservations));
         localStorage.setItem('fds_student_observations', JSON.stringify(mergedObservations));
         localStorage.setItem(`fds_student_observations_${course.id}`, JSON.stringify(mergedObservations));
+        if (onRestoreObservations) {
+          onRestoreObservations(mergedObservations);
+        }
+        if (uid) {
+          firestoreSync.saveStudentObservationsMap(uid, mergedObservations).catch(() => {});
+        }
       }
 
-      // 3. Restore gradebook categories if present
-      if (parsedBackup.gradebookCategories) {
+      // 3. Restore gradebook categories & grades if present
+      const gb = parsedBackup.gradebook || {};
+      const cats1c = gb.categories1c || parsedBackup.gradebookCategories;
+      if (cats1c) {
+        try {
+          localStorage.setItem(`fds_grades_categories_${course.id}_1c`, JSON.stringify(cats1c));
+          localStorage.setItem(`fds_grades_categories_${course.id}`, JSON.stringify(cats1c));
+        } catch (_) {}
+      }
+      if (gb.categories2c) {
+        try {
+          localStorage.setItem(`fds_grades_categories_${course.id}_2c`, JSON.stringify(gb.categories2c));
+        } catch (_) {}
+      }
+      if (gb.gradesData1c) {
+        try {
+          localStorage.setItem(`fds_grades_data_${course.id}_1c`, JSON.stringify(gb.gradesData1c));
+          localStorage.setItem(`fds_grades_data_${course.id}`, JSON.stringify(gb.gradesData1c));
+        } catch (_) {}
+      }
+      if (gb.gradesData2c) {
+        try {
+          localStorage.setItem(`fds_grades_data_${course.id}_2c`, JSON.stringify(gb.gradesData2c));
+        } catch (_) {}
+      }
+      if (gb.finalCalc1c) {
+        try {
+          localStorage.setItem(`fds_grades_final_calc_${course.id}_1c`, gb.finalCalc1c);
+          localStorage.setItem(`fds_grades_final_calc_${course.id}`, gb.finalCalc1c);
+        } catch (_) {}
+      }
+      if (gb.finalCalc2c) {
+        try {
+          localStorage.setItem(`fds_grades_final_calc_${course.id}_2c`, gb.finalCalc2c);
+        } catch (_) {}
+      }
+      if (gb.annualOverrides) {
         try {
           localStorage.setItem(
-            `fds_gradebook_categories_${course.id}`,
-            JSON.stringify(parsedBackup.gradebookCategories)
+            `fds_grades_annual_override_${course.id}`,
+            JSON.stringify(gb.annualOverrides)
           );
         } catch (_) {}
+      }
+      if (gb.preliminaryValuation1c) {
+        try {
+          localStorage.setItem(
+            `fds_preliminary_valuation_${course.id}_1c`,
+            JSON.stringify(gb.preliminaryValuation1c)
+          );
+        } catch (_) {}
+      }
+      if (gb.preliminaryValuation2c) {
+        try {
+          localStorage.setItem(
+            `fds_preliminary_valuation_${course.id}_2c`,
+            JSON.stringify(gb.preliminaryValuation2c)
+          );
+        } catch (_) {}
+      }
+      if (uid && (cats1c || gb.gradesData1c)) {
+        firestoreSync
+          .saveTermSnapshot(uid, course.id, '1c', {
+            courseId: course.id,
+            term: '1c',
+            termLabel: '1° Cuatrimestre',
+            categories: cats1c || [],
+            gradesMap: gb.gradesData1c || {},
+            annualOverrides: gb.annualOverrides,
+            preliminaryValuation: gb.preliminaryValuation1c,
+            updatedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+      if (uid && (gb.categories2c || gb.gradesData2c)) {
+        firestoreSync
+          .saveTermSnapshot(uid, course.id, '2c', {
+            courseId: course.id,
+            term: '2c',
+            termLabel: '2° Cuatrimestre',
+            categories: gb.categories2c || [],
+            gradesMap: gb.gradesData2c || {},
+            preliminaryValuation: gb.preliminaryValuation2c,
+            updatedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
       }
 
       // 4. Restore Libro de Temas if present
@@ -239,6 +360,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       // Trigger custom events so all components update in-place
       window.dispatchEvent(new CustomEvent('docencia_observations_updated'));
       window.dispatchEvent(new CustomEvent('docencia_disposition_storage_change'));
+      window.dispatchEvent(new CustomEvent('fds-grades-updated', { detail: { courseId: course.id } }));
       window.dispatchEvent(new CustomEvent('docencia_libro_temas_restored', { detail: { courseId: course.id } }));
 
       onRestoreSuccess(`¡Respaldo restaurado con éxito para "${course.name}"!`);

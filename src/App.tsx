@@ -125,6 +125,17 @@ function AppContent() {
   }, [currentView, selectedCourseId]);
 
   useEffect(() => {
+    if (!user) {
+      setCourses([]);
+      setStudents([]);
+      setSelectedCourseId('');
+      return;
+    }
+    const localC = api.getLocalCourses();
+    const localS = api.getLocalStudents();
+    setCourses(localC);
+    setStudents(localS);
+    setSelectedCourseId(localC.length > 0 ? localC[0].id : '');
     loadData();
   }, [user?.id, user?.email]);
 

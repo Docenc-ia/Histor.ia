@@ -1677,20 +1677,20 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       >
         {/* Encabezado: Título arriba y las 3 columnas de opciones debajo */}
         <div
-          className={`p-4 border-b flex flex-col gap-3.5 ${
+          className={`p-3 sm:p-4 border-b flex flex-col gap-3.5 min-w-0 ${
             isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-stone-50 border-neutral-200'
           }`}
         >
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-start sm:items-center gap-2.5 min-w-0">
             <div className="w-8 h-8 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center border border-amber-500/20 shrink-0">
               <BookOpen className="w-4 h-4" />
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap min-w-0 flex-1">
               <h3 className="text-sm font-bold text-neutral-900 dark:text-white tracking-tight">
                 Libro de Temas Oficial
               </h3>
               <span
-                className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${
+                className={`px-2 py-0.5 rounded-md text-[11px] font-bold border max-w-full truncate ${
                   isDarkMode
                     ? 'bg-blue-950/60 border-blue-800 text-blue-300'
                     : 'bg-blue-50 border-blue-200 text-blue-700'
@@ -1700,7 +1700,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               </span>
               {stats.holidaysCount > 0 && (
                 <span
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border ${
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-semibold border max-w-full truncate ${
                     isDarkMode
                       ? 'bg-slate-800 border-slate-700 text-slate-300'
                       : 'bg-neutral-100 border-neutral-200 text-neutral-600'
@@ -1711,7 +1711,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               )}
               {stats.pendingUpToToday > 0 && (
                 <span
-                  className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${
+                  className={`px-2 py-0.5 rounded-md text-[11px] font-bold border max-w-full truncate ${
                     isDarkMode
                       ? 'bg-amber-950/60 border-amber-800 text-amber-300'
                       : 'bg-amber-50 border-amber-200 text-amber-700'
@@ -1725,13 +1725,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           </div>
 
           {/* 3 Columnas de Opciones debajo del título y arriba de Asignatura, Prof. Titular, etc. */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full pt-2 border-t border-neutral-200/70 dark:border-slate-800">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full min-w-0 pt-2 border-t border-neutral-200/70 dark:border-slate-800">
             {/* COLUMNA 1: Firmar clases cargadas, Opciones de carácter y Agregar Fecha */}
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 min-w-0">
               <button
                 type="button"
                 onClick={handleSignAllCompletedClasses}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1745,7 +1745,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               <button
                 type="button"
                 onClick={() => setShowCharacterOptionsModal(true)}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1759,7 +1759,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               <button
                 type="button"
                 onClick={() => setShowAddDateModal(true)}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1772,12 +1772,12 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             </div>
 
             {/* COLUMNA 2: Abrir Sheets, Sincronizar Sheets y Guardar Drive */}
-            <div className="flex flex-col gap-1.5 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
+            <div className="flex flex-col gap-1.5 min-w-0 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={handleOpenGoogleSheet}
                 disabled={isOpeningSheet || isSyncingSheet}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1796,7 +1796,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 type="button"
                 onClick={() => handleSyncWithSheets(false)}
                 disabled={isSyncingSheet}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs ${
                   isDarkMode
                     ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
                     : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
@@ -1820,7 +1820,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   setShowDriveConfirm((prev) => !prev);
                 }}
                 disabled={isExportingDoc}
-                className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
+                className="w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
                 title="Guardar el Libro de Temas directamente en Google Drive como documento editable (.gdoc)"
               >
                 {isExportingDoc ? (
@@ -1833,11 +1833,11 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             </div>
 
             {/* COLUMNA 3: Imprimir, Descargar y Copia de Seguridad */}
-            <div className="flex flex-col gap-1.5 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
+            <div className="flex flex-col gap-1.5 min-w-0 sm:col-span-2 lg:col-span-1 lg:border-l lg:pl-2.5 border-neutral-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={handlePrintLibro}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1851,7 +1851,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               <button
                 type="button"
                 onClick={handleDownloadLibro}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
                     : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
@@ -1865,7 +1865,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               <button
                 type="button"
                 onClick={handleOpenOrDownloadBackup}
-                className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+                className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                   isDarkMode
                     ? 'bg-slate-800 hover:bg-slate-750 text-indigo-300 border-indigo-900/60 hover:border-indigo-700'
                     : 'bg-white hover:bg-indigo-50/60 text-indigo-700 border-indigo-200'
@@ -1882,13 +1882,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         {/* Panel de confirmación para Guardar en Drive (.gdoc) */}
         {showDriveConfirm && (
           <div
-            className={`px-4 py-3 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in ${
+            className={`px-3 sm:px-4 py-3 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-w-0 animate-in fade-in ${
               isDarkMode
                 ? 'bg-emerald-950/30 border-emerald-800/60'
                 : 'bg-emerald-50/70 border-emerald-200'
             }`}
           >
-            <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2">
+            <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
               <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 shrink-0">
                 Nombre del Google Doc (.gdoc):
               </span>
@@ -1896,14 +1896,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 type="text"
                 value={driveDocTitle}
                 onChange={(e) => setDriveDocTitle(e.target.value)}
-                className={`flex-1 px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden ${
+                className={`flex-1 min-w-0 px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden ${
                   isDarkMode
                     ? 'bg-slate-900 border-slate-700 text-white'
                     : 'bg-white border-emerald-300 text-neutral-900'
                 }`}
               />
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
               <button
                 type="button"
                 onClick={handleExportToGoogleDoc}
@@ -1930,13 +1930,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
         {/* Campos del Encabezado del Libro de Temas: ASIGNATURA, PROF. TITULAR, DÍAS DE CLASE y CALENDARIO ESCOLAR Y FERIADOS */}
         <div
-          className={`p-4 grid grid-cols-1 md:grid-cols-12 gap-3 border-b ${
+          className={`p-3 sm:p-4 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-12 gap-3 border-b min-w-0 ${
             isDarkMode
               ? 'bg-slate-900/90 border-slate-800'
               : 'bg-amber-50/20 border-neutral-200'
           }`}
         >
-          <div className="md:col-span-3">
+          <div className="sm:col-span-1 xl:col-span-3 min-w-0">
             <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
               ASIGNATURA:
             </label>
@@ -1945,7 +1945,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               value={metadata.asignatura}
               onChange={(e) => handleMetadataChange('asignatura', e.target.value)}
               placeholder="Ej: Historia 2° Año"
-              className={`w-full px-3 py-1.5 rounded-lg border text-xs font-bold focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
+              className={`w-full min-w-0 px-3 py-1.5 rounded-lg border text-xs font-bold focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
                 isDarkMode
                   ? 'bg-slate-800 border-slate-700 text-white'
                   : 'bg-white border-neutral-300 text-neutral-900'
@@ -1953,7 +1953,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             />
           </div>
 
-          <div className="md:col-span-3">
+          <div className="sm:col-span-1 xl:col-span-3 min-w-0">
             <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
               PROF. TITULAR:
             </label>
@@ -1962,7 +1962,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               value={metadata.profTitular}
               onChange={(e) => handleMetadataChange('profTitular', e.target.value)}
               placeholder="Nombre y Apellido del docente"
-              className={`w-full px-3 py-1.5 rounded-lg border text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
+              className={`w-full min-w-0 px-3 py-1.5 rounded-lg border text-xs font-semibold focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
                 isDarkMode
                   ? 'bg-slate-800 border-slate-700 text-white'
                   : 'bg-white border-neutral-300 text-neutral-900'
@@ -1970,21 +1970,21 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             />
           </div>
 
-          <div className="md:col-span-6">
+          <div className="sm:col-span-2 xl:col-span-6 min-w-0">
             <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
               DÍAS DE CLASE:
             </label>
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-              <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <div className="flex-1 min-w-[200px] max-w-full">
                 {!isEditingScheduleConfig ? (
                   <div
-                    className={`w-full px-3 py-1.5 rounded-lg border flex items-center justify-between gap-2 ${
+                    className={`w-full px-3 py-1.5 rounded-lg border flex flex-wrap items-center justify-between gap-2 min-w-0 ${
                       isDarkMode
                         ? 'bg-slate-800 border-slate-700 text-slate-200'
                         : 'bg-white border-neutral-300 text-neutral-800'
                     }`}
                   >
-                    <div className="flex items-center gap-2 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
                       <Lock className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
                       <span className="text-xs font-bold text-blue-600 dark:text-blue-400 truncate">
                         {activeWeekdaysLabel}
@@ -2000,19 +2000,19 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       }`}
                       title="Modificar los días de cursada si cambiaron"
                     >
-                      <Pencil className="w-3 h-3 text-blue-500" />
+                      <Pencil className="w-3 h-3 text-blue-500 shrink-0" />
                       <span>Editar</span>
                     </button>
                   </div>
                 ) : (
                   <div
-                    className={`w-full px-2.5 py-1 rounded-lg border flex flex-wrap items-center justify-between gap-1.5 ${
+                    className={`w-full px-2.5 py-1 rounded-lg border flex flex-wrap items-center justify-between gap-1.5 min-w-0 ${
                       isDarkMode
                         ? 'bg-slate-800 border-blue-500/60'
                         : 'bg-white border-blue-400'
                     }`}
                   >
-                    <div className="inline-flex items-center gap-1 flex-wrap">
+                    <div className="inline-flex items-center gap-1 flex-wrap min-w-0">
                       {[
                         { day: 1, label: 'Lun' },
                         { day: 2, label: 'Mar' },
@@ -2045,7 +2045,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer shrink-0"
                       title="Guardar permanentemente los días de clase de este curso"
                     >
-                      <Check className="w-3 h-3" />
+                      <Check className="w-3 h-3 shrink-0" />
                       <span>Guardar</span>
                     </button>
                   </div>
@@ -2056,53 +2056,53 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 <button
                   type="button"
                   onClick={onOpenAttendanceSettingsModal}
-                  className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer shrink-0 ${
+                  className={`flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer min-w-0 ${
                     isDarkMode
                       ? 'border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-750'
                       : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100'
                   }`}
                   title="Configurar fechas de inicio/fin de cuatrimestres y feriados del calendario escolar"
                 >
-                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Calendario Escolar y Feriados</span>
+                  <Calendar className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                  <span className="truncate">Calendario Escolar y Feriados</span>
                 </button>
               )}
             </div>
           </div>
         </div>
 
-        {/* Barra de Filtros */}
+        {/* Barra de Filtros y Buscador 100% Elástica */}
         <div
-          className={`px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 ${
+          className={`px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-2.5 min-w-0 ${
             isDarkMode ? 'bg-slate-850/60' : 'bg-neutral-50/80'
           }`}
         >
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap min-w-0 max-w-full">
             {sheetInfo?.url && (
               <a
                 href={sheetInfo.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors max-w-full min-w-0 ${
                   isDarkMode
                     ? 'bg-emerald-950/50 border-emerald-800 text-emerald-300 hover:bg-emerald-900/60'
                     : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
                 }`}
                 title="Abrir hoja de Google Sheets vinculada en la carpeta de Drive de la materia"
               >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                <span>
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                <span className="truncate">
                   Sheet en Drive{sheetInfo.lastSyncedAt ? ` (${sheetInfo.lastSyncedAt})` : ''}
                 </span>
-                <ExternalLink className="w-3 h-3 opacity-80" />
+                <ExternalLink className="w-3 h-3 opacity-80 shrink-0" />
               </a>
             )}
           </div>
 
           {/* Filtros de período, estado y buscador */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap w-full xl:w-auto flex-1 justify-end min-w-0">
             <div
-              className={`inline-flex p-0.5 rounded-lg border text-[11px] font-semibold ${
+              className={`flex flex-wrap p-0.5 rounded-lg border text-[11px] font-semibold w-full sm:w-auto min-w-0 ${
                 isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-200'
               }`}
             >
@@ -2116,7 +2116,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   key={tab.id}
                   type="button"
                   onClick={() => setTermFilter(tab.id as any)}
-                  className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                  className={`flex-1 sm:flex-initial px-2.5 py-1 rounded-md transition-colors cursor-pointer text-center whitespace-nowrap ${
                     termFilter === tab.id
                       ? 'bg-blue-600 text-white'
                       : isDarkMode
@@ -2132,7 +2132,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as any)}
-              className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold focus:outline-hidden ${
+              className={`w-full sm:w-auto max-w-full min-w-0 flex-1 sm:flex-initial px-2.5 py-1.5 sm:py-1 rounded-lg border text-[11px] font-semibold focus:outline-hidden truncate ${
                 isDarkMode
                   ? 'bg-slate-800 border-slate-700 text-slate-200'
                   : 'bg-white border-neutral-200 text-neutral-700'
@@ -2146,14 +2146,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               </option>
             </select>
 
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <div className="relative w-full sm:w-52 flex-1 sm:flex-initial min-w-[160px]">
+              <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Buscar tema, unidad, fecha..."
-                className={`pl-8 pr-7 py-1 rounded-lg border text-xs focus:outline-hidden w-48 ${
+                className={`w-full min-w-0 pl-8 pr-7 py-1.5 sm:py-1 rounded-lg border text-xs focus:outline-hidden ${
                   isDarkMode
                     ? 'bg-slate-800 border-slate-700 text-white placeholder:text-slate-500'
                     : 'bg-white border-neutral-200 text-neutral-800 placeholder:text-neutral-400'
@@ -2172,6 +2172,307 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ===================================================================== */}
+      {/* MODO TARJETA COMPACTA PARA "CLASE DE HOY" (CELULAR Y ZOOM CERCANO)     */}
+      {/* ===================================================================== */}
+      {todayClassRow && (() => {
+        const row = todayClassRow;
+        const isHol = row.entry.isHoliday;
+        const noClassPreset = NO_CLASS_PRESETS.find(
+          (p) => p.id === (row.entry.noClassCategory || 'feriado')
+        );
+        const noClassBadgeText = noClassPreset?.badgeLabel || 'Sin clase';
+
+        return (
+          <div
+            className={`xl:hidden rounded-xl border-2 overflow-hidden shadow-xs transition-colors ${
+              isDarkMode
+                ? 'bg-slate-900 border-blue-700/80'
+                : 'bg-white border-blue-400'
+            }`}
+          >
+            {/* Cabecera de la tarjeta Clase de Hoy */}
+            <div
+              className={`px-3.5 py-2.5 border-b flex flex-wrap items-center justify-between gap-2 ${
+                isDarkMode
+                  ? 'bg-blue-950/75 border-blue-800/80'
+                  : 'bg-blue-50 border-blue-200'
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-blue-600 text-white shadow-2xs shrink-0">
+                  <Calendar className="w-3 h-3" />
+                  Clase de Hoy
+                </span>
+                <span
+                  className={`text-xs font-extrabold ${
+                    isDarkMode ? 'text-blue-100' : 'text-blue-950'
+                  }`}
+                >
+                  {row.weekdayFull} {row.day}/{row.month}{' '}
+                  {row.computedClassNumber !== '-'
+                    ? `· Clase N° ${row.computedClassNumber}`
+                    : '· Día sin dictado'}
+                </span>
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    isDarkMode
+                      ? 'bg-slate-800 text-slate-300 border border-slate-700'
+                      : 'bg-white text-neutral-700 border border-neutral-200'
+                  }`}
+                >
+                  {row.term === '1c' ? '1° Cuatr.' : '2° Cuatr.'}
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleOpenNoClassModal(row)}
+                className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer font-semibold shrink-0 ${
+                  isHol
+                    ? isDarkMode
+                      ? 'bg-amber-950/80 border-amber-700 text-amber-300'
+                      : 'bg-amber-100 border-amber-300 text-amber-800'
+                    : isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-slate-200 hover:border-amber-500'
+                    : 'bg-white border-neutral-300 text-neutral-700 hover:border-amber-500'
+                }`}
+              >
+                {isHol ? `Evento: ${noClassBadgeText} (Editar)` : 'Marcar Sin clase / Evento'}
+              </button>
+            </div>
+
+            {/* Cuerpo adaptable de la tarjeta Clase de Hoy (sin scroll horizontal) */}
+            <div className="p-3.5 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                {/* Unidad N° */}
+                <div className="sm:col-span-3 min-w-0">
+                  <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+                    Unidad N°
+                  </label>
+                  {isHol ? (
+                    <div
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold text-center ${
+                        isDarkMode
+                          ? 'bg-slate-800/60 border-slate-700 text-slate-400'
+                          : 'bg-neutral-100 border-neutral-200 text-neutral-500'
+                      }`}
+                    >
+                      -
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      value={row.entry.unitNumber}
+                      placeholder={row.suggestedUnit || '1'}
+                      onChange={(e) =>
+                        updateEntryField(row.dateStr, (curr) => ({
+                          ...curr,
+                          unitNumber: e.target.value,
+                        }))
+                      }
+                      onFocus={() => {
+                        if (!row.entry.unitNumber && row.suggestedUnit) {
+                          updateEntryField(row.dateStr, (curr) => ({
+                            ...curr,
+                            unitNumber: row.suggestedUnit,
+                          }));
+                        }
+                      }}
+                      className={`w-full px-3 py-1.5 text-center font-bold rounded-lg border text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white placeholder:text-slate-500'
+                          : 'bg-white border-neutral-300 text-neutral-900 placeholder:text-neutral-400'
+                      }`}
+                    />
+                  )}
+                </div>
+
+                {/* Carácter de la clase */}
+                <div className="sm:col-span-9 min-w-0">
+                  <div className="flex items-center justify-between gap-1 mb-1">
+                    <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
+                      Carácter de la clase
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowCharacterOptionsModal(true)}
+                      className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer inline-flex items-center gap-1"
+                    >
+                      <Pencil className="w-2.5 h-2.5" />
+                      Editar opciones
+                    </button>
+                  </div>
+                  {isHol ? (
+                    <div
+                      className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold text-center ${
+                        isDarkMode
+                          ? 'bg-slate-800/60 border-slate-700 text-slate-400'
+                          : 'bg-neutral-100 border-neutral-200 text-neutral-500'
+                      }`}
+                    >
+                      Sin dictado de clases
+                    </div>
+                  ) : (
+                    <select
+                      value={row.entry.classCharacter || ''}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === '__EDIT_CHARACTER_OPTIONS__') {
+                          setShowCharacterOptionsModal(true);
+                          return;
+                        }
+                        updateEntryField(row.dateStr, (curr) => ({
+                          ...curr,
+                          classCharacter: val,
+                        }));
+                      }}
+                      className={`w-full px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-slate-200'
+                          : 'bg-white border-neutral-300 text-neutral-800'
+                      }`}
+                    >
+                      <option value="">Seleccionar carácter...</option>
+                      {row.entry.classCharacter &&
+                        !characterOptions.includes(row.entry.classCharacter) && (
+                          <option value={row.entry.classCharacter}>
+                            {row.entry.classCharacter}
+                          </option>
+                        )}
+                      {characterOptions.map((preset) => (
+                        <option key={preset} value={preset}>
+                          {preset}
+                        </option>
+                      ))}
+                      <option value="__EDIT_CHARACTER_OPTIONS__">
+                        ⚙️ Editar / agregar opciones...
+                      </option>
+                    </select>
+                  )}
+                </div>
+              </div>
+
+              {/* Contenidos */}
+              <div className="min-w-0">
+                <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+                  Contenidos {isHol ? '(Motivo sin dictado)' : 'de la Clase de Hoy'}
+                </label>
+                <textarea
+                  rows={2}
+                  value={row.entry.contents}
+                  placeholder={
+                    isHol
+                      ? 'Escribir motivo por el cual no se dictó la clase (Feriado, Acto, Mocks, Deportes...)'
+                      : 'Escribir los contenidos dictados en la Clase de Hoy...'
+                  }
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    updateEntryField(row.dateStr, (curr) => ({
+                      ...curr,
+                      contents: val,
+                      noClassReason: curr.isHoliday ? val : curr.noClassReason,
+                      unitNumber:
+                        !curr.isHoliday && !curr.unitNumber && val.trim()
+                          ? row.suggestedUnit || '1'
+                          : curr.unitNumber,
+                      classCharacter:
+                        !curr.isHoliday && !curr.classCharacter && val.trim()
+                          ? characterOptions[0] || 'Teórico - Práctica'
+                          : curr.classCharacter,
+                    }));
+                  }}
+                  className={`w-full px-3 py-2 rounded-lg border text-xs resize-y leading-relaxed focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
+                    isHol
+                      ? isDarkMode
+                        ? 'bg-amber-950/30 border-amber-800/60 text-amber-200 font-semibold italic'
+                        : 'bg-amber-50/70 border-amber-200 text-amber-900 font-semibold italic'
+                      : isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-white placeholder:text-slate-400'
+                      : 'bg-white border-neutral-300 text-neutral-900 placeholder:text-neutral-400'
+                  }`}
+                />
+              </div>
+
+              {/* Observaciones + Firmas */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end">
+                <div className="sm:col-span-6 min-w-0">
+                  <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+                    Observaciones
+                  </label>
+                  <input
+                    type="text"
+                    value={row.entry.observations}
+                    placeholder="Observaciones..."
+                    onChange={(e) =>
+                      updateEntryField(row.dateStr, (curr) => ({
+                        ...curr,
+                        observations: e.target.value,
+                      }))
+                    }
+                    className={`w-full px-3 py-1.5 rounded-lg border text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-slate-200 placeholder:text-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-800 placeholder:text-neutral-400'
+                    }`}
+                  />
+                </div>
+
+                <div className="sm:col-span-3 min-w-0">
+                  <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+                    Firma Profesor
+                  </label>
+                  {row.entry.teacherSignature ? (
+                    <button
+                      type="button"
+                      onClick={() => handleSignRow(row.dateStr)}
+                      className="w-full px-2.5 py-1.5 rounded-lg bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 text-xs font-serif italic cursor-pointer hover:bg-red-500/10 hover:text-red-500 truncate"
+                      title="Clic para quitar firma"
+                    >
+                      {row.entry.teacherSignature}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleSignRow(row.dateStr)}
+                      className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-blue-950/60 border-blue-700 text-blue-300 hover:bg-blue-900/60'
+                          : 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      Firmar clase
+                    </button>
+                  )}
+                </div>
+
+                <div className="sm:col-span-3 min-w-0">
+                  <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+                    Firma Autoridad
+                  </label>
+                  <input
+                    type="text"
+                    value={row.entry.authoritySignature}
+                    placeholder="Visado..."
+                    onChange={(e) =>
+                      updateEntryField(row.dateStr, (curr) => ({
+                        ...curr,
+                        authoritySignature: e.target.value,
+                      }))
+                    }
+                    className={`w-full px-3 py-1.5 rounded-lg border text-xs text-center focus:outline-hidden ${
+                      isDarkMode
+                        ? 'bg-slate-800 border-slate-700 text-slate-300 placeholder:text-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-700 placeholder:text-neutral-400'
+                    }`}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ===================================================================== */}
       {/* TABLA OFICIAL DEL LIBRO DE TEMAS (PÁGINA IZQUIERDA + PÁGINA DERECHA)  */}

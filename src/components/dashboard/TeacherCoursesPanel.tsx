@@ -757,85 +757,50 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                     <GraduationCap className="w-3.5 h-3.5" />
                     Gestión de Estudiantes:
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                     {/* Asistencia */}
                     <button
                       onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}
-                      className={`p-2 border rounded-lg text-left transition-all flex items-start gap-2 cursor-pointer ${
+                      className={`px-3 py-2.5 border rounded-lg text-left transition-all flex items-center gap-2 cursor-pointer min-w-0 ${
                         isDarkMode
                           ? 'bg-slate-900 border-slate-700/80 hover:border-blue-500 hover:bg-slate-850'
                           : 'bg-white border-neutral-200/90 hover:border-blue-400 hover:bg-blue-50/40'
                       }`}
                     >
-                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <p className={`font-semibold text-[11px] truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                          Asistencia
-                        </p>
-                        <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                          Presentes y ausencias
-                        </p>
-                      </div>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                      <span className={`font-semibold text-xs truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
+                        Asistencia
+                      </span>
                     </button>
 
                     {/* Disposición */}
                     <button
                       onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}
-                      className={`p-2 border rounded-lg text-left transition-all flex items-start gap-2 cursor-pointer ${
+                      className={`px-3 py-2.5 border rounded-lg text-left transition-all flex items-center gap-2 cursor-pointer min-w-0 ${
                         isDarkMode
                           ? 'bg-slate-900 border-slate-700/80 hover:border-blue-500 hover:bg-slate-850'
                           : 'bg-white border-neutral-200/90 hover:border-blue-400 hover:bg-blue-50/40'
                       }`}
                     >
-                      <Users className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <p className={`font-semibold text-[11px] truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                          Disposición
-                        </p>
-                        <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                          Puntos & llamados
-                        </p>
-                      </div>
+                      <Users className="w-4 h-4 text-blue-500 shrink-0" />
+                      <span className={`font-semibold text-xs truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
+                        Disposición
+                      </span>
                     </button>
 
                     {/* Libro de Temas */}
                     <button
                       onClick={() => onSelectCourseAndTab(course.id, 'libro_temas')}
-                      className={`p-2 border rounded-lg text-left transition-all flex items-start gap-2 cursor-pointer ${
+                      className={`px-3 py-2.5 border rounded-lg text-left transition-all flex items-center gap-2 cursor-pointer min-w-0 ${
                         isDarkMode
                           ? 'bg-slate-900 border-slate-700/80 hover:border-indigo-500 hover:bg-slate-850'
                           : 'bg-white border-neutral-200/90 hover:border-indigo-400 hover:bg-indigo-50/40'
                       }`}
                     >
-                      <BookOpen className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <p className={`font-semibold text-[11px] truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                          Libro de Temas
-                        </p>
-                        <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                          Temas dados por clase
-                        </p>
-                      </div>
-                    </button>
-
-                    {/* Classroom & Avisos */}
-                    <button
-                      onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}
-                      className={`p-2 border rounded-lg text-left transition-all flex items-start gap-2 cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-900 border-slate-700/80 hover:border-blue-500 hover:bg-slate-850'
-                          : 'bg-white border-neutral-200/90 hover:border-blue-400 hover:bg-blue-50/40'
-                      }`}
-                    >
-                      <Mail className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                      <div className="min-w-0">
-                        <p className={`font-semibold text-[11px] truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                          Classroom & Mail
-                        </p>
-                        <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                          Tablón y avisos Gmail
-                        </p>
-                      </div>
+                      <BookOpen className="w-4 h-4 text-indigo-500 shrink-0" />
+                      <span className={`font-semibold text-xs truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
+                        Libro de Temas
+                      </span>
                     </button>
                   </div>
                 </div>

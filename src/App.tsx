@@ -37,6 +37,9 @@ const ImportClassroomModal = lazy(() =>
 const CreateModal = lazy(() =>
   import('./components/common/CreateModal').then((m) => ({ default: m.CreateModal }))
 );
+const AttendanceSettingsModal = lazy(() =>
+  import('./components/modules/classes/AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
+);
 
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
@@ -75,6 +78,7 @@ function AppContent() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
   const [createModalType, setCreateModalType] = useState<'course' | 'plan' | 'task' | 'file'>('course');
   const [isImportClassroomOpen, setIsImportClassroomOpen] = useState<boolean>(false);
+  const [isGlobalScheduleModalOpen, setIsGlobalScheduleModalOpen] = useState<boolean>(false);
 
   // Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -138,6 +142,17 @@ function AppContent() {
     setSelectedCourseId(localC.length > 0 ? localC[0].id : '');
     loadData();
   }, [user?.id, user?.email]);
+
+  // Listen to open attendance settings triggered globally
+  useEffect(() => {
+    const handleOpenGlobal = () => {
+      setIsGlobalScheduleModalOpen(true);
+    };
+    window.addEventListener('docencia_open_attendance_settings', handleOpenGlobal);
+    return () => {
+      window.removeEventListener('docencia_open_attendance_settings', handleOpenGlobal);
+    };
+  }, []);
 
   // Cascaded synchronization of students status across modules and dashboard view
   useEffect(() => {
@@ -260,10 +275,7 @@ function AppContent() {
     } else if (tab === 'calendar') {
       setCurrentView('calendar');
     } else if (tab === 'calendar_schedule') {
-      setCurrentView('course_detail');
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('docencia_open_attendance_settings'));
-      }, 120);
+      setIsGlobalScheduleModalOpen(true);
     } else {
       // Any other tab (classes, alumnos, students, etc.) navigates to course_detail
       setCurrentView('course_detail');
@@ -323,11 +335,7 @@ function AppContent() {
               setCurrentView('calendar');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             } else if (tab === 'calendar_schedule') {
-              setCurrentView('course_detail');
-              setTimeout(() => {
-                window.dispatchEvent(new CustomEvent('docencia_open_attendance_settings'));
-              }, 120);
-              window.scrollTo({ top: 0, behavior: 'smooth' });
+              setIsGlobalScheduleModalOpen(true);
             } else if (courseId) {
               setSelectedCourseId(courseId);
               setCurrentView('course_detail');
@@ -466,6 +474,17 @@ function AppContent() {
               setToast({ message: msg, type: 'success' });
               setTimeout(() => setToast(null), 4000);
             }}
+          />
+        </Suspense>
+      )}
+
+      {/* Global Horarios y Semanas de Clase Modal (fuente común para todas las materias) */}
+      {isGlobalScheduleModalOpen && (
+        <Suspense fallback={null}>
+          <AttendanceSettingsModal
+            isOpen={isGlobalScheduleModalOpen}
+            onClose={() => setIsGlobalScheduleModalOpen(false)}
+            isDarkMode={isDarkMode}
           />
         </Suspense>
       )}

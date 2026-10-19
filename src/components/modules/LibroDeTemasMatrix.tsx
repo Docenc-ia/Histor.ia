@@ -2289,10 +2289,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
         return (
           <div
-            className={`xl:hidden rounded-xl border-2 overflow-hidden shadow-xs transition-colors ${
+            className={`rounded-xl border-2 overflow-hidden shadow-xs transition-colors mb-4 ${
               isDarkMode
-                ? 'bg-slate-900 border-blue-700/80'
-                : 'bg-white border-blue-400'
+                ? 'bg-slate-900 border-blue-600/80 shadow-blue-950/20'
+                : 'bg-white border-blue-400 shadow-blue-500/5'
             }`}
           >
             {/* Cabecera de la tarjeta Clase de Hoy */}
@@ -2327,23 +2327,56 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 >
                   {row.term === '1c' ? '1° Cuatr.' : '2° Cuatr.'}
                 </span>
+                <span
+                  className={`text-[10px] font-medium hidden sm:inline ${
+                    isDarkMode ? 'text-slate-400' : 'text-neutral-500'
+                  }`}
+                >
+                  (Sincronizada con la fila de la tabla)
+                </span>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleOpenNoClassModal(row)}
-                className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer font-semibold shrink-0 ${
-                  isHol
-                    ? isDarkMode
-                      ? 'bg-amber-950/80 border-amber-700 text-amber-300'
-                      : 'bg-amber-100 border-amber-300 text-amber-800'
-                    : isDarkMode
-                    ? 'bg-slate-800 border-slate-700 text-slate-200 hover:border-amber-500'
-                    : 'bg-white border-neutral-300 text-neutral-700 hover:border-amber-500'
-                }`}
-              >
-                {isHol ? `Evento: ${noClassBadgeText} (Editar)` : 'Marcar Sin clase / Evento'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (termFilter !== 'all' || statusFilter !== 'all' || searchQuery) {
+                      setTermFilter('all');
+                      setStatusFilter('all');
+                      setSearchQuery('');
+                    }
+                    setTimeout(() => {
+                      if (todayRowRef.current) {
+                        todayRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }
+                    }, 50);
+                  }}
+                  className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer font-semibold shrink-0 ${
+                    isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-slate-200 hover:border-blue-500'
+                      : 'bg-white border-neutral-300 text-neutral-700 hover:border-blue-500'
+                  }`}
+                  title="Desplazarse hasta la fila de esta clase en la tabla cronológica de abajo"
+                >
+                  Ver en la tabla ↓
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenNoClassModal(row)}
+                  className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer font-semibold shrink-0 ${
+                    isHol
+                      ? isDarkMode
+                        ? 'bg-amber-950/80 border-amber-700 text-amber-300'
+                        : 'bg-amber-100 border-amber-300 text-amber-800'
+                      : isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-slate-200 hover:border-amber-500'
+                      : 'bg-white border-neutral-300 text-neutral-700 hover:border-amber-500'
+                  }`}
+                >
+                  {isHol ? `Evento: ${noClassBadgeText} (Editar)` : 'Marcar Sin clase / Evento'}
+                </button>
+              </div>
             </div>
 
             {/* Cuerpo adaptable de la tarjeta Clase de Hoy (sin scroll horizontal) */}
@@ -2713,378 +2746,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 isDarkMode ? 'divide-slate-800' : 'divide-neutral-200'
               }`}
             >
-              {/* =============================================================== */}
-              {/* FILA DESTACADA ARRIBA DEL TODO: "CLASE DE HOY"                  */}
-              {/* =============================================================== */}
-              {todayClassRow && (
-                <>
-                  <tr
-                    className={
-                      isDarkMode
-                        ? 'bg-blue-950/75 border-b border-blue-800/80'
-                        : 'bg-blue-600/10 border-b border-blue-200'
-                    }
-                  >
-                    <td colSpan={9} className="py-1.5 px-3">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-blue-600 text-white shadow-2xs">
-                            <Calendar className="w-3 h-3" />
-                            Clase de Hoy
-                          </span>
-                          <span
-                            className={`text-xs font-bold ${
-                              isDarkMode ? 'text-blue-200' : 'text-blue-900'
-                            }`}
-                          >
-                            {todayClassRow.weekdayFull} {todayClassRow.day}/{todayClassRow.month}{' '}
-                            {todayClassRow.computedClassNumber !== '-'
-                              ? `· Clase N° ${todayClassRow.computedClassNumber}`
-                              : '· Día sin dictado'}
-                          </span>
-                          {todayClassRow.dateStr === todayStr ? (
-                            <span
-                              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                                isDarkMode
-                                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
-                                  : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                              }`}
-                            >
-                              Cursada del día de hoy
-                            </span>
-                          ) : (
-                            <span
-                              className={`text-[10px] font-medium ${
-                                isDarkMode ? 'text-blue-300/80' : 'text-blue-700/80'
-                              }`}
-                            >
-                              (Fecha activa según el calendario)
-                            </span>
-                          )}
-                        </div>
-                        <span
-                          className={`text-[10px] font-medium ${
-                            isDarkMode ? 'text-slate-400' : 'text-neutral-500'
-                          }`}
-                        >
-                          Se actualiza automáticamente según avanzan los días
-                        </span>
-                      </div>
-                    </td>
-                  </tr>
-
-                  {(() => {
-                    const row = todayClassRow;
-                    const isHol = row.entry.isHoliday;
-                    const noClassPreset = NO_CLASS_PRESETS.find(
-                      (p) => p.id === (row.entry.noClassCategory || 'feriado')
-                    );
-                    const noClassBadgeText = noClassPreset?.badgeLabel || 'Sin clase';
-
-                    return (
-                      <tr
-                        key={`pinned-today-${row.dateStr}`}
-                        className={`transition-colors group border-l-4 border-l-blue-600 ${
-                          isDarkMode
-                            ? 'bg-blue-950/35 hover:bg-blue-950/45'
-                            : 'bg-blue-50/70 hover:bg-blue-50/90'
-                        }`}
-                      >
-                        {/* COLUMNA 1A: DÍA */}
-                        <td
-                          className={`py-2.5 px-1.5 text-center font-mono font-bold border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          <div className="flex flex-col items-center justify-center leading-tight">
-                            <span className="text-xs font-extrabold">{row.day}</span>
-                            <span className="text-[9px] font-semibold uppercase opacity-75">
-                              {row.weekdayShort}
-                            </span>
-                            <span className="mt-0.5 px-1 py-0.2 rounded text-[8px] font-extrabold bg-blue-600 text-white">
-                              HOY
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* COLUMNA 1B: MES */}
-                        <td
-                          className={`py-2.5 px-1.5 text-center font-mono font-bold border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          <div className="flex flex-col items-center justify-center">
-                            <span className="text-xs font-extrabold">{row.month}</span>
-                            <span className="text-[9px] opacity-60 font-sans">
-                              {row.term === '1c' ? '1°C' : '2°C'}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* COLUMNA 2: CLASE N° */}
-                        <td
-                          className={`py-2.5 px-1.5 text-center border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          <div className="flex flex-col items-center justify-center gap-1">
-                            <span
-                              className={`text-xs font-extrabold font-mono ${
-                                isHol
-                                  ? 'text-amber-600 dark:text-amber-400'
-                                  : 'text-blue-700 dark:text-blue-300'
-                              }`}
-                            >
-                              {row.computedClassNumber}
-                            </span>
-
-                            <button
-                              type="button"
-                              onClick={() => handleOpenNoClassModal(row)}
-                              className={`text-[9px] px-1.5 py-0.5 rounded border transition-all cursor-pointer leading-tight ${
-                                isHol
-                                  ? isDarkMode
-                                    ? 'bg-amber-950/80 border-amber-800 text-amber-300 font-semibold'
-                                    : 'bg-amber-100 border-amber-300 text-amber-800 font-semibold'
-                                  : 'border-blue-300 dark:border-slate-700 text-blue-700 dark:text-slate-300 hover:border-amber-500 hover:text-amber-600 bg-white/80 dark:bg-slate-800/80'
-                              }`}
-                              title={
-                                isHol
-                                  ? 'Día sin dictado de clases. Clic para editar la razón o volver a clase normal.'
-                                  : 'Marcar día sin dictado de clase (Feriado, Acto, Mocks, Exámenes Internacionales, Deportes, etc.)'
-                              }
-                            >
-                              {isHol ? noClassBadgeText : 'Sin clase / Evento'}
-                            </button>
-                          </div>
-                        </td>
-
-                        {/* COLUMNA 3: UNIDAD N° */}
-                        <td
-                          className={`py-2.5 px-1.5 text-center border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          {isHol ? (
-                            <span className="font-mono font-bold text-neutral-400">-</span>
-                          ) : (
-                            <input
-                              type="text"
-                              value={row.entry.unitNumber}
-                              placeholder={row.suggestedUnit || '1'}
-                              onChange={(e) =>
-                                updateEntryField(row.dateStr, (curr) => ({
-                                  ...curr,
-                                  unitNumber: e.target.value,
-                                }))
-                              }
-                              onFocus={() => {
-                                if (!row.entry.unitNumber && row.suggestedUnit) {
-                                  updateEntryField(row.dateStr, (curr) => ({
-                                    ...curr,
-                                    unitNumber: row.suggestedUnit,
-                                  }));
-                                }
-                              }}
-                              className={`w-12 px-1.5 py-1 text-center font-bold rounded-md border text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
-                                isDarkMode
-                                  ? 'bg-slate-900 border-blue-700/70 text-white placeholder:text-slate-500'
-                                  : 'bg-white border-blue-300 text-neutral-900 placeholder:text-neutral-400'
-                              }`}
-                            />
-                          )}
-                        </td>
-
-                        {/* COLUMNA 4: CONTENIDOS */}
-                        <td
-                          className={`py-2.5 px-2.5 border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          <div className="relative">
-                            <textarea
-                              rows={row.entry.contents.length > 95 ? 2 : 1}
-                              value={row.entry.contents}
-                              placeholder={
-                                isHol
-                                  ? 'Escribir motivo por el cual no se dictó la clase (Feriado, Acto, Mocks, Deportes...)'
-                                  : 'Escribir los contenidos dictados en la Clase de Hoy...'
-                              }
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                updateEntryField(row.dateStr, (curr) => ({
-                                  ...curr,
-                                  contents: val,
-                                  noClassReason: curr.isHoliday ? val : curr.noClassReason,
-                                  unitNumber:
-                                    !curr.isHoliday && !curr.unitNumber && val.trim()
-                                      ? row.suggestedUnit || '1'
-                                      : curr.unitNumber,
-                                  classCharacter:
-                                    !curr.isHoliday && !curr.classCharacter && val.trim()
-                                      ? characterOptions[0] || 'Teórico - Práctica'
-                                      : curr.classCharacter,
-                                }));
-                              }}
-                              className={`w-full px-2.5 py-1.5 rounded-lg border text-xs resize-y leading-relaxed focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
-                                isHol
-                                  ? isDarkMode
-                                    ? 'bg-amber-950/30 border-amber-800/60 text-amber-200 font-semibold italic'
-                                    : 'bg-amber-50/70 border-amber-200 text-amber-900 font-semibold italic'
-                                  : isDarkMode
-                                  ? 'bg-slate-900 border-blue-700/70 text-white placeholder:text-blue-300/50'
-                                  : 'bg-white border-blue-300 text-neutral-900 placeholder:text-blue-700/50'
-                              }`}
-                            />
-                          </div>
-                        </td>
-
-                        {/* COLUMNA 5: CARÁCTER DE LA CLASE */}
-                        <td
-                          className={`py-2.5 px-2 border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          {isHol ? (
-                            <div className="text-center font-mono font-bold text-neutral-400">-</div>
-                          ) : (
-                            <select
-                              value={row.entry.classCharacter || ''}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                if (val === '__EDIT_CHARACTER_OPTIONS__') {
-                                  setShowCharacterOptionsModal(true);
-                                  return;
-                                }
-                                updateEntryField(row.dateStr, (curr) => ({
-                                  ...curr,
-                                  classCharacter: val,
-                                }));
-                              }}
-                              className={`w-full px-2 py-1.5 rounded-lg border text-xs font-medium text-center focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
-                                isDarkMode
-                                  ? 'bg-slate-900 border-blue-700/70 text-slate-200'
-                                  : 'bg-white border-blue-300 text-neutral-800'
-                              }`}
-                            >
-                              <option value="">Seleccionar...</option>
-                              {row.entry.classCharacter &&
-                                !characterOptions.includes(row.entry.classCharacter) && (
-                                  <option value={row.entry.classCharacter}>
-                                    {row.entry.classCharacter}
-                                  </option>
-                                )}
-                              {characterOptions.map((preset) => (
-                                <option key={preset} value={preset}>
-                                  {preset}
-                                </option>
-                              ))}
-                              <option value="__EDIT_CHARACTER_OPTIONS__">
-                                ⚙️ Editar / agregar opciones...
-                              </option>
-                            </select>
-                          )}
-                        </td>
-
-                        {/* COLUMNA 6: OBSERVACIONES */}
-                        <td
-                          className={`py-2.5 px-2 border-r align-middle ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          <input
-                            type="text"
-                            value={row.entry.observations}
-                            placeholder="Observaciones..."
-                            onChange={(e) =>
-                              updateEntryField(row.dateStr, (curr) => ({
-                                ...curr,
-                                observations: e.target.value,
-                              }))
-                            }
-                            className={`w-full px-2.5 py-1.5 rounded-lg border text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
-                              isDarkMode
-                                ? 'bg-slate-900 border-blue-700/70 text-slate-200 placeholder:text-slate-500'
-                                : 'bg-white border-blue-300 text-neutral-800 placeholder:text-neutral-400'
-                            }`}
-                          />
-                        </td>
-
-                        {/* COLUMNA 7: FIRMA DEL PROFESOR */}
-                        <td
-                          className={`py-2.5 px-2 border-r align-middle text-center ${
-                            isDarkMode ? 'border-slate-800' : 'border-blue-200/70'
-                          }`}
-                        >
-                          {row.entry.teacherSignature ? (
-                            <div className="flex items-center justify-center gap-1">
-                              <span
-                                onClick={() => handleSignRow(row.dateStr)}
-                                className="px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 text-[11px] font-serif italic cursor-pointer hover:bg-red-500/10 hover:text-red-500"
-                                title="Clic para quitar firma"
-                              >
-                                {row.entry.teacherSignature}
-                              </span>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => handleSignRow(row.dateStr)}
-                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold border transition-colors cursor-pointer ${
-                                isDarkMode
-                                  ? 'bg-slate-900 border-blue-700 text-blue-300 hover:bg-blue-900/50'
-                                  : 'bg-white border-blue-300 text-blue-700 hover:bg-blue-100'
-                              }`}
-                              title="Firmar esta clase con tus datos de Profesor Titular"
-                            >
-                              Firmar
-                            </button>
-                          )}
-                        </td>
-
-                        {/* COLUMNA 8: FIRMA DE LA AUTORIDAD */}
-                        <td className="py-2.5 px-2 align-middle text-center">
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="text"
-                              value={row.entry.authoritySignature}
-                              placeholder="Visado..."
-                              onChange={(e) =>
-                                updateEntryField(row.dateStr, (curr) => ({
-                                  ...curr,
-                                  authoritySignature: e.target.value,
-                                }))
-                              }
-                              className={`w-full px-2 py-1 rounded-md border text-[11px] text-center focus:outline-hidden ${
-                                isDarkMode
-                                  ? 'bg-slate-900 border-blue-700/70 text-slate-300 placeholder:text-slate-500'
-                                  : 'bg-white border-blue-300 text-neutral-700 placeholder:text-neutral-400'
-                              }`}
-                            />
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })()}
-
-                  {/* Separador visual entre "Clase de Hoy" y la lista cronológica completa */}
-                  <tr
-                    className={
-                      isDarkMode
-                        ? 'bg-slate-850 border-y border-slate-700 text-slate-400'
-                        : 'bg-stone-100 border-y border-neutral-300 text-neutral-600'
-                    }
-                  >
-                    <td
-                      colSpan={9}
-                      className="py-1 px-3 text-[10px] font-extrabold uppercase tracking-wider"
-                    >
-                      Listado cronológico completo de clases
-                    </td>
-                  </tr>
-                </>
-              )}
-
               {filteredRows.length === 0 ? (
                 <tr>
                   <td colSpan={9} className="py-12 px-4 text-center text-neutral-400">
@@ -3118,8 +2779,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       className={`transition-colors group ${
                         isToday
                           ? isDarkMode
-                            ? 'bg-blue-950/30'
-                            : 'bg-blue-50/60'
+                            ? 'bg-blue-950/45 border-l-4 border-l-blue-500'
+                            : 'bg-blue-50/85 border-l-4 border-l-blue-600'
                           : isHol
                           ? isDarkMode
                             ? 'bg-amber-950/15 text-amber-200/90'
@@ -3141,7 +2802,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                             {row.weekdayShort}
                           </span>
                           {isToday && (
-                            <span className="mt-0.5 px-1 py-0.2 rounded text-[8px] font-extrabold bg-blue-600 text-white">
+                            <span className="mt-0.5 px-1.5 py-0.2 rounded text-[8px] font-extrabold bg-blue-600 text-white tracking-wider shadow-2xs">
                               HOY
                             </span>
                           )}

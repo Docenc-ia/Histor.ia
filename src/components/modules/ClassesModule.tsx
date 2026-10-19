@@ -205,11 +205,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const handleOpenSettingsEvent = () => {
       setIsAttendanceSettingsModalOpen(true);
     };
+    const handleGlobalUpdate = () => {
+      if (activeCourse) {
+        setAttendanceSettings(getCourseAttendanceSettings(activeCourse.id, activeCourse.schedule));
+      }
+    };
     window.addEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
+    window.addEventListener('docencia_global_attendance_settings_updated', handleGlobalUpdate);
     return () => {
       window.removeEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
+      window.removeEventListener('docencia_global_attendance_settings_updated', handleGlobalUpdate);
     };
-  }, []);
+  }, [activeCourse?.id, activeCourse?.schedule]);
 
   // Modal 1: Sincronizar / Seleccionar Horarios con Google Calendar (manual, sin auto-adivinar)
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);

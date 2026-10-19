@@ -114,70 +114,134 @@ export function deriveClassesPerWeekFromSchedule(schedule?: string): number {
  * Loads course attendance settings from localStorage or defaults, automatically
  * detecting holidays and asuetos for the course schedule.
  */
-export function getCourseAttendanceSettings(courseId?: string, schedule?: string): AttendanceSettings {
-  const fallbackClassesPerWeek = deriveClassesPerWeekFromSchedule(schedule);
-  const parsedWeekdays = extractWeekdaysFromSchedule(schedule);
-  const detectedDefaults = detectHolidaysForCourse({
-    schedule,
-    explicitWeekdays: parsedWeekdays.length > 0 ? parsedWeekdays : undefined,
+export const GLOBAL_ATTENDANCE_SETTINGS_KEY = 'fds_attendance_settings_global';
+
+/**
+ * Loads shared global attendance & calendar schedule settings (common source for all courses)
+ */
+export function getGlobalAttendanceSettings(): AttendanceSettings {
+  const allSchoolWeekdays = [1, 2, 3, 4, 5, 6];
+  const detected = detectHolidaysForCourse({
+    explicitWeekdays: allSchoolWeekdays,
+    termStartDate1c: DEFAULT_ATTENDANCE_SETTINGS.termStartDate1c,
+    termEndDate1c: DEFAULT_ATTENDANCE_SETTINGS.termEndDate1c,
+    termStartDate2c: DEFAULT_ATTENDANCE_SETTINGS.termStartDate2c,
+    termEndDate2c: DEFAULT_ATTENDANCE_SETTINGS.termEndDate2c,
   });
 
-  if (typeof window !== 'undefined' && courseId) {
+  if (typeof window !== 'undefined') {
     try {
-      const stored = getUserScopedItem(`fds_attendance_settings_${courseId}`);
+      const stored = getUserScopedItem(GLOBAL_ATTENDANCE_SETTINGS_KEY);
       if (stored) {
         const parsed = JSON.parse(stored);
-        const storedWeekdays = Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0
-          ? parsed.courseWeekdays
-          : (parsedWeekdays.length > 0 ? parsedWeekdays : [1, 3]);
+        if (parsed && typeof parsed === 'object') {
+          const customHolidays = Array.isArray(parsed.customHolidays) ? parsed.customHolidays : [];
+          const excludedHolidayIds = Array.isArray(parsed.excludedHolidayIds) ? parsed.excludedHolidayIds : [];
+          
+          let holidays1c = Number(parsed.holidays1c);
+          let holidays2c = Number(parsed.holidays2c);
+          if (isNaN(holidays1c) || isNaN(holidays2c) || (holidays1c === 0 && holidays2c === 0)) {
+            const recomputed = detectHolidaysForCourse({
+              explicitWeekdays: allSchoolWeekdays,
+              termStartDate1c: parsed.termStartDate1c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate1c,
+              termEndDate1c: parsed.termEndDate1c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate1c,
+              termStartDate2c: parsed.termStartDate2c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate2c,
+              termEndDate2c: parsed.termEndDate2c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate2c,
+              customHolidays,
+              excludedHolidayIds,
+            });
+            holidays1c = recomputed.holidays1cCount;
+            holidays2c = recomputed.holidays2cCount;
+          }
 
-        const customHolidays = Array.isArray(parsed.customHolidays) ? parsed.customHolidays : [];
-        const excludedHolidayIds = Array.isArray(parsed.excludedHolidayIds) ? parsed.excludedHolidayIds : [];
-
-        // If holidays were not explicitly set or were 0, recalculate using detected holidays
-        let holidays1c = Number(parsed.holidays1c);
-        let holidays2c = Number(parsed.holidays2c);
-        if (isNaN(holidays1c) || isNaN(holidays2c) || (holidays1c === 0 && holidays2c === 0)) {
-          const auto = detectHolidaysForCourse({
-            schedule,
-            explicitWeekdays: storedWeekdays,
-            termStartDate1c: parsed.termStartDate1c,
-            termEndDate1c: parsed.termEndDate1c,
-            termStartDate2c: parsed.termStartDate2c,
-            termEndDate2c: parsed.termEndDate2c,
+          return {
+            ...DEFAULT_ATTENDANCE_SETTINGS,
+            ...parsed,
+            courseWeekdays: allSchoolWeekdays,
             customHolidays,
             excludedHolidayIds,
-          });
-          if (isNaN(holidays1c) || holidays1c === 0) holidays1c = auto.holidays1cCount;
-          if (isNaN(holidays2c) || holidays2c === 0) holidays2c = auto.holidays2cCount;
+            holidays1c: holidays1c || detected.holidays1cCount,
+            holidays2c: holidays2c || detected.holidays2cCount,
+          };
         }
-
-        return {
-          weeks1c: Number(parsed.weeks1c) || DEFAULT_ATTENDANCE_SETTINGS.weeks1c,
-          weeks2c: Number(parsed.weeks2c) || DEFAULT_ATTENDANCE_SETTINGS.weeks2c,
-          classesPerWeek: Number(parsed.classesPerWeek) || fallbackClassesPerWeek,
-          maxAbsencePercent: Number(parsed.maxAbsencePercent) || DEFAULT_ATTENDANCE_SETTINGS.maxAbsencePercent,
-          halfLatePenalty: parsed.halfLatePenalty !== false,
-          holidays1c: holidays1c || 0,
-          holidays2c: holidays2c || 0,
-          termStartDate1c: parsed.termStartDate1c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate1c,
-          termEndDate1c: parsed.termEndDate1c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate1c,
-          termStartDate2c: parsed.termStartDate2c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate2c,
-          termEndDate2c: parsed.termEndDate2c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate2c,
-          courseWeekdays: storedWeekdays,
-          customHolidays,
-          excludedHolidayIds,
-        };
       }
     } catch (_) {}
   }
 
   return {
     ...DEFAULT_ATTENDANCE_SETTINGS,
-    classesPerWeek: fallbackClassesPerWeek,
-    holidays1c: detectedDefaults.holidays1cCount,
-    holidays2c: detectedDefaults.holidays2cCount,
-    courseWeekdays: detectedDefaults.weekdays,
+    courseWeekdays: allSchoolWeekdays,
+    holidays1c: detected.holidays1cCount,
+    holidays2c: detected.holidays2cCount,
+  };
+}
+
+/**
+ * Saves shared global attendance & calendar schedule settings (common source for all courses)
+ */
+export function saveGlobalAttendanceSettings(settings: AttendanceSettings): void {
+  if (typeof window !== 'undefined') {
+    setUserScopedItem(GLOBAL_ATTENDANCE_SETTINGS_KEY, JSON.stringify(settings));
+    window.dispatchEvent(
+      new CustomEvent('docencia_global_attendance_settings_updated', { detail: settings })
+    );
+    import('../services/firestoreSync')
+      .then(({ firestoreSync, getActiveUserId }) => {
+        const uid = getActiveUserId();
+        if (uid) {
+          firestoreSync.saveUserSetting(uid, 'attendance_settings_global', settings).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+/**
+ * Loads course attendance settings, inheriting from global calendar settings (terms, weeks, feriados, asuetos)
+ * while respecting each course's specific weekday schedule for class counting.
+ */
+export function getCourseAttendanceSettings(courseId?: string, schedule?: string): AttendanceSettings {
+  const globalSettings = getGlobalAttendanceSettings();
+  const fallbackClassesPerWeek = deriveClassesPerWeekFromSchedule(schedule);
+  const parsedWeekdays = extractWeekdaysFromSchedule(schedule);
+
+  let courseWeekdays = parsedWeekdays.length > 0 ? parsedWeekdays : [1, 3];
+  let classesPerWeek = fallbackClassesPerWeek > 0 ? fallbackClassesPerWeek : courseWeekdays.length;
+
+  if (typeof window !== 'undefined' && courseId) {
+    try {
+      const stored = getUserScopedItem(`fds_attendance_settings_${courseId}`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0) {
+          courseWeekdays = parsed.courseWeekdays;
+          classesPerWeek = Number(parsed.classesPerWeek) || courseWeekdays.length;
+        } else if (parsedWeekdays.length > 0) {
+          courseWeekdays = parsedWeekdays;
+          classesPerWeek = fallbackClassesPerWeek;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Detect holidays specifically for this course's days using global holidays & events & term dates
+  const courseHolidays = detectHolidaysForCourse({
+    schedule,
+    explicitWeekdays: courseWeekdays,
+    termStartDate1c: globalSettings.termStartDate1c,
+    termEndDate1c: globalSettings.termEndDate1c,
+    termStartDate2c: globalSettings.termStartDate2c,
+    termEndDate2c: globalSettings.termEndDate2c,
+    customHolidays: globalSettings.customHolidays,
+    excludedHolidayIds: globalSettings.excludedHolidayIds,
+  });
+
+  return {
+    ...globalSettings,
+    classesPerWeek,
+    courseWeekdays,
+    holidays1c: courseHolidays.holidays1cCount,
+    holidays2c: courseHolidays.holidays2cCount,
   };
 }
 

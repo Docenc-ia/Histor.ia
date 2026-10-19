@@ -829,14 +829,14 @@ export const LibroDeTemasView: React.FC<LibroDeTemasViewProps> = ({
       const uploaded = await driveService.uploadReportFile(
         title,
         html,
-        'application/vnd.google-apps.document',
-        parentFolderId
+        parentFolderId,
+        true
       );
 
       setSavedDriveDoc({
         id: uploaded.id,
         name: uploaded.name,
-        webViewLink: uploaded.webViewLink,
+        webViewLink: uploaded.webViewLink || uploaded.url,
       });
       setShowDriveConfirm(false);
       onToast?.('Libro de Temas guardado en Google Drive como documento editable (.gdoc).');

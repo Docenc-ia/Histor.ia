@@ -1185,4 +1185,93 @@ export const firestoreSync = {
       }
     }
   },
+
+  /**
+   * Save a single student observation or full observations map to the user's cloud settings
+   */
+  async saveStudentObservation(
+    userId: string,
+    obs: any,
+    fullMap?: Record<string, any[]>
+  ): Promise<void> {
+    if (!userId) return;
+    try {
+      let mapToSave = fullMap;
+      if (!mapToSave && typeof window !== 'undefined') {
+        const stored = localStorage.getItem('fds_student_observations');
+        if (stored) {
+          mapToSave = JSON.parse(stored);
+        }
+      }
+      if (!mapToSave && obs?.studentId) {
+        mapToSave = { [obs.studentId]: [obs] };
+      }
+      if (mapToSave) {
+        await this.saveUserSetting(userId, 'student_observations', mapToSave);
+      }
+    } catch (_) {}
+  },
+
+  /**
+   * Save full student observations map to Firestore
+   */
+  async saveStudentObservationsMap(
+    userId: string,
+    observationsMap: Record<string, any[]>
+  ): Promise<void> {
+    if (!userId) return;
+    await this.saveUserSetting(userId, 'student_observations', observationsMap);
+  },
+
+  /**
+   * Load student observations map from Firestore across candidate accounts
+   */
+  async loadStudentObservationsMap(userId: string): Promise<Record<string, any[]> | null> {
+    if (!userId) return null;
+    const res = await this.loadUserSetting(userId, 'student_observations');
+    return (res as Record<string, any[]>) || null;
+  },
+
+  /**
+   * Delete any late arrival records for a student recorded today in Firestore
+   */
+  async deleteTodayLatesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
+    if (!userId || !studentId) return [];
+    const candidateIds = getCandidateUserIds(userId);
+    const deletedIds: string[] = [];
+
+    for (const targetDb of ALL_DBS) {
+      for (const uid of candidateIds) {
+        try {
+          const col = collection(targetDb, 'users', uid, 'disposition');
+          const snap = await executeWithTimeout(getDocs(col));
+          if (!snap) continue;
+          const deletePromises: Promise<void>[] = [];
+
+          snap.forEach((docSnap: any) => {
+            const data = docSnap.data();
+            const isLate =
+              data.category === 'Llegada tarde' ||
+              data.action === 'Llegada tarde' ||
+              String(data.action || '').toLowerCase().includes('llegada tarde') ||
+              String(data.action || '').toLowerCase().includes('tarde');
+            if (
+              data.studentId === studentId &&
+              isLate &&
+              isSameCalendarDay(data.date, data.timestamp, targetDate)
+            ) {
+              deletedIds.push(docSnap.id);
+              deletePromises.push(deleteDoc(docSnap.ref));
+            }
+          });
+
+          if (deletePromises.length > 0) {
+            await Promise.all(deletePromises);
+          }
+        } catch (_) {}
+      }
+    }
+    return Array.from(new Set(deletedIds));
+  },
 };
+

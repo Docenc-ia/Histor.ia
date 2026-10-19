@@ -89,6 +89,7 @@ import { GoogleSyncManager } from './classes/GoogleSyncManager';
 import { GoogleSessionExpiryBanner } from './classes/GoogleSessionExpiryBanner';
 import { AttendanceSettingsModal } from './classes/AttendanceSettingsModal';
 import { BackupRestoreModal } from './classes/BackupRestoreModal';
+import { QuickRollCallModal } from './classes/QuickRollCallModal';
 import { useAttendanceSync } from '../../hooks/useAttendanceSync';
 import {
   AttendanceSettings,
@@ -174,6 +175,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // Semáforo de asistencia, semanas de clase y calendario escolar
   const [isAttendanceSettingsModalOpen, setIsAttendanceSettingsModalOpen] = useState(false);
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
+  const [isQuickRollCallOpen, setIsQuickRollCallOpen] = useState(false);
   const [attendanceSettings, setAttendanceSettings] = useState<AttendanceSettings>(() =>
     getCourseAttendanceSettings(activeCourse?.id, activeCourse?.schedule)
   );
@@ -979,6 +981,45 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
     return {};
   });
+
+  // Load student observations from Firestore on mount to keep PC and mobile synced
+  useEffect(() => {
+    let isMounted = true;
+    const uid = getActiveUserId();
+    if (uid) {
+      firestoreSync
+        .loadStudentObservationsMap(uid)
+        .then((cloudMap) => {
+          if (!isMounted || !cloudMap || typeof cloudMap !== 'object') return;
+          setStudentObservations((prev) => {
+            const merged: Record<string, StudentObservation[]> = { ...prev };
+            let changed = false;
+            for (const [stId, cloudList] of Object.entries(cloudMap)) {
+              if (!Array.isArray(cloudList)) continue;
+              const localList = merged[stId] || [];
+              const existingIds = new Set(localList.map((o) => o.id));
+              const newItems = cloudList.filter((o) => o && o.id && !existingIds.has(o.id));
+              if (newItems.length > 0 || (localList.length === 0 && cloudList.length > 0)) {
+                merged[stId] = [...localList, ...newItems].sort(
+                  (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+                );
+                changed = true;
+              }
+            }
+            if (changed && typeof window !== 'undefined') {
+              try {
+                localStorage.setItem('fds_student_observations', JSON.stringify(merged));
+              } catch (_) {}
+            }
+            return changed ? merged : prev;
+          });
+        })
+        .catch(() => {});
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   // Exportación directa de la Ficha de Seguimiento del Alumno a Google Drive como Google Doc (.gdoc) editable
   const [showProfileDocConfirm, setShowProfileDocConfirm] = useState(false);
@@ -2297,7 +2338,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // LÓGICA DE REGISTRO IDÉNTICA AL SCRIPT DE GOOGLE SHEETS
   // -------------------------------------------------------------
 
-  // 1. LÓGICA PARA AUSENCIAS (Columna B / número 2 del script + Descuento de 1 pto de Disposición)
+  // 1. LÓGICA PARA AUSENCIAS (Columna B / número 2 del script + si tenía llegada tarde hoy, la reemplaza atómicamente)
   const handleAddAbsence = async (student: Student) => {
     const studentFullName = `${student.lastName}, ${student.firstName}`;
     const now = new Date();
@@ -2313,7 +2354,38 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setTimeout(() => setPulsingStudentId(null), 600);
 
     const current = getStudentMetrics(student.id, targetTerm);
+
+    // Si el mismo día el alumno tenía una Llegada Tarde registrada, se cancela automáticamente al pasarlo a Ausente
+    const isTodayLate = (h: StudentHistoryItem) => {
+      if (h.studentId !== student.id) return false;
+      const isLate =
+        h.category === 'Llegada tarde' ||
+        h.action === 'Llegada tarde' ||
+        h.action?.toLowerCase().includes('llegada tarde') ||
+        h.action?.toLowerCase().includes('tarde') ||
+        h.action?.toLowerCase().includes('tardanza');
+      if (!isLate) return false;
+      return isSameCalendarDay(h.date, h.timestamp, now) || !h.date;
+    };
+
+    const todayLatesToRemove: StudentHistoryItem[] = [];
+    const cleanHistory = historyList.filter((h) => {
+      if (isTodayLate(h)) {
+        todayLatesToRemove.push(h);
+        return false;
+      }
+      return true;
+    });
+
+    if (todayLatesToRemove.length > 0) {
+      todayLatesToRemove.forEach((l) => markHistoryIdDeleted(l.id));
+    }
+
     const newAbsences = current.totalAbsences + 1;
+    const newLates =
+      todayLatesToRemove.length > 0
+        ? Math.max(0, (current.totalLates || 0) - todayLatesToRemove.length)
+        : current.totalLates || 0;
     const newDisposition = current.totalDisposition;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const updatedMap: Record<string, StudentDispositionData> = {
@@ -2321,6 +2393,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       [student.id]: {
         ...current,
         totalAbsences: newAbsences,
+        totalLates: newLates,
         totalDisposition: newDisposition,
       },
     };
@@ -2343,7 +2416,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       notificationMethod: 'none',
     };
 
-    const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
+    const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
     setHistoryList(updatedHistory);
     saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
@@ -2359,6 +2432,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     if (onRefreshData) {
       onRefreshData();
+    }
+
+    if (todayLatesToRemove.length > 0) {
+      for (const item of todayLatesToRemove) {
+        api.deleteDispositionHistory(item.id).catch(() => {});
+      }
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync.deleteTodayLatesForStudent(userId, student.id, now).catch(() => {});
+      }
     }
 
     // Persist to server with exact ID, date, time, timestamp and expected summary
@@ -2378,7 +2461,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         notificationMethod: 'none',
         expectedSummary: {
           totalAbsences: newAbsences,
-          totalLates: current.totalLates || 0,
+          totalLates: newLates,
           totalDisposition: newDisposition,
         },
       })
@@ -4375,6 +4458,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         if (activeCourse?.id) {
           localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
         }
+        const uid = getActiveUserId();
+        if (uid) {
+          firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {});
+        }
       } catch (_) {}
     }
 
@@ -4398,6 +4485,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
         if (activeCourse?.id) {
           localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+        }
+        const uid = getActiveUserId();
+        if (uid) {
+          firestoreSync.saveStudentObservationsMap(uid, updatedMap).catch(() => {});
         }
       } catch (_) {}
     }
@@ -4447,14 +4538,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       if (!activeCourse) return [];
       try {
         const catRaw =
+          localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
+          (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null) ||
           localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}_${term}`) ||
           (term === '1c' ? localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}`) : null);
         const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
 
         const gradesRaw =
+          localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
+          (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null) ||
           localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}_${term}`) ||
           (term === '1c' ? localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}`) : null);
-        const gMap: StudentGradesMap = gradesRaw ? JSON.parse(gradesRaw) : {};
+        const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
         const stGrades = gMap[student.id] || {};
 
         const items: { id: string; name: string; weight: number; score: number | null }[] = [];
@@ -4462,11 +4557,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
           for (const sub of cat.subcategories || []) {
             const rawVal = stGrades[sub.id];
+            const parsedNum =
+              rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
+                ? Number(String(rawVal).replace(',', '.'))
+                : NaN;
             items.push({
               id: sub.id,
               name: sub.name,
-              weight: sub.weight,
-              score: typeof rawVal === 'number' && !isNaN(rawVal) ? rawVal : null,
+              weight: (sub as any).weight ?? cat.weight ?? 0,
+              score: !isNaN(parsedNum) ? parsedNum : null,
             });
           }
         }
@@ -4791,14 +4890,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const uploadedDoc = await driveService.uploadReportFile(
         finalDocTitle,
         htmlContent,
-        'application/vnd.google-apps.document',
-        parentFolderId
+        parentFolderId,
+        true
       );
+
+      const docLink = uploadedDoc.webViewLink || uploadedDoc.url;
 
       setExportedProfileDoc({
         id: uploadedDoc.id,
         name: uploadedDoc.name,
-        webViewLink: uploadedDoc.webViewLink,
+        webViewLink: docLink,
         studentId: student.id,
       });
       setShowProfileDocConfirm(false);
@@ -4814,8 +4915,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           courseId: activeCourse.id,
           date: dateStr,
           text: `Ficha de Seguimiento exportada a Google Docs (.gdoc editable): "${uploadedDoc.name}"`,
-          reportUrl: uploadedDoc.webViewLink,
-          createdAt: Date.now(),
+          reportUrl: docLink,
+          timestamp: Date.now(),
         };
         const currentList = studentObservations[student.id] || [];
         const updatedMap = {
@@ -4825,9 +4926,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         setStudentObservations(updatedMap);
         try {
           localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+          if (activeCourse.id) {
+            localStorage.setItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
+          }
           const uid = getActiveUserId();
           if (uid) {
-            firestoreSync.saveStudentObservation(uid, newObs).catch(() => {});
+            firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {});
           }
         } catch (_) {}
       }
@@ -5889,6 +5993,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               attendanceSummary={currentAttendanceSummary}
               onOpenAttendanceSettings={() => setIsAttendanceSettingsModalOpen(true)}
               onOpenBackupModal={() => setIsBackupModalOpen(true)}
+              onOpenQuickRollCall={() => setIsQuickRollCallOpen(true)}
               isDarkMode={isDarkMode}
             />
           )}
@@ -9933,14 +10038,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 const loadTermExams = (term: '1c' | '2c') => {
                   try {
                     const catRaw =
+                      localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
+                      (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null) ||
                       localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}_${term}`) ||
                       (term === '1c' ? localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}`) : null);
                     const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
 
                     const gradesRaw =
+                      localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
+                      (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null) ||
                       localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}_${term}`) ||
                       (term === '1c' ? localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}`) : null);
-                    const gMap: StudentGradesMap = gradesRaw ? JSON.parse(gradesRaw) : {};
+                    const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
                     const stGrades = gMap[selectedStudentForProfile.id] || {};
 
                     const items: { id: string; name: string; weight: number; score: number | null }[] = [];
@@ -9948,11 +10057,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                       if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
                       for (const sub of cat.subcategories || []) {
                         const rawVal = stGrades[sub.id];
+                        const parsedNum =
+                          rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
+                            ? Number(String(rawVal).replace(',', '.'))
+                            : NaN;
                         items.push({
                           id: sub.id,
                           name: sub.name,
-                          weight: sub.weight,
-                          score: typeof rawVal === 'number' && !isNaN(rawVal) ? rawVal : null,
+                          weight: (sub as any).weight ?? cat.weight ?? 0,
+                          score: !isNaN(parsedNum) ? parsedNum : null,
                         });
                       }
                     }
@@ -13869,6 +13982,28 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             setTimeout(() => setToastMessage(null), 4000);
             onRefreshData();
           }}
+          isDarkMode={isDarkMode}
+        />
+      )}
+
+      {/* Quick Roll-Call Modal (Pasar Lista Rápido) */}
+      {isQuickRollCallOpen && activeCourse && (
+        <QuickRollCallModal
+          isOpen={isQuickRollCallOpen}
+          onClose={() => setIsQuickRollCallOpen(false)}
+          courseId={activeCourse.id}
+          courseName={activeCourse.name}
+          students={filteredStudents.length > 0 ? filteredStudents : courseStudents}
+          attendanceTerm={attendanceTerm}
+          attendanceSettings={attendanceSettings}
+          historyList={historyList}
+          getStudentMetrics={getStudentMetrics}
+          teacherConductOptions={teacherConductOptions}
+          onAddAbsence={handleAddAbsence}
+          onRecordLateArrival={handleRecordLateArrival}
+          onDeleteLatestAbsence={handleDeleteLatestAbsence}
+          onDeleteLatestLate={handleDeleteLatestLate}
+          onRecordDispositionAction={handleRecordDispositionAction}
           isDarkMode={isDarkMode}
         />
       )}

@@ -1147,7 +1147,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       const uploaded = await driveService.uploadReportFile(
         docName,
         htmlContent,
-        'text/html',
         targetFolderId,
         true // Convert to editable Google Doc (.gdoc)
       );

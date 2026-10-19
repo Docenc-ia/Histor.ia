@@ -320,6 +320,18 @@ export const driveService = {
   },
 
   /**
+   * Alias for setupCourseFolderStructure so all modules can ensure the course folder structure exists
+   */
+  async ensureCourseFolderStructure(
+    courseName: string,
+    _courseId?: string,
+    existingFolderId?: string,
+    providedToken?: string
+  ): Promise<CourseFolderStructure> {
+    return this.setupCourseFolderStructure(courseName, existingFolderId, providedToken);
+  },
+
+  /**
    * Upload a generated document or HTML report to a Google Drive course folder.
    * When convertToGoogleDoc is true (default), Google Drive converts the rich HTML
    * into a native, fully editable Google Doc (.gdoc) in the user's Drive.
@@ -328,10 +340,13 @@ export const driveService = {
     fileName: string,
     content: string,
     folderId?: string,
-    mimeType: string = 'text/html',
+    mimeTypeOrConvert: string | boolean = 'text/html',
     providedToken?: string,
     convertToGoogleDoc: boolean = true
-  ): Promise<{ id: string; name: string; url: string; isLiveGoogle: boolean; isGoogleDoc?: boolean }> {
+  ): Promise<{ id: string; name: string; url: string; webViewLink: string; isLiveGoogle: boolean; isGoogleDoc?: boolean }> {
+    const resolvedMimeType = typeof mimeTypeOrConvert === 'string' ? mimeTypeOrConvert : 'text/html';
+    const resolvedConvert = typeof mimeTypeOrConvert === 'boolean' ? mimeTypeOrConvert : convertToGoogleDoc;
+
     let token = providedToken || getCachedAccessToken();
     if (!token) {
       try {
@@ -339,15 +354,20 @@ export const driveService = {
       } catch {}
     }
 
-    const cleanDocName = convertToGoogleDoc ? fileName.replace(/\.html$/i, '') : fileName;
+    const cleanDocName = resolvedConvert ? fileName.replace(/\.html$/i, '') : fileName;
 
     if (token) {
       try {
         const metadata: any = {
           name: cleanDocName,
-          mimeType: convertToGoogleDoc ? 'application/vnd.google-apps.document' : mimeType,
+          mimeType: resolvedConvert ? 'application/vnd.google-apps.document' : resolvedMimeType,
         };
-        if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
+        if (
+          folderId &&
+          !folderId.startsWith('folder-') &&
+          !folderId.startsWith('f-') &&
+          !folderId.includes('/')
+        ) {
           metadata.parents = [folderId];
         }
 
@@ -360,7 +380,7 @@ export const driveService = {
           'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
           JSON.stringify(metadata) +
           delimiter +
-          `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n` +
+          `Content-Type: ${resolvedMimeType}; charset=UTF-8\r\n\r\n` +
           content +
           close_delim;
 
@@ -378,7 +398,7 @@ export const driveService = {
 
         if (res.ok) {
           const data = await res.json();
-          const liveUrl = convertToGoogleDoc
+          const liveUrl = resolvedConvert
             ? data.webViewLink || `https://docs.google.com/document/d/${data.id}/edit`
             : data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`;
 
@@ -399,8 +419,9 @@ export const driveService = {
             id: data.id,
             name: data.name || cleanDocName,
             url: liveUrl,
+            webViewLink: liveUrl,
             isLiveGoogle: true,
-            isGoogleDoc: convertToGoogleDoc,
+            isGoogleDoc: resolvedConvert,
           };
         } else {
           const errText = await res.text();
@@ -428,19 +449,22 @@ export const driveService = {
           id: data.file.id,
           name: data.file.name,
           url: data.file.googleDriveUrl,
+          webViewLink: data.file.googleDriveUrl,
           isLiveGoogle: false,
-          isGoogleDoc: convertToGoogleDoc,
+          isGoogleDoc: resolvedConvert,
         };
       }
     } catch {}
 
     const fallbackId = `report-${Date.now()}`;
+    const fallbackUrl = 'https://drive.google.com/drive/u/0/my-drive';
     return {
       id: fallbackId,
       name: cleanDocName,
-      url: 'https://drive.google.com/drive/u/0/my-drive',
+      url: fallbackUrl,
+      webViewLink: fallbackUrl,
       isLiveGoogle: false,
-      isGoogleDoc: convertToGoogleDoc,
+      isGoogleDoc: resolvedConvert,
     };
   },
 };

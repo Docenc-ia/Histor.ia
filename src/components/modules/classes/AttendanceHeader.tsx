@@ -11,6 +11,7 @@ import {
   Calendar,
   Loader2,
   Database,
+  Smartphone,
 } from 'lucide-react';
 
 import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
@@ -36,6 +37,7 @@ interface AttendanceHeaderProps {
   attendanceSummary?: CourseAttendanceSummary;
   onOpenAttendanceSettings?: () => void;
   onOpenBackupModal?: () => void;
+  onOpenQuickRollCall?: () => void;
   isDarkMode: boolean;
 }
 
@@ -60,6 +62,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
   attendanceSummary,
   onOpenAttendanceSettings,
   onOpenBackupModal,
+  onOpenQuickRollCall,
   isDarkMode,
 }) => {
   const isSyncActive = isSyncingSheet || isPullingFromSheet;
@@ -254,16 +257,22 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
                   : '💜 Resumen Anual Activo'}
               </span>
             </div>
-            <p className={`text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-              {attendanceTerm === 'annual'
-                ? 'Consolidado acumulado de inasistencias, tardanzas y notas de disposición de ambos cuatrimestres.'
-                : 'Registro y control específico para este período lectivo.'}
-            </p>
           </div>
         </div>
 
-        {/* Term switch buttons */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Quick Roll-Call + Term switch buttons */}
+        <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+          {onOpenQuickRollCall && (
+            <button
+              type="button"
+              onClick={onOpenQuickRollCall}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-extrabold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-xs transition-all cursor-pointer inline-flex items-center gap-1.5 mr-1"
+              title="Abrir Modo Toma Rápida (P / A / T uno por uno o en lista vertical compacta para celular y PC)"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Pasar Lista Rápido</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onSelectTerm('1c')}

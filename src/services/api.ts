@@ -34,6 +34,8 @@ import {
   deduplicateHistoryItems,
   saveAllDispositionStorage,
   getAllDispositionStorage,
+  getLocalDisposition2c,
+  saveLocalDisposition2c,
 } from './storageHelpers';
 
 export {
@@ -56,6 +58,8 @@ export {
   deduplicateHistoryItems,
   saveAllDispositionStorage,
   getAllDispositionStorage,
+  getLocalDisposition2c,
+  saveLocalDisposition2c,
 };
 
 
@@ -752,12 +756,14 @@ export const api = {
     return { message: 'Asistencia registrada con éxito' };
   },
 
-  // Student Disposition & Absences System (Google Sheets script integration)
+  // Student Disposition & Absences System (Compact v2 Cloud Engine + Google Sheets integration)
   async getDisposition(courseId?: string, studentId?: string): Promise<{
     disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
+    disposition2c?: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
     history: any[];
   }> {
     const local = getAllDispositionStorage();
+    const local2c = getLocalDisposition2c();
     const userId = getActiveUserId();
     const deleted = getDeletedHistoryIds();
 
@@ -765,21 +771,33 @@ export const api = {
       try {
         const cloud = await firestoreSync.loadDisposition(userId);
         const cleanCloudHistory = (cloud.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
+        const cloudIds = new Set(cleanCloudHistory.map((h: any) => h.id));
+        const hasUnsyncedLocalItems = local.history.some((lh: any) => lh?.id && !deleted.has(lh.id) && !cloudIds.has(lh.id));
 
-        // Purge any resurrected tombstones from Firestore in background
-        const resurrected = (cloud.history || []).filter((h: any) => h?.id && deleted.has(h.id));
-        if (resurrected.length > 0) {
-          resurrected.forEach((r: any) => {
-            firestoreSync.deleteDisposition(userId, r.id).catch(() => {});
-          });
-        }
-
-        if (cleanCloudHistory.length > 0 || Object.keys(cloud.disposition || {}).length > 0) {
-          const mergedHistory = deduplicateHistoryItems([...cleanCloudHistory, ...local.history]).filter((h) => !deleted.has(h.id));
+        if (
+          cleanCloudHistory.length > 0 ||
+          Object.keys(cloud.disposition || {}).length > 0 ||
+          Object.keys(cloud.disposition2c || {}).length > 0
+        ) {
+          const mergedHistory = deduplicateHistoryItems([...cleanCloudHistory, ...local.history]).filter(
+            (h) => !deleted.has(h.id)
+          );
           mergedHistory.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
           const mergedDisp = { ...local.disposition, ...(cloud.disposition || {}) };
+          const mergedDisp2c = { ...local2c, ...(cloud.disposition2c || {}) };
+
           saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
-          return { disposition: mergedDisp, history: mergedHistory };
+          if (Object.keys(mergedDisp2c).length > 0) {
+            saveLocalDisposition2c(mergedDisp2c);
+          }
+
+          if (hasUnsyncedLocalItems) {
+            firestoreSync.syncCompactDispositionNow(userId, false);
+          }
+
+          return { disposition: mergedDisp, disposition2c: mergedDisp2c, history: mergedHistory };
+        } else if (hasUnsyncedLocalItems || Object.keys(local.disposition).length > 0) {
+          firestoreSync.syncCompactDispositionNow(userId, false);
         }
       } catch (err) {
         console.warn('Firestore loadDisposition warning:', err);
@@ -797,16 +815,18 @@ export const api = {
           const serverData = await res.json();
           if (serverData?.history || serverData?.disposition) {
             const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
-            const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter((h) => !deleted.has(h.id));
+            const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter(
+              (h) => !deleted.has(h.id)
+            );
             const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
             saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
-            return { disposition: mergedDisp, history: mergedHistory };
+            return { disposition: mergedDisp, disposition2c: local2c, history: mergedHistory };
           }
         }
       } catch (_) {}
     }
 
-    return local as any;
+    return { disposition: local.disposition, disposition2c: local2c, history: local.history } as any;
   },
 
   async recordDisposition(data: {
@@ -1210,6 +1230,8 @@ export const api = {
         firestoreSync.deleteStudentDispositionDocs(userId, data.studentId, data.clearHistory).catch(() => {});
       } else if (data.courseId) {
         firestoreSync.deleteCourseDispositionDocs(userId, data.courseId, data.clearHistory).catch(() => {});
+      } else {
+        firestoreSync.syncCompactDispositionNow(userId, false);
       }
     }
 

@@ -426,7 +426,11 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (!k) continue;
-        if (k.startsWith('docencia_disposition_data_') || k.startsWith('fds_disposition_data')) {
+        if (
+          (k.startsWith('docencia_disposition_data_') || k.startsWith('fds_disposition_data')) &&
+          !k.endsWith('_2c') &&
+          !k.includes('_data_2c')
+        ) {
           keysDisp.add(k);
         } else if (k.startsWith('docencia_disposition_history_') || k.startsWith('fds_disposition_history')) {
           keysHist.add(k);
@@ -464,3 +468,23 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
 
   return { disposition, history };
 }
+
+export function getLocalDisposition2c(): Record<string, any> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = getUserScopedItem('fds_disposition_data_2c');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch (_) {}
+  return {};
+}
+
+export function saveLocalDisposition2c(disposition2c: Record<string, any>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    setUserScopedItem('fds_disposition_data_2c', JSON.stringify(disposition2c || {}));
+  } catch (_) {}
+}
+

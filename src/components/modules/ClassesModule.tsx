@@ -1180,23 +1180,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     } catch (_) {}
   }, [courseStudents]);
 
-  // Guaranteed two-way synchronization on startup to ensure long-term durability across days & months
-  useEffect(() => {
-    try {
-      const stored = getAllDispositionStorage();
-      if (Array.isArray(stored.history) && (stored.history.length > 0 || Object.keys(stored.disposition).length > 0)) {
-        api
-          .syncFullDisposition({ disposition: stored.disposition, history: stored.history })
-          .then((res) => {
-            if (res.disposition && Object.keys(res.disposition).length > 0) {
-              setDispositionMap((prev) => ({ ...prev, ...res.disposition }));
-            }
-          })
-          .catch(() => {});
-      }
-    } catch (_) {}
-  }, []);
-
   // Listen for storage changes across tabs / modules to update instantly
   useEffect(() => {
     const handleStorageChange = (e: any) => {
@@ -1241,7 +1224,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return () => window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
   }, []);
 
-  // Load from backend API / Firestore, keeping localStorage synced and deduplicated without resurrecting deleted items
+  // Load from Compact v2 Cloud Engine / backend API, keeping localStorage synced (1°C, 2°C & History in a single round-trip)
   useEffect(() => {
     let isMounted = true;
     if (activeCourse?.id) {
@@ -1266,6 +1249,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 }
               }
               return hasChanged ? { ...prev, ...incoming } : prev;
+            });
+          }
+          if (res.disposition2c && Object.keys(res.disposition2c).length > 0) {
+            setDispositionMap2c((prev) => {
+              const incoming2c = res.disposition2c!;
+              const incomingKeys = Object.keys(incoming2c);
+              let hasChanged = false;
+              for (const k of incomingKeys) {
+                if (
+                  !prev[k] ||
+                  prev[k].totalAbsences !== incoming2c[k]?.totalAbsences ||
+                  prev[k].totalLates !== incoming2c[k]?.totalLates ||
+                  prev[k].totalDisposition !== incoming2c[k]?.totalDisposition
+                ) {
+                  hasChanged = true;
+                  break;
+                }
+              }
+              return hasChanged ? { ...prev, ...incoming2c } : prev;
             });
           }
           if (Array.isArray(res.history)) {
@@ -2380,6 +2382,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     updatedMap: Record<string, StudentDispositionData>,
     updatedHistory: StudentHistoryItem[]
   ) => {
+    const uid = getActiveUserId();
     if (term === '2c') {
       setDispositionMap2c(updatedMap);
       if (typeof window !== 'undefined') {
@@ -2388,17 +2391,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
         }
       }
-      const uid = getActiveUserId();
-      if (uid) {
-        firestoreSync.saveUserSetting(uid, 'disposition_map_2c', updatedMap).catch(() => {});
-      }
       saveAllDispositionStorage(dispositionMap, updatedHistory);
+      if (uid) {
+        firestoreSync.syncCompactDispositionNow(uid, false);
+      }
     } else {
       setDispositionMap(updatedMap);
       if (typeof window !== 'undefined' && activeCourse?.id) {
         setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
       }
       saveAllDispositionStorage(updatedMap, updatedHistory);
+      if (uid) {
+        firestoreSync.syncCompactDispositionNow(uid, false);
+      }
     }
   };
 

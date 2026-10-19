@@ -479,12 +479,20 @@ export function getCandidateUserIds(primaryId?: string): string[] {
   return Array.from(ids).filter(Boolean);
 }
 
-// Short-lived in-memory caches (4 seconds TTL) to avoid redundant parallel Firestore reads on rapid tab switches
-const READ_CACHE_TTL_MS = 4000;
+// In-memory caches (60 seconds TTL, invalidated immediately on any write) to avoid redundant Firestore reads on tab switches
+const READ_CACHE_TTL_MS = 60000;
 let coursesReadCache: { userId: string; timestamp: number; data: Course[] } | null = null;
 let studentsReadCache: { userId: string; timestamp: number; data: Student[] } | null = null;
-let dispositionReadCache: { userId: string; timestamp: number; data: { disposition: Record<string, any>; history: any[] } } | null = null;
-let snapshotsReadCache: { key: string; timestamp: number; data: Record<string, any> } | null = null;
+let dispositionReadCache: {
+  userId: string;
+  timestamp: number;
+  data: { disposition: Record<string, any>; disposition2c?: Record<string, any>; history: any[] };
+} | null = null;
+let snapshotsByUserCache: {
+  userId: string;
+  timestamp: number;
+  byCourse: Record<string, Record<string, any>>;
+} | null = null;
 
 function invalidateCoursesCache() {
   coursesReadCache = null;
@@ -499,15 +507,280 @@ function invalidateDispositionCache() {
 }
 
 function invalidateSnapshotsCache() {
-  snapshotsReadCache = null;
+  snapshotsByUserCache = null;
 }
 
 export function clearFirestoreMemoryCaches(): void {
   coursesReadCache = null;
   studentsReadCache = null;
   dispositionReadCache = null;
-  snapshotsReadCache = null;
+  snapshotsByUserCache = null;
 }
+
+// ---------------------------------------------------------------------------
+// COMPACT DISPOSITION & HISTORY ENGINE (1-2 reads instead of 3,000+ reads)
+// ---------------------------------------------------------------------------
+const COMPACT_SUMMARY_DOC_ID = 'disposition_summary_v2';
+const COMPACT_HISTORY_DOC_ID = 'disposition_history_v2';
+const COMPACT_SYNC_KEY = 'disposition_compact_bundle';
+
+let compactSyncTimer: any = null;
+let pendingCompactUserId: string | null = null;
+const inMemoryPendingRecords = new Map<string, any>();
+const inMemoryDeletedIds = new Set<string>();
+
+function readLocalDispositionBundle(userId: string): {
+  disposition: Record<string, any>;
+  disposition2c: Record<string, any>;
+  history: any[];
+  deletedIds: Set<string>;
+} {
+  const deletedIds = getDeletedHistoryIdsSet();
+  inMemoryDeletedIds.forEach((id) => deletedIds.add(id));
+
+  let disposition: Record<string, any> = {};
+  let disposition2c: Record<string, any> = {};
+  const historyMap = new Map<string, any>();
+
+  if (typeof window !== 'undefined') {
+    const isOwner = isPrimaryOwnerAccount();
+    try {
+      const dispKeys = isOwner
+        ? [`docencia_disposition_data_${userId}`, 'fds_disposition_data_v2', 'docencia_disposition_data']
+        : [`docencia_disposition_data_${userId}`];
+      for (const k of dispKeys) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            disposition = { ...parsed, ...disposition };
+          }
+        }
+      }
+
+      const disp2cKeys = isOwner
+        ? [`fds_disposition_data_2c_${userId}`, 'fds_disposition_data_2c']
+        : [`fds_disposition_data_2c_${userId}`];
+      for (const k of disp2cKeys) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            disposition2c = { ...parsed, ...disposition2c };
+          }
+        }
+      }
+
+      const histKeys = isOwner
+        ? [`docencia_disposition_history_${userId}`, 'fds_disposition_history_v2', 'docencia_disposition_history']
+        : [`docencia_disposition_history_${userId}`];
+      for (const k of histKeys) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          const list = JSON.parse(raw);
+          if (Array.isArray(list)) {
+            for (const item of list) {
+              if (item?.id && !deletedIds.has(item.id) && !historyMap.has(item.id)) {
+                historyMap.set(item.id, item);
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Merge any in-memory pending records
+  inMemoryPendingRecords.forEach((rec, id) => {
+    if (!deletedIds.has(id)) {
+      historyMap.set(id, { ...(historyMap.get(id) || {}), ...rec });
+    }
+  });
+
+  const history = Array.from(historyMap.values()).filter((h) => h?.id && !deletedIds.has(h.id));
+  history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  return { disposition, disposition2c, history, deletedIds };
+}
+
+function computeTotalsFromHistoryList(history: any[]): {
+  disposition1c: Record<string, { totalAbsences: number; totalLates: number; totalDisposition: number }>;
+  disposition2c: Record<string, { totalAbsences: number; totalLates: number; totalDisposition: number }>;
+} {
+  const disposition1c: Record<string, { totalAbsences: number; totalLates: number; totalDisposition: number }> = {};
+  const disposition2c: Record<string, { totalAbsences: number; totalLates: number; totalDisposition: number }> = {};
+
+  const chronological = [...history].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  for (const data of chronological) {
+    const studentId = data?.studentId;
+    if (!studentId || studentId === 'all') continue;
+    const targetMap = data.term === '2c' ? disposition2c : disposition1c;
+    if (!targetMap[studentId]) {
+      targetMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    }
+    const isReset =
+      data.category === 'Sistema' ||
+      String(data.action || '').toLowerCase().includes('restablecid') ||
+      String(data.action || '').toLowerCase().includes('reinicio');
+    if (isReset) {
+      targetMap[studentId].totalDisposition = 10;
+      continue;
+    }
+
+    const isAbsence =
+      data.category === 'Ausencia' ||
+      data.action === 'Ausencia' ||
+      String(data.action || '').toLowerCase().includes('ausencia') ||
+      String(data.action || '').toLowerCase().includes('falta');
+
+    const isLate =
+      data.category === 'Llegada tarde' ||
+      data.action === 'Llegada tarde' ||
+      String(data.action || '').toLowerCase().includes('llegada tarde') ||
+      String(data.action || '').toLowerCase().includes('tardanza') ||
+      String(data.action || '').toLowerCase().includes('tarde');
+
+    if (isAbsence) {
+      targetMap[studentId].totalAbsences += 1;
+    } else if (isLate) {
+      targetMap[studentId].totalLates = (targetMap[studentId].totalLates || 0) + 1;
+    } else if (
+      data.category === 'Disposición' ||
+      (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
+    ) {
+      const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
+      targetMap[studentId].totalDisposition = Math.min(
+        10,
+        Math.max(0, targetMap[studentId].totalDisposition + delta)
+      );
+    }
+  }
+
+  return { disposition1c, disposition2c };
+}
+
+async function flushCompactDispositionToCloud(
+  explicitUserId?: string,
+  overrideBundle?: {
+    disposition: Record<string, any>;
+    disposition2c: Record<string, any>;
+    history: any[];
+    deletedIds?: string[];
+  }
+): Promise<void> {
+  if (compactSyncTimer) {
+    clearTimeout(compactSyncTimer);
+    compactSyncTimer = null;
+  }
+  const userId = explicitUserId || pendingCompactUserId || getActiveUserId();
+  if (!userId || Date.now() < firestoreUnavailableUntil) {
+    markDebouncedSyncDone(COMPACT_SYNC_KEY);
+    return;
+  }
+
+  const localBundle = overrideBundle
+    ? {
+        disposition: overrideBundle.disposition || {},
+        disposition2c: overrideBundle.disposition2c || {},
+        history: overrideBundle.history || [],
+        deletedIds: new Set<string>(overrideBundle.deletedIds || Array.from(getDeletedHistoryIdsSet())),
+      }
+    : readLocalDispositionBundle(userId);
+
+  const computed = computeTotalsFromHistoryList(localBundle.history);
+  const mergedDisp1c = { ...computed.disposition1c, ...localBundle.disposition };
+  const mergedDisp2c = { ...computed.disposition2c, ...localBundle.disposition2c };
+  const cleanHistory = localBundle.history.slice(0, 2500);
+  const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1500);
+
+  dispositionReadCache = {
+    userId,
+    timestamp: Date.now(),
+    data: {
+      disposition: mergedDisp1c,
+      disposition2c: mergedDisp2c,
+      history: cleanHistory,
+    },
+  };
+
+  const writeIds = getTargetWriteUserIds(userId);
+  const nowIso = new Date().toISOString();
+
+  const summaryPayload = sanitizeForFirestore({
+    version: 2,
+    migratedFromLegacy: true,
+    disposition: mergedDisp1c,
+    disposition2c: mergedDisp2c,
+    deletedIds: cleanDeletedIds,
+    updatedAt: nowIso,
+  });
+
+  const historyPayload = sanitizeForFirestore({
+    version: 2,
+    items: cleanHistory,
+    updatedAt: nowIso,
+  });
+
+  try {
+    for (const targetDb of ALL_DBS) {
+      const batch = writeBatch(targetDb);
+      for (const uid of writeIds) {
+        batch.set(
+          doc(targetDb, 'users', uid, 'settings', COMPACT_SUMMARY_DOC_ID),
+          { value: summaryPayload, updatedAt: nowIso },
+          { merge: true }
+        );
+        batch.set(
+          doc(targetDb, 'users', uid, 'settings', COMPACT_HISTORY_DOC_ID),
+          { value: historyPayload, updatedAt: nowIso },
+          { merge: true }
+        );
+      }
+      await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+    }
+    inMemoryPendingRecords.clear();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/${COMPACT_SUMMARY_DOC_ID}`);
+  } finally {
+    markDebouncedSyncDone(COMPACT_SYNC_KEY);
+  }
+}
+
+function scheduleCompactDispositionSync(userId: string, immediate = false): void {
+  if (!userId || Date.now() < firestoreUnavailableUntil) return;
+  pendingCompactUserId = userId;
+
+  const current = readLocalDispositionBundle(userId);
+  const computed = computeTotalsFromHistoryList(current.history);
+  dispositionReadCache = {
+    userId,
+    timestamp: Date.now(),
+    data: {
+      disposition: { ...computed.disposition1c, ...current.disposition },
+      disposition2c: { ...computed.disposition2c, ...current.disposition2c },
+      history: current.history,
+    },
+  };
+
+  if (immediate) {
+    flushCompactDispositionToCloud(userId).catch(() => {});
+    return;
+  }
+
+  markDebouncedSyncPending(COMPACT_SYNC_KEY);
+  if (compactSyncTimer) {
+    clearTimeout(compactSyncTimer);
+  }
+  compactSyncTimer = setTimeout(() => {
+    flushCompactDispositionToCloud(userId).catch(() => {});
+  }, 1200);
+}
+
+registerCloudFlushHandler(() => {
+  if (compactSyncTimer && pendingCompactUserId) {
+    flushCompactDispositionToCloud(pendingCompactUserId).catch(() => {});
+  }
+});
 
 // Target user bucket to write to: single canonical target to avoid burning Firestore write quota
 function getTargetWriteUserIds(userId: string): string[] {
@@ -799,30 +1072,16 @@ export const firestoreSync = {
   },
 
   /**
-   * Save a student disposition / absence incident globally
+   * Save a student disposition / absence incident globally via the Compact Coalesced Engine (1 batch write instead of N writes)
    */
   async saveDisposition(userId: string, record: any): Promise<void> {
     if (!userId || !record?.id || Date.now() < firestoreUnavailableUntil) return;
-    invalidateDispositionCache();
-    const writeIds = getTargetWriteUserIds(userId);
-    const nowIso = new Date().toISOString();
-    const cleanPayload = sanitizeForFirestore({
+    inMemoryPendingRecords.set(record.id, {
       ...record,
-      updatedAt: nowIso,
+      updatedAt: new Date().toISOString(),
     });
-
-    for (const targetDb of ALL_DBS) {
-      for (const uid of writeIds) {
-        const path = `users/${uid}/disposition/${record.id}`;
-        executeWithTimeout(
-          setDoc(
-            doc(targetDb, 'users', uid, 'disposition', record.id),
-            cleanPayload,
-            { merge: true }
-          )
-        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
-      }
-    }
+    inMemoryDeletedIds.delete(record.id);
+    scheduleCompactDispositionSync(userId, false);
   },
 
   /**
@@ -830,7 +1089,10 @@ export const firestoreSync = {
    */
   async deleteDisposition(userId: string, recordId: string): Promise<void> {
     if (!recordId) return;
-    invalidateDispositionCache();
+    inMemoryPendingRecords.delete(recordId);
+    inMemoryDeletedIds.add(recordId);
+    scheduleCompactDispositionSync(userId || getActiveUserId(), false);
+
     const candidateIds = getCandidateUserIds(userId);
     for (const targetDb of ALL_DBS) {
       for (const uid of candidateIds) {
@@ -840,222 +1102,267 @@ export const firestoreSync = {
   },
 
   /**
-   * Delete any absence records for a student recorded today in Firestore
+   * Delete any absence records for a student recorded today (0 Firestore reads — uses local/compact state)
    */
   async deleteTodayAbsencesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
     if (!userId || !studentId) return [];
-    invalidateDispositionCache();
-    const candidateIds = getCandidateUserIds(userId);
+    const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
 
-    for (const targetDb of ALL_DBS) {
-      for (const uid of candidateIds) {
-        try {
-          const col = collection(targetDb, 'users', uid, 'disposition');
-          const snap = await executeWithTimeout(getDocs(col));
-          if (!snap) continue;
-          const deletePromises: Promise<void>[] = [];
-
-          snap.forEach((docSnap: any) => {
-            const data = docSnap.data();
-            if (
-              data.studentId === studentId &&
-              data.category === 'Ausencia' &&
-              isSameCalendarDay(data.date, data.timestamp, targetDate)
-            ) {
-              deletedIds.push(docSnap.id);
-              deletePromises.push(deleteDoc(docSnap.ref));
-            }
-          });
-
-          if (deletePromises.length > 0) {
-            await Promise.all(deletePromises);
-          }
-        } catch (_) {}
+    for (const data of bundle.history) {
+      if (
+        data.studentId === studentId &&
+        data.category === 'Ausencia' &&
+        isSameCalendarDay(data.date, data.timestamp, targetDate)
+      ) {
+        deletedIds.push(data.id);
+        inMemoryDeletedIds.add(data.id);
+        inMemoryPendingRecords.delete(data.id);
       }
+    }
+
+    if (deletedIds.length > 0) {
+      scheduleCompactDispositionSync(userId, false);
     }
     return Array.from(new Set(deletedIds));
   },
 
   /**
-   * Delete disposition documents for a single student from Firestore (when resetting / clearing disposition)
+   * Delete disposition documents for a single student (0 Firestore reads — uses local/compact state)
    */
   async deleteStudentDispositionDocs(userId: string, studentId: string, clearAll: boolean = false): Promise<string[]> {
     if (!userId || !studentId) return [];
-    invalidateDispositionCache();
-    const candidateIds = getCandidateUserIds(userId);
+    const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
 
-    for (const targetDb of ALL_DBS) {
-      for (const uid of candidateIds) {
-        try {
-          const col = collection(targetDb, 'users', uid, 'disposition');
-          const snap = await executeWithTimeout(getDocs(col));
-          if (!snap) continue;
-          const deletePromises: Promise<void>[] = [];
-
-          snap.forEach((docSnap: any) => {
-            const data = docSnap.data();
-            if (data.studentId === studentId) {
-              const isDisp = data.category === 'Disposición' || (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
-              if (clearAll || isDisp) {
-                deletedIds.push(docSnap.id);
-                deletePromises.push(deleteDoc(docSnap.ref));
-              }
-            }
-          });
-
-          if (deletePromises.length > 0) {
-            await Promise.all(deletePromises);
-          }
-        } catch (_) {}
+    for (const data of bundle.history) {
+      if (data.studentId === studentId) {
+        const isDisp =
+          data.category === 'Disposición' ||
+          (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
+        if (clearAll || isDisp) {
+          deletedIds.push(data.id);
+          inMemoryDeletedIds.add(data.id);
+          inMemoryPendingRecords.delete(data.id);
+        }
       }
     }
+
+    scheduleCompactDispositionSync(userId, false);
     return Array.from(new Set(deletedIds));
   },
 
   /**
-   * Delete disposition documents for an entire course from Firestore
+   * Delete disposition documents for an entire course (0 Firestore reads — uses local/compact state)
    */
   async deleteCourseDispositionDocs(userId: string, courseId: string, clearAll: boolean = false): Promise<string[]> {
     if (!userId || !courseId) return [];
-    invalidateDispositionCache();
-    const candidateIds = getCandidateUserIds(userId);
+    const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
 
-    for (const targetDb of ALL_DBS) {
-      for (const uid of candidateIds) {
-        try {
-          const col = collection(targetDb, 'users', uid, 'disposition');
-          const snap = await executeWithTimeout(getDocs(col));
-          if (!snap) continue;
-          const deletePromises: Promise<void>[] = [];
-
-          snap.forEach((docSnap: any) => {
-            const data = docSnap.data();
-            if (data.courseId === courseId) {
-              const isDisp = data.category === 'Disposición' || (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
-              if (clearAll || isDisp) {
-                deletedIds.push(docSnap.id);
-                deletePromises.push(deleteDoc(docSnap.ref));
-              }
-            }
-          });
-
-          if (deletePromises.length > 0) {
-            await Promise.all(deletePromises);
-          }
-        } catch (_) {}
+    for (const data of bundle.history) {
+      if (data.courseId === courseId) {
+        const isDisp =
+          data.category === 'Disposición' ||
+          (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');
+        if (clearAll || isDisp) {
+          deletedIds.push(data.id);
+          inMemoryDeletedIds.add(data.id);
+          inMemoryPendingRecords.delete(data.id);
+        }
       }
     }
+
+    scheduleCompactDispositionSync(userId, false);
     return Array.from(new Set(deletedIds));
   },
 
   /**
-   * Load disposition history from Firestore for the current teacher's candidate accounts
+   * Load disposition summary (1°C + 2°C) and history from Firestore using Compact v2 Documents (2 reads instead of 3,000+),
+   * with automatic one-time migration from legacy `users/{uid}/disposition` collection so zero historical data is ever lost.
    */
-  async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
+  async loadDisposition(
+    userId: string
+  ): Promise<{ disposition: Record<string, any>; disposition2c?: Record<string, any>; history: any[] }> {
     if (Date.now() < firestoreUnavailableUntil) {
-      return { disposition: {}, history: [] };
+      return { disposition: {}, disposition2c: {}, history: [] };
     }
     if (
       dispositionReadCache &&
       dispositionReadCache.userId === userId &&
       Date.now() - dispositionReadCache.timestamp < READ_CACHE_TTL_MS &&
-      (dispositionReadCache.data.history.length > 0 || Object.keys(dispositionReadCache.data.disposition).length > 0)
+      (dispositionReadCache.data.history.length > 0 ||
+        Object.keys(dispositionReadCache.data.disposition).length > 0 ||
+        Object.keys(dispositionReadCache.data.disposition2c || {}).length > 0)
     ) {
       return dispositionReadCache.data;
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    const deleted = getDeletedHistoryIdsSet();
+    inMemoryDeletedIds.forEach((id) => deleted.add(id));
+
     try {
-      const queries: Promise<any>[] = [];
+      const summaryQueries: Promise<any>[] = [];
+      const historyQueries: Promise<any>[] = [];
+
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
-          queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'disposition'))).catch(() => null));
+          summaryQueries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', COMPACT_SUMMARY_DOC_ID))).catch(() => null)
+          );
+          historyQueries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', COMPACT_HISTORY_DOC_ID))).catch(() => null)
+          );
         }
       }
 
-      const snaps = await Promise.all(queries);
-      const history: any[] = [];
+      const [summarySnaps, historySnaps] = await Promise.all([
+        Promise.all(summaryQueries),
+        Promise.all(historyQueries),
+      ]);
+
+      let hasMigratedCompactDoc = false;
+      let mergedDisposition1c: Record<string, any> = {};
+      let mergedDisposition2c: Record<string, any> = {};
       const seenRecordIds = new Set<string>();
-      const disposition: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
-      const disposition2c: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
-      const deleted = getDeletedHistoryIdsSet();
+      const history: any[] = [];
 
-      for (const snap of snaps) {
-        if (!snap) continue;
-        snap.forEach((docSnap: any) => {
-          const docId = docSnap.id;
-          const data = docSnap.data();
-          const recordId = data.id || docId;
+      for (const snap of summarySnaps) {
+        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+        const rawData = snap.data();
+        const val = rawData?.value || rawData;
+        if (!val || typeof val !== 'object') continue;
 
-          if (deleted.has(docId) || deleted.has(recordId)) {
-            deleteDoc(docSnap.ref).catch(() => {});
-            return;
-          }
+        if (val.migratedFromLegacy) {
+          hasMigratedCompactDoc = true;
+        }
+        if (Array.isArray(val.deletedIds)) {
+          val.deletedIds.forEach((id: string) => {
+            if (id) deleted.add(id);
+          });
+        }
+        if (val.disposition && typeof val.disposition === 'object') {
+          mergedDisposition1c = { ...mergedDisposition1c, ...val.disposition };
+        }
+        if (val.disposition2c && typeof val.disposition2c === 'object') {
+          mergedDisposition2c = { ...mergedDisposition2c, ...val.disposition2c };
+        }
+      }
 
-          if (seenRecordIds.has(recordId)) return;
+      for (const snap of historySnaps) {
+        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+        const rawData = snap.data();
+        const val = rawData?.value || rawData;
+        const items = Array.isArray(val?.items) ? val.items : [];
+        if (items.length > 0) {
+          hasMigratedCompactDoc = true;
+        }
+        for (const item of items) {
+          const recordId = item?.id;
+          if (!recordId || deleted.has(recordId) || seenRecordIds.has(recordId)) continue;
           seenRecordIds.add(recordId);
-
-          const item: any = { id: recordId, ...data };
-          if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
-            item.pointsChange = 0;
-          }
           history.push(item);
+        }
+      }
 
-          const studentId = data.studentId;
-          if (studentId && studentId !== 'all') {
-            const targetMap = data.term === '2c' ? disposition2c : disposition;
-            if (!targetMap[studentId]) {
-              targetMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-            }
-            const isAbsence =
-              data.category === 'Ausencia' ||
-              data.action === 'Ausencia' ||
-              data.action?.toLowerCase().includes('ausencia') ||
-              data.action?.toLowerCase().includes('falta');
-
-            const isLate =
-              data.category === 'Llegada tarde' ||
-              data.action === 'Llegada tarde' ||
-              data.action?.toLowerCase().includes('llegada tarde') ||
-              data.action?.toLowerCase().includes('tardanza') ||
-              data.action?.toLowerCase().includes('tarde');
-
-            if (isAbsence) {
-              targetMap[studentId].totalAbsences += 1;
-            } else if (isLate) {
-              targetMap[studentId].totalLates = (targetMap[studentId].totalLates || 0) + 1;
-            } else if (
-              data.category === 'Disposición' ||
-              (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
-            ) {
-              const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
-              targetMap[studentId].totalDisposition = Math.min(
-                10,
-                Math.max(0, targetMap[studentId].totalDisposition + delta)
-              );
-            }
+      // ONE-TIME LEGACY MIGRATION if teacher hasn't been migrated to compact v2 yet
+      if (!hasMigratedCompactDoc) {
+        const legacyQueries: Promise<any>[] = [];
+        for (const targetDb of ALL_DBS) {
+          for (const uid of candidateIds) {
+            legacyQueries.push(
+              executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'disposition'))).catch(() => null)
+            );
           }
-        });
+        }
+        const legacySnaps = await Promise.all(legacyQueries);
+        for (const snap of legacySnaps) {
+          if (!snap) continue;
+          snap.forEach((docSnap: any) => {
+            const docId = docSnap.id;
+            const data = docSnap.data();
+            const recordId = data.id || docId;
+            if (deleted.has(docId) || deleted.has(recordId) || seenRecordIds.has(recordId)) return;
+            seenRecordIds.add(recordId);
+            const item: any = { id: recordId, ...data };
+            if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
+              item.pointsChange = 0;
+            }
+            history.push(item);
+          });
+        }
       }
 
       history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
-      const result = { disposition, disposition2c, history };
-      if (history.length > 0 || Object.keys(disposition).length > 0 || Object.keys(disposition2c).length > 0) {
-        dispositionReadCache = { userId, timestamp: Date.now(), data: result };
+      const computedFromHistory = computeTotalsFromHistoryList(history);
+      const finalDisposition1c: Record<string, any> = { ...computedFromHistory.disposition1c };
+      for (const [stId, summaryVal] of Object.entries(mergedDisposition1c)) {
+        const fromHist = finalDisposition1c[stId];
+        if (!fromHist) {
+          finalDisposition1c[stId] = summaryVal;
+        } else {
+          finalDisposition1c[stId] = {
+            totalAbsences: Math.max(fromHist.totalAbsences || 0, summaryVal.totalAbsences || 0),
+            totalLates: Math.max(fromHist.totalLates || 0, summaryVal.totalLates || 0),
+            totalDisposition:
+              summaryVal.totalDisposition !== undefined ? summaryVal.totalDisposition : fromHist.totalDisposition,
+          };
+        }
       }
+
+      const finalDisposition2c: Record<string, any> = { ...computedFromHistory.disposition2c };
+      for (const [stId, summaryVal] of Object.entries(mergedDisposition2c)) {
+        const fromHist = finalDisposition2c[stId];
+        if (!fromHist) {
+          finalDisposition2c[stId] = summaryVal;
+        } else {
+          finalDisposition2c[stId] = {
+            totalAbsences: Math.max(fromHist.totalAbsences || 0, summaryVal.totalAbsences || 0),
+            totalLates: Math.max(fromHist.totalLates || 0, summaryVal.totalLates || 0),
+            totalDisposition:
+              summaryVal.totalDisposition !== undefined ? summaryVal.totalDisposition : fromHist.totalDisposition,
+          };
+        }
+      }
+
+      const result = {
+        disposition: finalDisposition1c,
+        disposition2c: finalDisposition2c,
+        history,
+      };
+
+      dispositionReadCache = { userId, timestamp: Date.now(), data: result };
+
+      if (!hasMigratedCompactDoc) {
+        const localBundle = readLocalDispositionBundle(userId);
+        const combinedHistMap = new Map<string, any>();
+        for (const h of [...history, ...localBundle.history]) {
+          if (h?.id && !deleted.has(h.id) && !combinedHistMap.has(h.id)) {
+            combinedHistMap.set(h.id, h);
+          }
+        }
+        const combinedHistory = Array.from(combinedHistMap.values()).sort(
+          (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+        );
+        flushCompactDispositionToCloud(userId, {
+          disposition: { ...localBundle.disposition, ...finalDisposition1c },
+          disposition2c: { ...localBundle.disposition2c, ...finalDisposition2c },
+          history: combinedHistory,
+          deletedIds: Array.from(deleted),
+        }).catch(() => {});
+      }
+
       return result;
     } catch (err) {
-      handleFirestoreError(err, OperationType.GET, `users/${userId}/disposition`);
-      return { disposition: {}, history: [] };
+      handleFirestoreError(err, OperationType.GET, `users/${userId}/settings/${COMPACT_SUMMARY_DOC_ID}`);
+      return { disposition: {}, disposition2c: {}, history: [] };
     }
   },
 
   /**
-   * Save a cuatrimestre gradebook snapshot globally across linked accounts and database instances
+   * Save a cuatrimestre gradebook or libro de temas snapshot globally across linked accounts
    */
   async saveTermSnapshot(
     userId: string,
@@ -1064,7 +1371,6 @@ export const firestoreSync = {
     snapshotData: any
   ): Promise<void> {
     if (!userId || !courseId || !term) return;
-    invalidateSnapshotsCache();
     const docId = `${courseId}_${term}`;
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
@@ -1075,6 +1381,14 @@ export const firestoreSync = {
       updatedAt: nowIso,
     });
 
+    if (snapshotsByUserCache && snapshotsByUserCache.userId === userId) {
+      if (!snapshotsByUserCache.byCourse[courseId]) {
+        snapshotsByUserCache.byCourse[courseId] = {};
+      }
+      snapshotsByUserCache.byCourse[courseId][term] = cleanPayload;
+      snapshotsByUserCache.timestamp = Date.now();
+    }
+
     for (const targetDb of ALL_DBS) {
       for (const uid of writeIds) {
         const path = `users/${uid}/snapshots/${docId}`;
@@ -1083,28 +1397,29 @@ export const firestoreSync = {
             doc(targetDb, 'users', uid, 'snapshots', docId),
             cleanPayload,
             { merge: true }
-          )
+          ),
+          FIRESTORE_TIMEOUT_MS,
+          true
         ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
       }
     }
   },
 
   /**
-   * Load cuatrimestre closure snapshots for a course for the current teacher's candidate accounts
+   * Load cuatrimestre snapshots for a course using a teacher-wide in-memory cache
+   * so switching between courses or tabs uses 0 extra Firestore reads.
    */
   async loadTermSnapshots(
     userId: string,
     courseId: string
   ): Promise<Record<string, any>> {
     if (!courseId || Date.now() < firestoreUnavailableUntil) return {};
-    const cacheKey = `${userId}_${courseId}`;
     if (
-      snapshotsReadCache &&
-      snapshotsReadCache.key === cacheKey &&
-      Date.now() - snapshotsReadCache.timestamp < READ_CACHE_TTL_MS &&
-      Object.keys(snapshotsReadCache.data).length > 0
+      snapshotsByUserCache &&
+      snapshotsByUserCache.userId === userId &&
+      Date.now() - snapshotsByUserCache.timestamp < READ_CACHE_TTL_MS
     ) {
-      return snapshotsReadCache.data;
+      return snapshotsByUserCache.byCourse[courseId] || {};
     }
 
     const candidateIds = getCandidateUserIds(userId);
@@ -1117,23 +1432,24 @@ export const firestoreSync = {
       }
 
       const snaps = await Promise.all(queries);
-      const snapshots: Record<string, any> = {};
+      const byCourse: Record<string, Record<string, any>> = {};
       for (const snap of snaps) {
         if (!snap) continue;
         snap.forEach((docSnap: any) => {
           const data = docSnap.data();
-          if (data && data.courseId === courseId && data.term) {
-            const existing = snapshots[data.term];
+          if (data && data.courseId && data.term) {
+            if (!byCourse[data.courseId]) {
+              byCourse[data.courseId] = {};
+            }
+            const existing = byCourse[data.courseId][data.term];
             if (!existing || (data.updatedAt && (!existing.updatedAt || data.updatedAt > existing.updatedAt))) {
-              snapshots[data.term] = data;
+              byCourse[data.courseId][data.term] = data;
             }
           }
         });
       }
-      if (Object.keys(snapshots).length > 0) {
-        snapshotsReadCache = { key: cacheKey, timestamp: Date.now(), data: snapshots };
-      }
-      return snapshots;
+      snapshotsByUserCache = { userId, timestamp: Date.now(), byCourse };
+      return byCourse[courseId] || {};
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, `users/${userId}/snapshots`);
       return {};
@@ -1141,35 +1457,16 @@ export const firestoreSync = {
   },
 
   /**
-   * Batch save multiple disposition records in a single Firestore batch operation
+   * Save multiple disposition records in a single Compact Bundle write (2 docs total instead of N docs)
    */
   async saveDispositionBatch(userId: string, records: any[]): Promise<void> {
     if (!userId || !Array.isArray(records) || records.length === 0 || Date.now() < firestoreUnavailableUntil) return;
-    invalidateDispositionCache();
-    const writeIds = getTargetWriteUserIds(userId);
-    const nowIso = new Date().toISOString();
-    const validRecords = records.filter((r) => r && r.id);
-    if (validRecords.length === 0) return;
-
-    // Chunk into groups of 80 records so batch size * writeIds stays well below Firestore's 500 operation limit
-    const CHUNK_SIZE = 80;
-    for (const targetDb of ALL_DBS) {
-      for (let i = 0; i < validRecords.length; i += CHUNK_SIZE) {
-        const chunk = validRecords.slice(i, i + CHUNK_SIZE);
-        try {
-          const batch = writeBatch(targetDb);
-          for (const uid of writeIds) {
-            for (const rec of chunk) {
-              const ref = doc(targetDb, 'users', uid, 'disposition', rec.id);
-              batch.set(ref, sanitizeForFirestore({ ...rec, updatedAt: nowIso }), { merge: true });
-            }
-          }
-          await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
-        } catch (err) {
-          handleFirestoreError(err, OperationType.WRITE, `users/${userId}/disposition`);
-        }
+    for (const rec of records) {
+      if (rec?.id && !inMemoryDeletedIds.has(rec.id)) {
+        inMemoryPendingRecords.set(rec.id, rec);
       }
     }
+    scheduleCompactDispositionSync(userId, false);
   },
 
   /**
@@ -1341,46 +1638,43 @@ export const firestoreSync = {
   },
 
   /**
-   * Delete any late arrival records for a student recorded today in Firestore
+   * Delete any late arrival records for a student recorded today (0 Firestore reads — uses local/compact state)
    */
   async deleteTodayLatesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
     if (!userId || !studentId) return [];
-    invalidateDispositionCache();
-    const candidateIds = getCandidateUserIds(userId);
+    const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
 
-    for (const targetDb of ALL_DBS) {
-      for (const uid of candidateIds) {
-        try {
-          const col = collection(targetDb, 'users', uid, 'disposition');
-          const snap = await executeWithTimeout(getDocs(col));
-          if (!snap) continue;
-          const deletePromises: Promise<void>[] = [];
-
-          snap.forEach((docSnap: any) => {
-            const data = docSnap.data();
-            const isLate =
-              data.category === 'Llegada tarde' ||
-              data.action === 'Llegada tarde' ||
-              String(data.action || '').toLowerCase().includes('llegada tarde') ||
-              String(data.action || '').toLowerCase().includes('tarde');
-            if (
-              data.studentId === studentId &&
-              isLate &&
-              isSameCalendarDay(data.date, data.timestamp, targetDate)
-            ) {
-              deletedIds.push(docSnap.id);
-              deletePromises.push(deleteDoc(docSnap.ref));
-            }
-          });
-
-          if (deletePromises.length > 0) {
-            await Promise.all(deletePromises);
-          }
-        } catch (_) {}
+    for (const data of bundle.history) {
+      const isLate =
+        data.category === 'Llegada tarde' ||
+        data.action === 'Llegada tarde' ||
+        String(data.action || '').toLowerCase().includes('llegada tarde') ||
+        String(data.action || '').toLowerCase().includes('tarde');
+      if (
+        data.studentId === studentId &&
+        isLate &&
+        isSameCalendarDay(data.date, data.timestamp, targetDate)
+      ) {
+        deletedIds.push(data.id);
+        inMemoryDeletedIds.add(data.id);
+        inMemoryPendingRecords.delete(data.id);
       }
     }
+
+    if (deletedIds.length > 0) {
+      scheduleCompactDispositionSync(userId, false);
+    }
     return Array.from(new Set(deletedIds));
+  },
+
+  /**
+   * Trigger a compact disposition & history sync explicitly (e.g. when 2°C map or reset changes)
+   */
+  syncCompactDispositionNow(userId?: string, immediate = false): void {
+    const uid = userId || getActiveUserId();
+    if (!uid) return;
+    scheduleCompactDispositionSync(uid, immediate);
   },
 };
 

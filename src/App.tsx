@@ -365,6 +365,7 @@ function AppContent() {
               {currentView === 'courses' && (
                 <TeacherCoursesPanel
                   courses={courses}
+                  students={students}
                   onSelectCourseAndTab={(courseId, tab) => {
                     setSelectedCourseId(courseId);
                     setInitialCourseSubTab(tab === 'libro_temas' ? 'libro_temas' : 'roster');

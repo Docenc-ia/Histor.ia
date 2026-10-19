@@ -674,7 +674,7 @@ async function flushCompactDispositionToCloud(
   }
   const userId = explicitUserId || pendingCompactUserId || getActiveUserId();
   if (!userId || Date.now() < firestoreUnavailableUntil) {
-    markDebouncedSyncDone(COMPACT_SYNC_KEY);
+    notifyDebouncedSyncPending(COMPACT_SYNC_KEY, false);
     return;
   }
 
@@ -742,7 +742,7 @@ async function flushCompactDispositionToCloud(
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/${COMPACT_SUMMARY_DOC_ID}`);
   } finally {
-    markDebouncedSyncDone(COMPACT_SYNC_KEY);
+    notifyDebouncedSyncPending(COMPACT_SYNC_KEY, false);
   }
 }
 
@@ -767,7 +767,7 @@ function scheduleCompactDispositionSync(userId: string, immediate = false): void
     return;
   }
 
-  markDebouncedSyncPending(COMPACT_SYNC_KEY);
+  notifyDebouncedSyncPending(COMPACT_SYNC_KEY, true);
   if (compactSyncTimer) {
     clearTimeout(compactSyncTimer);
   }
@@ -776,7 +776,7 @@ function scheduleCompactDispositionSync(userId: string, immediate = false): void
   }, 1200);
 }
 
-registerCloudFlushHandler(() => {
+registerCloudFlushHandler('compact_disposition_flush', () => {
   if (compactSyncTimer && pendingCompactUserId) {
     flushCompactDispositionToCloud(pendingCompactUserId).catch(() => {});
   }
@@ -813,6 +813,7 @@ function sanitizeForFirestore<T>(input: T): T {
 
 export const firestoreSync = {
   clearMemoryCaches: clearFirestoreMemoryCaches,
+  clearCaches: clearFirestoreMemoryCaches,
 
   /**
    * Save teacher profile to Firestore under /users/{userId}
@@ -842,20 +843,33 @@ export const firestoreSync = {
   },
 
   /**
-   * Save all courses to Firestore under /users/{userId}/courses/{courseId}
+   * Save all courses to Firestore using Compact v2 Document (1 single write)
    */
   async saveCourses(userId: string, courses: Course[]): Promise<void> {
     if (!userId || !Array.isArray(courses) || Date.now() < firestoreUnavailableUntil) return;
-    invalidateCoursesCache();
+    const cleanCourses = courses.filter((c) => c && c.id);
+    coursesReadCache = { userId, timestamp: Date.now(), data: cleanCourses };
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
+
+    const compactPayload = sanitizeForFirestore({
+      version: 2,
+      migratedFromLegacy: true,
+      items: cleanCourses,
+      updatedAt: nowIso,
+    });
 
     for (const targetDb of ALL_DBS) {
       try {
         const batch = writeBatch(targetDb);
         for (const uid of writeIds) {
-          for (const course of courses) {
-            if (!course?.id) continue;
+          batch.set(
+            doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
+            { value: compactPayload, updatedAt: nowIso },
+            { merge: true }
+          );
+          // Mirror to individual course documents for backwards-compatibility
+          for (const course of cleanCourses) {
             const ref = doc(targetDb, 'users', uid, 'courses', course.id);
             batch.set(
               ref,
@@ -869,13 +883,14 @@ export const firestoreSync = {
         }
         await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${userId}/courses`);
+        handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/courses_compact_v2`);
       }
     }
   },
 
   /**
-   * Load courses from Firestore for the current teacher
+   * Load courses from Firestore using Compact v2 Document (1 read instead of N reads)
+   * with automatic backwards-compatible migration.
    */
   async loadCourses(userId: string): Promise<Course[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
@@ -889,29 +904,86 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
-    const courses: Course[] = [];
+    const coursesMap = new Map<string, Course>();
 
     try {
-      const queries: Promise<any>[] = [];
+      // 1. Try Compact v2 Document first (1 read per candidate)
+      const compactQueries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
-          queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'courses'))).catch(() => null));
+          compactQueries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'))).catch(() => null)
+          );
         }
       }
 
-      const snaps = await Promise.all(queries);
-      for (const snap of snaps) {
-        if (!snap) continue;
-        snap.forEach((docSnap: any) => {
-          const data = docSnap.data() as Course;
-          if (data && data.id && (data.name || data.subject)) {
-            courses.push(data);
+      const compactSnaps = await Promise.all(compactQueries);
+      let hasMigratedDoc = false;
+
+      for (const snap of compactSnaps) {
+        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+        const raw = snap.data();
+        const val = raw?.value || raw;
+        const items = Array.isArray(val?.items) ? val.items : [];
+        if (val?.migratedFromLegacy || items.length > 0) {
+          hasMigratedDoc = true;
+        }
+        for (const c of items) {
+          if (c && c.id && (c.name || c.subject)) {
+            coursesMap.set(c.id, c);
           }
-        });
+        }
       }
+
+      // 2. ONE-TIME LEGACY MIGRATION if no compact v2 doc exists yet
+      if (!hasMigratedDoc) {
+        const queries: Promise<any>[] = [];
+        for (const targetDb of ALL_DBS) {
+          for (const uid of candidateIds) {
+            queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'courses'))).catch(() => null));
+          }
+        }
+
+        const snaps = await Promise.all(queries);
+        for (const snap of snaps) {
+          if (!snap) continue;
+          snap.forEach((docSnap: any) => {
+            const data = docSnap.data() as Course;
+            if (data && data.id && (data.name || data.subject)) {
+              coursesMap.set(data.id, data);
+            }
+          });
+        }
+      }
+
+      const courses = Array.from(coursesMap.values());
       if (courses.length > 0) {
         coursesReadCache = { userId, timestamp: Date.now(), data: courses };
       }
+
+      // If we just migrated from legacy, save the compact v2 bundle in background
+      if (!hasMigratedDoc && courses.length > 0) {
+        const nowIso = new Date().toISOString();
+        const compactPayload = sanitizeForFirestore({
+          version: 2,
+          migratedFromLegacy: true,
+          items: courses,
+          updatedAt: nowIso,
+        });
+        const writeIds = getTargetWriteUserIds(userId);
+        for (const targetDb of ALL_DBS) {
+          for (const uid of writeIds) {
+            executeWithTimeout(
+              setDoc(
+                doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
+                { value: compactPayload, updatedAt: nowIso },
+                { merge: true }
+              )
+            ).catch(() => {});
+          }
+        }
+      }
+
       return courses;
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, `users/${userId}/courses`);
@@ -920,12 +992,43 @@ export const firestoreSync = {
   },
 
   /**
-   * Delete a course from Firestore across linked accounts
+   * Delete a course from Firestore across linked accounts and compact store
    */
   async deleteCourse(userId: string, courseId: string): Promise<void> {
     if (!courseId || Date.now() < firestoreUnavailableUntil) return;
     invalidateCoursesCache();
+    invalidateStudentsCache();
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
+    const nowIso = new Date().toISOString();
+
+    // 1. Remove from compact courses & compact students
+    try {
+      const remainingCourses = (coursesReadCache?.data || []).filter((c) => c.id !== courseId);
+      coursesReadCache = { userId, timestamp: Date.now(), data: remainingCourses };
+
+      for (const targetDb of ALL_DBS) {
+        const batch = writeBatch(targetDb);
+        for (const uid of writeIds) {
+          batch.set(
+            doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
+            {
+              value: sanitizeForFirestore({
+                version: 2,
+                migratedFromLegacy: true,
+                items: remainingCourses,
+                updatedAt: nowIso,
+              }),
+              updatedAt: nowIso,
+            },
+            { merge: true }
+          );
+        }
+        await executeWithTimeout(batch.commit());
+      }
+    } catch (_) {}
+
+    // 2. Remove legacy document
     for (const targetDb of ALL_DBS) {
       for (const uid of candidateIds) {
         executeWithTimeout(deleteDoc(doc(targetDb, 'users', uid, 'courses', courseId))).catch(() => {});
@@ -939,7 +1042,46 @@ export const firestoreSync = {
   async clearAllCourses(userId: string): Promise<void> {
     if (!userId || Date.now() < firestoreUnavailableUntil) return;
     invalidateCoursesCache();
+    invalidateStudentsCache();
     const writeIds = getTargetWriteUserIds(userId);
+    const nowIso = new Date().toISOString();
+
+    for (const targetDb of ALL_DBS) {
+      for (const uid of writeIds) {
+        executeWithTimeout(
+          setDoc(
+            doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
+            {
+              value: {
+                version: 2,
+                migratedFromLegacy: true,
+                items: [],
+                updatedAt: nowIso,
+              },
+              updatedAt: nowIso,
+            },
+            { merge: true }
+          )
+        ).catch(() => {});
+
+        executeWithTimeout(
+          setDoc(
+            doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
+            {
+              value: {
+                version: 2,
+                migratedFromLegacy: true,
+                items: [],
+                updatedAt: nowIso,
+              },
+              updatedAt: nowIso,
+            },
+            { merge: true }
+          )
+        ).catch(() => {});
+      }
+    }
+
     for (const targetDb of ALL_DBS) {
       for (const uid of writeIds) {
         try {
@@ -950,26 +1092,57 @@ export const firestoreSync = {
             batch.delete(docSnap.ref);
           });
           await executeWithTimeout(batch.commit());
-        } catch (err) {
-          handleFirestoreError(err, OperationType.DELETE, `users/${uid}/courses`);
-        }
+        } catch (_) {}
       }
     }
   },
 
   /**
-   * Save students roster for a course to Firestore globally
+   * Save students roster for a course to Firestore globally using Compact v2 Document (1 single write)
    */
   async saveStudents(userId: string, courseId: string, students: Student[]): Promise<void> {
     if (!userId || !courseId || !Array.isArray(students) || Date.now() < firestoreUnavailableUntil) return;
-    invalidateStudentsCache();
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
+
+    // Reconcile complete student list across all courses
+    const currentStudentsMap = new Map<string, Student>();
+    (studentsReadCache?.data || []).forEach((s) => {
+      if (s?.id) currentStudentsMap.set(s.id, s);
+    });
+
+    // Remove existing students of this course to prevent duplicates, then add incoming
+    for (const [sId, st] of Array.from(currentStudentsMap.entries())) {
+      if (st.courseId === courseId) {
+        currentStudentsMap.delete(sId);
+      }
+    }
+    for (const st of students) {
+      if (st?.id) {
+        currentStudentsMap.set(st.id, { ...st, courseId });
+      }
+    }
+
+    const fullCleanStudents = Array.from(currentStudentsMap.values());
+    studentsReadCache = { userId, timestamp: Date.now(), data: fullCleanStudents };
+
+    const compactPayload = sanitizeForFirestore({
+      version: 2,
+      migratedFromLegacy: true,
+      items: fullCleanStudents,
+      updatedAt: nowIso,
+    });
 
     for (const targetDb of ALL_DBS) {
       try {
         const batch = writeBatch(targetDb);
         for (const uid of writeIds) {
+          batch.set(
+            doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
+            { value: compactPayload, updatedAt: nowIso },
+            { merge: true }
+          );
+          // Mirror course students to legacy subcollection for backwards-compatibility
           for (const st of students) {
             if (!st?.id) continue;
             const ref = doc(targetDb, 'users', uid, 'students', st.id);
@@ -986,13 +1159,14 @@ export const firestoreSync = {
         }
         await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
       } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `users/${userId}/students`);
+        handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/students_compact_v2`);
       }
     }
   },
 
   /**
-   * Load students from Firestore for the current teacher's candidate accounts
+   * Load students from Firestore using Compact v2 Document (1 read instead of N reads)
+   * with automatic backwards-compatible migration.
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
@@ -1008,30 +1182,87 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
-    const students: Student[] = [];
+    const studentsMap = new Map<string, Student>();
 
     try {
-      const queries: Promise<any>[] = [];
+      // 1. Try Compact v2 Document first (1 read per candidate)
+      const compactQueries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
         for (const uid of candidateIds) {
-          queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'students'))).catch(() => null));
+          compactQueries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'))).catch(() => null)
+          );
         }
       }
 
-      const snaps = await Promise.all(queries);
-      for (const snap of snaps) {
-        if (!snap) continue;
-        snap.forEach((docSnap: any) => {
-          const data = docSnap.data() as Student;
-          if (data && data.id) {
-            students.push(data);
+      const compactSnaps = await Promise.all(compactQueries);
+      let hasMigratedDoc = false;
+
+      for (const snap of compactSnaps) {
+        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+        const raw = snap.data();
+        const val = raw?.value || raw;
+        const items = Array.isArray(val?.items) ? val.items : [];
+        if (val?.migratedFromLegacy || items.length > 0) {
+          hasMigratedDoc = true;
+        }
+        for (const s of items) {
+          if (s && s.id && (s.firstName || s.lastName || s.email)) {
+            studentsMap.set(s.id, s);
           }
+        }
+      }
+
+      // 2. ONE-TIME LEGACY MIGRATION if no compact doc exists yet
+      if (!hasMigratedDoc) {
+        const queries: Promise<any>[] = [];
+        for (const targetDb of ALL_DBS) {
+          for (const uid of candidateIds) {
+            queries.push(executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'students'))).catch(() => null));
+          }
+        }
+
+        const snaps = await Promise.all(queries);
+        for (const snap of snaps) {
+          if (!snap) continue;
+          snap.forEach((docSnap: any) => {
+            const data = docSnap.data() as Student;
+            if (data && data.id) {
+              studentsMap.set(data.id, data);
+            }
+          });
+        }
+      }
+
+      const allStudents = Array.from(studentsMap.values());
+      if (allStudents.length > 0) {
+        studentsReadCache = { userId, timestamp: Date.now(), data: allStudents };
+      }
+
+      // If we just migrated from legacy, save the compact v2 bundle in background
+      if (!hasMigratedDoc && allStudents.length > 0) {
+        const nowIso = new Date().toISOString();
+        const compactPayload = sanitizeForFirestore({
+          version: 2,
+          migratedFromLegacy: true,
+          items: allStudents,
+          updatedAt: nowIso,
         });
+        const writeIds = getTargetWriteUserIds(userId);
+        for (const targetDb of ALL_DBS) {
+          for (const uid of writeIds) {
+            executeWithTimeout(
+              setDoc(
+                doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
+                { value: compactPayload, updatedAt: nowIso },
+                { merge: true }
+              )
+            ).catch(() => {});
+          }
+        }
       }
-      if (students.length > 0) {
-        studentsReadCache = { userId, timestamp: Date.now(), data: students };
-      }
-      return courseId ? students.filter((s) => s.courseId === courseId) : students;
+
+      return courseId ? allStudents.filter((s) => s.courseId === courseId) : allStudents;
     } catch (err) {
       handleFirestoreError(err, OperationType.GET, `users/${userId}/students`);
       return [];

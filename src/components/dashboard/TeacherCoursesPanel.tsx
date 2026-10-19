@@ -22,8 +22,10 @@ import {
   LayoutGrid,
   List,
   Mail,
+  X,
+  User,
 } from 'lucide-react';
-import { Course } from '../../types';
+import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { formatCourseSidebarLabel } from '../../utils/courseFormatting';
 import { classroomService } from '../../services/workspace/classroomService';
@@ -33,6 +35,7 @@ import { ImportClassroomModal } from './ImportClassroomModal';
 
 interface TeacherCoursesPanelProps {
   courses: Course[];
+  students?: Student[];
   onSelectCourseAndTab: (courseId: string, tab: 'planificacion' | 'planificacion_anual' | 'material' | 'actividades' | 'evaluaciones' | 'alumnos' | 'libro_temas') => void;
   onCreateCourse: (courseData: Partial<Course>) => void;
   onDeleteCourse: (courseId: string) => Promise<void> | void;
@@ -45,6 +48,7 @@ interface TeacherCoursesPanelProps {
 
 export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   courses,
+  students = [],
   onSelectCourseAndTab,
   onCreateCourse,
   onDeleteCourse,
@@ -225,14 +229,53 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   // NOTE: Automatic background synchronization is intentionally disabled per user instructions.
   // Synchronization of students and courses is strictly manual and explicit.
 
+  // Fallback to local students if prop is empty
+  const allStudents = React.useMemo(() => {
+    if (Array.isArray(students) && students.length > 0) return students;
+    try {
+      return api.getLocalStudents();
+    } catch (_) {
+      return [];
+    }
+  }, [students]);
+
+  // Read local disposition data for real-time student metrics
+  const localDisposition = React.useMemo(() => {
+    try {
+      return api.getAllDispositionStorage();
+    } catch (_) {
+      return {};
+    }
+  }, [searchQuery]);
+
   // Strictly deduplicate courses to prevent any repeating subjects in UI
   const uniqueCourses = React.useMemo(() => api.deduplicateCourses(courses), [courses]);
 
-  const filteredCourses = uniqueCourses.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.grade.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const cleanQuery = searchQuery.trim().toLowerCase();
+
+  const filteredCourses = uniqueCourses.filter((c) => {
+    if (!cleanQuery) return true;
+    return (
+      (c.name || '').toLowerCase().includes(cleanQuery) ||
+      (c.subject || '').toLowerCase().includes(cleanQuery) ||
+      (c.grade || '').toLowerCase().includes(cleanQuery) ||
+      (c.division || '').toLowerCase().includes(cleanQuery) ||
+      (c.section || '').toLowerCase().includes(cleanQuery) ||
+      (c.schoolYear || '').toLowerCase().includes(cleanQuery)
+    );
+  });
+
+  const matchingStudents = React.useMemo(() => {
+    if (!cleanQuery || cleanQuery.length < 2) return [];
+    return allStudents.filter((s) => {
+      const first = (s.firstName || '').toLowerCase();
+      const last = (s.lastName || '').toLowerCase();
+      const full = `${first} ${last}`;
+      const rev = `${last} ${first}`;
+      const email = (s.email || '').toLowerCase();
+      return full.includes(cleanQuery) || rev.includes(cleanQuery) || email.includes(cleanQuery);
+    }).slice(0, 16);
+  }, [allStudents, cleanQuery]);
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -472,24 +515,39 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
       {/* Search & Filter Bar */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-        <div className="relative w-full sm:w-96">
+        <div className="relative w-full sm:w-[420px]">
           <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
           <input
             type="text"
-            placeholder="Buscar por materia, año o curso..."
+            placeholder="Buscar por materia, año, curso o estudiante..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className={`w-full pl-10 pr-4 py-2.5 rounded-xl text-xs transition-all shadow-2xs focus:outline-none ${
+            className={`w-full pl-10 pr-9 py-2.5 rounded-xl text-xs transition-all shadow-2xs focus:outline-none ${
               isDarkMode
                 ? 'bg-slate-900 border border-slate-700 text-white placeholder-slate-400 focus:border-blue-500'
                 : 'bg-white border border-neutral-200 text-neutral-800 placeholder:text-neutral-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
             }`}
           />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 p-1"
+              title="Limpiar búsqueda"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
           <p className={`text-xs font-medium ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
             Mostrando <strong>{filteredCourses.length}</strong> de {uniqueCourses.length} materias
+            {matchingStudents.length > 0 && (
+              <span className="ml-1.5 text-blue-600 dark:text-blue-400 font-semibold">
+                · {matchingStudents.length} estudiante{matchingStudents.length > 1 ? 's' : ''}
+              </span>
+            )}
           </p>
 
           {onClearCourses && uniqueCourses.length > 0 && (
@@ -551,6 +609,121 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Estudiantes encontrados en la búsqueda global */}
+      {matchingStudents.length > 0 && (
+        <div
+          className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+            isDarkMode
+              ? 'bg-slate-900/90 border-blue-500/30 shadow-lg shadow-blue-950/30'
+              : 'bg-white border-blue-200 shadow-md shadow-blue-500/5'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-neutral-100 dark:border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-400 flex items-center justify-center">
+                <Users className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs sm:text-sm font-bold text-neutral-900 dark:text-white flex items-center gap-2">
+                  Estudiantes encontrados
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
+                    {matchingStudents.length}
+                  </span>
+                </h4>
+                <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                  Hacé clic en cualquier estudiante para ir directamente a su curso y ficha
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {matchingStudents.map((st) => {
+              const matchedCourse = uniqueCourses.find(
+                (c) => c.id === st.courseId || c.classroomCourseId === st.courseId
+              );
+              const disp = localDisposition[st.id];
+              const score = disp?.disposition ?? 10;
+              const absences = disp?.absences ?? 0;
+              const late = disp?.late ?? 0;
+
+              return (
+                <div
+                  key={st.id}
+                  onClick={() => {
+                    if (st.courseId) {
+                      try {
+                        sessionStorage.setItem('docencia_focus_student_id', st.id);
+                        sessionStorage.setItem('docencia_focus_student_name', `${st.lastName || ''} ${st.firstName || ''}`.trim());
+                      } catch (_) {}
+                      onSelectCourseAndTab(st.courseId, 'alumnos');
+                    }
+                  }}
+                  className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md group ${
+                    isDarkMode
+                      ? 'bg-slate-800/80 border-slate-700/80 hover:border-blue-500/60 hover:bg-slate-800'
+                      : 'bg-neutral-50/70 border-neutral-200/80 hover:border-blue-400 hover:bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 mb-2">
+                    {st.avatar ? (
+                      <img
+                        src={st.avatar}
+                        alt={`${st.firstName} ${st.lastName}`}
+                        className="w-9 h-9 rounded-full object-cover border border-neutral-200 dark:border-slate-700 shrink-0"
+                        onError={(e) => {
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-500 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                        {(st.lastName?.[0] || st.firstName?.[0] || 'E').toUpperCase()}
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-neutral-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                        {st.lastName ? `${st.lastName}, ${st.firstName}` : st.firstName}
+                      </p>
+                      <p className="text-[10px] text-neutral-500 dark:text-slate-400 truncate">
+                        {st.email || 'Sin correo registrado'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Course / Materia badge */}
+                  <div className="mb-2">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60 truncate max-w-full">
+                      <GraduationCap className="w-3 h-3 shrink-0" />
+                      <span className="truncate">
+                        {matchedCourse ? `${matchedCourse.grade ? matchedCourse.grade + ' - ' : ''}${matchedCourse.name}` : 'Materia asignada'}
+                      </span>
+                    </span>
+                  </div>
+
+                  {/* Quick stats badges */}
+                  <div className="flex items-center justify-between text-[10px] pt-1.5 border-t border-neutral-100 dark:border-slate-700/60">
+                    <span
+                      className={`font-semibold ${
+                        score >= 8
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : score >= 6
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      Disposición: {score}/10
+                    </span>
+                    <span className="text-neutral-500 dark:text-slate-400">
+                      {absences} {absences === 1 ? 'falta' : 'faltas'} {late > 0 ? `· ${late}T` : ''}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Courses Cards Grid or Empty State */}
       {uniqueCourses.length === 0 ? (
@@ -666,7 +839,11 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
             isDarkMode ? 'bg-slate-900/40 border-slate-800 text-slate-400' : 'bg-white border-neutral-200 text-neutral-500'
           }`}
         >
-          <p className="text-sm font-medium">No se encontraron materias con el término "{searchQuery}".</p>
+          <p className="text-sm font-medium">
+            {matchingStudents.length > 0
+              ? `No se encontraron materias con el término "${searchQuery}", pero sí estudiantes (ver resultados arriba).`
+              : `No se encontraron materias ni estudiantes con el término "${searchQuery}".`}
+          </p>
           <button
             type="button"
             onClick={() => setSearchQuery('')}

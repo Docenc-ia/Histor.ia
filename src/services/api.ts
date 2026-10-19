@@ -145,6 +145,10 @@ export const api = {
     }).catch(() => {});
   },
 
+  async logoutAuthSession(email?: string): Promise<void> {
+    return this.logoutAuth(email);
+  },
+
   async getPermissions(): Promise<{ role: string; permissions: string[]; scopes: string[] }> {
     const res = await fetch('/api/auth/permissions');
     if (!res.ok) throw new Error('Error al consultar permisos');

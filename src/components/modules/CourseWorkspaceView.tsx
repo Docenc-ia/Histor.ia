@@ -18,6 +18,7 @@ interface CourseWorkspaceViewProps {
   courses: Course[];
   students?: Student[];
   activeTab?: string;
+  initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
   onTabChange?: (tab: CourseTabType) => void;
   onBackToCourses: () => void;
   onSelectCourse: (courseId: string) => void;
@@ -31,6 +32,7 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
   course,
   courses,
   students = [],
+  initialSubTab,
   onBackToCourses,
   onSelectCourse,
   onDeleteCourse,
@@ -142,6 +144,7 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
           courses={courses}
           students={students}
           selectedCourseId={course.id}
+          initialSubTab={initialSubTab}
           onSelectCourse={onSelectCourse}
           onRefreshData={onRefreshData}
           onNavigate={onNavigate}

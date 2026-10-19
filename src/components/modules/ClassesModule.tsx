@@ -55,6 +55,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { GradebookMatrix, DEFAULT_CATEGORIES } from './GradebookMatrix';
+import { LibroDeTemasMatrix } from './LibroDeTemasMatrix';
 import { ImportGradesModal } from './ImportGradesModal';
 import { CourseReportModal } from './CourseReportModal';
 import {
@@ -102,6 +103,7 @@ interface ClassesModuleProps {
   courses: Course[];
   students: Student[];
   selectedCourseId?: string;
+  initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
   onSelectCourse?: (id: string) => void;
   onRefreshData: () => void;
   onNavigate: (tab: string, filterCourseId?: string) => void;
@@ -129,6 +131,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   courses,
   students,
   selectedCourseId,
+  initialSubTab,
   onSelectCourse,
   onRefreshData,
   onNavigate,
@@ -152,8 +155,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       });
   }, [students, activeCourse?.id]);
 
-  // Active view: 'roster' (Alumnos/as) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
-  const [activeTab, setActiveTab] = useState<'roster' | 'grades' | 'history'>('roster');
+  // Active view: 'roster' (Alumnos/as) vs 'libro_temas' (Libro de Temas) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
+  const [activeTab, setActiveTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>(
+    initialSubTab || 'roster'
+  );
+
+  useEffect(() => {
+    if (initialSubTab) {
+      setActiveTab(initialSubTab);
+    }
+  }, [initialSubTab]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -968,6 +979,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
     return {};
   });
+
+  // Exportación directa de la Ficha de Seguimiento del Alumno a Google Drive como Google Doc (.gdoc) editable
+  const [showProfileDocConfirm, setShowProfileDocConfirm] = useState(false);
+  const [profileDocTitle, setProfileDocTitle] = useState('');
+  const [profileDocLinkToObs, setProfileDocLinkToObs] = useState(true);
+  const [isExportingProfileDoc, setIsExportingProfileDoc] = useState(false);
+  const [exportedProfileDoc, setExportedProfileDoc] = useState<{
+    id: string;
+    name: string;
+    webViewLink: string;
+    studentId: string;
+  } | null>(null);
+  const [profileDocError, setProfileDocError] = useState<string | null>(null);
 
   // Modal para mandar nota de disposición a Calificaciones
   const [isSendDispositionModalOpen, setIsSendDispositionModalOpen] = useState(false);
@@ -4382,16 +4406,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Imprimir o descargar en PDF la ficha pedagógica individual del alumno
-  const handlePrintStudentProfile = (
+  // Generar el HTML formateado para Google Docs (.gdoc) de la Ficha de Seguimiento del Alumno
+  const buildStudentTrackingDocHtml = (
     student: Student,
     tl: any,
     disp: number,
     m1: StudentDispositionData,
     m2: StudentDispositionData
   ) => {
-    if (!student) return;
-
     const observations = studentObservations[student.id] || [];
     const termLabel =
       attendanceTerm === 'annual'
@@ -4408,10 +4430,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const statusBadgeColor =
       tl.status === 'alert'
-        ? '#ef4444'
+        ? '#dc2626'
         : tl.status === 'warning'
-        ? '#f59e0b'
-        : '#10b981';
+        ? '#d97706'
+        : '#059669';
 
     const statusBg =
       tl.status === 'alert'
@@ -4420,278 +4442,416 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         ? '#fffbeb'
         : '#ecfdf5';
 
-    const printContent = `
-      <!DOCTYPE html>
-      <html lang="es">
-      <head>
-        <meta charset="utf-8" />
-        <title>Ficha del Estudiante - ${student.lastName}, ${student.firstName}</title>
-        <style>
-          @page {
-            size: A4;
-            margin: 1.5cm;
-          }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-            color: #1f2937;
-            margin: 0;
-            padding: 0;
-            line-height: 1.5;
-            font-size: 13px;
-          }
-          .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            border-bottom: 2px solid #2563eb;
-            padding-bottom: 12px;
-            margin-bottom: 16px;
-          }
-          .title-box h1 {
-            font-size: 18px;
-            margin: 0 0 4px 0;
-            color: #1e3a8a;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-          }
-          .title-box p {
-            margin: 0;
-            font-size: 11px;
-            color: #6b7280;
-          }
-          .meta-box {
-            text-align: right;
-            font-size: 11px;
-            color: #4b5563;
-          }
-          .section {
-            margin-bottom: 18px;
-          }
-          .section-title {
-            font-size: 12px;
-            font-weight: bold;
-            color: #1e40af;
-            text-transform: uppercase;
-            border-bottom: 1px solid #e5e7eb;
-            padding-bottom: 4px;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-          }
-          .student-card {
-            background-color: #f8fafc;
-            border: 1px solid #e2e8f0;
-            border-radius: 6px;
-            padding: 10px 14px;
-            display: grid;
-            grid-template-columns: 2fr 1fr 1fr;
-            gap: 12px;
-            font-size: 12px;
-          }
-          .data-item span {
-            display: block;
-            font-size: 10px;
-            color: #64748b;
-            text-transform: uppercase;
-          }
-          .data-item strong {
-            color: #0f172a;
-            font-size: 13px;
-          }
-          .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 8px;
-            margin-bottom: 12px;
-          }
-          .metric-cell {
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            border-radius: 6px;
-            padding: 8px;
-            text-align: center;
-          }
-          .metric-cell .label {
-            font-size: 10px;
-            color: #64748b;
-            text-transform: uppercase;
-            display: block;
-            margin-bottom: 2px;
-          }
-          .metric-cell .value {
-            font-size: 16px;
-            font-weight: bold;
-            color: #0f172a;
-          }
-          .metric-cell .sub {
-            font-size: 9px;
-            color: #94a3b8;
-            display: block;
-          }
-          .traffic-card {
-            background: ${statusBg};
-            border: 1px solid ${statusBadgeColor};
-            border-radius: 6px;
-            padding: 10px 14px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 14px;
-          }
-          .traffic-status {
-            font-size: 13px;
-            font-weight: bold;
-            color: ${statusBadgeColor};
-          }
-          .obs-list {
-            margin-top: 6px;
-          }
-          .obs-item {
-            border-left: 3px solid #6366f1;
-            background: #faf5ff;
-            padding: 8px 10px;
-            margin-bottom: 8px;
-            border-radius: 0 4px 4px 0;
-            font-size: 11.5px;
-          }
-          .obs-date {
-            font-size: 10px;
-            font-weight: bold;
-            color: #6366f1;
-            margin-bottom: 2px;
-          }
-          .signatures {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 20px;
-            margin-top: 40px;
-            padding-top: 20px;
-            page-break-inside: avoid;
-          }
-          .sig-box {
-            text-align: center;
-            border-top: 1px dashed #94a3b8;
-            padding-top: 8px;
-            font-size: 11px;
-            color: #475569;
-          }
-          .sig-box strong {
-            display: block;
-            font-size: 11px;
-            color: #1e293b;
-          }
-          @media print {
-            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <div class="title-box">
-            <h1>Ficha de Asistencia y Observaciones</h1>
-            <p>Docenc.IA • Sistema de Seguimiento Académico y Pedagógico</p>
-          </div>
-          <div class="meta-box">
-            <div><strong>Fecha:</strong> ${currentDateStr}</div>
-            <div><strong>Período:</strong> ${termLabel}</div>
-          </div>
-        </div>
+    // Cargar notas de exámenes y TPs de la pestaña Calificaciones (1°C y 2°C)
+    const loadTermExamsForDoc = (term: '1c' | '2c') => {
+      if (!activeCourse) return [];
+      try {
+        const catRaw =
+          localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}_${term}`) ||
+          (term === '1c' ? localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}`) : null);
+        const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
 
-        <div class="section">
-          <div class="student-card">
-            <div class="data-item">
-              <span>Estudiante</span>
-              <strong>${student.lastName}, ${student.firstName}</strong>
-            </div>
-            <div class="data-item">
-              <span>Materia / Espacio</span>
-              <strong>${activeCourse?.name || 'Materia'}</strong>
-            </div>
-            <div class="data-item">
-              <span>Aula / Horario</span>
-              <strong>${activeCourse?.room || activeCourse?.schedule || 'Turno Regular'}</strong>
-            </div>
-          </div>
-        </div>
+        const gradesRaw =
+          localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}_${term}`) ||
+          (term === '1c' ? localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}`) : null);
+        const gMap: StudentGradesMap = gradesRaw ? JSON.parse(gradesRaw) : {};
+        const stGrades = gMap[student.id] || {};
 
-        <div class="section">
-          <div class="section-title">📊 Resumen de Asistencia y Semáforo de Regularidad</div>
-          
-          <div class="traffic-card">
-            <div>
-              <span style="font-size: 10px; text-transform: uppercase; color: #64748b; display: block;">Estado de Regularidad:</span>
-              <span class="traffic-status">● ${tl.statusLabel} (${tl.percentage}% de asistencia)</span>
-            </div>
-            <div style="text-align: right; font-size: 11px; color: #475569;">
-              <div><strong>Límite permitido:</strong> ${tl.maxAllowedAbsences} inasistencias máximas</div>
-              <div>${tl.remainingAbsences >= 0 ? `Margen disponible: <strong>${tl.remainingAbsences} faltas</strong>` : `<strong style="color:#ef4444;">Excedido por ${Math.abs(tl.remainingAbsences)} faltas</strong>`}</div>
-            </div>
-          </div>
+        const items: { id: string; name: string; weight: number; score: number | null }[] = [];
+        for (const cat of cats) {
+          if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
+          for (const sub of cat.subcategories || []) {
+            const rawVal = stGrades[sub.id];
+            items.push({
+              id: sub.id,
+              name: sub.name,
+              weight: sub.weight,
+              score: typeof rawVal === 'number' && !isNaN(rawVal) ? rawVal : null,
+            });
+          }
+        }
+        return items;
+      } catch {
+        return [];
+      }
+    };
 
-          <div class="metrics-grid">
-            <div class="metric-cell">
-              <span class="label">Clases Reales</span>
-              <span class="value">${tl.totalClasses}</span>
-              <span class="sub">${tl.attendedClasses} asistidas</span>
-            </div>
-            <div class="metric-cell">
-              <span class="label">Total Inasistencias</span>
-              <span class="value" style="color: ${tl.totalAbsences > 0 ? '#ef4444' : '#10b981'};">${tl.totalAbsences}</span>
-              <span class="sub">1°C: ${m1.totalAbsences} • 2°C: ${m2.totalAbsences}</span>
-            </div>
-            <div class="metric-cell">
-              <span class="label">Llegadas Tarde</span>
-              <span class="value" style="color: #f59e0b;">${(m1.totalLates || 0) + (m2.totalLates || 0)}</span>
-              <span class="sub">1°C: ${m1.totalLates || 0} • 2°C: ${m2.totalLates || 0}</span>
-            </div>
-            <div class="metric-cell">
-              <span class="label">Disposición / Conducta</span>
-              <span class="value" style="color: ${disp >= 8 ? '#10b981' : disp >= 6 ? '#f59e0b' : '#ef4444'};">${disp} / 10</span>
-              <span class="sub">Puntaje actual</span>
-            </div>
-          </div>
-        </div>
+    const exams1c = loadTermExamsForDoc('1c');
+    const exams2c = loadTermExamsForDoc('2c');
 
-        <div class="section">
-          <div class="section-title">📝 Observaciones Pedagógicas y Seguimiento</div>
+    // Calcular promedios de 1°C, 2°C y Final si hay notas cargadas
+    const computeWeightedAvg = (items: { weight: number; score: number | null }[]) => {
+      const valid = items.filter((i) => i.score !== null);
+      if (valid.length === 0) return null;
+      const totalWeight = valid.reduce((acc, cur) => acc + (cur.weight || 1), 0);
+      if (totalWeight <= 0) return null;
+      const sum = valid.reduce((acc, cur) => acc + (cur.score || 0) * (cur.weight || 1), 0);
+      return Number((sum / totalWeight).toFixed(2));
+    };
+
+    const avg1c = computeWeightedAvg(exams1c);
+    const avg2c = computeWeightedAvg(exams2c);
+    const finalAvg =
+      avg1c !== null && avg2c !== null
+        ? Number(((avg1c + avg2c) / 2).toFixed(2))
+        : avg1c !== null
+        ? avg1c
+        : avg2c;
+
+    // Historial de eventos del estudiante en el curso actual
+    const studentHistoryEvents = historyList
+      .filter((h) => h.studentId === student.id && (!activeCourse || h.courseId === activeCourse.id))
+      .slice(0, 25);
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Ficha de Seguimiento - ${student.lastName}, ${student.firstName}</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      color: #1e293b;
+      line-height: 1.5;
+      font-size: 11pt;
+      margin: 24px;
+    }
+    h1 {
+      font-size: 16pt;
+      color: #1e3a8a;
+      margin: 0 0 4px 0;
+      text-transform: uppercase;
+    }
+    h2 {
+      font-size: 12pt;
+      color: #1e40af;
+      border-bottom: 2px solid #cbd5e1;
+      padding-bottom: 4px;
+      margin-top: 20px;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 14px;
+    }
+    th, td {
+      border: 1px solid #cbd5e1;
+      padding: 7px 10px;
+      font-size: 10pt;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background-color: #f1f5f9;
+      color: #334155;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <table style="border: none; border-bottom: 3px solid #2563eb; margin-bottom: 16px;">
+    <tr>
+      <td style="border: none; padding: 0 0 10px 0;">
+        <h1>Ficha de Seguimiento Académico y Pedagógico</h1>
+        <div style="font-size: 10pt; color: #64748b;">Documento editable de seguimiento individual • Ciclo Lectivo ${new Date().getFullYear()}</div>
+      </td>
+      <td style="border: none; padding: 0 0 10px 0; text-align: right; font-size: 10pt; color: #475569;">
+        <div><strong>Fecha de emisión:</strong> ${currentDateStr}</div>
+        <div><strong>Período evaluado:</strong> ${termLabel}</div>
+      </td>
+    </tr>
+  </table>
+
+  <table>
+    <tr>
+      <th style="width: 35%;">Estudiante</th>
+      <th style="width: 35%;">Materia / Espacio Curricular</th>
+      <th style="width: 30%;">Curso / Aula / Contacto</th>
+    </tr>
+    <tr>
+      <td><strong>${student.lastName}, ${student.firstName}</strong></td>
+      <td><strong>${activeCourse?.name || 'Materia'}</strong> (${activeCourse?.grade || ''} ${activeCourse?.division || ''})</td>
+      <td>${activeCourse?.room || activeCourse?.schedule || 'Turno Regular'}<br/><span style="font-size: 9pt; color: #64748b;">${student.email || 'Sin correo registrado'}</span></td>
+    </tr>
+  </table>
+
+  <h2>1. Resumen de Asistencia, Regularidad y Disposición</h2>
+  <table>
+    <tr>
+      <td colspan="4" style="background-color: ${statusBg}; border-color: ${statusBadgeColor};">
+        <strong style="color: ${statusBadgeColor}; font-size: 11pt;">● Estado de Regularidad: ${tl.statusLabel} (${tl.percentage}% de asistencia)</strong><br/>
+        <span style="font-size: 9.5pt; color: #334155;">
+          Límite permitido: <strong>${tl.maxAllowedAbsences} inasistencias</strong> • 
           ${
-            observations.length === 0
-              ? '<p style="color: #64748b; font-style: italic; margin-top: 6px;">No se registran observaciones adicionales a la fecha.</p>'
-              : `<div class="obs-list">
-                  ${observations
-                    .map(
-                      (obs: any) => `
-                    <div class="obs-item">
-                      <div class="obs-date">📅 ${obs.date}</div>
-                      <div>${obs.text || 'Sin texto'}</div>
-                      ${obs.reportUrl ? `<div style="font-size: 10px; color: #2563eb; margin-top: 2px;">Enlace adjunto: ${obs.reportUrl}</div>` : ''}
-                    </div>
-                  `
-                    )
-                    .join('')}
-                </div>`
+            tl.remainingAbsences >= 0
+              ? `Margen disponible: <strong>${tl.remainingAbsences} faltas</strong>`
+              : `<strong style="color: #dc2626;">Excedido por ${Math.abs(tl.remainingAbsences)} faltas</strong>`
           }
-        </div>
+        </span>
+      </td>
+    </tr>
+    <tr>
+      <th style="width: 25%; text-align: center;">Clases Dictadas</th>
+      <th style="width: 25%; text-align: center;">Inasistencias Totales</th>
+      <th style="width: 25%; text-align: center;">Llegadas Tarde</th>
+      <th style="width: 25%; text-align: center;">Disposición / Conducta</th>
+    </tr>
+    <tr>
+      <td style="text-align: center;">
+        <strong style="font-size: 13pt;">${tl.totalClasses}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">${tl.attendedClasses} asistidas</span>
+      </td>
+      <td style="text-align: center;">
+        <strong style="font-size: 13pt; color: ${tl.totalAbsences > 0 ? '#dc2626' : '#059669'};">${m1.totalAbsences + m2.totalAbsences}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalAbsences} | 2°C: ${m2.totalAbsences}</span>
+      </td>
+      <td style="text-align: center;">
+        <strong style="font-size: 13pt; color: #d97706;">${(m1.totalLates || 0) + (m2.totalLates || 0)}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalLates || 0} | 2°C: ${m2.totalLates || 0}</span>
+      </td>
+      <td style="text-align: center;">
+        <strong style="font-size: 13pt; color: ${disp >= 8 ? '#059669' : disp >= 6 ? '#d97706' : '#dc2626'};">${disp} / 10</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalDisposition}/10 | 2°C: ${m2.totalDisposition}/10</span>
+      </td>
+    </tr>
+  </table>
 
-        <div class="signatures">
-          <div class="sig-box">
-            <strong>Firma y Sello del Docente</strong>
-            Aclaración
-          </div>
-          <div class="sig-box">
-            <strong>Firma del Padre / Madre / Tutor</strong>
-            Notificado
-          </div>
-          <div class="sig-box">
-            <strong>Preceptoría / Equipo Directivo</strong>
-            Recepción
-          </div>
-        </div>
-      </body>
-      </html>
-    `;
+  <h2>2. Rendimiento Académico, Exámenes y Trabajos Prácticos</h2>
+  <table>
+    <tr>
+      <th style="width: 33%; text-align: center;">Promedio 1° Cuatrimestre</th>
+      <th style="width: 33%; text-align: center;">Promedio 2° Cuatrimestre</th>
+      <th style="width: 34%; text-align: center;">Promedio General / Final</th>
+    </tr>
+    <tr>
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg1c !== null ? (avg1c >= 7 ? '#059669' : avg1c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+        ${avg1c !== null ? avg1c : 'Sin calificar'}
+      </td>
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg2c !== null ? (avg2c >= 7 ? '#059669' : avg2c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+        ${avg2c !== null ? avg2c : 'Sin calificar'}
+      </td>
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${finalAvg !== null ? (finalAvg >= 7 ? '#059669' : finalAvg >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+        ${finalAvg !== null ? finalAvg : 'En curso'}
+      </td>
+    </tr>
+  </table>
 
+  <table>
+    <tr>
+      <th colspan="2" style="width: 50%; background-color: #eef2ff; color: #312e81;">1° Cuatrimestre (Exámenes / TPs)</th>
+      <th colspan="2" style="width: 50%; background-color: #eef2ff; color: #312e81;">2° Cuatrimestre (Exámenes / TPs)</th>
+    </tr>
+    <tr>
+      <th style="width: 35%;">Instancia Evaluativa</th>
+      <th style="width: 15%; text-align: center;">Nota</th>
+      <th style="width: 35%;">Instancia Evaluativa</th>
+      <th style="width: 15%; text-align: center;">Nota</th>
+    </tr>
+    ${(() => {
+      const maxRows = Math.max(exams1c.length, exams2c.length, 1);
+      let rowsHtml = '';
+      for (let i = 0; i < maxRows; i++) {
+        const e1 = exams1c[i];
+        const e2 = exams2c[i];
+        const c1Color = e1 && e1.score !== null ? (e1.score >= 7 ? '#059669' : e1.score >= 4 ? '#d97706' : '#dc2626') : '#94a3b8';
+        const c2Color = e2 && e2.score !== null ? (e2.score >= 7 ? '#059669' : e2.score >= 4 ? '#d97706' : '#dc2626') : '#94a3b8';
+        rowsHtml += `
+          <tr>
+            <td>${e1 ? `${e1.name} <span style="color:#64748b;font-size:9pt;">(${e1.weight}%)</span>` : '-'}</td>
+            <td style="text-align: center; font-weight: bold; color: ${c1Color};">${e1 ? (e1.score !== null ? e1.score : 'S/C') : '-'}</td>
+            <td>${e2 ? `${e2.name} <span style="color:#64748b;font-size:9pt;">(${e2.weight}%)</span>` : '-'}</td>
+            <td style="text-align: center; font-weight: bold; color: ${c2Color};">${e2 ? (e2.score !== null ? e2.score : 'S/C') : '-'}</td>
+          </tr>
+        `;
+      }
+      return rowsHtml;
+    })()}
+  </table>
+
+  <h2>3. Observaciones Pedagógicas y Acuerdos Registrados</h2>
+  ${
+    observations.length === 0
+      ? `<p style="color: #64748b; font-style: italic;">No se registran observaciones particulares previas. El docente puede redactar observaciones adicionales a continuación:</p>`
+      : `<table>
+          <tr>
+            <th style="width: 18%;">Fecha</th>
+            <th style="width: 82%;">Detalle de la Observación / Informe</th>
+          </tr>
+          ${observations
+            .map(
+              (obs: any) => `
+            <tr>
+              <td><strong>${obs.date}</strong></td>
+              <td>
+                ${obs.text || 'Sin detalle de texto'}
+                ${obs.reportUrl ? `<br/><a href="${obs.reportUrl}" style="color: #2563eb; font-size: 9pt;">Enlace adjunto: ${obs.reportUrl}</a>` : ''}
+              </td>
+            </tr>
+          `
+            )
+            .join('')}
+        </table>`
+  }
+
+  <h2>4. Registro Cronológico de Seguimiento en Clase</h2>
+  ${
+    studentHistoryEvents.length === 0
+      ? `<p style="color: #64748b; font-style: italic;">No se registran novedades de asistencia o disposición en el historial reciente.</p>`
+      : `<table>
+          <tr>
+            <th style="width: 18%;">Fecha</th>
+            <th style="width: 18%;">Categoría</th>
+            <th style="width: 64%;">Detalle / Motivo</th>
+          </tr>
+          ${studentHistoryEvents
+            .map(
+              (ev) => `
+            <tr>
+              <td>${ev.date}</td>
+              <td><strong>${ev.category}</strong> (${ev.term === '2c' ? '2°C' : '1°C'})</td>
+              <td>${ev.action}${ev.pointsChange ? ` (${ev.pointsChange > 0 ? `+${ev.pointsChange}` : ev.pointsChange} pts)` : ''}</td>
+            </tr>
+          `
+            )
+            .join('')}
+        </table>`
+  }
+
+  <h2>5. Espacio Editable para Intervención Docente y Acuerdos</h2>
+  <table>
+    <tr>
+      <td style="height: 85px; background-color: #fafafa; color: #475569;">
+        <strong>Observaciones / Compromisos acordados (espacio editable en Google Docs):</strong><br/><br/>
+        • Fortalezas observadas:<br/>
+        • Aspectos a mejorar / contenidos pendientes:<br/>
+        • Acuerdos con el estudiante y la familia:
+      </td>
+    </tr>
+  </table>
+
+  <table style="border: none; margin-top: 36px;">
+    <tr>
+      <td style="border: none; border-top: 1px dashed #64748b; text-align: center; width: 33%; padding-top: 8px;">
+        <strong>Firma y Aclaración Docente</strong>
+      </td>
+      <td style="border: none; border-top: 1px dashed #64748b; text-align: center; width: 33%; padding-top: 8px;">
+        <strong>Firma Estudiante / Familia</strong>
+      </td>
+      <td style="border: none; border-top: 1px dashed #64748b; text-align: center; width: 33%; padding-top: 8px;">
+        <strong>Equipo Directivo / Preceptoría</strong>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+  };
+
+  const handleOpenExportProfileDocConfirm = (student: Student) => {
+    const defaultTitle = `📄 Ficha de Seguimiento - ${student.lastName}, ${student.firstName} (${activeCourse?.name || 'Materia'})`;
+    setProfileDocTitle(defaultTitle);
+    setProfileDocError(null);
+    setShowProfileDocConfirm(true);
+  };
+
+  const handleConfirmExportProfileToGoogleDoc = async (
+    student: Student,
+    tl: any,
+    disp: number,
+    m1: StudentDispositionData,
+    m2: StudentDispositionData
+  ) => {
+    if (!student || !activeCourse) return;
+    setIsExportingProfileDoc(true);
+    setProfileDocError(null);
+
+    try {
+      const htmlContent = buildStudentTrackingDocHtml(student, tl, disp, m1, m2);
+      const finalDocTitle =
+        profileDocTitle.trim() ||
+        `📄 Ficha de Seguimiento - ${student.lastName}, ${student.firstName} (${activeCourse.name})`;
+
+      // Obtener o asegurar la carpeta del curso en Google Drive
+      let parentFolderId = courseDriveStructure?.mainFolder?.id;
+      if (!parentFolderId) {
+        try {
+          const folderStruct = await driveService.ensureCourseFolderStructure(
+            activeCourse.name,
+            activeCourse.id
+          );
+          parentFolderId = folderStruct.mainFolder.id;
+          setCourseDriveStructure(folderStruct);
+        } catch {
+          // Si no se pudo crear carpeta, se guarda en Mi Unidad de Drive
+        }
+      }
+
+      // Crear el documento nativo editable de Google Docs (.gdoc) mediante la API de Google Drive
+      const uploadedDoc = await driveService.uploadReportFile(
+        finalDocTitle,
+        htmlContent,
+        'application/vnd.google-apps.document',
+        parentFolderId
+      );
+
+      setExportedProfileDoc({
+        id: uploadedDoc.id,
+        name: uploadedDoc.name,
+        webViewLink: uploadedDoc.webViewLink,
+        studentId: student.id,
+      });
+      setShowProfileDocConfirm(false);
+
+      // Si el docente eligió vincular automáticamente el .gdoc a las Observaciones de la Ficha:
+      if (profileDocLinkToObs) {
+        const now = new Date();
+        const pad = (n: number) => n.toString().padStart(2, '0');
+        const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        const newObs: StudentObservation = {
+          id: `obs-gdoc-${Date.now()}`,
+          studentId: student.id,
+          courseId: activeCourse.id,
+          date: dateStr,
+          text: `Ficha de Seguimiento exportada a Google Docs (.gdoc editable): "${uploadedDoc.name}"`,
+          reportUrl: uploadedDoc.webViewLink,
+          createdAt: Date.now(),
+        };
+        const currentList = studentObservations[student.id] || [];
+        const updatedMap = {
+          ...studentObservations,
+          [student.id]: [newObs, ...currentList],
+        };
+        setStudentObservations(updatedMap);
+        try {
+          localStorage.setItem('fds_student_observations', JSON.stringify(updatedMap));
+          const uid = getActiveUserId();
+          if (uid) {
+            firestoreSync.saveStudentObservation(uid, newObs).catch(() => {});
+          }
+        } catch (_) {}
+      }
+
+      setToastMessage(`Ficha de seguimiento creada en Google Drive (.gdoc editable).`);
+      setTimeout(() => setToastMessage(null), 4000);
+    } catch (err: any) {
+      setProfileDocError(
+        err?.message || 'No se pudo exportar la ficha a Google Drive. Verificá tu conexión con Google Workspace.'
+      );
+    } finally {
+      setIsExportingProfileDoc(false);
+    }
+  };
+
+  // Imprimir o descargar en PDF la ficha pedagógica individual del alumno
+  const handlePrintStudentProfile = (
+    student: Student,
+    _tl: any,
+    _disp: number,
+    _m1: StudentDispositionData,
+    _m2: StudentDispositionData
+  ) => {
+    if (!student) return;
     // Open the full interactive customizable report modal for this student
     setCourseReportModalStudentId(student.id);
     setCourseReportModalTab('individual');
@@ -5628,7 +5788,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* RENGLÓN SUPERIOR DE PESTAÑAS (A LO LARGO)                     */}
           {/* ------------------------------------------------------------- */}
           <div
-            className={`p-1.5 rounded-xl border grid grid-cols-1 sm:grid-cols-3 gap-2 transition-colors ${
+            className={`p-1.5 rounded-xl border grid grid-cols-1 sm:grid-cols-4 gap-2 transition-colors ${
               isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-100 border-neutral-200'
             }`}
           >
@@ -5645,6 +5805,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             >
               <Users className="w-4 h-4 shrink-0" />
               <span>Asistencia y Disposición</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('libro_temas')}
+              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                activeTab === 'libro_temas'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+              }`}
+            >
+              <BookOpen className="w-4 h-4 shrink-0" />
+              <span>Libro de Temas</span>
             </button>
 
             <button
@@ -6317,77 +6492,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     >
                       <Send className="w-3.5 h-3.5" />
                       <span>Enviar aviso a seleccionados ({selectedStudentIds.length})</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* Pending notifications notice bar (Absences and Conduct) */}
-              {selectedStudentIds.length === 0 && pendingAllItems.length > 0 && (
-                <div
-                  className={`mb-3 p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-3 animate-in fade-in duration-150 shadow-xs ${
-                    isDarkMode
-                      ? 'bg-amber-950/40 border-amber-800 text-amber-200'
-                      : 'bg-amber-50 border-amber-200 text-amber-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-1.5 rounded-lg bg-amber-500/20 text-amber-600 dark:text-amber-400">
-                      <Bell className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-bold text-xs">
-                          {pendingAllItems.length} aviso{pendingAllItems.length > 1 ? 's' : ''} pendiente{pendingAllItems.length > 1 ? 's' : ''} de notificación
-                        </span>
-                        <div className="flex items-center gap-1.5 text-[11px]">
-                          {pendingAbsenceItems.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-full font-semibold bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800">
-                              {pendingAbsenceItems.length} ausencia{pendingAbsenceItems.length > 1 ? 's' : ''}
-                            </span>
-                          )}
-                          {pendingConductItems.length > 0 && (
-                            <span className="px-2 py-0.5 rounded-full font-semibold bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800">
-                              {pendingConductItems.length} conducta{pendingConductItems.length > 1 ? 's' : ''}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <p className="text-[11px] opacity-80 mt-0.5">
-                        Tienen las faltas y descuentos anotados. Puedes mandar todas las notificaciones juntas al final de la clase o ahora.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {pendingAbsenceItems.length > 0 && pendingConductItems.length > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenBatchFromPending('absences')}
-                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-red-600 hover:bg-red-700 text-white shadow-xs transition-all cursor-pointer"
-                          title="Enviar solo los avisos de inasistencia"
-                        >
-                          Solo ausencias ({pendingAbsenceItems.length})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenBatchFromPending('conduct')}
-                          className="px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-purple-600 hover:bg-purple-700 text-white shadow-xs transition-all cursor-pointer"
-                          title="Enviar solo los avisos de llamados de atención y conducta"
-                        >
-                          Solo conductas ({pendingConductItems.length})
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleOpenBatchFromPending('all')}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg shadow-xs transition-all cursor-pointer"
-                      title="Abrir ventana para enviar todas las notificaciones pendientes juntas"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Enviar todos juntos ({pendingAllItems.length})</span>
                     </button>
                   </div>
                 </div>
@@ -7098,6 +7202,26 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         )}
       </div>
     )}
+
+          {/* ------------------------------------------------------------- */}
+          {/* TAB 1.5: LIBRO DE TEMAS (COORDINADO CON EL CALENDARIO)        */}
+          {/* ------------------------------------------------------------- */}
+          {activeTab === 'libro_temas' && (
+            <LibroDeTemasMatrix
+              courseId={activeCourse.id}
+              courseName={activeCourse.name}
+              courseSubject={activeCourse.subject}
+              courseSchedule={activeCourse.schedule}
+              teacherName={user?.name}
+              attendanceSettings={attendanceSettings}
+              onUpdateAttendanceSettings={(next) => setAttendanceSettings(next)}
+              onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
+              onOpenBackupModal={() => setIsBackupModalOpen(true)}
+              isDarkMode={isDarkMode}
+              driveFolderId={activeCourse.driveFolderId}
+              driveFolderUrl={activeCourse.driveFolderUrl}
+            />
+          )}
 
           {/* ------------------------------------------------------------- */}
           {/* TAB 2: CALIFICACIONES (CATEGORÍAS Y SUBCATEGORÍAS CUSTOM)     */}
@@ -9584,7 +9708,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <button
                           type="button"
                           onClick={() => handleOpenEditAbsences(selectedStudentForProfile)}
@@ -9607,12 +9731,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => handlePrintStudentProfile(selectedStudentForProfile, activeTl, currentDisp, metrics1c, metrics2c)}
-                          className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
-                          title="Generar vista de impresión oficial o descargar en PDF la ficha pedagógica y asistencia del estudiante"
+                          onClick={() => handleOpenExportProfileDocConfirm(selectedStudentForProfile)}
+                          disabled={isExportingProfileDoc}
+                          className="px-3 py-1 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                          title="Guardar esta ficha de seguimiento directamente en Google Drive como un documento nativo y editable (.gdoc)"
                         >
-                          <Printer className="w-3 h-3" />
-                          <span>Imprimir / PDF</span>
+                          {isExportingProfileDoc ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Save className="w-3.5 h-3.5" />
+                          )}
+                          <span>Guardar en Drive (.gdoc)</span>
                         </button>
                       </div>
                     </div>
@@ -9659,13 +9788,264 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         </span>
                       </div>
                     </div>
+
+                    {/* Panel de confirmación para exportar la Ficha de Seguimiento como Google Doc (.gdoc) */}
+                    {showProfileDocConfirm && (
+                      <div className={`mt-3 p-3.5 rounded-xl border space-y-2.5 animate-in fade-in duration-150 ${
+                        isDarkMode ? 'bg-slate-900 border-emerald-700/70 text-slate-100' : 'bg-white border-emerald-300 text-neutral-900 shadow-sm'
+                      }`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                            <span className="text-xs font-bold">
+                              Crear Documento Google Doc (.gdoc) editable en Google Drive
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowProfileDocConfirm(false)}
+                            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 p-0.5 cursor-pointer"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        <p className="text-[11px] text-neutral-600 dark:text-slate-300 leading-relaxed">
+                          Se generará un documento nativo de <strong>Google Docs (.gdoc)</strong> en la carpeta de Drive de <strong>{activeCourse?.name || 'la materia'}</strong> con asistencia, calificaciones de exámenes/TPs, observaciones, historial y espacio editable para acuerdos docentes.
+                        </p>
+
+                        <div className="space-y-1.5">
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
+                            Nombre del archivo en Google Drive:
+                          </label>
+                          <input
+                            type="text"
+                            value={profileDocTitle}
+                            onChange={(e) => setProfileDocTitle(e.target.value)}
+                            className={`w-full px-3 py-1.5 rounded-lg border text-xs outline-hidden focus:ring-2 focus:ring-emerald-500 ${
+                              isDarkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-neutral-50 border-neutral-300 text-neutral-900'
+                            }`}
+                          />
+                        </div>
+
+                        <label className="flex items-center gap-2 text-[11px] text-neutral-700 dark:text-slate-300 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={profileDocLinkToObs}
+                            onChange={(e) => setProfileDocLinkToObs(e.target.checked)}
+                            className="rounded border-neutral-300 text-emerald-600 focus:ring-emerald-500"
+                          />
+                          <span>Dejar vinculado el enlace del Google Doc en las Observaciones de esta ficha</span>
+                        </label>
+
+                        {profileDocError && (
+                          <div className="p-2 rounded-lg bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-[11px] text-red-700 dark:text-red-300 flex items-center gap-1.5">
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{profileDocError}</span>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setShowProfileDocConfirm(false)}
+                            disabled={isExportingProfileDoc}
+                            className="px-3 py-1.5 rounded-lg text-xs font-semibold text-neutral-600 dark:text-slate-300 hover:bg-neutral-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isExportingProfileDoc}
+                            onClick={() =>
+                              handleConfirmExportProfileToGoogleDoc(
+                                selectedStudentForProfile,
+                                activeTl,
+                                currentDisp,
+                                metrics1c,
+                                metrics2c
+                              )
+                            }
+                            className="px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white shadow-xs inline-flex items-center gap-1.5 cursor-pointer"
+                          >
+                            {isExportingProfileDoc ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Creando Google Doc en Drive...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check className="w-3.5 h-3.5" />
+                                <span>Confirmar y crear Google Doc</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Banner de éxito con acceso directo para editar el .gdoc recién creado */}
+                    {exportedProfileDoc && exportedProfileDoc.studentId === selectedStudentForProfile.id && (
+                      <div className={`mt-3 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 animate-in fade-in duration-150 ${
+                        isDarkMode ? 'bg-emerald-950/50 border-emerald-800 text-emerald-200' : 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                      }`}>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold truncate">
+                              Documento Google Doc (.gdoc) creado en tu Google Drive
+                            </p>
+                            <p className="text-[10px] opacity-80 truncate">
+                              {exportedProfileDoc.name}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <a
+                            href={exportedProfileDoc.webViewLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs inline-flex items-center gap-1.5 transition-colors"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>Abrir y editar en Google Docs</span>
+                          </a>
+                          <button
+                            type="button"
+                            onClick={() => setExportedProfileDoc(null)}
+                            className="p-1 rounded-lg text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200/50 dark:hover:bg-emerald-900/50 cursor-pointer"
+                            title="Cerrar aviso"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
             })()}
 
-            {/* Scrollable Content: Observaciones e Informes */}
+            {/* Scrollable Content: Calificaciones, Observaciones e Informes */}
             <div className="p-5 overflow-y-auto space-y-4 flex-1 text-xs">
+              {/* Resumen de Notas de Exámenes y TPs de la pestaña Calificaciones */}
+              {activeCourse && (() => {
+                const loadTermExams = (term: '1c' | '2c') => {
+                  try {
+                    const catRaw =
+                      localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}_${term}`) ||
+                      (term === '1c' ? localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}`) : null);
+                    const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
+
+                    const gradesRaw =
+                      localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}_${term}`) ||
+                      (term === '1c' ? localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}`) : null);
+                    const gMap: StudentGradesMap = gradesRaw ? JSON.parse(gradesRaw) : {};
+                    const stGrades = gMap[selectedStudentForProfile.id] || {};
+
+                    const items: { id: string; name: string; weight: number; score: number | null }[] = [];
+                    for (const cat of cats) {
+                      if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
+                      for (const sub of cat.subcategories || []) {
+                        const rawVal = stGrades[sub.id];
+                        items.push({
+                          id: sub.id,
+                          name: sub.name,
+                          weight: sub.weight,
+                          score: typeof rawVal === 'number' && !isNaN(rawVal) ? rawVal : null,
+                        });
+                      }
+                    }
+                    return items;
+                  } catch {
+                    return [];
+                  }
+                };
+
+                const exams1c = loadTermExams('1c');
+                const exams2c = loadTermExams('2c');
+                const hasAnyExamScore =
+                  exams1c.some((e) => e.score !== null) || exams2c.some((e) => e.score !== null);
+
+                return (
+                  <div className={`p-3.5 rounded-2xl border space-y-2.5 ${
+                    isDarkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-emerald-50/40 border-emerald-200/70'
+                  }`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Award className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                        <span className="font-bold text-neutral-900 dark:text-slate-100">
+                          Notas de Exámenes y Trabajos Prácticos (Calificaciones)
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                        Incluidas en Ficha PDF / Google Doc
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className={`p-2.5 rounded-xl border ${isDarkMode ? 'bg-slate-900/70 border-slate-700/80' : 'bg-white border-neutral-200/80'}`}>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-1.5 border-b border-neutral-100 dark:border-slate-800 pb-1">
+                          1° Cuatrimestre
+                        </div>
+                        <div className="space-y-1">
+                          {exams1c.map((item) => (
+                            <div key={`prof-1c-${item.id}`} className="flex items-center justify-between text-[11px]">
+                              <span className="text-neutral-600 dark:text-slate-300 truncate pr-2">
+                                {item.name} <span className="text-[10px] text-neutral-400">({item.weight}%)</span>
+                              </span>
+                              <span className={`font-bold px-1.5 py-0.5 rounded ${
+                                item.score === null
+                                  ? 'text-neutral-400 dark:text-slate-500'
+                                  : item.score >= 7
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                                  : item.score >= 4
+                                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                                  : 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300'
+                              }`}>
+                                {item.score !== null ? item.score : 'S/C'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className={`p-2.5 rounded-xl border ${isDarkMode ? 'bg-slate-900/70 border-slate-700/80' : 'bg-white border-neutral-200/80'}`}>
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-1.5 border-b border-neutral-100 dark:border-slate-800 pb-1">
+                          2° Cuatrimestre
+                        </div>
+                        <div className="space-y-1">
+                          {exams2c.map((item) => (
+                            <div key={`prof-2c-${item.id}`} className="flex items-center justify-between text-[11px]">
+                              <span className="text-neutral-600 dark:text-slate-300 truncate pr-2">
+                                {item.name} <span className="text-[10px] text-neutral-400">({item.weight}%)</span>
+                              </span>
+                              <span className={`font-bold px-1.5 py-0.5 rounded ${
+                                item.score === null
+                                  ? 'text-neutral-400 dark:text-slate-500'
+                                  : item.score >= 7
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                                  : item.score >= 4
+                                  ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                                  : 'bg-red-50 dark:bg-red-950/60 text-red-700 dark:text-red-300'
+                              }`}>
+                                {item.score !== null ? item.score : 'S/C'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {!hasAnyExamScore && (
+                      <p className="text-[11px] text-neutral-500 dark:text-slate-400 italic">
+                        Aún no se cargaron notas de exámenes o TPs en la pestaña Calificaciones para este estudiante.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Formulario Agregar Observación */}
               <div className={`p-3.5 rounded-2xl border space-y-2.5 ${
                 isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-indigo-50/40 border-indigo-100'
@@ -9828,7 +10208,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                     </button>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenExportProfileDocConfirm(selectedStudentForProfile)}
+                      disabled={isExportingProfileDoc}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
+                      title="Guardar directamente esta ficha de seguimiento en Google Drive como un documento editable (.gdoc)"
+                    >
+                      {isExportingProfileDoc ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                      ) : (
+                        <Save className="w-3.5 h-3.5 text-white" />
+                      )}
+                      <span>Guardar en Drive (.gdoc)</span>
+                    </button>
+
                     <button
                       type="button"
                       onClick={() => {
@@ -9837,10 +10232,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                         setCourseReportModalOpen(true);
                       }}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800 transition-colors cursor-pointer"
-                      title="Generar informe individual o citación a la familia (asistencia, calificaciones o disposición)"
+                      title="Personalizar secciones del informe o citación a la familia"
                     >
-                      <Printer className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                      <span>Informe / Citación</span>
+                      <FileText className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                      <span>Personalizar Informe</span>
                     </button>
 
                     <button

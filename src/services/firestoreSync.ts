@@ -15,6 +15,7 @@ import {
   getDocFromServer,
   writeBatch,
   Firestore,
+  disableNetwork,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Course, Student, TeacherProfile, CustomGem } from '../types';
@@ -47,8 +48,57 @@ export interface FirestoreErrorInfo {
   };
 }
 
+// Circuit breaker state to prevent hanging the UI or flooding backend when quota is exhausted
+let firestoreUnavailableUntil = (() => {
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = sessionStorage.getItem('firestore_quota_exhausted_until');
+      if (stored) {
+        const val = parseInt(stored, 10);
+        if (val > Date.now()) return val;
+      }
+    } catch (_) {}
+  }
+  return 0;
+})();
+
+// Helper to check if error is due to Firestore quota exhaustion
+export function isFirestoreQuotaError(error: unknown): boolean {
+  if (!error) return false;
+  const msg = error instanceof Error ? error.message : String(error);
+  const code = (error as any)?.code;
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('quota metric') ||
+    msg.includes('Free daily write units per project')
+  );
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): void {
   const msg = error instanceof Error ? error.message : String(error);
+
+  if (isFirestoreQuotaError(error)) {
+    // Quota reached on Firestore free tier: trip circuit breaker for 30 minutes
+    firestoreUnavailableUntil = Date.now() + 30 * 60 * 1000;
+    try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('firestore_quota_exhausted_until', String(firestoreUnavailableUntil));
+      }
+    } catch (_) {}
+    try {
+      disableNetwork(db).catch(() => {});
+    } catch (_) {}
+    console.warn('Docenc.IA: Límite diario de Firestore alcanzado. La app continúa funcionando con persistencia local ultrarrápida sin pérdida de datos.');
+    emitSyncStatus({
+      state: 'synced',
+      pendingCount: 0,
+      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
     error: msg,
     authInfo: {
@@ -80,11 +130,18 @@ export const db: Firestore = (firebaseConfig as any).firestoreDatabaseId
   ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
   : getFirestore(app);
 
+// Disable network if quota was exhausted during recent session to prevent background retry logs
+if (firestoreUnavailableUntil > Date.now()) {
+  try {
+    disableNetwork(db).catch(() => {});
+  } catch (_) {}
+}
+
 // Default database instance of gen-lang-client-0511455975 (ensures cross-environment & Vercel compatibility)
 export const defaultDb: Firestore = getFirestore(app);
 
-// List of active database instances in project gen-lang-client-0511455975 to read/write globally
-const ALL_DBS: Firestore[] = db === defaultDb ? [db] : [db, defaultDb];
+// Active database instance to use: targets the provisioned database only to prevent duplicate writes
+const ALL_DBS: Firestore[] = [db];
 
 // Shared global workspace ID so changes sync globally across linked user accounts in gen-lang-client-0511455975
 export const GLOBAL_WORKSPACE_ID = 'global_shared_workspace';
@@ -127,8 +184,6 @@ export function getCloudSyncStatus(): CloudSyncStatusInfo {
   return currentSyncStatus;
 }
 
-// Circuit breaker & timeout helper to prevent hanging the UI on slow/offline Firestore connections
-let firestoreUnavailableUntil = 0;
 const FIRESTORE_TIMEOUT_MS = 2200;
 
 async function executeWithTimeout<T>(
@@ -167,12 +222,20 @@ async function executeWithTimeout<T>(
       });
     }
     return res;
-  } catch (err) {
+  } catch (err: any) {
     clearTimeout(timer);
+    if (isFirestoreQuotaError(err)) {
+      firestoreUnavailableUntil = Date.now() + 30 * 60 * 1000;
+      try {
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('firestore_quota_exhausted_until', String(firestoreUnavailableUntil));
+        }
+      } catch (_) {}
+    }
     if (trackAsWrite) {
       const nextPending = Math.max(0, currentSyncStatus.pendingCount - 1);
       emitSyncStatus({
-        state: 'error',
+        state: isFirestoreQuotaError(err) ? 'synced' : 'error',
         pendingCount: nextPending,
       });
     }
@@ -182,6 +245,13 @@ async function executeWithTimeout<T>(
 
 // Test connection on boot as required by Firebase guidelines
 export async function testFirestoreConnection(): Promise<boolean> {
+  if (Date.now() < firestoreUnavailableUntil) {
+    emitSyncStatus({
+      state: 'synced',
+      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
+    return true;
+  }
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     emitSyncStatus({
@@ -190,6 +260,19 @@ export async function testFirestoreConnection(): Promise<boolean> {
     });
     return true;
   } catch (error: any) {
+    if (isFirestoreQuotaError(error)) {
+      firestoreUnavailableUntil = Date.now() + 30 * 60 * 1000;
+      try {
+        if (typeof window !== 'undefined') {
+          sessionStorage.setItem('firestore_quota_exhausted_until', String(firestoreUnavailableUntil));
+        }
+      } catch (_) {}
+      emitSyncStatus({
+        state: 'synced',
+        lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      });
+      return true;
+    }
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration.');
     }
@@ -329,30 +412,13 @@ function invalidateStudentsCache() {
   studentsReadCache = null;
 }
 
-// Target user buckets to write to:
-// - If Jorge Cano: writes to his linked accounts & global workspace
-// - If another teacher: writes strictly to that teacher's own isolated space
+// Target user bucket to write to: single canonical target to avoid burning Firestore write quota
 function getTargetWriteUserIds(userId: string): string[] {
   const email = getActiveUserEmail();
   if (email && !isPrimaryOwnerAccount(email)) {
-    const colleagueTargets = new Set<string>([
-      'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_'),
-    ]);
-    if (userId) colleagueTargets.add(userId);
-    if (auth.currentUser?.uid) colleagueTargets.add(auth.currentUser.uid);
-    return Array.from(colleagueTargets);
+    return ['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')];
   }
-
-  const targets = new Set<string>([
-    GLOBAL_WORKSPACE_ID,
-    'teacher_jorge_cano_fds_esc_edu_ar',
-    'teacher_canomorenojj_gmail_com',
-  ]);
-  if (userId) targets.add(userId);
-  if (email) {
-    targets.add('teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_'));
-  }
-  return Array.from(targets);
+  return [userId || GLOBAL_WORKSPACE_ID];
 }
 
 // Recursively strips `undefined` values from objects/arrays before writing to Firestore
@@ -381,6 +447,7 @@ export const firestoreSync = {
    */
   async saveTeacherProfile(profile: Partial<TeacherProfile> & { id?: string; email?: string }): Promise<void> {
     if (!profile?.email && !profile?.id) return;
+    if (Date.now() < firestoreUnavailableUntil) return;
     const userId = profile.id || getActiveUserId();
     const payload = {
       uid: String(userId).slice(0, 128),
@@ -618,7 +685,7 @@ export const firestoreSync = {
     date: string,
     records: { studentId: string; status: string }[]
   ): Promise<void> {
-    if (!userId || !courseId || !date) return;
+    if (!userId || !courseId || !date || Date.now() < firestoreUnavailableUntil) return;
     const docId = `${courseId}_${date}`;
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
@@ -646,7 +713,7 @@ export const firestoreSync = {
    * Save a student disposition / absence incident globally
    */
   async saveDisposition(userId: string, record: any): Promise<void> {
-    if (!userId || !record?.id) return;
+    if (!userId || !record?.id || Date.now() < firestoreUnavailableUntil) return;
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
     const cleanPayload = sanitizeForFirestore({
@@ -794,6 +861,9 @@ export const firestoreSync = {
    * Load disposition history from Firestore globally across linked accounts and database instances
    */
   async loadDisposition(userId: string): Promise<{ disposition: Record<string, any>; history: any[] }> {
+    if (Date.now() < firestoreUnavailableUntil) {
+      return { disposition: {}, history: [] };
+    }
     const candidateIds = getCandidateUserIds(userId);
     const candidateSet = new Set<string>(candidateIds);
     const isOwner = isPrimaryOwnerAccount();

@@ -25,10 +25,20 @@ import {
   HeartHandshake,
   Eye,
   EyeOff,
+  Save,
 } from 'lucide-react';
-import { Student } from '../../types';
+import { Student, StudentObservation } from '../../types';
+import { GradeCategory, StudentGradesMap } from '../../types/grades';
+import { DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { driveService } from '../../services/workspace/driveService';
+
+export interface ExamGradeDetailItem {
+  id: string;
+  categoryName: string;
+  itemName: string;
+  score: string;
+}
 
 export interface CourseReportModalProps {
   isOpen: boolean;
@@ -67,6 +77,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [activeTab, setActiveTab] = useState<'course' | 'individual'>(initialTab);
   const [selectedStudentId, setSelectedStudentId] = useState<string>(initialStudentId || 'all');
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
+  const [showDriveConfirmModal, setShowDriveConfirmModal] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
   const [driveSavedResult, setDriveSavedResult] = useState<{
     success: boolean;
@@ -96,6 +107,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [includeGrades, setIncludeGrades] = useState<boolean>(
     initialPreset === 'attendance' || initialPreset === 'disposition' ? false : true
   );
+  const [includeExamDetails, setIncludeExamDetails] = useState<boolean>(
+    initialPreset === 'attendance' || initialPreset === 'disposition' ? false : true
+  );
   const [includeAttendance, setIncludeAttendance] = useState<boolean>(
     initialPreset === 'grades' || initialPreset === 'disposition' ? false : true
   );
@@ -106,7 +120,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [includeFamilySignature, setIncludeFamilySignature] = useState<boolean>(
     initialPreset !== 'all'
   );
-  const effectiveReason = 'Informe';
+  const effectiveReason = 'Informe de Trayectoria';
 
   const selectedElementsCount =
     (includeGrades ? 1 : 0) +
@@ -137,7 +151,86 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }
   }, [courseId]);
 
-  // Dedicated observations for reports / certificates (strictly isolated from private course notes)
+  // Load Categories and Grades Maps from Pestaña Calificaciones (1°C and 2°C)
+  const categories1c = useMemo<GradeCategory[]>(() => {
+    try {
+      const raw =
+        localStorage.getItem(`fds_grades_categories_${courseId}_1c`) ||
+        localStorage.getItem(`fds_grades_categories_${courseId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_CATEGORIES;
+  }, [courseId]);
+
+  const categories2c = useMemo<GradeCategory[]>(() => {
+    try {
+      const raw = localStorage.getItem(`fds_grades_categories_${courseId}_2c`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return DEFAULT_CATEGORIES.map((cat) => ({
+      ...cat,
+      id: `c2-${cat.id}`,
+      subcategories: cat.subcategories.map((sub) => ({ ...sub, id: `c2-${sub.id}` })),
+    }));
+  }, [courseId]);
+
+  const gradesData1c = useMemo<StudentGradesMap>(() => {
+    try {
+      const raw =
+        localStorage.getItem(`fds_grades_data_${courseId}_1c`) ||
+        localStorage.getItem(`fds_grades_data_${courseId}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, [courseId]);
+
+  const gradesData2c = useMemo<StudentGradesMap>(() => {
+    try {
+      const raw = localStorage.getItem(`fds_grades_data_${courseId}_2c`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, [courseId]);
+
+  const calcMode1c = useMemo<'average_of_categories' | 'manual_final'>(() => {
+    try {
+      const raw =
+        localStorage.getItem(`fds_grades_final_calc_${courseId}_1c`) ||
+        localStorage.getItem(`fds_grades_final_calc_${courseId}`);
+      if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
+    } catch {}
+    return 'manual_final';
+  }, [courseId]);
+
+  const calcMode2c = useMemo<'average_of_categories' | 'manual_final'>(() => {
+    try {
+      const raw = localStorage.getItem(`fds_grades_final_calc_${courseId}_2c`);
+      if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
+    } catch {}
+    return 'manual_final';
+  }, [courseId]);
+
+  // Load Student Profile observations from Ficha del Alumno as default fallback
+  const profileObservationsMap = useMemo<Record<string, StudentObservation[]>>(() => {
+    try {
+      const raw =
+        localStorage.getItem(`fds_student_observations_${courseId}`) ||
+        localStorage.getItem('fds_student_observations');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, [courseId]);
+
+  // Dedicated observations for reports / certificates
   const [reportObservations, setReportObservations] = useState<Record<string, string>>(() => {
     try {
       const raw = localStorage.getItem(`fds_report_student_observations_${courseId}`);
@@ -159,54 +252,109 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     });
   };
 
+  // Helper to compute term final score from GradebookMatrix data
+  const computeTermScoreForStudent = (
+    stId: string,
+    cats: GradeCategory[],
+    gradesMap: StudentGradesMap,
+    calcMode: 'average_of_categories' | 'manual_final'
+  ): { scoreStr: string; num: number | null } => {
+    const stGrades = gradesMap[stId] || {};
+    if (calcMode === 'manual_final' && stGrades['__final__'] !== undefined && stGrades['__final__'] !== '') {
+      const val = stGrades['__final__'];
+      const num = !isNaN(Number(val)) ? Number(val) : null;
+      return { scoreStr: val, num };
+    }
+
+    const numericScores: number[] = [];
+    cats.forEach((cat) => {
+      if (cat.subcategories.length === 0) {
+        const val = stGrades[cat.id];
+        if (val !== undefined && val !== '' && !isNaN(Number(val))) {
+          numericScores.push(Number(val));
+        }
+      } else {
+        cat.subcategories.forEach((sub) => {
+          const val = stGrades[sub.id];
+          if (val !== undefined && val !== '' && !isNaN(Number(val))) {
+            numericScores.push(Number(val));
+          }
+        });
+      }
+    });
+
+    if (numericScores.length > 0) {
+      const avg = numericScores.reduce((a, b) => a + b, 0) / numericScores.length;
+      const str = avg.toFixed(1).replace('.0', '');
+      return { scoreStr: str, num: avg };
+    }
+
+    // Fallback if manual __final__ exists even when mode was average
+    if (stGrades['__final__'] !== undefined && stGrades['__final__'] !== '') {
+      const val = stGrades['__final__'];
+      const num = !isNaN(Number(val)) ? Number(val) : null;
+      return { scoreStr: val, num };
+    }
+
+    return { scoreStr: '', num: null };
+  };
+
+  // Helper to extract all individual Exam / TP items for a student in a term
+  const extractStudentExamDetails = (
+    stId: string,
+    cats: GradeCategory[],
+    gradesMap: StudentGradesMap
+  ): ExamGradeDetailItem[] => {
+    const stGrades = gradesMap[stId] || {};
+    const items: ExamGradeDetailItem[] = [];
+    cats.forEach((cat) => {
+      if (cat.subcategories.length === 0) {
+        const rawScore = stGrades[cat.id];
+        items.push({
+          id: cat.id,
+          categoryName: cat.name,
+          itemName: cat.name,
+          score: rawScore !== undefined && String(rawScore).trim() !== '' ? String(rawScore).trim() : '—',
+        });
+      } else {
+        cat.subcategories.forEach((sub) => {
+          const rawScore = stGrades[sub.id];
+          items.push({
+            id: sub.id,
+            categoryName: cat.name,
+            itemName: sub.name,
+            score: rawScore !== undefined && String(rawScore).trim() !== '' ? String(rawScore).trim() : '—',
+          });
+        });
+      }
+    });
+    return items;
+  };
+
   // Fallback loading of grades and annual overrides if opened outside of GradebookMatrix
   const effectiveScore1cMap = useMemo(() => {
     if (score1cMap && Object.keys(score1cMap).length > 0) return score1cMap;
     const result: Record<string, { scoreStr: string; num: number | null }> = {};
-    try {
-      const gradesRaw =
-        localStorage.getItem(`fds_grades_data_${courseId}_1c`) ||
-        localStorage.getItem(`fds_grades_data_${courseId}`);
-      if (gradesRaw) {
-        const grades = JSON.parse(gradesRaw);
-        students.forEach((st) => {
-          const stGrades = grades[st.id] || {};
-          const nums = Object.values(stGrades)
-            .map((v: any) => parseFloat(v))
-            .filter((v: number) => !isNaN(v) && v > 0);
-          if (nums.length > 0) {
-            const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-            const str = avg.toFixed(1).replace('.0', '');
-            result[st.id] = { scoreStr: str, num: avg };
-          }
-        });
+    students.forEach((st) => {
+      const calc = computeTermScoreForStudent(st.id, categories1c, gradesData1c, calcMode1c);
+      if (calc.scoreStr !== '') {
+        result[st.id] = calc;
       }
-    } catch {}
+    });
     return result;
-  }, [score1cMap, courseId, students]);
+  }, [score1cMap, students, categories1c, gradesData1c, calcMode1c]);
 
   const effectiveScore2cMap = useMemo(() => {
     if (score2cMap && Object.keys(score2cMap).length > 0) return score2cMap;
     const result: Record<string, { scoreStr: string; num: number | null }> = {};
-    try {
-      const gradesRaw = localStorage.getItem(`fds_grades_data_${courseId}_2c`);
-      if (gradesRaw) {
-        const grades = JSON.parse(gradesRaw);
-        students.forEach((st) => {
-          const stGrades = grades[st.id] || {};
-          const nums = Object.values(stGrades)
-            .map((v: any) => parseFloat(v))
-            .filter((v: number) => !isNaN(v) && v > 0);
-          if (nums.length > 0) {
-            const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
-            const str = avg.toFixed(1).replace('.0', '');
-            result[st.id] = { scoreStr: str, num: avg };
-          }
-        });
+    students.forEach((st) => {
+      const calc = computeTermScoreForStudent(st.id, categories2c, gradesData2c, calcMode2c);
+      if (calc.scoreStr !== '') {
+        result[st.id] = calc;
       }
-    } catch {}
+    });
     return result;
-  }, [score2cMap, courseId, students]);
+  }, [score2cMap, students, categories2c, gradesData2c, calcMode2c]);
 
   const effectiveOverrides = useMemo(() => {
     if (annualOverrides && Object.keys(annualOverrides).length > 0) return annualOverrides;
@@ -218,12 +366,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }
   }, [annualOverrides, courseId]);
 
-  // Consolidate full student annual data
+  // Consolidate full student annual data + detailed exam/TP grades
   const consolidatedStudents = useMemo(() => {
     return students.map((st) => {
       const s1 = effectiveScore1cMap[st.id] || { scoreStr: '', num: null };
       const s2 = effectiveScore2cMap[st.id] || { scoreStr: '', num: null };
       const override = effectiveOverrides[st.id];
+
+      const examDetails1c = extractStudentExamDetails(st.id, categories1c, gradesData1c);
+      const examDetails2c = extractStudentExamDetails(st.id, categories2c, gradesData2c);
 
       let calcAvgStr = '';
       let calcAvgNum: number | null = null;
@@ -267,9 +418,16 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         Math.min(100, Math.round(100 - totalAbs * 2.5 - totalLat * 0.8))
       );
 
-      // Dedicated observation for official report / certificate (strictly separated from private course notes)
+      // Dedicated observation for official report / certificate (falls back to Student Profile observations if not customized yet)
       const customReportObs = reportObservations[st.id];
-      const observation = customReportObs !== undefined ? customReportObs : '';
+      const profileObsList = profileObservationsMap[st.id] || [];
+      const fallbackProfileObsText =
+        profileObsList.length > 0
+          ? profileObsList
+              .map((o) => `• [${o.date}] ${o.text || ''}${o.reportUrl ? ` (${o.reportUrl})` : ''}`)
+              .join('\n')
+          : '';
+      const observation = customReportObs !== undefined ? customReportObs : fallbackProfileObsText;
 
       return {
         student: st,
@@ -277,6 +435,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         score1cNum: s1.num,
         score2c: s2.scoreStr,
         score2cNum: s2.num,
+        examDetails1c,
+        examDetails2c,
         calcAvgStr,
         calcAvgNum,
         finalVal,
@@ -295,7 +455,20 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         observation,
       };
     });
-  }, [students, effectiveScore1cMap, effectiveScore2cMap, effectiveOverrides, disp1cMap, disp2cMap, reportObservations]);
+  }, [
+    students,
+    effectiveScore1cMap,
+    effectiveScore2cMap,
+    effectiveOverrides,
+    categories1c,
+    categories2c,
+    gradesData1c,
+    gradesData2c,
+    disp1cMap,
+    disp2cMap,
+    reportObservations,
+    profileObservationsMap,
+  ]);
 
   // Overall Statistics
   const stats = useMemo(() => {
@@ -557,7 +730,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             includeGrades
               ? `
             <div class="section-title">1. Rendimiento Académico y Calificaciones</div>
-            <table class="data-table" style="margin-bottom: 16px;">
+            <table class="data-table" style="margin-bottom: 12px;">
               <thead>
                 <tr>
                   <th style="text-align: center;">1° Cuatrimestre</th>
@@ -583,6 +756,51 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 </tr>
               </tbody>
             </table>
+            ${
+              includeExamDetails && (row.examDetails1c.length > 0 || row.examDetails2c.length > 0)
+                ? `
+              <div style="font-size: 11.5px; font-weight: bold; color: #334155; margin: 8px 0 6px 0;">
+                Detalle de Evaluaciones, Exámenes y Trabajos Prácticos:
+              </div>
+              <table class="data-table" style="margin-bottom: 16px;">
+                <thead>
+                  <tr>
+                    <th style="width: 22%;">Período</th>
+                    <th style="width: 28%;">Categoría</th>
+                    <th style="width: 32%;">Examen / Trabajo Práctico</th>
+                    <th style="width: 18%; text-align: center;">Calificación</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${row.examDetails1c
+                    .map(
+                      (item) => `
+                    <tr>
+                      <td><strong>1° Cuatrimestre</strong></td>
+                      <td>${item.categoryName}</td>
+                      <td>${item.itemName}</td>
+                      <td style="text-align: center; font-weight: bold; color: #1e3a8a;">${item.score}</td>
+                    </tr>
+                  `
+                    )
+                    .join('')}
+                  ${row.examDetails2c
+                    .map(
+                      (item) => `
+                    <tr>
+                      <td><strong>2° Cuatrimestre</strong></td>
+                      <td>${item.categoryName}</td>
+                      <td>${item.itemName}</td>
+                      <td style="text-align: center; font-weight: bold; color: #4338ca;">${item.score}</td>
+                    </tr>
+                  `
+                    )
+                    .join('')}
+                </tbody>
+              </table>
+            `
+                : ''
+            }
           `
               : ''
           }
@@ -935,9 +1153,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Download locally (.html printable file)
   const handleDownloadHtml = () => {
     const html = generateHtmlDocument(activeTab);
+    const singleStudent =
+      activeTab === 'individual' && selectedStudentId !== 'all'
+        ? consolidatedStudents.find((s) => s.student.id === selectedStudentId)
+        : null;
     const fileName =
       activeTab === 'course'
         ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_2026.html`
+        : singleStudent
+        ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
         : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_2026.html`;
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
@@ -951,8 +1175,23 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  // Save directly to Google Drive of the course
-  const handleSaveToDrive = async () => {
+  // Compute the target Google Doc title
+  const getTargetGoogleDocTitle = () => {
+    if (activeTab === 'course') {
+      return `📊 Informe Consolidado Anual - ${courseName}`;
+    }
+    if (selectedStudentId !== 'all') {
+      const single = consolidatedStudents.find((s) => s.student.id === selectedStudentId);
+      if (single) {
+        return `📄 Ficha de Trayectoria - ${single.student.lastName}, ${single.student.firstName} (${courseName})`;
+      }
+    }
+    return `🎓 Fichas Individuales de Trayectoria - ${courseName}`;
+  };
+
+  // Save directly as a native editable Google Doc (.gdoc) in the course's Google Drive folder
+  const executeSaveToDrive = async () => {
+    setShowDriveConfirmModal(false);
     setIsSavingToDrive(true);
     setDriveSavedResult(null);
 
@@ -965,19 +1204,18 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       const targetFolderId = folderStructure.mainFolder.id;
       const targetFolderName = folderStructure.mainFolder.name;
 
-      // 2. Generate HTML report
+      // 2. Generate HTML report and convert to native Google Doc (.gdoc)
       const htmlContent = generateHtmlDocument(activeTab);
-      const fileName =
-        activeTab === 'course'
-          ? `📊 Informe Consolidado Anual - ${courseName}.html`
-          : `🎓 Boletines por Alumno (1 Pág) - ${courseName}.html`;
+      const docTitle = getTargetGoogleDocTitle();
 
-      // 3. Upload file to Google Drive folder
+      // 3. Upload file to Google Drive folder with convertToGoogleDoc = true
       const result = await driveService.uploadReportFile(
-        fileName,
+        docTitle,
         htmlContent,
         targetFolderId,
-        'text/html'
+        'text/html',
+        undefined,
+        true
       );
 
       setDriveSavedResult({
@@ -988,7 +1226,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         folderName: targetFolderName,
       });
     } catch (err) {
-      console.error('Error saving report to Google Drive:', err);
+      console.error('Error saving report as Google Doc to Google Drive:', err);
       setDriveSavedResult({
         success: false,
         name: '',
@@ -1021,7 +1259,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h2 className="text-base sm:text-lg font-bold">
-                  Informe
+                  Informe de Trayectoria y Ficha
                 </h2>
                 <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-blue-100 text-blue-800 dark:bg-blue-950/70 dark:text-blue-300 border border-blue-300 dark:border-blue-800">
                   {courseName}
@@ -1034,39 +1272,20 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           </div>
 
           {/* Action buttons */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
             <button
               type="button"
-              onClick={handlePrint}
-              disabled={isPrinting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors cursor-pointer disabled:opacity-70"
-              title="Imprimir o guardar como PDF en tu navegador"
-            >
-              {isPrinting ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Printer className="w-3.5 h-3.5" />
-              )}
-              <span>{isPrinting ? 'Generando...' : 'Imprimir / PDF'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveToDrive}
+              onClick={() => setShowDriveConfirmModal(true)}
               disabled={isSavingToDrive}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-700 text-emerald-400 border-slate-700'
-                  : 'bg-white hover:bg-neutral-50 text-emerald-700 border-emerald-300'
-              }`}
-              title="Guardar archivo en la carpeta de Google Drive de este curso"
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer disabled:opacity-70"
+              title="Guardar el informe de seguimiento actual directamente en Google Drive como un archivo Google Doc (.gdoc) nativo y editable"
             >
               {isSavingToDrive ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-500" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
               ) : (
-                <Cloud className="w-3.5 h-3.5 text-emerald-500" />
+                <Save className="w-3.5 h-3.5 text-white" />
               )}
-              <span>{isSavingToDrive ? 'Guardando...' : 'Guardar en Drive'}</span>
+              <span>{isSavingToDrive ? 'Guardando en Drive...' : 'Guardar en Drive (.gdoc)'}</span>
             </button>
 
             <button
@@ -1202,6 +1421,30 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               <span className="text-[10px] opacity-75 font-normal">(1°C, 2°C, Final)</span>
             </button>
 
+            {/* 1b. Notas de Exámenes y TPs (solo en ficha individual cuando Calificaciones está activo) */}
+            {includeGrades && activeTab === 'individual' && (
+              <button
+                type="button"
+                onClick={() => setIncludeExamDetails(!includeExamDetails)}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  includeExamDetails
+                    ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700 shadow-2xs font-bold'
+                    : isDarkMode
+                    ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                    : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+                }`}
+                title="Extraer e incluir el desglose de todas las notas de Exámenes y Trabajos Prácticos de la pestaña Calificaciones"
+              >
+                {includeExamDetails ? (
+                  <CheckSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                ) : (
+                  <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                )}
+                <span>Notas de Exámenes y TPs</span>
+                <span className="text-[10px] opacity-75 font-normal">(Desglose completo)</span>
+              </button>
+            )}
+
             {/* 2. Asistencia */}
             <button
               type="button"
@@ -1303,8 +1546,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <div className="flex items-center gap-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
               <span>
-                Reporte guardado exitosamente en Google Drive en la carpeta{' '}
-                <strong>"{driveSavedResult.folderName}"</strong>
+                Google Doc editable <strong>"{driveSavedResult.name}"</strong> creado en tu Google Drive (carpeta{' '}
+                <strong>"{driveSavedResult.folderName}"</strong>)
               </span>
             </div>
             {driveSavedResult.url && (
@@ -1312,9 +1555,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 href={driveSavedResult.url}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 font-bold underline hover:opacity-80"
+                className="inline-flex items-center gap-1 font-bold underline hover:opacity-80 shrink-0"
               >
-                <span>Abrir en Google Drive</span>
+                <span>Abrir en Google Docs</span>
                 <ExternalLink className="w-3 h-3" />
               </a>
             )}
@@ -1641,7 +1884,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                         <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
                           1. Rendimiento Académico y Calificaciones
                         </h4>
-                        <table className="w-full text-xs border border-neutral-300">
+                        <table className="w-full text-xs border border-neutral-300 mb-3">
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                             <tr>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
@@ -1679,6 +1922,73 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                             </tr>
                           </tbody>
                         </table>
+
+                        {/* Detailed Breakdown of Exam & TP Grades from Pestaña Calificaciones */}
+                        {includeExamDetails && (row.examDetails1c.length > 0 || row.examDetails2c.length > 0) && (
+                          <div className="mt-2.5">
+                            <div className="text-[11px] font-bold text-indigo-900 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
+                              <Award className="w-3.5 h-3.5 text-indigo-600" />
+                              <span>Desglose de Evaluaciones, Exámenes y Trabajos Prácticos (Calificaciones)</span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              {/* 1° Cuatrimestre */}
+                              <div className="border border-neutral-300 rounded-lg overflow-hidden">
+                                <div className="bg-blue-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-blue-900 flex items-center justify-between">
+                                  <span>1° Cuatrimestre</span>
+                                  <span>Nota 1°C: {row.score1c || '—'}</span>
+                                </div>
+                                <table className="w-full text-[11px]">
+                                  <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
+                                    <tr>
+                                      <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
+                                      <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
+                                      <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-neutral-200">
+                                    {row.examDetails1c.map((item) => (
+                                      <tr key={`1c-${item.id}`}>
+                                        <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
+                                        <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
+                                        <td className="py-1.5 px-2.5 text-center font-bold text-blue-800 bg-blue-50/30">
+                                          {item.score}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+
+                              {/* 2° Cuatrimestre */}
+                              <div className="border border-neutral-300 rounded-lg overflow-hidden">
+                                <div className="bg-indigo-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-indigo-900 flex items-center justify-between">
+                                  <span>2° Cuatrimestre</span>
+                                  <span>Nota 2°C: {row.score2c || '—'}</span>
+                                </div>
+                                <table className="w-full text-[11px]">
+                                  <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
+                                    <tr>
+                                      <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
+                                      <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
+                                      <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-neutral-200">
+                                    {row.examDetails2c.map((item) => (
+                                      <tr key={`2c-${item.id}`}>
+                                        <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
+                                        <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
+                                        <td className="py-1.5 px-2.5 text-center font-bold text-indigo-800 bg-indigo-50/30">
+                                          {item.score}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -1969,19 +2279,71 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             </button>
             <button
               type="button"
-              onClick={handleSaveToDrive}
+              onClick={() => setShowDriveConfirmModal(true)}
               disabled={isSavingToDrive}
               className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
             >
               {isSavingToDrive ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : (
-                <Cloud className="w-3.5 h-3.5" />
+                <Save className="w-3.5 h-3.5" />
               )}
-              <span>Guardar en Drive del Curso</span>
+              <span>Guardar en Drive (.gdoc)</span>
             </button>
           </div>
         </div>
+
+        {/* Confirmation Dialog before creating/updating Google Doc in Drive */}
+        {showDriveConfirmModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+            <div
+              className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4 ${
+                isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">
+                    ¿Crear archivo Google Doc editable en Google Drive?
+                  </h3>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400 mt-1 leading-relaxed">
+                    Se creará un documento editable de <strong>Google Docs (.gdoc)</strong> en la carpeta de la materia <strong>"{courseName}"</strong> con el siguiente nombre:
+                  </p>
+                  <div
+                    className={`mt-2 p-2.5 rounded-xl border text-xs font-semibold ${
+                      isDarkMode ? 'bg-slate-800 border-slate-700 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    }`}
+                  >
+                    {getTargetGoogleDocTitle()}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowDriveConfirmModal(false)}
+                  className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
+                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                  }`}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={executeSaveToDrive}
+                  className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Confirmar y Crear Google Doc</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

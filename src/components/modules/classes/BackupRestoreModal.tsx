@@ -78,6 +78,15 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         if (storedCats) gradebookCategories = JSON.parse(storedCats);
       } catch (_) {}
 
+      // Libro de Temas if present
+      let libroDeTemas = null;
+      try {
+        const storageRaw = localStorage.getItem(`fds_libro_temas_${course.id}`);
+        if (storageRaw) {
+          libroDeTemas = JSON.parse(storageRaw);
+        }
+      } catch (_) {}
+
       // Backup payload
       const backupData = {
         app: 'Docenc.IA',
@@ -102,6 +111,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         studentObservations: filteredObservations,
         courseHistory,
         gradebookCategories,
+        libroDeTemas,
       };
 
       const jsonStr = JSON.stringify(backupData, null, 2);
@@ -147,7 +157,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           throw new Error('El archivo no contiene un JSON válido.');
         }
 
-        if (!data.course && !data.students && !data.studentObservations) {
+        if (!data.course && !data.students && !data.studentObservations && !data.libroDeTemas) {
           throw new Error('El archivo seleccionado no tiene la estructura de un respaldo de Docenc.IA.');
         }
 
@@ -207,9 +217,29 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         } catch (_) {}
       }
 
+      // 4. Restore Libro de Temas if present
+      if (parsedBackup.libroDeTemas && typeof parsedBackup.libroDeTemas === 'object') {
+        try {
+          const ldt = parsedBackup.libroDeTemas;
+          if (restoreMergeMode === 'replace') {
+            localStorage.setItem(`fds_libro_temas_${course.id}`, JSON.stringify(ldt));
+          } else {
+            const existingRaw = localStorage.getItem(`fds_libro_temas_${course.id}`);
+            const existing = existingRaw ? JSON.parse(existingRaw) : {};
+            const merged = {
+              ...existing,
+              ...ldt,
+              entries: { ...(existing.entries || {}), ...(ldt.entries || {}) },
+            };
+            localStorage.setItem(`fds_libro_temas_${course.id}`, JSON.stringify(merged));
+          }
+        } catch (_) {}
+      }
+
       // Trigger custom events so all components update in-place
       window.dispatchEvent(new CustomEvent('docencia_observations_updated'));
       window.dispatchEvent(new CustomEvent('docencia_disposition_storage_change'));
+      window.dispatchEvent(new CustomEvent('docencia_libro_temas_restored', { detail: { courseId: course.id } }));
 
       onRestoreSuccess(`¡Respaldo restaurado con éxito para "${course.name}"!`);
       onClose();

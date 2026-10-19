@@ -35,7 +35,7 @@ import { TeacherGuideModal } from '../common/TeacherGuideModal';
 
 interface TeacherCoursesPanelProps {
   courses: Course[];
-  onSelectCourseAndTab: (courseId: string, tab: 'planificacion' | 'planificacion_anual' | 'material' | 'actividades' | 'evaluaciones' | 'alumnos') => void;
+  onSelectCourseAndTab: (courseId: string, tab: 'planificacion' | 'planificacion_anual' | 'material' | 'actividades' | 'evaluaciones' | 'alumnos' | 'libro_temas') => void;
   onCreateCourse: (courseData: Partial<Course>) => void;
   onDeleteCourse: (courseId: string) => Promise<void> | void;
   onClearCourses?: () => Promise<void> | void;
@@ -757,7 +757,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                     <GraduationCap className="w-3.5 h-3.5" />
                     Gestión de Estudiantes:
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 text-xs">
                     {/* Asistencia */}
                     <button
                       onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}
@@ -794,6 +794,26 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                         </p>
                         <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
                           Puntos & llamados
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Libro de Temas */}
+                    <button
+                      onClick={() => onSelectCourseAndTab(course.id, 'libro_temas')}
+                      className={`p-2 border rounded-lg text-left transition-all flex items-start gap-2 cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-900 border-slate-700/80 hover:border-indigo-500 hover:bg-slate-850'
+                          : 'bg-white border-neutral-200/90 hover:border-indigo-400 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <BookOpen className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                      <div className="min-w-0">
+                        <p className={`font-semibold text-[11px] truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
+                          Libro de Temas
+                        </p>
+                        <p className={`text-[10px] truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                          Temas dados por clase
                         </p>
                       </div>
                     </button>

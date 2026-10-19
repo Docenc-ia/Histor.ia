@@ -234,9 +234,6 @@ export const api = {
 
     if (mergedList.length > 0) {
       saveLocalCourses(mergedList);
-      if (userId) {
-        firestoreSync.saveCourses(userId, mergedList).catch(() => {});
-      }
       return mergedList;
     }
 
@@ -541,9 +538,6 @@ export const api = {
     if (mergedStudents.length > 0) {
       if (courseId) {
         saveLocalStudents(courseId, mergedStudents);
-        if (userId) {
-          firestoreSync.saveStudents(userId, courseId, mergedStudents).catch(() => {});
-        }
       } else {
         const byCourse = new Map<string, Student[]>();
         for (const st of mergedStudents) {
@@ -554,9 +548,6 @@ export const api = {
         }
         byCourse.forEach((courseList, cid) => {
           saveLocalStudents(cid, courseList);
-          if (userId) {
-            firestoreSync.saveStudents(userId, cid, courseList).catch(() => {});
-          }
         });
       }
     }

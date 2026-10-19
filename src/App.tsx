@@ -69,6 +69,7 @@ function AppContent() {
     const local = api.getLocalCourses();
     return local.length > 0 ? local[0].id : '';
   });
+  const [initialCourseSubTab, setInitialCourseSubTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>('roster');
 
   // Creation modal & Classroom Import modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
@@ -353,8 +354,9 @@ function AppContent() {
               {currentView === 'courses' && (
                 <TeacherCoursesPanel
                   courses={courses}
-                  onSelectCourseAndTab={(courseId) => {
+                  onSelectCourseAndTab={(courseId, tab) => {
                     setSelectedCourseId(courseId);
+                    setInitialCourseSubTab(tab === 'libro_temas' ? 'libro_temas' : 'roster');
                     setCurrentView('course_detail');
                   }}
                   onCreateCourse={handleCreateCourse}
@@ -384,6 +386,7 @@ function AppContent() {
                     course={selectedCourse}
                     courses={courses}
                     students={students}
+                    initialSubTab={initialCourseSubTab}
                     onBackToCourses={() => setCurrentView('courses')}
                     onSelectCourse={(id) => setSelectedCourseId(id)}
                     onDeleteCourse={handleDeleteCourse}

@@ -4,13 +4,14 @@
  * Scope: https://www.googleapis.com/auth/drive.file
  */
 
-import { getCachedAccessToken } from './googleAuth';
+import { getCachedAccessToken, requestGoogleAccessToken } from './googleAuth';
 import { DriveResource } from '../../types';
 
 export interface CourseFolderStructure {
   mainFolder: { id: string; name: string; url: string };
   attendanceFolder: { id: string; name: string; url: string };
   gradesFolder: { id: string; name: string; url: string };
+  libroDeTemasFolder?: { id: string; name: string; url: string };
 }
 
 export const driveService = {
@@ -184,10 +185,14 @@ export const driveService = {
     // Create subfolder 2: "Calificaciones" inside main folder
     const gradesFolder = await this.findOrCreateFolder('Calificaciones', mainFolder.id, token);
 
+    // Create subfolder 3: "Libro de Temas" inside main folder
+    const libroDeTemasFolder = await this.findOrCreateFolder('Libro de Temas', mainFolder.id, token);
+
     return {
       mainFolder,
       attendanceFolder,
       gradesFolder,
+      libroDeTemasFolder,
     };
   },
 
@@ -315,22 +320,32 @@ export const driveService = {
   },
 
   /**
-   * Upload a generated document or HTML report to a Google Drive course folder
+   * Upload a generated document or HTML report to a Google Drive course folder.
+   * When convertToGoogleDoc is true (default), Google Drive converts the rich HTML
+   * into a native, fully editable Google Doc (.gdoc) in the user's Drive.
    */
   async uploadReportFile(
     fileName: string,
     content: string,
     folderId?: string,
     mimeType: string = 'text/html',
-    providedToken?: string
-  ): Promise<{ id: string; name: string; url: string; isLiveGoogle: boolean }> {
-    const token = providedToken || getCachedAccessToken();
+    providedToken?: string,
+    convertToGoogleDoc: boolean = true
+  ): Promise<{ id: string; name: string; url: string; isLiveGoogle: boolean; isGoogleDoc?: boolean }> {
+    let token = providedToken || getCachedAccessToken();
+    if (!token) {
+      try {
+        token = await requestGoogleAccessToken();
+      } catch {}
+    }
+
+    const cleanDocName = convertToGoogleDoc ? fileName.replace(/\.html$/i, '') : fileName;
 
     if (token) {
       try {
         const metadata: any = {
-          name: fileName,
-          mimeType: mimeType,
+          name: cleanDocName,
+          mimeType: convertToGoogleDoc ? 'application/vnd.google-apps.document' : mimeType,
         };
         if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
           metadata.parents = [folderId];
@@ -363,7 +378,9 @@ export const driveService = {
 
         if (res.ok) {
           const data = await res.json();
-          const liveUrl = data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`;
+          const liveUrl = convertToGoogleDoc
+            ? data.webViewLink || `https://docs.google.com/document/d/${data.id}/edit`
+            : data.webViewLink || `https://drive.google.com/file/d/${data.id}/view`;
 
           // Also register in local server drive resources
           try {
@@ -371,7 +388,7 @@ export const driveService = {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                name: fileName,
+                name: cleanDocName,
                 type: 'doc',
                 folder: folderId || 'Informes y Reportes',
               }),
@@ -380,9 +397,10 @@ export const driveService = {
 
           return {
             id: data.id,
-            name: data.name,
+            name: data.name || cleanDocName,
             url: liveUrl,
             isLiveGoogle: true,
+            isGoogleDoc: convertToGoogleDoc,
           };
         } else {
           const errText = await res.text();
@@ -399,7 +417,7 @@ export const driveService = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: fileName,
+          name: cleanDocName,
           type: 'doc',
           folder: folderId || 'Informes y Reportes',
         }),
@@ -411,6 +429,7 @@ export const driveService = {
           name: data.file.name,
           url: data.file.googleDriveUrl,
           isLiveGoogle: false,
+          isGoogleDoc: convertToGoogleDoc,
         };
       }
     } catch {}
@@ -418,9 +437,10 @@ export const driveService = {
     const fallbackId = `report-${Date.now()}`;
     return {
       id: fallbackId,
-      name: fileName,
+      name: cleanDocName,
       url: 'https://drive.google.com/drive/u/0/my-drive',
       isLiveGoogle: false,
+      isGoogleDoc: convertToGoogleDoc,
     };
   },
 };

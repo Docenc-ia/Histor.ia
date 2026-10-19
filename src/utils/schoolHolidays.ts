@@ -246,6 +246,192 @@ export function extractWeekdaysFromSchedule(schedule?: string): number[] {
   return days.sort((a, b) => a - b);
 }
 
+export interface CourseDayTimeSlot {
+  slotIndex: number;
+  startTime?: string;
+  endTime?: string;
+  timeLabel: string;
+}
+
+/**
+ * Parses a schedule text and extracts the time slots / hours for each day of the week.
+ * In secondary schools, each hour / module corresponds to one class row in the Libro de Temas.
+ * Supports:
+ * - Multiple blocks on the same day: "Jueves 07:50 - 08:50, Jueves 08:50 - 09:50" -> 2 slots for Thursday
+ * - Continuous 2-hour blocks: "Jueves 07:50 - 09:50" -> 2 slots (07:50 - 08:50 and 08:50 - 09:50)
+ * - Explicit hours counts: "Jueves (2 horas)" -> 2 slots
+ * - Single blocks: "Martes 13:10 - 14:10" -> 1 slot
+ */
+export function extractDailySlotsFromSchedule(
+  schedule?: string,
+  activeWeekdays?: number[]
+): Record<number, CourseDayTimeSlot[]> {
+  const result: Record<number, CourseDayTimeSlot[]> = {};
+
+  if (!schedule || typeof schedule !== 'string') {
+    if (activeWeekdays) {
+      for (const d of activeWeekdays) {
+        result[d] = [{ slotIndex: 0, timeLabel: '' }];
+      }
+    }
+    return result;
+  }
+
+  const dayPatterns: { day: number; regex: RegExp }[] = [
+    { day: 1, regex: /\b(lunes|lun|lu)\b/i },
+    { day: 2, regex: /\b(martes|mar|ma)\b/i },
+    { day: 3, regex: /\b(mi[eé]rcoles|mi[eé]|mie|mi)\b/i },
+    { day: 4, regex: /\b(jueves|jue|ju)\b/i },
+    { day: 5, regex: /\b(viernes|vie|vi)\b/i },
+    { day: 6, regex: /\b(s[aá]bado|sab|sa)\b/i },
+  ];
+
+  const toMin = (t: string) => {
+    const parts = t.split(':').map((p) => parseInt(p, 10));
+    if (parts.length < 2 || isNaN(parts[0]) || isNaN(parts[1])) return 0;
+    return parts[0] * 60 + parts[1];
+  };
+
+  const toTimeStr = (min: number) => {
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+
+  // Split schedule into chunks by comma, semicolon, newline, slash, or " y "
+  const rawChunks = schedule.split(/[,;\n/]+|\s+y\s+(?=[a-záéíóú]+\s+\d|\d)/i);
+  let currentDay: number | null = null;
+
+  for (const chunk of rawChunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed) continue;
+
+    for (const { day, regex } of dayPatterns) {
+      if (regex.test(trimmed)) {
+        currentDay = day;
+        break;
+      }
+    }
+
+    if (currentDay === null) {
+      if (activeWeekdays && activeWeekdays.length > 0) {
+        currentDay = activeWeekdays[0];
+      }
+    }
+
+    if (currentDay === null) continue;
+
+    if (!result[currentDay]) {
+      result[currentDay] = [];
+    }
+
+    const hoursMatch = trimmed.match(/(\d+)\s*(?:horas|hs|m[oó]dulos)/i);
+    const explicitHoursCount = hoursMatch ? parseInt(hoursMatch[1], 10) : 0;
+
+    const timeRangeRegex = /(\d{1,2}:\d{2})\s*(?:-|a|–|al)\s*(\d{1,2}:\d{2})/g;
+    const matches = Array.from(trimmed.matchAll(timeRangeRegex));
+
+    if (matches.length > 0) {
+      for (const m of matches) {
+        const start = m[1].length === 4 ? `0${m[1]}` : m[1];
+        const end = m[2].length === 4 ? `0${m[2]}` : m[2];
+        const startMin = toMin(start);
+        const endMin = toMin(end);
+        const duration = endMin > startMin ? endMin - startMin : 60;
+
+        const splitCount =
+          explicitHoursCount > 1
+            ? explicitHoursCount
+            : duration >= 150
+            ? Math.round(duration / 60)
+            : duration >= 75
+            ? 2
+            : 1;
+
+        if (splitCount > 1) {
+          const slotDur = Math.round(duration / splitCount);
+          for (let s = 0; s < splitCount; s++) {
+            const sMin = startMin + s * slotDur;
+            const eMin = s === splitCount - 1 ? endMin : startMin + (s + 1) * slotDur;
+            const sStr = toTimeStr(sMin);
+            const eStr = toTimeStr(eMin);
+            result[currentDay].push({
+              slotIndex: result[currentDay].length,
+              startTime: sStr,
+              endTime: eStr,
+              timeLabel: `${sStr} - ${eStr}`,
+            });
+          }
+        } else {
+          result[currentDay].push({
+            slotIndex: result[currentDay].length,
+            startTime: start,
+            endTime: end,
+            timeLabel: `${start} - ${end}`,
+          });
+        }
+      }
+    } else if (explicitHoursCount > 1) {
+      for (let s = 0; s < explicitHoursCount; s++) {
+        result[currentDay].push({
+          slotIndex: result[currentDay].length,
+          timeLabel: `${s + 1}° Hora`,
+        });
+      }
+    } else {
+      if (result[currentDay].length === 0) {
+        result[currentDay].push({
+          slotIndex: 0,
+          timeLabel: '',
+        });
+      }
+    }
+  }
+
+  // Deduplicate identical time slots for the same day and sort by start time
+  for (const d of Object.keys(result).map(Number)) {
+    const seenTimes = new Set<string>();
+    result[d] = result[d]
+      .filter((slot) => {
+        const key = `${slot.startTime || ''}_${slot.endTime || ''}_${slot.timeLabel || ''}`;
+        if (!key || key === '__') return true;
+        if (seenTimes.has(key)) return false;
+        seenTimes.add(key);
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.startTime && b.startTime) return a.startTime.localeCompare(b.startTime);
+        return a.slotIndex - b.slotIndex;
+      });
+  }
+
+  // Ensure every active weekday has at least one slot
+  if (activeWeekdays) {
+    for (const d of activeWeekdays) {
+      if (!result[d] || result[d].length === 0) {
+        result[d] = [{ slotIndex: 0, timeLabel: '' }];
+      }
+    }
+  }
+
+  // Clean slot indices and assign clear labels
+  for (const d of Object.keys(result).map(Number)) {
+    result[d] = result[d].map((slot, idx) => ({
+      ...slot,
+      slotIndex: idx,
+      timeLabel:
+        slot.timeLabel ||
+        (slot.startTime && slot.endTime
+          ? `${slot.startTime} - ${slot.endTime}`
+          : result[d].length > 1
+          ? `${idx + 1}° Hora`
+          : ''),
+    }));
+  }
+
+  return result;
+}
+
 /**
  * Detects holidays and asuetos that coincide with a course's weekdays and academic term ranges.
  */

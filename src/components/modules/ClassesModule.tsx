@@ -84,6 +84,7 @@ import { sheetsService } from '../../services/workspace/sheetsService';
 import { calendarService } from '../../services/workspace/calendarService';
 import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
+import { extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
 import { AttendanceHeader } from './classes/AttendanceHeader';
@@ -2156,11 +2157,46 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     try {
       setIsSavingCalendarSelection(true);
+      const extractedWeekdays = extractWeekdaysFromSchedule(cleanSchedule);
+
       // 1. Guardar en la base de datos y Firestore (horario + calendario preferido)
       await api.updateCourse(calendarModalCourse.id, {
         schedule: cleanSchedule,
         preferredCalendarId: selectedCalendarForSlots || 'primary',
       });
+
+      // 1b. Impactar directamente en la configuración de asistencia y libro de temas de este curso
+      if (extractedWeekdays.length > 0) {
+        const nextSettings: AttendanceSettings = {
+          ...attendanceSettings,
+          courseWeekdays: extractedWeekdays,
+          classesPerWeek: extractedWeekdays.length,
+        };
+        saveCourseAttendanceSettings(calendarModalCourse.id, nextSettings);
+        setAttendanceSettings(nextSettings);
+
+        try {
+          const libroKey = `fds_libro_temas_${calendarModalCourse.id}`;
+          const currentLibroRaw = localStorage.getItem(libroKey);
+          if (currentLibroRaw) {
+            const parsed = JSON.parse(currentLibroRaw);
+            const updatedLibro = {
+              ...parsed,
+              metadata: {
+                ...(parsed.metadata || {}),
+                horario: cleanSchedule,
+                configuredWeekdays: extractedWeekdays,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
+            const uid = getActiveUserId();
+            if (uid) {
+              firestoreSync.saveUserSetting(uid, `libro_temas_${calendarModalCourse.id}`, updatedLibro).catch(() => {});
+            }
+          }
+        } catch (_) {}
+      }
 
       // 2. Sincronizar bloques de cursada en el calendario interno de la app
       await fetch('/api/calendar/sync-course-schedules', {
@@ -2224,14 +2260,50 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     try {
       setIsSavingCourseDetails(true);
+      const cleanSchedule = editCourseData.schedule.trim();
+      const extractedWeekdays = extractWeekdaysFromSchedule(cleanSchedule);
+
       await api.updateCourse(editCourseData.id, {
         name: editCourseData.name.trim(),
         subject: editCourseData.subject.trim(),
         grade: editCourseData.grade.trim(),
         room: editCourseData.room.trim(),
         division: editCourseData.division.trim(),
-        schedule: editCourseData.schedule.trim(),
+        schedule: cleanSchedule,
       });
+
+      if (extractedWeekdays.length > 0) {
+        const nextSettings: AttendanceSettings = {
+          ...attendanceSettings,
+          courseWeekdays: extractedWeekdays,
+          classesPerWeek: extractedWeekdays.length,
+        };
+        saveCourseAttendanceSettings(editCourseData.id, nextSettings);
+        setAttendanceSettings(nextSettings);
+
+        try {
+          const libroKey = `fds_libro_temas_${editCourseData.id}`;
+          const currentLibroRaw = localStorage.getItem(libroKey);
+          if (currentLibroRaw) {
+            const parsed = JSON.parse(currentLibroRaw);
+            const updatedLibro = {
+              ...parsed,
+              metadata: {
+                ...(parsed.metadata || {}),
+                asignatura: `${editCourseData.name.trim()} (${editCourseData.division.trim() || editCourseData.grade.trim() || 'Curso'})`,
+                horario: cleanSchedule,
+                configuredWeekdays: extractedWeekdays,
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
+            const uid = getActiveUserId();
+            if (uid) {
+              firestoreSync.saveUserSetting(uid, `libro_temas_${editCourseData.id}`, updatedLibro).catch(() => {});
+            }
+          }
+        } catch (_) {}
+      }
 
       setToastMessage(`¡Información actualizada para ${editCourseData.name}!`);
       setTimeout(() => setToastMessage(null), 4500);
@@ -7400,6 +7472,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               teacherName={user?.name}
               attendanceSettings={attendanceSettings}
               onUpdateAttendanceSettings={(next) => setAttendanceSettings(next)}
+              onRefreshCourse={onRefreshData}
               onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
               onOpenBackupModal={() => setIsBackupModalOpen(true)}
               isDarkMode={isDarkMode}

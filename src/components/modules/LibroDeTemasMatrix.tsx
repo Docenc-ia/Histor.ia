@@ -37,6 +37,8 @@ import {
   SchoolHolidayItem,
   WEEKDAY_LABELS,
   extractWeekdaysFromSchedule,
+  extractDailySlotsFromSchedule,
+  CourseDayTimeSlot,
 } from '../../utils/schoolHolidays';
 import { driveService } from '../../services/workspace/driveService';
 import {
@@ -67,6 +69,8 @@ export type NoClassCategory =
 
 export interface LibroDeTemasEntry {
   date: string; // YYYY-MM-DD
+  slotIndex?: number; // 0 para 1° hora, 1 para 2° hora, etc.
+  timeLabel?: string; // Ej: "07:50 - 08:50"
   isHoliday?: boolean; // Si no se dictó clase (Feriado, Acto, Mocks, Exámenes Internacionales, Deportes, etc.) -> Clase N° = "-"
   noClassCategory?: NoClassCategory;
   noClassReason?: string; // Razón específica por la cual no se dio la clase
@@ -88,6 +92,25 @@ export interface LibroDeTemasMetadata {
   folioNumero: string;
   configuredWeekdays?: number[]; // Días de clase guardados permanentemente para este curso
   isScheduleLocked?: boolean; // Si el día y horario ya quedaron fijados (editables con botón)
+  slotsConfig?: Record<number, CourseDayTimeSlot[]>; // Horas y módulos configurados por día
+}
+
+export interface ScheduledRow {
+  rowKey: string; // Identificador único de fila (ej: "2026-03-05" o "2026-03-05__1")
+  dateStr: string;
+  slotIndex: number;
+  totalSlotsForDay: number;
+  timeLabel: string;
+  day: number;
+  month: number;
+  dow: number;
+  weekdayShort: string;
+  weekdayFull: string;
+  term: '1c' | '2c';
+  computedClassNumber: string;
+  calendarHoliday?: SchoolHolidayItem;
+  suggestedUnit: string;
+  entry: LibroDeTemasEntry;
 }
 
 export interface LibroDeTemasSheetInfo {
@@ -112,6 +135,7 @@ export interface LibroDeTemasMatrixProps {
   teacherName?: string;
   attendanceSettings: AttendanceSettings;
   onUpdateAttendanceSettings?: (next: AttendanceSettings) => void;
+  onRefreshCourse?: () => void;
   onOpenAttendanceSettingsModal?: () => void;
   onOpenBackupModal?: () => void;
   isDarkMode: boolean;
@@ -237,21 +261,23 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   teacherName,
   attendanceSettings,
   onUpdateAttendanceSettings,
+  onRefreshCourse,
   onOpenAttendanceSettingsModal,
   onOpenBackupModal,
   isDarkMode,
   driveFolderId,
 }) => {
-  // Días iniciales detectados desde configuración previa o desde el horario del curso
+  // Días iniciales detectados desde el horario del curso (prioritario) o configuración previa
   const initialWeekdays = useMemo<number[]>(() => {
+    const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
+    if (fromSchedule.length > 0) return fromSchedule;
+
     if (
       Array.isArray(attendanceSettings?.courseWeekdays) &&
       attendanceSettings.courseWeekdays.length > 0
     ) {
       return [...attendanceSettings.courseWeekdays].sort((a, b) => a - b);
     }
-    const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
-    if (fromSchedule.length > 0) return fromSchedule;
     return [1, 3];
   }, [attendanceSettings?.courseWeekdays, courseSchedule]);
 
@@ -276,6 +302,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Modo edición de días y horarios (cuando ya están guardados se muestran bloqueados para no alterarlos por error)
   const [isEditingScheduleConfig, setIsEditingScheduleConfig] = useState<boolean>(false);
+  const [customScheduleInput, setCustomScheduleInput] = useState<string>('');
+
+  // Selector de hora para la tarjeta "Clase de Hoy" cuando el día tiene múltiples horas (módulos)
+  const [selectedTodaySlotIndex, setSelectedTodaySlotIndex] = useState<number>(0);
 
   // Modal para editar las opciones del desplegable "Carácter de la clase"
   const [showCharacterOptionsModal, setShowCharacterOptionsModal] = useState(false);
@@ -285,7 +315,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Modal para marcar una fecha como "Sin dictado de clase" (Feriado, Acto, Mocks, Exámenes Internacionales, Deportes, etc.)
   const [noClassModalRow, setNoClassModalRow] = useState<{
+    rowKey: string;
     dateStr: string;
+    slotIndex: number;
+    timeLabel?: string;
     day: number;
     month: number;
     weekdayFull: string;
@@ -293,6 +326,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     category: NoClassCategory;
     reasonText: string;
     observations: string;
+    applyToAllDaySlots?: boolean;
   } | null>(null);
 
   // Filtros de vista
@@ -361,9 +395,12 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<LibroDeTemasStorageData>;
         if (parsed.metadata) {
+          const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
           const savedWeekdays =
-            Array.isArray(parsed.metadata.configuredWeekdays) &&
-            parsed.metadata.configuredWeekdays.length > 0
+            fromSchedule.length > 0
+              ? fromSchedule
+              : Array.isArray(parsed.metadata.configuredWeekdays) &&
+                parsed.metadata.configuredWeekdays.length > 0
               ? parsed.metadata.configuredWeekdays
               : initialWeekdays;
 
@@ -371,10 +408,11 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             asignatura: parsed.metadata.asignatura || defaultMetadata.asignatura,
             profTitular: parsed.metadata.profTitular || defaultMetadata.profTitular,
             horario:
-              parsed.metadata.horario &&
+              courseSchedule ||
+              (parsed.metadata.horario &&
               parsed.metadata.horario !== 'Sin horario especificado'
                 ? parsed.metadata.horario
-                : defaultMetadata.horario,
+                : defaultMetadata.horario),
             folioNumero: parsed.metadata.folioNumero || '1',
             configuredWeekdays: savedWeekdays,
             isScheduleLocked: parsed.metadata.isScheduleLocked ?? true,
@@ -463,16 +501,19 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           }
 
           if (isCloudNewer && cloudData.metadata) {
+            const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
             const cloudWeekdays =
-              Array.isArray(cloudData.metadata.configuredWeekdays) &&
-              cloudData.metadata.configuredWeekdays.length > 0
+              fromSchedule.length > 0
+                ? fromSchedule
+                : Array.isArray(cloudData.metadata.configuredWeekdays) &&
+                  cloudData.metadata.configuredWeekdays.length > 0
                 ? cloudData.metadata.configuredWeekdays
                 : initialWeekdays;
 
             const mergedMeta: LibroDeTemasMetadata = {
               asignatura: cloudData.metadata.asignatura || defaultMetadata.asignatura,
               profTitular: cloudData.metadata.profTitular || defaultMetadata.profTitular,
-              horario: cloudData.metadata.horario || defaultMetadata.horario,
+              horario: courseSchedule || cloudData.metadata.horario || defaultMetadata.horario,
               folioNumero: cloudData.metadata.folioNumero || '1',
               configuredWeekdays: cloudWeekdays,
               isScheduleLocked: cloudData.metadata.isScheduleLocked ?? true,
@@ -602,24 +643,97 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     });
   };
 
-  // Días de cursada activos: prioriza los días guardados en metadata.configuredWeekdays
+  // Sincronizar automáticamente cuando cambie o se cargue courseSchedule (desde Calendar o edición del curso)
+  useEffect(() => {
+    if (!courseSchedule) return;
+    const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
+    if (fromSchedule.length === 0) return;
+
+    setMetadata((prev) => {
+      const prevDaysStr = (prev.configuredWeekdays || []).join(',');
+      const newDaysStr = fromSchedule.join(',');
+      if (prevDaysStr === newDaysStr && prev.horario === courseSchedule) {
+        return prev;
+      }
+      const updatedMeta: LibroDeTemasMetadata = {
+        ...prev,
+        horario: courseSchedule,
+        configuredWeekdays: fromSchedule,
+      };
+      persistLibroData(updatedMeta, entriesMap, characterOptions, true);
+      return updatedMeta;
+    });
+
+    const nextSettings: AttendanceSettings = {
+      ...attendanceSettings,
+      courseWeekdays: fromSchedule,
+      classesPerWeek: fromSchedule.length,
+    };
+    saveCourseAttendanceSettings(courseId, nextSettings);
+    if (onUpdateAttendanceSettings) {
+      onUpdateAttendanceSettings(nextSettings);
+    }
+  }, [courseSchedule, courseId]);
+
+  // Días de cursada activos: el horario superior (Google Calendar o edición del curso) es la fuente directa
   const activeWeekdays = useMemo<number[]>(() => {
+    // 1. Si el horario del curso tiene días explícitos, siempre tiene prioridad absoluta para coincidir con "Horario"
+    const fromSchedule = extractWeekdaysFromSchedule(courseSchedule || metadata.horario);
+    if (fromSchedule.length > 0) {
+      return fromSchedule;
+    }
+
+    // 2. Si no hay horario de texto pero sí días configurados en metadata
     if (
       Array.isArray(metadata.configuredWeekdays) &&
       metadata.configuredWeekdays.length > 0
     ) {
       return [...metadata.configuredWeekdays].sort((a, b) => a - b);
     }
+
+    // 3. Configuración de asistencia
     if (
       Array.isArray(attendanceSettings?.courseWeekdays) &&
       attendanceSettings.courseWeekdays.length > 0
     ) {
       return [...attendanceSettings.courseWeekdays].sort((a, b) => a - b);
     }
-    const fromSchedule = extractWeekdaysFromSchedule(metadata.horario || courseSchedule);
-    if (fromSchedule.length > 0) return fromSchedule;
+
     return [1, 3];
-  }, [metadata.configuredWeekdays, attendanceSettings?.courseWeekdays, metadata.horario, courseSchedule]);
+  }, [courseSchedule, metadata.horario, metadata.configuredWeekdays, attendanceSettings?.courseWeekdays]);
+
+  // Módulos y horas diarias extraídas del horario del curso (Google Calendar o edición)
+  // Cada hora/módulo genera una fila independiente en el Libro de Temas
+  const dailySlots = useMemo<Record<number, CourseDayTimeSlot[]>>(() => {
+    const raw = courseSchedule || metadata.horario;
+    const parsed = extractDailySlotsFromSchedule(raw, activeWeekdays);
+    if (metadata.slotsConfig) {
+      for (const d of activeWeekdays) {
+        if (metadata.slotsConfig[d] && metadata.slotsConfig[d].length > 0) {
+          parsed[d] = metadata.slotsConfig[d];
+        }
+      }
+    }
+    return parsed;
+  }, [courseSchedule, metadata.horario, metadata.slotsConfig, activeWeekdays]);
+
+  // Resumen legible de módulos y horas por día para el encabezado
+  const scheduleSummaryText = useMemo(() => {
+    return activeWeekdays
+      .map((d) => {
+        const slots = dailySlots[d] || [];
+        const dayLabel = WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d] || `Día ${d}`;
+        if (slots.length > 1) {
+          const times = slots.map((s) => s.timeLabel).filter(Boolean).join(' y ');
+          return `${dayLabel}: ${slots.length} horas${times ? ` (${times})` : ''}`;
+        }
+        if (slots.length === 1 && slots[0].timeLabel) {
+          return `${dayLabel}: ${slots[0].timeLabel}`;
+        }
+        return dayLabel;
+      })
+      .join(' · ');
+  }, [activeWeekdays, dailySlots]);
 
   // Alternar día de cursada semanal
   const handleToggleCourseWeekday = (dayNumber: number) => {
@@ -650,8 +764,26 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Guardar permanentemente Día y Horario de las clases
   const handleSavePermanentScheduleAndDays = async () => {
+    const newScheduleLabel = activeWeekdays
+      .map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d])
+      .join(', ');
+
+    const fromPreviousSchedule = extractWeekdaysFromSchedule(courseSchedule || metadata.horario);
+    const daysChanged = fromPreviousSchedule.join(',') !== activeWeekdays.join(',');
+
+    let updatedScheduleText = courseSchedule || metadata.horario;
+    if (
+      daysChanged ||
+      !updatedScheduleText ||
+      updatedScheduleText === 'Sin horario especificado' ||
+      updatedScheduleText === 'Lunes y Miércoles'
+    ) {
+      updatedScheduleText = newScheduleLabel;
+    }
+
     const nextMeta: LibroDeTemasMetadata = {
       ...metadata,
+      horario: updatedScheduleText,
       configuredWeekdays: activeWeekdays,
       isScheduleLocked: true,
     };
@@ -670,14 +802,15 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       onUpdateAttendanceSettings(nextSettings);
     }
 
-    if (metadata.horario && metadata.horario !== 'Sin horario especificado') {
-      try {
-        await api.updateCourse(courseId, { schedule: metadata.horario });
-      } catch (_) {}
-    }
+    try {
+      await api.updateCourse(courseId, { schedule: updatedScheduleText });
+      if (onRefreshCourse) {
+        onRefreshCourse();
+      }
+    } catch (_) {}
 
     setToastMsg(
-      'Días y horario de cursada guardados permanentemente. Podés editarlos cuando lo necesites.'
+      'Días y horario de cursada sincronizados correctamente para toda la materia.'
     );
     setTimeout(() => setToastMsg(null), 3500);
   };
@@ -794,11 +927,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     const sortedDates = Array.from(dateSet).sort();
 
-    // Construir filas y numerar secuencialmente Clase N° (saltando días sin dictado con "-")
+    // Construir filas y numerar secuencialmente Clase N°: CADA HORA/MÓDULO ES UNA FILA
+    // Si un día tiene 2 horas (ej: 07:50 - 08:50 y 08:50 - 09:50), se generan 2 filas consecutivas
+    const rows: ScheduledRow[] = [];
     let sequentialClassCounter = 0;
     let lastKnownUnit = '1';
 
-    return sortedDates.map((dateStr) => {
+    for (const dateStr of sortedDates) {
       const dateObj = parseLocalDate(dateStr);
       const day = dateObj.getDate();
       const month = dateObj.getMonth() + 1;
@@ -806,90 +941,121 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       const weekdayShort = SHORT_WEEKDAYS[dow] || '';
       const weekdayFull = WEEKDAY_LABELS[dow] || '';
       const calendarHoliday = holidaysByDate[dateStr];
-      const saved = entriesMap[dateStr];
+      const slots =
+        dailySlots[dow] && dailySlots[dow].length > 0
+          ? dailySlots[dow]
+          : [{ slotIndex: 0, timeLabel: '' }];
 
-      // Determinar si la fecha es feriado / evento sin dictado de clases
-      const isHoliday =
-        saved?.isHoliday !== undefined ? saved.isHoliday : Boolean(calendarHoliday);
+      slots.forEach((slot, sIdx) => {
+        const rowKey = sIdx === 0 ? dateStr : `${dateStr}__${sIdx}`;
+        // Compatibilidad: buscar primero en rowKey específico, o en dateStr para el slot 0
+        const saved = entriesMap[rowKey] || (sIdx === 0 ? entriesMap[dateStr] : undefined);
 
-      const noClassCategory: NoClassCategory | undefined = isHoliday
-        ? saved?.noClassCategory || 'feriado'
-        : undefined;
+        // Feriado en todo el día (desde el calendario escolar o marcado en dateStr)
+        const dayWideHoliday =
+          Boolean(calendarHoliday) || Boolean(entriesMap[dateStr]?.isHoliday);
+        const isHoliday =
+          saved?.isHoliday !== undefined ? saved.isHoliday : dayWideHoliday;
 
-      let computedClassNumber = '-';
-      if (!isHoliday) {
-        sequentialClassCounter += 1;
-        computedClassNumber = saved?.customClassNumber?.trim()
-          ? saved.customClassNumber.trim()
-          : String(sequentialClassCounter);
-      }
+        const noClassCategory: NoClassCategory | undefined = isHoliday
+          ? saved?.noClassCategory || entriesMap[dateStr]?.noClassCategory || 'feriado'
+          : undefined;
 
-      if (saved?.unitNumber && saved.unitNumber !== '-') {
-        lastKnownUnit = saved.unitNumber;
-      }
+        let computedClassNumber = '-';
+        if (!isHoliday) {
+          sequentialClassCounter += 1;
+          computedClassNumber = saved?.customClassNumber?.trim()
+            ? saved.customClassNumber.trim()
+            : String(sequentialClassCounter);
+        }
 
-      const defaultNoClassContents =
-        saved?.noClassReason?.trim() ||
-        (calendarHoliday ? 'Feriado' : 'Sin dictado de clases');
+        if (saved?.unitNumber && saved.unitNumber !== '-') {
+          lastKnownUnit = saved.unitNumber;
+        }
 
-      const entry: LibroDeTemasEntry = {
-        date: dateStr,
-        isHoliday,
-        noClassCategory,
-        noClassReason: saved?.noClassReason,
-        holidayName: calendarHoliday?.name || saved?.holidayName,
-        customClassNumber: saved?.customClassNumber || '',
-        unitNumber: isHoliday ? '-' : saved?.unitNumber ?? '',
-        contents: isHoliday
-          ? saved?.contents !== undefined && saved.contents !== ''
-            ? saved.contents
-            : defaultNoClassContents
-          : saved?.contents ?? '',
-        classCharacter: isHoliday
-          ? '-'
-          : saved?.classCharacter !== undefined
-          ? saved.classCharacter
-          : saved?.contents
-          ? characterOptions[0] || 'Teórico - Práctica'
-          : '',
-        observations:
-          saved?.observations ??
-          (isHoliday && calendarHoliday ? calendarHoliday.name : ''),
-        teacherSignature: saved?.teacherSignature ?? '',
-        authoritySignature: saved?.authoritySignature ?? '',
-        isCustomDate: saved?.isCustomDate,
-      };
+        const defaultNoClassContents =
+          saved?.noClassReason?.trim() ||
+          entriesMap[dateStr]?.noClassReason?.trim() ||
+          (calendarHoliday ? 'Feriado' : 'Sin dictado de clases');
 
-      return {
-        dateStr,
-        day,
-        month,
-        dow,
-        weekdayShort,
-        weekdayFull,
-        term: dateTermMap[dateStr] || '1c',
-        computedClassNumber,
-        calendarHoliday,
-        suggestedUnit: lastKnownUnit,
-        entry,
-      };
-    });
-  }, [attendanceSettings, activeWeekdays, holidaysByDate, entriesMap, characterOptions]);
+        const entry: LibroDeTemasEntry = {
+          date: dateStr,
+          slotIndex: sIdx,
+          timeLabel: slot.timeLabel,
+          isHoliday,
+          noClassCategory,
+          noClassReason: saved?.noClassReason || entriesMap[dateStr]?.noClassReason,
+          holidayName:
+            calendarHoliday?.name || saved?.holidayName || entriesMap[dateStr]?.holidayName,
+          customClassNumber: saved?.customClassNumber || '',
+          unitNumber: isHoliday ? '-' : saved?.unitNumber ?? '',
+          contents: isHoliday
+            ? saved?.contents !== undefined && saved.contents !== ''
+              ? saved.contents
+              : defaultNoClassContents
+            : saved?.contents ?? '',
+          classCharacter: isHoliday
+            ? '-'
+            : saved?.classCharacter !== undefined
+            ? saved.classCharacter
+            : saved?.contents
+            ? characterOptions[0] || 'Teórico - Práctica'
+            : '',
+          observations:
+            saved?.observations ??
+            (isHoliday && calendarHoliday ? calendarHoliday.name : ''),
+          teacherSignature: saved?.teacherSignature ?? '',
+          authoritySignature: saved?.authoritySignature ?? '',
+          isCustomDate: saved?.isCustomDate,
+        };
 
-  // Actualizar una celda de una fecha específica
+        rows.push({
+          rowKey,
+          dateStr,
+          slotIndex: sIdx,
+          totalSlotsForDay: slots.length,
+          timeLabel: slot.timeLabel,
+          day,
+          month,
+          dow,
+          weekdayShort,
+          weekdayFull,
+          term: dateTermMap[dateStr] || '1c',
+          computedClassNumber,
+          calendarHoliday,
+          suggestedUnit: lastKnownUnit,
+          entry,
+        });
+      });
+    }
+
+    return rows;
+  }, [
+    attendanceSettings,
+    activeWeekdays,
+    dailySlots,
+    holidaysByDate,
+    entriesMap,
+    characterOptions,
+  ]);
+
+  // Actualizar una celda de una fila específica (identificada por su rowKey)
   const updateEntryField = (
-    dateStr: string,
+    rowKey: string,
     updater: (
       current: LibroDeTemasEntry,
       rowMeta?: (typeof scheduledRows)[0]
     ) => LibroDeTemasEntry,
     immediateCloud = false
   ) => {
-    const rowMeta = scheduledRows.find((r) => r.dateStr === dateStr);
+    const rowMeta = scheduledRows.find((r) => r.rowKey === rowKey || r.dateStr === rowKey);
+    const dateStr = rowMeta ? rowMeta.dateStr : rowKey.split('__')[0];
     const current: LibroDeTemasEntry = rowMeta
       ? { ...rowMeta.entry }
-      : entriesMap[dateStr] || {
+      : entriesMap[rowKey] || entriesMap[dateStr] || {
           date: dateStr,
+          slotIndex: rowMeta?.slotIndex || 0,
+          timeLabel: rowMeta?.timeLabel,
           unitNumber: '1',
           contents: '',
           classCharacter: characterOptions[0] || 'Teórico - Práctica',
@@ -900,7 +1066,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     const updated = updater(current, rowMeta);
     setEntriesMap((prev) => {
-      const next = { ...prev, [dateStr]: updated };
+      const next = { ...prev, [rowKey]: updated };
+      if (rowMeta && rowMeta.slotIndex === 0) {
+        next[dateStr] = updated;
+      }
       persistLibroData(metadata, next, characterOptions, immediateCloud);
       return next;
     });
@@ -919,7 +1088,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       : 'Feriado';
 
     setNoClassModalRow({
+      rowKey: row.rowKey,
       dateStr: row.dateStr,
+      slotIndex: row.slotIndex,
+      timeLabel: row.timeLabel,
       day: row.day,
       month: row.month,
       weekdayFull: row.weekdayFull,
@@ -927,6 +1099,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       category: currentCat,
       reasonText: initialReason,
       observations: row.entry.observations || row.calendarHoliday?.name || '',
+      applyToAllDaySlots: true,
     });
   };
 
@@ -936,20 +1109,35 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     if (!noClassModalRow) return;
 
     const reasonClean = noClassModalRow.reasonText.trim() || 'Sin dictado de clases';
-    updateEntryField(
-      noClassModalRow.dateStr,
-      (curr) => ({
-        ...curr,
-        isHoliday: true,
-        noClassCategory: noClassModalRow.category,
-        noClassReason: reasonClean,
+    const updater = (curr: LibroDeTemasEntry): LibroDeTemasEntry => ({
+      ...curr,
+      isHoliday: true,
+      noClassCategory: noClassModalRow.category,
+      noClassReason: reasonClean,
+      unitNumber: '-',
+      contents: reasonClean,
+      classCharacter: '-',
+      observations: noClassModalRow.observations.trim(),
+    });
+
+    const siblingRows = scheduledRows.filter((r) => r.dateStr === noClassModalRow.dateStr);
+    setEntriesMap((prev) => {
+      const next = { ...prev };
+      next[noClassModalRow.dateStr] = updater(prev[noClassModalRow.dateStr] || {
+        date: noClassModalRow.dateStr,
         unitNumber: '-',
         contents: reasonClean,
         classCharacter: '-',
-        observations: noClassModalRow.observations.trim(),
-      }),
-      true
-    );
+        observations: '',
+        teacherSignature: '',
+        authoritySignature: '',
+      });
+      siblingRows.forEach((sr) => {
+        next[sr.rowKey] = updater(prev[sr.rowKey] || sr.entry);
+      });
+      persistLibroData(metadata, next, characterOptions, true);
+      return next;
+    });
 
     setNoClassModalRow(null);
     setToastMsg(
@@ -960,15 +1148,15 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Restaurar un día sin clase a clase normal dictada
   const handleRevertToNormalClass = (dateStr: string) => {
-    const row = scheduledRows.find((r) => r.dateStr === dateStr);
-    updateEntryField(
-      dateStr,
-      (curr) => ({
+    const siblingRows = scheduledRows.filter((r) => r.dateStr === dateStr);
+    setEntriesMap((prev) => {
+      const next = { ...prev };
+      const revertEntry = (curr: LibroDeTemasEntry, sr?: (typeof scheduledRows)[0]): LibroDeTemasEntry => ({
         ...curr,
         isHoliday: false,
         noClassCategory: undefined,
         noClassReason: undefined,
-        unitNumber: curr.unitNumber === '-' ? row?.suggestedUnit || '1' : curr.unitNumber,
+        unitNumber: curr.unitNumber === '-' ? sr?.suggestedUnit || '1' : curr.unitNumber,
         contents:
           curr.contents === 'Feriado' ||
           curr.contents.startsWith('Sin dictado') ||
@@ -979,16 +1167,22 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           curr.classCharacter === '-'
             ? characterOptions[0] || 'Teórico - Práctica'
             : curr.classCharacter,
-      }),
-      true
-    );
+      });
+
+      if (next[dateStr]) next[dateStr] = revertEntry(next[dateStr]);
+      siblingRows.forEach((sr) => {
+        if (next[sr.rowKey]) next[sr.rowKey] = revertEntry(next[sr.rowKey], sr);
+      });
+      persistLibroData(metadata, next, characterOptions, true);
+      return next;
+    });
     setNoClassModalRow(null);
   };
 
   // Firmar digitalmente una fila con el nombre del profesor
-  const handleSignRow = (dateStr: string) => {
+  const handleSignRow = (rowKey: string) => {
     const sig = metadata.profTitular.trim() || teacherName || 'Firmado';
-    updateEntryField(dateStr, (curr) => ({
+    updateEntryField(rowKey, (curr) => ({
       ...curr,
       teacherSignature: curr.teacherSignature ? '' : sig,
     }));
@@ -1003,7 +1197,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     scheduledRows.forEach((row) => {
       const hasContent = row.entry.contents.trim().length > 0;
       if (hasContent && !row.entry.teacherSignature) {
-        nextEntries[row.dateStr] = {
+        nextEntries[row.rowKey] = {
           ...row.entry,
           teacherSignature: sig,
         };
@@ -1056,6 +1250,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     setEntriesMap((prev) => {
       const next = { ...prev };
       delete next[dateStr];
+      Object.keys(next).forEach((k) => {
+        if (k.startsWith(`${dateStr}__`)) delete next[k];
+      });
       persistLibroData(metadata, next, characterOptions, true);
       return next;
     });
@@ -1081,6 +1278,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           row.entry.observations.toLowerCase().includes(q) ||
           row.entry.classCharacter.toLowerCase().includes(q) ||
           row.entry.unitNumber.toLowerCase().includes(q) ||
+          (row.timeLabel && row.timeLabel.toLowerCase().includes(q)) ||
+          row.computedClassNumber.toLowerCase().includes(q) ||
           dateFormatted.includes(q) ||
           row.dateStr.includes(q);
         if (!match) return false;
@@ -1098,6 +1297,18 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     if (currentOrNext) return currentOrNext;
     return scheduledRows[scheduledRows.length - 1];
   }, [scheduledRows, todayStr]);
+
+  // Todas las horas/módulos programados para la fecha seleccionada en "Clase de Hoy"
+  const todayRows = useMemo(() => {
+    if (!todayClassRow) return [];
+    return scheduledRows.filter((r) => r.dateStr === todayClassRow.dateStr);
+  }, [scheduledRows, todayClassRow]);
+
+  // Fila activa que se muestra y edita en la tarjeta superior "Clase de Hoy"
+  const activeTodayRow = useMemo(() => {
+    if (todayRows.length === 0) return null;
+    return todayRows[selectedTodaySlotIndex] || todayRows[0];
+  }, [todayRows, selectedTodaySlotIndex]);
 
   // Estadísticas rápidas del Libro de Temas
   const stats = useMemo(() => {
@@ -1137,6 +1348,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         return `<tr style="background-color:${bgRow};${textStyle}">
           <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${row.day}</td>
           <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${row.month}</td>
+          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-family:monospace;font-size:8.5pt;width:80px;">${row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-')}</td>
           <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:54px;">${row.computedClassNumber}</td>
           <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;width:58px;">${
             isHol ? '-' : row.entry.unitNumber || ''
@@ -1177,7 +1389,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         <strong>PROF. TITULAR:</strong> ${metadata.profTitular}
       </td>
       <td style="padding:8px 12px;border:1px solid #0f172a;width:30%;font-size:10.5pt;">
-        <strong>DÍAS DE CLASE:</strong> ${activeWeekdaysLabel}
+        <strong>DÍAS DE CLASE:</strong> ${activeWeekdaysLabel}${scheduleSummaryText ? ` (${scheduleSummaryText})` : ''}
       </td>
     </tr>
   </table>
@@ -1186,7 +1398,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   <table style="width:100%;border-collapse:collapse;border:2px solid #0f172a;font-size:9.5pt;">
     <thead>
       <tr style="background-color:#e2e8f0;color:#0f172a;">
-        <th colspan="2" style="border:1px solid #0f172a;padding:6px 4px;text-align:center;font-weight:bold;">FECHA</th>
+        <th colspan="3" style="border:1px solid #0f172a;padding:6px 4px;text-align:center;font-weight:bold;">FECHA</th>
         <th rowspan="2" style="border:1px solid #0f172a;padding:6px 4px;text-align:center;font-weight:bold;">Clase<br/>N°</th>
         <th rowspan="2" style="border:1px solid #0f172a;padding:6px 4px;text-align:center;font-weight:bold;">Unidad<br/>N°</th>
         <th rowspan="2" style="border:1px solid #0f172a;padding:6px 8px;text-align:center;font-weight:bold;letter-spacing:1px;">CONTENIDOS</th>
@@ -1198,6 +1410,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       <tr style="background-color:#f1f5f9;color:#0f172a;">
         <th style="border:1px solid #0f172a;padding:4px;text-align:center;font-size:8.5pt;">Día</th>
         <th style="border:1px solid #0f172a;padding:4px;text-align:center;font-size:8.5pt;">Mes</th>
+        <th style="border:1px solid #0f172a;padding:4px;text-align:center;font-size:8.5pt;">Hora</th>
       </tr>
     </thead>
     <tbody>
@@ -1475,10 +1688,11 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         nowStr,
         '',
       ];
-      const emptyRow = ['', '', '', '', '', '', '', '', ''];
+      const emptyRow = ['', '', '', '', '', '', '', '', '', ''];
       const headerRow = [
         'Fecha (ISO)',
         'FECHA (Día / Mes)',
+        'Horario / Módulo',
         'Clase N°',
         'Unidad N°',
         'CONTENIDOS',
@@ -1488,19 +1702,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         'Firma de la Autoridad',
       ];
 
-      let classCounter = 0;
       const dataRows = scheduledRows.map((row) => {
-        const entry = workingEntries[row.dateStr] || row.entry;
+        const entry = workingEntries[row.rowKey] || workingEntries[row.dateStr] || row.entry;
         const isHol = Boolean(entry.isHoliday);
-        let classNumStr = '-';
-        if (!isHol) {
-          classCounter += 1;
-          classNumStr = entry.customClassNumber?.trim() || String(classCounter);
-        }
         return [
           row.dateStr,
           `${row.day}/${row.month}`,
-          classNumStr,
+          row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-'),
+          row.computedClassNumber,
           isHol ? '-' : entry.unitNumber || '',
           entry.contents || '',
           isHol ? '-' : entry.classCharacter || '',
@@ -2089,19 +2298,29 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   >
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       <Lock className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span className="text-xs font-bold text-blue-600 dark:text-blue-400 truncate">
-                        {activeWeekdaysLabel}
-                      </span>
+                      <div className="flex flex-col min-w-0">
+                        <span className="text-xs font-bold text-blue-600 dark:text-blue-400 truncate">
+                          {activeWeekdaysLabel}
+                        </span>
+                        {scheduleSummaryText && (
+                          <span className="text-[10px] font-medium text-neutral-500 dark:text-slate-400 truncate">
+                            {scheduleSummaryText}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => setIsEditingScheduleConfig(true)}
+                      onClick={() => {
+                        setCustomScheduleInput(courseSchedule || metadata.horario || '');
+                        setIsEditingScheduleConfig(true);
+                      }}
                       className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer shrink-0 ${
                         isDarkMode
                           ? 'border-slate-600 bg-slate-700/80 text-slate-200 hover:bg-slate-700'
                           : 'border-neutral-200 bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
                       }`}
-                      title="Modificar los días de cursada si cambiaron"
+                      title="Modificar los días y horas de cursada"
                     >
                       <Pencil className="w-3 h-3 text-blue-500 shrink-0" />
                       <span>Editar</span>
@@ -2109,48 +2328,130 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   </div>
                 ) : (
                   <div
-                    className={`w-full px-2.5 py-1 rounded-lg border flex flex-wrap items-center justify-between gap-1.5 min-w-0 ${
+                    className={`w-full p-2.5 rounded-lg border space-y-2 min-w-0 ${
                       isDarkMode
-                        ? 'bg-slate-800 border-blue-500/60'
-                        : 'bg-white border-blue-400'
+                        ? 'bg-slate-800 border-blue-500/60 text-slate-200'
+                        : 'bg-white border-blue-400 text-neutral-800'
                     }`}
                   >
-                    <div className="inline-flex items-center gap-1 flex-wrap min-w-0">
-                      {[
-                        { day: 1, label: 'Lun' },
-                        { day: 2, label: 'Mar' },
-                        { day: 3, label: 'Mié' },
-                        { day: 4, label: 'Jue' },
-                        { day: 5, label: 'Vie' },
-                      ].map((d) => {
-                        const isSelected = activeWeekdays.includes(d.day);
-                        return (
-                          <button
-                            key={d.day}
-                            type="button"
-                            onClick={() => handleToggleCourseWeekday(d.day)}
-                            className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-all cursor-pointer ${
-                              isSelected
-                                ? 'bg-blue-600 border-blue-600 text-white shadow-2xs'
-                                : isDarkMode
-                                ? 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
-                                : 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                            }`}
-                          >
-                            {d.label}
-                          </button>
-                        );
-                      })}
+                    {/* Días de la semana */}
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase text-neutral-500 dark:text-slate-400">
+                        Días de cursada:
+                      </span>
+                      <div className="inline-flex items-center gap-1 flex-wrap min-w-0">
+                        {[
+                          { day: 1, label: 'Lun' },
+                          { day: 2, label: 'Mar' },
+                          { day: 3, label: 'Mié' },
+                          { day: 4, label: 'Jue' },
+                          { day: 5, label: 'Vie' },
+                        ].map((d) => {
+                          const isSelected = activeWeekdays.includes(d.day);
+                          return (
+                            <button
+                              key={d.day}
+                              type="button"
+                              onClick={() => handleToggleCourseWeekday(d.day)}
+                              className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-blue-600 border-blue-600 text-white shadow-2xs'
+                                  : isDarkMode
+                                  ? 'bg-slate-900 border-slate-700 text-slate-400 hover:text-white'
+                                  : 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                              }`}
+                            >
+                              {d.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleSavePermanentScheduleAndDays}
-                      className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer shrink-0"
-                      title="Guardar permanentemente los días de clase de este curso"
-                    >
-                      <Check className="w-3 h-3 shrink-0" />
-                      <span>Guardar</span>
-                    </button>
+
+                    {/* Horarios específicos por día (cada hora genera una fila) */}
+                    <div className="space-y-1.5 pt-1 border-t border-neutral-200 dark:border-slate-700/60">
+                      <div className="flex items-center justify-between gap-1 flex-wrap">
+                        <span className="text-[10px] font-bold uppercase text-neutral-500 dark:text-slate-400">
+                          Horario (cada hora es una fila en la tabla):
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const daysNames = activeWeekdays.map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]);
+                            const formatted = daysNames
+                              .map((dn) => `${dn} 07:50 - 08:50, ${dn} 08:50 - 09:50`)
+                              .join(', ');
+                            setCustomScheduleInput(formatted);
+                          }}
+                          className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer"
+                        >
+                          Usar 2 horas (07:50 - 08:50 y 08:50 - 09:50)
+                        </button>
+                      </div>
+
+                      <input
+                        type="text"
+                        value={customScheduleInput}
+                        onChange={(e) => setCustomScheduleInput(e.target.value)}
+                        placeholder="Ej: Jueves 07:50 - 08:50, Jueves 08:50 - 09:50"
+                        className={`w-full px-2.5 py-1 text-xs rounded-md border font-medium focus:outline-hidden ${
+                          isDarkMode
+                            ? 'bg-slate-900 border-slate-700 text-white'
+                            : 'bg-neutral-50 border-neutral-300 text-neutral-900'
+                        }`}
+                      />
+                      <p className="text-[10px] text-neutral-500 dark:text-slate-400">
+                        Si tenés 2 horas un día (ej: 7:50 a 8:50 y 8:50 a 9:50), se generan automáticamente 2 filas en el Libro de Temas.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingScheduleConfig(false)}
+                        className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-neutral-500 dark:text-slate-400 hover:text-neutral-700 cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const scheduleToSave = customScheduleInput.trim() || activeWeekdays.map((d) => WEEKDAY_LABELS[d]).join(', ');
+                          const nextWeekdays = extractWeekdaysFromSchedule(scheduleToSave);
+                          const finalWeekdays = nextWeekdays.length > 0 ? nextWeekdays : activeWeekdays;
+
+                          const nextMeta: LibroDeTemasMetadata = {
+                            ...metadata,
+                            horario: scheduleToSave,
+                            configuredWeekdays: finalWeekdays,
+                            isScheduleLocked: true,
+                          };
+                          setMetadata(nextMeta);
+                          setIsEditingScheduleConfig(false);
+                          persistLibroData(nextMeta, entriesMap, characterOptions, true);
+
+                          const nextSettings: AttendanceSettings = {
+                            ...attendanceSettings,
+                            courseWeekdays: finalWeekdays,
+                            classesPerWeek: finalWeekdays.length,
+                          };
+                          saveCourseAttendanceSettings(courseId, nextSettings);
+                          if (onUpdateAttendanceSettings) onUpdateAttendanceSettings(nextSettings);
+
+                          try {
+                            await api.updateCourse(courseId, { schedule: scheduleToSave });
+                            if (onRefreshCourse) onRefreshCourse();
+                          } catch (_) {}
+
+                          setToastMsg('Días y horas de cursada guardados correctamente.');
+                          setTimeout(() => setToastMsg(null), 3500);
+                        }}
+                        className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer"
+                      >
+                        <Check className="w-3 h-3" />
+                        <span>Guardar</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -2279,8 +2580,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       {/* ===================================================================== */}
       {/* MODO TARJETA COMPACTA PARA "CLASE DE HOY" (CELULAR Y ZOOM CERCANO)     */}
       {/* ===================================================================== */}
-      {todayClassRow && (() => {
-        const row = todayClassRow;
+      {activeTodayRow && (() => {
+        const row = activeTodayRow;
         const isHol = row.entry.isHoliday;
         const noClassPreset = NO_CLASS_PRESETS.find(
           (p) => p.id === (row.entry.noClassCategory || 'feriado')
@@ -2313,10 +2614,11 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     isDarkMode ? 'text-blue-100' : 'text-blue-950'
                   }`}
                 >
-                  {row.weekdayFull} {row.day}/{row.month}{' '}
+                  {row.weekdayFull} {row.day}/{row.month}
+                  {row.timeLabel ? ` · ${row.timeLabel}` : ''}
                   {row.computedClassNumber !== '-'
-                    ? `· Clase N° ${row.computedClassNumber}`
-                    : '· Día sin dictado'}
+                    ? ` · Clase N° ${row.computedClassNumber}`
+                    : ' · Día sin dictado'}
                 </span>
                 <span
                   className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
@@ -2346,7 +2648,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       setSearchQuery('');
                     }
                     setTimeout(() => {
-                      if (todayRowRef.current) {
+                      const el = document.getElementById(`row-${row.rowKey}`);
+                      if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      } else if (todayRowRef.current) {
                         todayRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
                       }
                     }, 50);
@@ -2379,6 +2684,53 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               </div>
             </div>
 
+            {/* Selector de Horas de Hoy (cuando el curso tiene 2 o más horas/módulos en el mismo día) */}
+            {todayRows.length > 1 && (
+              <div
+                className={`px-3.5 py-2 border-b flex flex-wrap items-center gap-2 ${
+                  isDarkMode
+                    ? 'bg-slate-850/80 border-slate-800'
+                    : 'bg-blue-50/50 border-blue-100'
+                }`}
+              >
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
+                  Horas de esta fecha:
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {todayRows.map((tr, idx) => {
+                    const isSelected = tr.rowKey === row.rowKey;
+                    const hasContent = tr.entry.contents.trim().length > 0;
+                    return (
+                      <button
+                        key={tr.rowKey}
+                        type="button"
+                        onClick={() => setSelectedTodaySlotIndex(idx)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                          isSelected
+                            ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
+                            : isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                            : 'bg-white border-neutral-300 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        <span>
+                          {tr.timeLabel ? `${idx + 1}° Hora (${tr.timeLabel})` : `${idx + 1}° Hora`}
+                        </span>
+                        <span
+                          className={`text-[10px] px-1 rounded ${
+                            isSelected ? 'bg-blue-700 text-white' : 'bg-neutral-200 dark:bg-slate-700'
+                          }`}
+                        >
+                          N° {tr.computedClassNumber}
+                        </span>
+                        {hasContent && <span className="text-emerald-400 font-bold">✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Cuerpo adaptable de la tarjeta Clase de Hoy (sin scroll horizontal) */}
             <div className="p-3.5 space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
@@ -2403,14 +2755,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       value={row.entry.unitNumber}
                       placeholder={row.suggestedUnit || '1'}
                       onChange={(e) =>
-                        updateEntryField(row.dateStr, (curr) => ({
+                        updateEntryField(row.rowKey, (curr) => ({
                           ...curr,
                           unitNumber: e.target.value,
                         }))
                       }
                       onFocus={() => {
                         if (!row.entry.unitNumber && row.suggestedUnit) {
-                          updateEntryField(row.dateStr, (curr) => ({
+                          updateEntryField(row.rowKey, (curr) => ({
                             ...curr,
                             unitNumber: row.suggestedUnit,
                           }));
@@ -2459,7 +2811,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           setShowCharacterOptionsModal(true);
                           return;
                         }
-                        updateEntryField(row.dateStr, (curr) => ({
+                        updateEntryField(row.rowKey, (curr) => ({
                           ...curr,
                           classCharacter: val,
                         }));
@@ -2493,7 +2845,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               {/* Contenidos */}
               <div className="min-w-0">
                 <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
-                  Contenidos {isHol ? '(Motivo sin dictado)' : 'de la Clase de Hoy'}
+                  Contenidos {isHol ? '(Motivo sin dictado)' : 'de la Clase'} {row.timeLabel ? `(${row.timeLabel})` : ''}
                 </label>
                 <textarea
                   rows={2}
@@ -2501,11 +2853,11 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   placeholder={
                     isHol
                       ? 'Escribir motivo por el cual no se dictó la clase (Feriado, Acto, Mocks, Deportes...)'
-                      : 'Escribir los contenidos dictados en la Clase de Hoy...'
+                      : 'Escribir los contenidos dictados en esta hora...'
                   }
                   onChange={(e) => {
                     const val = e.target.value;
-                    updateEntryField(row.dateStr, (curr) => ({
+                    updateEntryField(row.rowKey, (curr) => ({
                       ...curr,
                       contents: val,
                       noClassReason: curr.isHoliday ? val : curr.noClassReason,
@@ -2542,7 +2894,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     value={row.entry.observations}
                     placeholder="Observaciones..."
                     onChange={(e) =>
-                      updateEntryField(row.dateStr, (curr) => ({
+                      updateEntryField(row.rowKey, (curr) => ({
                         ...curr,
                         observations: e.target.value,
                       }))
@@ -2562,7 +2914,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   {row.entry.teacherSignature ? (
                     <button
                       type="button"
-                      onClick={() => handleSignRow(row.dateStr)}
+                      onClick={() => handleSignRow(row.rowKey)}
                       className="w-full px-2.5 py-1.5 rounded-lg bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 text-xs font-serif italic cursor-pointer hover:bg-red-500/10 hover:text-red-500 truncate"
                       title="Clic para quitar firma"
                     >
@@ -2571,7 +2923,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                   ) : (
                     <button
                       type="button"
-                      onClick={() => handleSignRow(row.dateStr)}
+                      onClick={() => handleSignRow(row.rowKey)}
                       className={`w-full px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
                         isDarkMode
                           ? 'bg-blue-950/60 border-blue-700 text-blue-300 hover:bg-blue-900/60'
@@ -2592,7 +2944,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     value={row.entry.authoritySignature}
                     placeholder="Visado..."
                     onChange={(e) =>
-                      updateEntryField(row.dateStr, (curr) => ({
+                      updateEntryField(row.rowKey, (curr) => ({
                         ...curr,
                         authoritySignature: e.target.value,
                       }))
@@ -2630,7 +2982,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 }`}
               >
                 <th
-                  colSpan={2}
+                  colSpan={3}
                   className={`py-2 px-2 text-center border-r ${
                     isDarkMode ? 'border-slate-700' : 'border-neutral-300'
                   }`}
@@ -2716,7 +3068,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 </th>
               </tr>
 
-              {/* Segunda fila de encabezados para Día | Mes */}
+              {/* Segunda fila de encabezados para Día | Mes | Horario */}
               <tr
                 className={`border-b text-[10px] font-bold uppercase ${
                   isDarkMode
@@ -2738,6 +3090,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 >
                   Mes
                 </th>
+                <th
+                  className={`py-1.5 px-2 text-center border-r w-28 ${
+                    isDarkMode ? 'border-slate-700' : 'border-neutral-300'
+                  }`}
+                >
+                  Horario
+                </th>
               </tr>
             </thead>
 
@@ -2748,7 +3107,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             >
               {filteredRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-12 px-4 text-center text-neutral-400">
+                  <td colSpan={10} className="py-12 px-4 text-center text-neutral-400">
                     <BookOpen className="w-8 h-8 mx-auto mb-2 opacity-40" />
                     <p className="font-semibold text-sm">
                       No hay clases que coincidan con el filtro seleccionado.
@@ -2763,6 +3122,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 filteredRows.map((row) => {
                   const isHol = row.entry.isHoliday;
                   const isToday = todayClassRow?.dateStr === row.dateStr;
+                  const isSelectedTodaySlot =
+                    isToday && row.slotIndex === (selectedTodaySlotIndex || 0);
                   const isPastOrToday = row.dateStr <= todayStr;
                   const isEmptyPast =
                     isPastOrToday && !isHol && row.entry.contents.trim().length === 0;
@@ -2774,8 +3135,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
                   return (
                     <tr
-                      key={row.dateStr}
-                      ref={isToday ? todayRowRef : undefined}
+                      key={row.rowKey}
+                      ref={isSelectedTodaySlot ? todayRowRef : undefined}
                       className={`transition-colors group ${
                         isToday
                           ? isDarkMode
@@ -2820,6 +3181,34 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           <span className="text-[9px] opacity-50 font-sans">
                             {row.term === '1c' ? '1°C' : '2°C'}
                           </span>
+                        </div>
+                      </td>
+
+                      {/* COLUMNA 1C: HORARIO / MÓDULO */}
+                      <td
+                        className={`py-2 px-1.5 text-center font-mono border-r align-middle ${
+                          isDarkMode ? 'border-slate-800' : 'border-neutral-200'
+                        }`}
+                      >
+                        <div className="flex flex-col items-center justify-center leading-tight">
+                          {row.timeLabel ? (
+                            <>
+                              <span className="text-[11px] font-bold text-neutral-800 dark:text-slate-200 whitespace-nowrap">
+                                {row.timeLabel}
+                              </span>
+                              {row.totalSlotsForDay > 1 && (
+                                <span className="text-[9px] font-semibold text-blue-600 dark:text-blue-400">
+                                  {row.slotIndex + 1}° Hora
+                                </span>
+                              )}
+                            </>
+                          ) : row.totalSlotsForDay > 1 ? (
+                            <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
+                              {row.slotIndex + 1}° Hora
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-neutral-400">-</span>
+                          )}
                         </div>
                       </td>
 
@@ -2875,14 +3264,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                             value={row.entry.unitNumber}
                             placeholder={row.suggestedUnit || '1'}
                             onChange={(e) =>
-                              updateEntryField(row.dateStr, (curr) => ({
+                              updateEntryField(row.rowKey, (curr) => ({
                                 ...curr,
                                 unitNumber: e.target.value,
                               }))
                             }
                             onFocus={() => {
                               if (!row.entry.unitNumber && row.suggestedUnit) {
-                                updateEntryField(row.dateStr, (curr) => ({
+                                updateEntryField(row.rowKey, (curr) => ({
                                   ...curr,
                                   unitNumber: row.suggestedUnit,
                                 }));
@@ -2916,7 +3305,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                             }
                             onChange={(e) => {
                               const val = e.target.value;
-                              updateEntryField(row.dateStr, (curr) => ({
+                              updateEntryField(row.rowKey, (curr) => ({
                                 ...curr,
                                 contents: val,
                                 noClassReason: curr.isHoliday ? val : curr.noClassReason,
@@ -2965,7 +3354,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                                 setShowCharacterOptionsModal(true);
                                 return;
                               }
-                              updateEntryField(row.dateStr, (curr) => ({
+                              updateEntryField(row.rowKey, (curr) => ({
                                 ...curr,
                                 classCharacter: val,
                               }));
@@ -3007,7 +3396,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           value={row.entry.observations}
                           placeholder="Observaciones..."
                           onChange={(e) =>
-                            updateEntryField(row.dateStr, (curr) => ({
+                            updateEntryField(row.rowKey, (curr) => ({
                               ...curr,
                               observations: e.target.value,
                             }))
@@ -3029,7 +3418,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                         {row.entry.teacherSignature ? (
                           <div className="flex items-center justify-center gap-1">
                             <span
-                              onClick={() => handleSignRow(row.dateStr)}
+                              onClick={() => handleSignRow(row.rowKey)}
                               className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 text-[11px] font-serif italic cursor-pointer hover:bg-red-500/10 hover:text-red-500"
                               title="Clic para quitar firma"
                             >
@@ -3039,7 +3428,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                         ) : (
                           <button
                             type="button"
-                            onClick={() => handleSignRow(row.dateStr)}
+                            onClick={() => handleSignRow(row.rowKey)}
                             className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
                               isDarkMode
                                 ? 'border-slate-700 text-slate-400 hover:text-white hover:bg-slate-800'
@@ -3060,7 +3449,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                             value={row.entry.authoritySignature}
                             placeholder="Visado..."
                             onChange={(e) =>
-                              updateEntryField(row.dateStr, (curr) => ({
+                              updateEntryField(row.rowKey, (curr) => ({
                                 ...curr,
                                 authoritySignature: e.target.value,
                               }))

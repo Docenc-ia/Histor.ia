@@ -293,14 +293,15 @@ export const LibroDeTemasView: React.FC<LibroDeTemasViewProps> = ({
 
   // Active weekdays coordinated with the course calendar
   const activeWeekdays = useMemo(() => {
+    const parsed = extractWeekdaysFromSchedule(course.schedule);
+    if (parsed.length > 0) return parsed;
     if (
       Array.isArray(attendanceSettings.courseWeekdays) &&
       attendanceSettings.courseWeekdays.length > 0
     ) {
       return attendanceSettings.courseWeekdays;
     }
-    const parsed = extractWeekdaysFromSchedule(course.schedule);
-    return parsed.length > 0 ? parsed : [1, 3];
+    return [1, 3];
   }, [attendanceSettings.courseWeekdays, course.schedule]);
 
   // Toggle a weekday directly from the L | M | M | J | V header table

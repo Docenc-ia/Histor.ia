@@ -213,12 +213,12 @@ export function getCourseAttendanceSettings(courseId?: string, schedule?: string
       const stored = getUserScopedItem(`fds_attendance_settings_${courseId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0) {
+        if (parsedWeekdays.length > 0) {
+          courseWeekdays = parsedWeekdays;
+          classesPerWeek = fallbackClassesPerWeek > 0 ? fallbackClassesPerWeek : parsedWeekdays.length;
+        } else if (Array.isArray(parsed.courseWeekdays) && parsed.courseWeekdays.length > 0) {
           courseWeekdays = parsed.courseWeekdays;
           classesPerWeek = Number(parsed.classesPerWeek) || courseWeekdays.length;
-        } else if (parsedWeekdays.length > 0) {
-          courseWeekdays = parsedWeekdays;
-          classesPerWeek = fallbackClassesPerWeek;
         }
       }
     } catch (_) {}

@@ -34,7 +34,7 @@ interface StudentAttendanceRowProps {
   onOpenEditDisposition: (student: Student) => void;
   onAddAbsence: (student: Student) => void;
   onRecordLateArrival: (student: Student) => void;
-  onDeleteLatestAbsence: (student: Student) => void;
+  onDeleteLatestAbsence?: (student: Student) => void;
   onDeleteLatestLate: (student: Student) => void;
   onRecordDispositionAction: (student: Student, cleanReason: string, date?: string, delta?: number) => void;
   onOpenConductModal: (student: Student, mode: 'add' | 'subtract') => void;
@@ -283,18 +283,6 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
           >
             <span>Tarde</span>
           </button>
-
-          {metrics.totalAbsences > 0 && (
-            <button
-              type="button"
-              onClick={() => onDeleteLatestAbsence(student)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-red-600 hover:border-red-200 dark:hover:border-red-800/60 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-              title="Borrar falta: elimina la última inasistencia registrada y actualiza el contador"
-            >
-              <RotateCcw className="w-3 h-3 text-red-500" />
-              <span className="text-[11px]">Borrar falta</span>
-            </button>
-          )}
 
           {(metrics.totalLates || 0) > 0 && (
             <button

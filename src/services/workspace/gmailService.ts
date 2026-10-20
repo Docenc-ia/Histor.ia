@@ -4,7 +4,7 @@
  * Scope: https://www.googleapis.com/auth/gmail.send
  */
 
-import { getCachedAccessToken } from './googleAuth';
+import { getCachedAccessToken, fetchGoogleApiWithRetry } from './googleAuth';
 
 export const gmailService = {
   /**
@@ -49,16 +49,15 @@ export const gmailService = {
         .replace(/\//g, '_')
         .replace(/=+$/, '');
 
-      const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      const res = await fetchGoogleApiWithRetry('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           raw: encodedMessage,
         }),
-      });
+      }, token);
 
       if (res.ok) {
         const data = await res.json();

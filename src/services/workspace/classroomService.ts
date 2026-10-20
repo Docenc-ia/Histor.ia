@@ -6,10 +6,10 @@
  * - https://www.googleapis.com/auth/classroom.coursework.students
  */
 
-import { getCachedAccessToken } from './googleAuth';
+import { getCachedAccessToken, fetchGoogleApiWithRetry } from './googleAuth';
 import { ClassroomTask } from '../../types';
 
-// Helper for timeout-protected fetch requests
+// Helper for timeout-protected fetch requests with automatic 401 token refresh retry
 const fetchWithTimeout = async (
   url: string,
   options: RequestInit = {},
@@ -18,7 +18,7 @@ const fetchWithTimeout = async (
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...options, signal: controller.signal });
+    const res = await fetchGoogleApiWithRetry(url, { ...options, signal: controller.signal });
     return res;
   } finally {
     clearTimeout(id);
@@ -481,10 +481,9 @@ export const classroomService = {
     const token = getCachedAccessToken();
     if (token && classroomCourseId) {
       try {
-        const res = await fetch(`https://classroom.googleapis.com/v1/courses/${classroomCourseId}/courseWork`, {
+        const res = await fetchGoogleApiWithRetry(`https://classroom.googleapis.com/v1/courses/${classroomCourseId}/courseWork`, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
@@ -499,7 +498,7 @@ export const classroomService = {
               day: new Date(task.dueDate).getDate(),
             } : undefined,
           }),
-        });
+        }, token);
 
         if (res.ok) {
           const data = await res.json();
@@ -561,14 +560,13 @@ export const classroomService = {
         };
       }
 
-      const res = await fetch(`https://classroom.googleapis.com/v1/courses/${classroomCourseId}/announcements`, {
+      const res = await fetchGoogleApiWithRetry(`https://classroom.googleapis.com/v1/courses/${classroomCourseId}/announcements`, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(announcementBody),
-      });
+      }, token);
 
       if (res.ok) {
         const data = await res.json();

@@ -4,7 +4,7 @@
  * Scope: https://www.googleapis.com/auth/drive.file
  */
 
-import { getCachedAccessToken, requestGoogleAccessToken } from './googleAuth';
+import { getCachedAccessToken, requestGoogleAccessToken, fetchGoogleApiWithRetry } from './googleAuth';
 import { DriveResource } from '../../types';
 
 export interface CourseFolderStructure {
@@ -37,12 +37,11 @@ export const driveService = {
         query += ` and '${parentFolderId}' in parents`;
       }
 
-      // Check if folder already exists
-      const searchRes = await fetch(
+      // Check if folder already exists (auto-retrying if token expired)
+      const searchRes = await fetchGoogleApiWithRetry(
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)&pageSize=1`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        {},
+        token
       );
 
       if (searchRes.ok) {
@@ -66,14 +65,17 @@ export const driveService = {
         metadata.parents = [parentFolderId];
       }
 
-      const createRes = await fetch('https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      const createRes = await fetchGoogleApiWithRetry(
+        'https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(metadata),
         },
-        body: JSON.stringify(metadata),
-      });
+        token
+      );
 
       if (createRes.ok) {
         const data = await createRes.json();
@@ -104,9 +106,7 @@ export const driveService = {
 
     try {
       // 1. Get current parents
-      const getRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=parents`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const getRes = await fetchGoogleApiWithRetry(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=parents`, {}, token);
       let previousParents = '';
       if (getRes.ok) {
         const fileInfo = await getRes.json();
@@ -122,10 +122,9 @@ export const driveService = {
         url += `&removeParents=${encodeURIComponent(previousParents)}`;
       }
 
-      const patchRes = await fetch(url, {
+      const patchRes = await fetchGoogleApiWithRetry(url, {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      }, token);
 
       return patchRes.ok;
     } catch (err) {
@@ -152,9 +151,7 @@ export const driveService = {
     if (existingFolderId && !existingFolderId.startsWith('folder-') && !existingFolderId.startsWith('f-')) {
       if (token) {
         try {
-          const checkRes = await fetch(`https://www.googleapis.com/drive/v3/files/${existingFolderId}?fields=id,name,webViewLink,trashed`, {
-            headers: { Authorization: `Bearer ${token}` },
-          });
+          const checkRes = await fetchGoogleApiWithRetry(`https://www.googleapis.com/drive/v3/files/${existingFolderId}?fields=id,name,webViewLink,trashed`, {}, token);
           if (checkRes.ok) {
             const data = await checkRes.json();
             if (!data.trashed) {
@@ -207,11 +204,10 @@ export const driveService = {
         if (folderId) {
           query += ` and '${folderId}' in parents`;
         }
-        const res = await fetch(
+        const res = await fetchGoogleApiWithRetry(
           `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,size,modifiedTime,webViewLink)`,
-          {
-            headers: { Authorization: `Bearer ${token}` },
-          }
+          {},
+          token
         );
         if (res.ok) {
           const data = await res.json();
@@ -260,11 +256,10 @@ export const driveService = {
         return null;
       }
 
-      const searchRes = await fetch(
+      const searchRes = await fetchGoogleApiWithRetry(
         `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)&orderBy=modifiedTime desc&pageSize=1`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+        {},
+        token
       );
 
       if (searchRes.ok) {
@@ -294,14 +289,13 @@ export const driveService = {
         name: `📚 ${courseName} - Materiales Docentes`,
         mimeType: 'application/vnd.google-apps.folder',
       };
-      const res = await fetch('https://www.googleapis.com/drive/v3/files', {
+      const res = await fetchGoogleApiWithRetry('https://www.googleapis.com/drive/v3/files', {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(metadata),
-      });
+      }, token);
       if (res.ok) {
         const data = await res.json();
         return {

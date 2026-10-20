@@ -9,6 +9,8 @@ import {
   setCachedAccessToken,
   isValidGoogleAccessToken,
   notifyGoogleSessionExpired,
+  fetchGoogleApiWithRetry,
+  renewGoogleSessionSilently,
 } from './googleAuth';
 import { Student, GradeEntry, StudentHistoryItem, StudentDispositionData } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
@@ -640,49 +642,49 @@ export const sheetsService = {
           // Clear old data safely from tabs
           try {
             await Promise.all([
-              fetch(
+              fetchGoogleApiWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                   },
                   body: '{}',
-                }
+                },
+                token
               ),
-              fetch(
+              fetchGoogleApiWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                   },
                   body: '{}',
-                }
+                },
+                token
               ),
-              fetch(
+              fetchGoogleApiWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A1:Z500")}:clear`,
                 {
                   method: 'POST',
                   headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                   },
                   body: '{}',
-                }
+                },
+                token
               ),
-              fetch(
+              fetchGoogleApiWithRetry(
                 `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z3000")}:clear`,
                 {
                   method: 'POST',
                   headers: {
-                    Authorization: `Bearer ${token}`,
                     'Content-Type': 'application/json',
                   },
                   body: '{}',
-                }
+                },
+                token
               ),
             ]);
           } catch (e) {
@@ -708,13 +710,12 @@ export const sheetsService = {
                   ],
                 ];
 
-          // Batch update all 4 sheets with current active rows
-          const updateRes = await fetch(
+          // Batch update all 4 sheets with current active rows (auto-retries on 401)
+          const updateRes = await fetchGoogleApiWithRetry(
             `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values:batchUpdate`,
             {
               method: 'POST',
               headers: {
-                Authorization: `Bearer ${token}`,
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
@@ -769,8 +770,6 @@ export const sheetsService = {
             } catch (_) {}
 
             if (errStatus === 401) {
-              setCachedAccessToken(null);
-
               notifyGoogleSessionExpired('sheets_unauthorized');
               return {
                 spreadsheetId: targetSpreadsheetId,
@@ -823,11 +822,10 @@ export const sheetsService = {
           }
         }
 
-        // Create new spreadsheet with all 4 sheets if no real existing ID was provided
-        const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+        // Create new spreadsheet with all 4 sheets if no real existing ID was provided (auto-retries on 401)
+        const createRes = await fetchGoogleApiWithRetry('https://sheets.googleapis.com/v4/spreadsheets', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({

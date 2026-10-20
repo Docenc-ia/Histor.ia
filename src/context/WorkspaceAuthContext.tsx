@@ -154,28 +154,41 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
 
-  // Proactive Google OAuth session expiration monitoring (~55-60 mins)
+  // Google OAuth session monitoring
   useEffect(() => {
+    let isCancelled = false;
+
     const handleExpiredEvent = () => {
-      if (mode === 'connected' && getCachedAccessToken()) {
-        setIsTokenExpired(true);
+      if (mode !== 'connected' || isCancelled) return;
+      setIsTokenExpired(true);
+    };
+
+    const handleRenewedEvent = (e: any) => {
+      const freshToken = e.detail?.token;
+      if (freshToken && isValidGoogleAccessToken(freshToken)) {
+        setToken(freshToken);
+        setIsTokenExpired(false);
       }
     };
 
     if (typeof window !== 'undefined') {
       window.addEventListener('google_session_expired', handleExpiredEvent);
+      window.addEventListener('google_session_renewed', handleRenewedEvent);
     }
 
-    // Periodic check every 30 seconds
+    // Periodic check every 30 seconds: check if token expired based on timestamp
     const intervalId = setInterval(() => {
-      if (mode === 'connected' && isGoogleSessionExpired()) {
+      if (mode !== 'connected' || isCancelled) return;
+      if (isGoogleSessionExpired()) {
         setIsTokenExpired(true);
       }
     }, 30000);
 
     return () => {
+      isCancelled = true;
       if (typeof window !== 'undefined') {
         window.removeEventListener('google_session_expired', handleExpiredEvent);
+        window.removeEventListener('google_session_renewed', handleRenewedEvent);
       }
       clearInterval(intervalId);
     };
@@ -187,9 +200,12 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const renewGoogleSession = async (): Promise<boolean> => {
     try {
-      const freshToken = await requestAccessToken();
-      if (freshToken && isValidGoogleAccessToken(freshToken)) {
-        setToken(freshToken);
+      const emailHint = user?.email || undefined;
+      const gsiRes = await signInWithGoogleIdentityServices(emailHint, {
+        prompt: emailHint ? '' : 'select_account',
+      });
+      if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
+        setToken(gsiRes.accessToken);
         setIsTokenExpired(false);
         return true;
       }

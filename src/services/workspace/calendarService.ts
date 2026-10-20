@@ -8,7 +8,7 @@
  * - https://www.googleapis.com/auth/calendar.events
  */
 
-import { getCachedAccessToken } from './googleAuth';
+import { getCachedAccessToken, fetchGoogleApiWithRetry, renewGoogleSessionSilently } from './googleAuth';
 import { CalendarEventItem, GoogleCalendarInfo, Course, CalendarEventCategory } from '../../types';
 import { extractDailySlotsFromSchedule, extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
 import { getLocalCourses } from '../storageHelpers';
@@ -161,9 +161,11 @@ export const calendarService = {
     }
 
     const fetchCalList = async (activeToken: string) => {
-      const res = await fetch('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader', {
-        headers: { Authorization: `Bearer ${activeToken}` },
-      });
+      const res = await fetchGoogleApiWithRetry(
+        'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader',
+        {},
+        activeToken
+      );
       if (res.status === 401) return { unauthorized: true, items: [] };
       if (!res.ok) return { unauthorized: false, items: null };
       const data = await res.json();
@@ -173,11 +175,10 @@ export const calendarService = {
     try {
       let attempt = await fetchCalList(token);
       if (attempt.unauthorized) {
-        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
-        setCachedAccessToken(null);
-        token = await requestAccessToken();
-        if (token) {
-          attempt = await fetchCalList(token);
+        const fresh = await renewGoogleSessionSilently();
+        if (fresh) {
+          token = fresh;
+          attempt = await fetchCalList(fresh);
         }
       }
 

@@ -9,6 +9,7 @@ import {
   setCachedAccessToken,
   isValidGoogleAccessToken,
   notifyGoogleSessionExpired,
+  renewGoogleSessionSilently,
 } from '../services/workspace/googleAuth';
 import { formatLocalDateDMY, formatLocalTimeHMS } from '../utils/dateUtils';
 
@@ -204,7 +205,6 @@ export function useAttendanceSync({
             })
             .catch(() => {});
         } else if (res.errorCode === 'UNAUTHORIZED') {
-          setCachedAccessToken(null);
           notifyGoogleSessionExpired('attendance_sync_unauthorized');
         }
       } catch (err) {
@@ -227,18 +227,25 @@ export function useAttendanceSync({
       let isAuthentic = activeToken && isValidGoogleAccessToken(activeToken);
 
       if (!isAuthentic) {
-        if (onToast) onToast('Solicitando autorización de tu cuenta de Google...');
-        try {
-          const freshToken = await requestAccessToken();
-          if (freshToken && isValidGoogleAccessToken(freshToken)) {
-            activeToken = freshToken;
-            isAuthentic = true;
+        // 1. First attempt silent background renewal without popup
+        const silentToken = await renewGoogleSessionSilently().catch(() => null);
+        if (silentToken && isValidGoogleAccessToken(silentToken)) {
+          activeToken = silentToken;
+          isAuthentic = true;
+        } else {
+          if (onToast) onToast('Solicitando autorización de tu cuenta de Google...');
+          try {
+            const freshToken = await requestAccessToken();
+            if (freshToken && isValidGoogleAccessToken(freshToken)) {
+              activeToken = freshToken;
+              isAuthentic = true;
+            }
+          } catch (authErr: any) {
+            console.warn('Google Sheets OAuth authorization error:', authErr);
+            if (onToast) onToast('Se requiere autorización de Google para editar la planilla.');
+            setShowSheetsConnectModal(true);
+            return;
           }
-        } catch (authErr: any) {
-          console.warn('Google Sheets OAuth authorization error:', authErr);
-          if (onToast) onToast('Se requiere autorización de Google para editar la planilla.');
-          setShowSheetsConnectModal(true);
-          return;
         }
       }
 
@@ -335,7 +342,24 @@ export function useAttendanceSync({
         if (onToast) onToast(`✓ Información de la materia subida a Google Sheets con éxito (${res.updatedAt})`);
       } else {
         if (res.errorCode === 'UNAUTHORIZED') {
-          setCachedAccessToken(null);
+          // Attempt silent renewal and auto-retry once
+          const renewed = await renewGoogleSessionSilently().catch(() => null);
+          if (renewed && isValidGoogleAccessToken(renewed)) {
+            const retryRes = await sheetsService.syncDispositionSheet(
+              activeCourse,
+              currentStudents,
+              dispositionMap,
+              historyForCourse,
+              realExistingId,
+              targetFolderId,
+              renewed,
+              dispositionMap2c
+            );
+            if (retryRes && retryRes.isLiveGoogle) {
+              if (onToast) onToast(`✓ Información de la materia subida a Google Sheets con éxito (${retryRes.updatedAt})`);
+              return;
+            }
+          }
           notifyGoogleSessionExpired('manual_sync_unauthorized');
           if (onToast) onToast('Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.');
           setShowSheetsConnectModal(true);

@@ -47,9 +47,39 @@ provider.setCustomParameters({
   prompt: 'select_account',
 });
 
-// Strictly in-memory access token storage (Security requirement: NO localStorage / sessionStorage)
+// Token storage keys for session persistence across tabs and page reloads
+const TOKEN_STORAGE_KEY = 'docencia_workspace_access_token';
+const TOKEN_EXPIRY_KEY = 'docencia_workspace_token_expires_at';
+const TOKEN_ISSUED_KEY = 'docencia_workspace_token_issued_at';
+const TOKEN_LIFETIME_MS = 55 * 60 * 1000; // 55 minutes threshold (tokens last 60m)
+
 let cachedAccessToken: string | null = null;
+let tokenIssuedAt: number | null = null;
 let isSigningIn = false;
+
+// User gesture tracking to prevent popup-blocked errors when calling GIS requestAccessToken
+let lastUserGestureTime = 0;
+if (typeof window !== 'undefined') {
+  const markGesture = () => {
+    lastUserGestureTime = Date.now();
+  };
+  window.addEventListener('pointerdown', markGesture, { capture: true, passive: true });
+  window.addEventListener('click', markGesture, { capture: true, passive: true });
+  window.addEventListener('keydown', markGesture, { capture: true, passive: true });
+}
+
+export const hasRecentUserGesture = (): boolean => {
+  return typeof window !== 'undefined' && Date.now() - lastUserGestureTime < 3500;
+};
+
+export const getActiveTeacherEmail = (): string => {
+  if (typeof window === 'undefined') return '';
+  return (
+    sessionStorage.getItem('docencia_teacher_email') ||
+    localStorage.getItem('docencia_teacher_email') ||
+    ''
+  ).trim().toLowerCase();
+};
 
 /**
  * Validates whether a token string is a genuine Google OAuth 2.0 access token for Google APIs
@@ -120,12 +150,15 @@ export const DEFAULT_TEACHER: TeacherProfile = {
   scopes: WORKSPACE_SCOPES,
 };
 
-// In-memory token expiration tracking (Google OAuth tokens expire in ~60 minutes)
-let tokenIssuedAt: number | null = null;
-const TOKEN_LIFETIME_MS = 55 * 60 * 1000; // 55 minutes proactive threshold
-
 export const isGoogleSessionExpired = (): boolean => {
-  if (!cachedAccessToken) return false;
+  if (typeof window === 'undefined') return false;
+  const isSessionActive =
+    sessionStorage.getItem('docencia_session_active') === 'true' ||
+    localStorage.getItem('docencia_session_active') === 'true';
+  if (!isSessionActive) return false;
+
+  const currentToken = getCachedAccessToken();
+  if (!currentToken) return true;
   if (!tokenIssuedAt) return false;
   return Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS;
 };
@@ -141,25 +174,98 @@ export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
 };
 
 export const getCachedAccessToken = (): string | null => {
+  // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
+    if (tokenIssuedAt && Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS) {
+      // Check stored absolute expiry before nullifying
+      const storedExpiry = typeof window !== 'undefined'
+        ? Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0)
+        : 0;
+      if (storedExpiry && Date.now() > storedExpiry) {
+        return null;
+      }
+    }
     return cachedAccessToken;
   }
+
+  // 2. Persistent storage fallback (survives page refresh F5 and tab switches)
+  if (typeof window !== 'undefined') {
+    try {
+      const stored =
+        sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
+        localStorage.getItem(TOKEN_STORAGE_KEY);
+      const storedIssued = Number(
+        sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
+        localStorage.getItem(TOKEN_ISSUED_KEY) ||
+        0
+      );
+      const storedExpiry = Number(
+        sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
+        localStorage.getItem(TOKEN_EXPIRY_KEY) ||
+        0
+      );
+
+      if (stored && isValidGoogleAccessToken(stored)) {
+        const now = Date.now();
+        if (!storedExpiry || now < storedExpiry) {
+          cachedAccessToken = stored;
+          tokenIssuedAt = storedIssued || (now - 5 * 60 * 1000);
+          return cachedAccessToken;
+        } else {
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+        }
+      }
+    } catch (_) {}
+  }
+
   return null;
 };
 
-export const setCachedAccessToken = (token: string | null): void => {
+export const setCachedAccessToken = (
+  token: string | null,
+  teacherEmail?: string,
+  expiresInSeconds?: number
+): void => {
+  const now = Date.now();
   if (token && isValidGoogleAccessToken(token)) {
     cachedAccessToken = token;
-    tokenIssuedAt = Date.now();
+    tokenIssuedAt = now;
+    const ttlMs = expiresInSeconds ? Math.max((expiresInSeconds - 60) * 1000, 10 * 60 * 1000) : TOKEN_LIFETIME_MS;
+    const expiresAt = now + ttlMs;
+
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+        sessionStorage.setItem(TOKEN_ISSUED_KEY, String(now));
+        sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
+        localStorage.setItem(TOKEN_STORAGE_KEY, token);
+        localStorage.setItem(TOKEN_ISSUED_KEY, String(now));
+        localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
+        if (teacherEmail) {
+          sessionStorage.setItem('docencia_teacher_email', teacherEmail.trim().toLowerCase());
+          localStorage.setItem('docencia_teacher_email', teacherEmail.trim().toLowerCase());
+        }
+      } catch (_) {}
+    }
   } else if (!token) {
     cachedAccessToken = null;
     tokenIssuedAt = null;
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+        sessionStorage.removeItem(TOKEN_ISSUED_KEY);
+        sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+        localStorage.removeItem(TOKEN_STORAGE_KEY);
+        localStorage.removeItem(TOKEN_ISSUED_KEY);
+        localStorage.removeItem(TOKEN_EXPIRY_KEY);
+      } catch (_) {}
+    }
   }
 };
 
 export const clearAuthSession = (): void => {
-  cachedAccessToken = null;
-  tokenIssuedAt = null;
+  setCachedAccessToken(null);
 };
 
 // Listen to Firebase Auth state
@@ -271,7 +377,8 @@ export const getEffectiveOAuthClientId = (): string => {
 
 // Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser for ANY user
 export const signInWithGoogleIdentityServices = (
-  preferredEmail?: string
+  preferredEmail?: string,
+  options?: { prompt?: string }
 ): Promise<{ accessToken: string; profile: TeacherProfile }> => {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -283,13 +390,14 @@ export const signInWithGoogleIdentityServices = (
       return reject(new Error('Google Identity Services no está listo. Verifica tu conexión.'));
     }
 
-    const cleanHint = preferredEmail?.trim().toLowerCase() || undefined;
+    const cleanHint = (preferredEmail || getActiveTeacherEmail() || '').trim().toLowerCase() || undefined;
+    const promptMode = options?.prompt !== undefined ? options.prompt : (cleanHint ? '' : 'select_account');
 
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: WORKSPACE_SCOPES.join(' '),
-        prompt: 'select_account',
+        prompt: promptMode,
         ...(cleanHint ? { hint: cleanHint } : {}),
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
@@ -300,15 +408,18 @@ export const signInWithGoogleIdentityServices = (
             if (!accessToken || !isValidGoogleAccessToken(accessToken)) {
               return reject(new Error('No se recibió un token de acceso OAuth 2.0 válido de Google'));
             }
-            setCachedAccessToken(accessToken);
+            const expiresIn = Number(tokenResponse.expires_in) || 3540;
+
             const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
               headers: { Authorization: `Bearer ${accessToken}` },
             });
-            const userInfo = await res.json();
-            const userEmail = (userInfo.email || '').trim().toLowerCase();
+            const userInfo = await res.json().catch(() => ({}));
+            const userEmail = (userInfo.email || cleanHint || '').trim().toLowerCase();
             const rawName = userInfo.name || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') : 'Docente');
             const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
             const derivedSchool = deriveSchoolFromEmail(userEmail);
+
+            setCachedAccessToken(accessToken, userEmail, expiresIn);
 
             const profile: TeacherProfile = {
               id: userInfo.sub || `google-${Date.now()}`,
@@ -331,6 +442,12 @@ export const signInWithGoogleIdentityServices = (
               school: profile.school,
             });
 
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(
+                new CustomEvent('google_session_renewed', { detail: { token: accessToken } })
+              );
+            }
+
             resolve({ accessToken, profile });
           } catch (fetchErr) {
             reject(fetchErr);
@@ -347,7 +464,7 @@ export const signInWithGoogleIdentityServices = (
       });
 
       client.requestAccessToken({
-        prompt: 'select_account',
+        prompt: promptMode,
         ...(cleanHint ? { hint: cleanHint } : {}),
       });
     } catch (err) {
@@ -361,22 +478,31 @@ export const requestGoogleAccessToken = async (forceRefresh = false, preferredEm
   if (
     !forceRefresh &&
     cachedAccessToken &&
-    isValidGoogleAccessToken(cachedAccessToken)
+    isValidGoogleAccessToken(cachedAccessToken) &&
+    !isGoogleSessionExpired()
   ) {
     return cachedAccessToken;
   }
 
-  // 1. Prioritize Google Identity Services (GSI) OAuth 2.0 flow
+  // 1. Attempt proactive silent renewal first without opening popup
+  const silentToken = await renewGoogleSessionSilently(preferredEmail);
+  if (silentToken && isValidGoogleAccessToken(silentToken)) {
+    return silentToken;
+  }
+
+  // 2. Prioritize Google Identity Services (GSI) OAuth 2.0 flow
   if (typeof window !== 'undefined' && (window as any).google?.accounts?.oauth2) {
     try {
-      const gsiRes = await signInWithGoogleIdentityServices(preferredEmail);
+      const emailHint = preferredEmail || getActiveTeacherEmail();
+      const gsiRes = await signInWithGoogleIdentityServices(emailHint, {
+        prompt: emailHint ? '' : 'select_account',
+      });
       if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
-        setCachedAccessToken(gsiRes.accessToken);
+        setCachedAccessToken(gsiRes.accessToken, gsiRes.profile?.email);
         return gsiRes.accessToken;
       }
     } catch (gsiErr: any) {
       console.warn('GSI token request notice:', gsiErr);
-      // If popup was blocked or closed, don't cascade into another popup
       return '';
     }
   }
@@ -395,7 +521,7 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
       try {
         const gsiResult = await signInWithGoogleIdentityServices(preferredEmail);
         if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-          setCachedAccessToken(gsiResult.accessToken);
+          setCachedAccessToken(gsiResult.accessToken, gsiResult.profile?.email);
           return { accessToken: gsiResult.accessToken, profile: gsiResult.profile };
         }
       } catch (gsiErr: any) {
@@ -426,9 +552,9 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
         ((result as any)._tokenResponse?.oauthAccessToken && isValidGoogleAccessToken((result as any)._tokenResponse?.oauthAccessToken) ? (result as any)._tokenResponse?.oauthAccessToken : null) ||
         null;
 
-      setCachedAccessToken(token);
-
       const userEmail = (result.user.email || preferredEmail || '').trim().toLowerCase();
+      setCachedAccessToken(token, userEmail);
+
       const rawName = result.user.displayName || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Docente Titular');
       const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
       const derivedSchool = deriveSchoolFromEmail(userEmail);
@@ -505,14 +631,135 @@ export const logoutUser = async (): Promise<void> => {
   } catch (err) {
     console.warn('SignOut error:', err);
   }
-  cachedAccessToken = null;
+  clearAuthSession();
   await api.logoutAuth();
 };
 
-// Google Identity Services OAuth 2.0 requires a direct user gesture (click) to open the OAuth popup window.
-// Background silent calls attempt to open a popup without user interaction and are blocked by modern browsers.
-// Therefore, renewal is handled via explicit user interaction through the GoogleSessionExpiryBanner.
-export const renewGoogleSessionSilently = async (): Promise<string | null> => {
-  return null;
+/**
+ * Refreshes Google OAuth 2.0 access token using Google Identity Services.
+ * Passes prompt: '' and the teacher's email hint.
+ * NOTE: Modern browsers strictly require a user gesture (click/tap) to open the OAuth popup.
+ * If called without a recent user gesture, it gracefully returns null instead of triggering
+ * the browser's popup blocker.
+ */
+export const renewGoogleSessionSilently = async (userEmail?: string): Promise<string | null> => {
+  if (typeof window === 'undefined') return null;
+
+  // Modern browsers require a user gesture to open popups.
+  // Do not attempt window.open without a user gesture as it will be blocked.
+  if (!hasRecentUserGesture()) {
+    return null;
+  }
+
+  const google = (window as any).google;
+  const clientId = getEffectiveOAuthClientId();
+  if (!google?.accounts?.oauth2 || !clientId) return null;
+
+  const email = (userEmail || getActiveTeacherEmail()).trim().toLowerCase();
+
+  return new Promise<string | null>((resolve) => {
+    try {
+      let isSettled = false;
+      const timeoutId = setTimeout(() => {
+        if (!isSettled) {
+          isSettled = true;
+          resolve(null);
+        }
+      }, 7000);
+
+      const client = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: WORKSPACE_SCOPES.join(' '),
+        prompt: '',
+        ...(email ? { hint: email } : {}),
+        callback: async (tokenResponse: any) => {
+          if (isSettled) return;
+          isSettled = true;
+          clearTimeout(timeoutId);
+
+          if (tokenResponse?.error || !tokenResponse?.access_token) {
+            resolve(null);
+            return;
+          }
+          const freshToken = tokenResponse.access_token;
+          if (isValidGoogleAccessToken(freshToken)) {
+            const expiresIn = Number(tokenResponse.expires_in) || 3540;
+            setCachedAccessToken(freshToken, email, expiresIn);
+            window.dispatchEvent(
+              new CustomEvent('google_session_renewed', { detail: { token: freshToken } })
+            );
+            resolve(freshToken);
+          } else {
+            resolve(null);
+          }
+        },
+        error_callback: () => {
+          if (isSettled) return;
+          isSettled = true;
+          clearTimeout(timeoutId);
+          resolve(null);
+        },
+      });
+
+      client.requestAccessToken({
+        prompt: '',
+        ...(email ? { hint: email } : {}),
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+};
+
+/**
+ * Universal fetch wrapper for Google Workspace APIs (Sheets, Drive, Calendar, Classroom, Gmail, Docs)
+ * Automatically injects the active Google OAuth token.
+ * If an active user gesture triggered this request and a 401 is received, it attempts automatic renewal.
+ */
+export const fetchGoogleApiWithRetry = async (
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  providedToken?: string
+): Promise<Response> => {
+  let activeToken = providedToken || getCachedAccessToken();
+
+  const buildHeaders = (tok: string | null): Headers => {
+    const headers = new Headers(init.headers || {});
+    if (tok && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${tok}`);
+    }
+    return headers;
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(input, {
+      ...init,
+      headers: buildHeaders(activeToken),
+    });
+  } catch (networkErr) {
+    throw networkErr;
+  }
+
+  // Intercept 401 Unauthorized (Google token expired or revoked)
+  if (response.status === 401) {
+    console.warn('Google API returned 401 Unauthorized.');
+    // Only attempt interactive popup renewal if this request was triggered by a direct user click/gesture
+    if (hasRecentUserGesture()) {
+      const freshToken = await renewGoogleSessionSilently().catch(() => null);
+      if (freshToken && isValidGoogleAccessToken(freshToken)) {
+        console.info('Token renewed via user gesture. Retrying request...');
+        activeToken = freshToken;
+        response = await fetch(input, {
+          ...init,
+          headers: buildHeaders(freshToken),
+        });
+        return response;
+      }
+    }
+    notifyGoogleSessionExpired('http_401_token_expired');
+  }
+
+  return response;
 };
 

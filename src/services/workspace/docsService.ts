@@ -4,7 +4,7 @@
  * Scope: https://www.googleapis.com/auth/documents
  */
 
-import { getCachedAccessToken } from './googleAuth';
+import { getCachedAccessToken, fetchGoogleApiWithRetry } from './googleAuth';
 import { LessonPlan } from '../../types';
 
 export const docsService = {
@@ -17,15 +17,14 @@ export const docsService = {
 
     if (token) {
       try {
-        // 1. Create blank document
-        const createRes = await fetch('https://docs.googleapis.com/v1/documents', {
+        // 1. Create blank document (auto-retrying if token expired)
+        const createRes = await fetchGoogleApiWithRetry('https://docs.googleapis.com/v1/documents', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ title: docTitle }),
-        });
+        }, token);
 
         if (createRes.ok) {
           const docData = await createRes.json();
@@ -44,10 +43,9 @@ export const docsService = {
             `4. EVALUACIÓN FORMATIVA:\n${plan.assessment}\n\n` +
             `5. RECURSOS Y MATERIALES:\n${plan.materials.join(', ')}\n`;
 
-          await fetch(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
+          await fetchGoogleApiWithRetry(`https://docs.googleapis.com/v1/documents/${documentId}:batchUpdate`, {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${token}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({

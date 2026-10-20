@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { Course } from '../../types';
-import { formatCourseSidebarLabel } from '../../utils/courseFormatting';
+import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 
 interface SidebarProps {
   currentTab: string;
@@ -50,6 +50,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { user, isDarkMode } = useWorkspaceAuth();
   const [coursesExpanded, setCoursesExpanded] = useState<boolean>(true);
+  const sortedSidebarCourses = React.useMemo(
+    () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
+    [courses]
+  );
 
   const navItems: NavGroup[] = [
     {
@@ -206,9 +210,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     </div>
 
                     {/* Collapsible courses list (Google Classroom style) */}
-                    {isCoursesItem && coursesExpanded && courses.length > 0 && (
+                    {isCoursesItem && coursesExpanded && sortedSidebarCourses.length > 0 && (
                       <div className="pl-3 pr-1 py-1 space-y-0.5 ml-3 border-l border-neutral-200 dark:border-slate-800">
-                        {courses.map((course) => {
+                        {sortedSidebarCourses.map((course) => {
                           const isCourseActive = selectedCourseId === course.id && currentTab !== 'courses';
                           const courseBg = course.color || '#1a73e8';
                           const displayLabel = formatCourseSidebarLabel(course);

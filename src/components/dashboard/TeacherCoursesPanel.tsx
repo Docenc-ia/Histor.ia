@@ -27,8 +27,13 @@ import {
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { formatCourseSidebarLabel } from '../../utils/courseFormatting';
+import {
+  formatCourseSidebarLabel,
+  sortCoursesByUpcomingSchedule,
+  NextCourseClassInfo,
+} from '../../utils/courseFormatting';
 import { classroomService } from '../../services/workspace/classroomService';
+import { calendarService } from '../../services/workspace/calendarService';
 import { api } from '../../services/api';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { ImportClassroomModal } from './ImportClassroomModal';
@@ -75,6 +80,34 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [syncingCourseId, setSyncingCourseId] = useState<string | null>(null);
+  const [nowTick, setNowTick] = useState<Date>(() => new Date());
+  const [liveCalendarSlots, setLiveCalendarSlots] = useState<
+    { dayOfWeek: number; startTime: string; endTime: string; title: string }[]
+  >([]);
+
+  // Refresh current time every 60s so courses reorder automatically as classes start/finish
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(new Date()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Load weekly calendar slots in background when connected to enrich schedule sorting
+  useEffect(() => {
+    const activeToken = token || getCachedAccessToken();
+    if (!activeToken || courses.length === 0) return;
+    let mounted = true;
+    calendarService
+      .getWeeklyCalendarSlots('primary', courses)
+      .then((res) => {
+        if (mounted && res.success && Array.isArray(res.slots)) {
+          setLiveCalendarSlots(res.slots);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [token, courses.length]);
 
   // Sync real students from Google Classroom (MANUALLY triggered by user)
   const handleSyncRealClassroomStudents = async (showNotice = true) => {
@@ -253,17 +286,33 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
   const cleanQuery = searchQuery.trim().toLowerCase();
 
-  const filteredCourses = uniqueCourses.filter((c) => {
-    if (!cleanQuery) return true;
-    return (
-      (c.name || '').toLowerCase().includes(cleanQuery) ||
-      (c.subject || '').toLowerCase().includes(cleanQuery) ||
-      (c.grade || '').toLowerCase().includes(cleanQuery) ||
-      (c.division || '').toLowerCase().includes(cleanQuery) ||
-      (c.section || '').toLowerCase().includes(cleanQuery) ||
-      (c.schoolYear || '').toLowerCase().includes(cleanQuery)
-    );
-  });
+  const filteredAndSortedCourses = React.useMemo(() => {
+    const filtered = uniqueCourses.filter((c) => {
+      if (!cleanQuery) return true;
+      return (
+        (c.name || '').toLowerCase().includes(cleanQuery) ||
+        (c.subject || '').toLowerCase().includes(cleanQuery) ||
+        (c.grade || '').toLowerCase().includes(cleanQuery) ||
+        (c.division || '').toLowerCase().includes(cleanQuery) ||
+        (c.section || '').toLowerCase().includes(cleanQuery) ||
+        (c.schoolYear || '').toLowerCase().includes(cleanQuery)
+      );
+    });
+    return sortCoursesByUpcomingSchedule(filtered, nowTick, liveCalendarSlots);
+  }, [uniqueCourses, cleanQuery, nowTick, liveCalendarSlots]);
+
+  const filteredCourses = React.useMemo(
+    () => filteredAndSortedCourses.map((item) => item.course),
+    [filteredAndSortedCourses]
+  );
+
+  const nextClassMap = React.useMemo(() => {
+    const map: Record<string, NextCourseClassInfo> = {};
+    for (const item of filteredAndSortedCourses) {
+      map[item.course.id] = item.nextClass;
+    }
+    return map;
+  }, [filteredAndSortedCourses]);
 
   const matchingStudents = React.useMemo(() => {
     if (!cleanQuery || cleanQuery.length < 2) return [];
@@ -869,7 +918,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
               {/* Header of the Course Card with Top Actions: Eliminar y Entrar a la materia */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span
                       className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border ${
                         isDarkMode
@@ -883,6 +932,27 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                       <Users className="w-3.5 h-3.5 text-neutral-400" />
                       {course.studentsCount} {course.studentsCount === 1 ? 'estudiante' : 'estudiantes'}
                     </span>
+                    {nextClassMap[course.id]?.badgeText && (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
+                          nextClassMap[course.id]?.status === 'in_progress'
+                            ? isDarkMode
+                              ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/80'
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : nextClassMap[course.id]?.status === 'today'
+                            ? isDarkMode
+                              ? 'bg-amber-950/70 text-amber-300 border-amber-800/70'
+                              : 'bg-amber-50 text-amber-800 border-amber-200'
+                            : isDarkMode
+                            ? 'bg-slate-800 text-slate-300 border-slate-700'
+                            : 'bg-neutral-100 text-neutral-700 border-neutral-200'
+                        }`}
+                        title="Próxima clase según calendario"
+                      >
+                        <Clock className="w-3 h-3 shrink-0" />
+                        <span>{nextClassMap[course.id]?.badgeText}</span>
+                      </span>
+                    )}
                   </div>
                   <h3
                     className={`text-lg font-bold transition-colors ${

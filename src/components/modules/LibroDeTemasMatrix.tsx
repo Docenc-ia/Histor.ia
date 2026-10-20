@@ -2513,23 +2513,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
                           try {
                             await api.updateCourse(courseId, { schedule: scheduleToSave });
-                            const { calendarService } = await import('../../services/workspace/calendarService');
-                            await calendarService.syncCourseScheduleToGoogle(
-                              {
-                                id: courseId,
-                                name: courseName,
-                                subject: courseSubject || courseName,
-                                grade: '',
-                                studentsCount: 0,
-                                schedule: scheduleToSave,
-                              },
-                              scheduleToSave,
-                              'primary'
-                            );
                             if (onRefreshCourse) onRefreshCourse();
                           } catch (_) {}
 
-                          setToastMsg('Días y horas de cursada guardados y sincronizados con Google Calendar.');
+                          setToastMsg('Días y horas de cursada guardados en el Libro de Temas.');
                           setTimeout(() => setToastMsg(null), 3500);
                         }}
                         className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer"

@@ -190,9 +190,9 @@ export const calendarService = {
               !String(c.id || '').includes('#contacts@group')
           )
           .map((c: any) => ({
-            id: c.primary ? 'primary' : c.id,
+            id: c.id || 'primary',
             summary: c.primary
-              ? `${c.summaryOverride || c.summary || 'Calendario Principal'} (Cuenta Classroom)`
+              ? `${c.summaryOverride || c.summary || c.id || 'Calendario Principal'} (${String(c.id || '').includes('@fds-esc.edu.ar') ? 'Cuenta Colegio' : 'Cuenta Principal'})`
               : c.summaryOverride || c.summary || 'Calendario sin título',
             description: c.description || '',
             primary: !!c.primary,
@@ -546,7 +546,7 @@ export const calendarService = {
     scheduleString: string,
     calendarId: string = 'primary'
   ): Promise<{ success: boolean; createdCount: number; updatedCount?: number; message: string }> {
-    const token = await this.ensureValidToken();
+    let token = await this.ensureValidToken();
     if (!token) {
       return {
         success: false,
@@ -555,7 +555,35 @@ export const calendarService = {
       };
     }
 
-    const targetCalendarId = !calendarId || calendarId === 'all' ? 'primary' : calendarId;
+    // Evitar que se modifique el calendario personal (canomorenojj@gmail.com) al sincronizar materias del colegio
+    let targetCalendarId =
+      !calendarId || calendarId === 'all' || calendarId.toLowerCase() === 'canomorenojj@gmail.com'
+        ? 'jorge.cano@fds-esc.edu.ar'
+        : calendarId;
+
+    // Verificar si el token actual pertenece al Gmail personal en vez de la cuenta del colegio
+    try {
+      const checkRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (checkRes.ok) {
+        const primaryData = await checkRes.json();
+        const primaryEmail = String(primaryData?.id || '').toLowerCase();
+        if (primaryEmail === 'canomorenojj@gmail.com') {
+          const { requestAccessToken } = await import('./googleAuth');
+          const schoolToken = await requestAccessToken(true, 'jorge.cano@fds-esc.edu.ar');
+          if (schoolToken) {
+            token = schoolToken;
+          } else {
+            return {
+              success: false,
+              createdCount: 0,
+              message: 'Para no modificar tu calendario personal, selecciona tu cuenta del colegio (jorge.cano@fds-esc.edu.ar) en la ventana de Google.',
+            };
+          }
+        }
+      }
+    } catch (_) {}
 
     // RRULE day codes
     const rruleDays: { [key: number]: string } = {
@@ -568,169 +596,38 @@ export const calendarService = {
       6: 'SA',
     };
 
-    const effectiveSchedule = scheduleString || getEffectiveCourseSchedule(course);
-    const weekdays = extractWeekdaysFromSchedule(effectiveSchedule);
-    const dailySlotsMap = extractDailySlotsFromSchedule(effectiveSchedule, weekdays);
+    const dayMap: { [key: string]: number } = {
+      domingo: 0,
+      lunes: 1,
+      martes: 2,
+      miercoles: 3,
+      miércoles: 3,
+      jueves: 4,
+      viernes: 5,
+      sabado: 6,
+      sábado: 6,
+    };
 
-    // Build flat list of { dayNum, startTime, endTime }
-    const targetSlots: { dayNum: number; startTime: string; endTime: string }[] = [];
-    for (const [dStr, slots] of Object.entries(dailySlotsMap)) {
-      const dayNum = Number(dStr);
-      for (const s of slots) {
-        if (s.startTime && s.endTime) {
-          targetSlots.push({
-            dayNum,
-            startTime: s.startTime.padStart(5, '0'),
-            endTime: s.endTime.padStart(5, '0'),
-          });
-        }
-      }
-    }
-
-    // Fallback regex if extractDailySlotsFromSchedule didn't find explicit hours
-    if (targetSlots.length === 0) {
-      const dayMap: { [key: string]: number } = {
-        domingo: 0,
-        lunes: 1,
-        martes: 2,
-        miercoles: 3,
-        miércoles: 3,
-        jueves: 4,
-        viernes: 5,
-        sabado: 6,
-        sábado: 6,
-      };
-      const parts = (effectiveSchedule || '').split(',');
-      for (const part of parts) {
-        const match = part
-          .trim()
-          .match(/(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)\s*([0-9]{1,2}:[0-9]{2})\s*[-aà–]\s*([0-9]{1,2}:[0-9]{2})/i);
-        if (!match) continue;
-        const dayNum = dayMap[match[1].toLowerCase()] ?? 1;
-        targetSlots.push({
-          dayNum,
-          startTime: match[2].padStart(5, '0'),
-          endTime: match[3].padStart(5, '0'),
-        });
-      }
-    }
-
-    // Fetch existing events in a 14-day window to update any "No disponible" / unnamed / matching events instead of leaving them unnamed
-    let existingItems: any[] = [];
-    try {
-      const now = new Date();
-      const currentDay = now.getDay();
-      const mondayDiff = currentDay === 0 ? -6 : 1 - currentDay;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + mondayDiff);
-      monday.setHours(0, 0, 0, 0);
-      const twoWeeksEnd = new Date(monday);
-      twoWeeksEnd.setDate(monday.getDate() + 13);
-      twoWeeksEnd.setHours(23, 59, 59, 999);
-
-      const params = new URLSearchParams({
-        singleEvents: 'true',
-        orderBy: 'startTime',
-        maxResults: '250',
-        timeMin: monday.toISOString(),
-        timeMax: twoWeeksEnd.toISOString(),
-      });
-      const existingRes = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events?${params.toString()}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (existingRes.ok) {
-        const existingData = await existingRes.json();
-        existingItems = existingData.items || [];
-      }
-    } catch (_) {}
-
-    const courseTitle = formatCourseCalendarTitle(course);
-    const courseDesc = `Materia escolar: ${course.name}\nDivisión / Curso: ${course.division || course.grade || course.section || 'General'}\nAula: ${course.room || 'Aula asignada'}\nSincronizado desde Docenc.IA.`;
-    const courseLoc = course.room ? `Aula ${course.room}` : 'Colegio';
-
+    const parts = (scheduleString || course.schedule || '').split(',');
     let createdCount = 0;
-    let updatedCount = 0;
-    const patchedMasterIds = new Set<string>();
 
-    for (const slot of targetSlots) {
-      const { dayNum, startTime, endTime } = slot;
-      const slotStartMin = timeToMinutes(startTime) ?? 0;
-      const slotEndMin = timeToMinutes(endTime) ?? slotStartMin + 60;
+    for (const part of parts) {
+      const clean = part.trim();
+      if (!clean) continue;
 
-      // Find if there is already an event on this dayOfWeek and overlapping time
-      const matchingExisting = existingItems.filter((item) => {
-        if (item.status === 'cancelled' || !item.start?.dateTime) return false;
-        const sDate = new Date(item.start.dateTime);
-        if (sDate.getDay() !== dayNum) return false;
-        const sh = String(sDate.getHours()).padStart(2, '0');
-        const sm = String(sDate.getMinutes()).padStart(2, '0');
-        const itemStart = `${sh}:${sm}`;
-        if (itemStart === startTime) return true;
+      const match = clean.match(
+        /(domingo|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado)\s*([0-9]{1,2}:[0-9]{2})\s*[-aà]\s*([0-9]{1,2}:[0-9]{2})/i
+      );
+      if (!match) continue;
 
-        const eDate = item.end?.dateTime ? new Date(item.end.dateTime) : sDate;
-        const eh = String(eDate.getHours()).padStart(2, '0');
-        const em = String(eDate.getMinutes()).padStart(2, '0');
-        const itemStartMin = timeToMinutes(itemStart) ?? 0;
-        const itemEndMin = timeToMinutes(`${eh}:${em}`) ?? itemStartMin + 60;
-        return Math.max(slotStartMin, itemStartMin) < Math.min(slotEndMin, itemEndMin);
-      });
+      const dayName = match[1].toLowerCase();
+      const startTime = match[2].padStart(5, '0');
+      const endTime = match[3].padStart(5, '0');
+      const targetDayNum = dayMap[dayName] ?? 1;
 
-      if (matchingExisting.length > 0) {
-        for (const ex of matchingExisting) {
-          const masterId = ex.recurringEventId || ex.id;
-          const patchPayload = {
-            summary: courseTitle,
-            description: ex.description || courseDesc,
-            location: ex.location || courseLoc,
-            visibility: 'public',
-            transparency: 'opaque',
-          };
-
-          try {
-            if (masterId && !patchedMasterIds.has(masterId)) {
-              patchedMasterIds.add(masterId);
-              const patchMasterRes = await fetch(
-                `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events/${encodeURIComponent(masterId)}`,
-                {
-                  method: 'PATCH',
-                  headers: {
-                    Authorization: `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(patchPayload),
-                }
-              );
-              if (patchMasterRes.ok) {
-                updatedCount++;
-                continue;
-              }
-            }
-            const patchInstRes = await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events/${encodeURIComponent(ex.id)}`,
-              {
-                method: 'PATCH',
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(patchPayload),
-              }
-            );
-            if (patchInstRes.ok) {
-              updatedCount++;
-            }
-          } catch (err) {
-            console.warn('Error updating existing event in Google Calendar:', err);
-          }
-        }
-        continue;
-      }
-
-      // Otherwise create a new weekly recurring event with the Materia name
       const today = new Date();
       const currentDay = today.getDay();
-      let diff = dayNum - currentDay;
+      let diff = targetDayNum - currentDay;
       if (diff < 0) diff += 7;
       const classDate = new Date(today);
       classDate.setDate(today.getDate() + diff);
@@ -742,14 +639,12 @@ export const calendarService = {
 
       const startDateTime = `${dateStr}T${startTime}:00`;
       const endDateTime = `${dateStr}T${endTime}:00`;
-      const dayCode = rruleDays[dayNum] || 'MO';
+      const dayCode = rruleDays[targetDayNum] || 'MO';
 
       const googlePayload = {
-        summary: courseTitle,
-        description: courseDesc,
-        location: courseLoc,
-        visibility: 'public',
-        transparency: 'opaque',
+        summary: `${course.name} (${course.division || course.grade || 'Curso'})`,
+        description: `[DocencIA-Curso:${course.id}] Clase regular de ${course.subject || course.name}. Sincronizado desde DocencIA Pro.`,
+        location: course.room ? `Aula ${course.room}` : 'Colegio',
         start: {
           dateTime: new Date(startDateTime).toISOString(),
         },
@@ -779,15 +674,13 @@ export const calendarService = {
       }
     }
 
-    const totalTouched = createdCount + updatedCount;
     return {
-      success: totalTouched > 0,
+      success: createdCount > 0,
       createdCount,
-      updatedCount,
       message:
-        totalTouched > 0
-          ? `¡Sincronizado con Google Calendar! (${updatedCount > 0 ? `${updatedCount} actualizado(s) con el nombre "${courseTitle}"` : ''}${updatedCount > 0 && createdCount > 0 ? ' y ' : ''}${createdCount > 0 ? `${createdCount} bloque(s) creado(s)` : ''}).`
-          : 'No se encontraron bloques con hora específica para sincronizar en Google Calendar.',
+        createdCount > 0
+          ? `¡Se crearon ${createdCount} bloque(s) semanal(es) de "${course.name}" en el calendario del colegio!`
+          : 'El horario se guardó en la materia (usa formato "Lunes 08:00 - 09:30" para crear bloques en Google Calendar).',
     };
   },
 
@@ -799,7 +692,7 @@ export const calendarService = {
     if (!token) {
       try {
         const { requestAccessToken } = await import('./googleAuth');
-        token = await requestAccessToken();
+        token = await requestAccessToken(false, 'jorge.cano@fds-esc.edu.ar');
       } catch (err) {
         console.warn('Could not obtain fresh Google OAuth token:', err);
         return null;
@@ -813,7 +706,8 @@ export const calendarService = {
    * Defaults to 'primary' (the calendar linked to the user's Classroom/Google account).
    */
   async getWeeklyCalendarSlots(
-    calendarId: string = 'primary'
+    calendarId: string = 'primary',
+    courses?: Course[]
   ): Promise<{
     success: boolean;
     slots: {
@@ -833,7 +727,10 @@ export const calendarService = {
       return { success: false, slots: [], message: 'Inicia sesión con Google Workspace para ver los módulos de tu calendario.' };
     }
 
-    const targetCalendarId = !calendarId || calendarId === 'all' ? 'primary' : calendarId;
+    const targetCalendarId =
+      !calendarId || calendarId === 'all' || calendarId.toLowerCase() === 'canomorenojj@gmail.com'
+        ? 'primary'
+        : calendarId;
 
     const fetchSlotsWithToken = async (activeToken: string) => {
       // Scan 14-day window starting from current week's Monday (to catch bi-weekly or next-week modules if current week had a holiday)
@@ -868,7 +765,7 @@ export const calendarService = {
           return { unauthorized: false, rawEntries: [] };
         }
         const data = await res.json();
-        const calSummary = data.summary || (targetCalendarId === 'primary' ? 'Calendario Principal (Cuenta Classroom)' : targetCalendarId);
+        const calSummary = data.summary || (targetCalendarId === 'primary' ? 'Calendario Principal (Cuenta Colegio)' : targetCalendarId);
         const rawEntries = (data.items || []).map((item: any) => ({
           item,
           calName: calSummary,
@@ -885,7 +782,7 @@ export const calendarService = {
         // Token expired -> clear and request a fresh one automatically
         const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
         setCachedAccessToken(null);
-        token = await requestAccessToken();
+        token = await requestAccessToken(false, 'jorge.cano@fds-esc.edu.ar');
         if (!token) {
           return { success: false, slots: [], message: 'Tu sesión de Google expiró. Vuelve a intentar para autorizar.' };
         }
@@ -896,7 +793,7 @@ export const calendarService = {
       const slots: any[] = [];
       const seen = new Set<string>();
 
-      const availableCourses = getLocalCourses();
+      const availableCourses = courses && courses.length > 0 ? courses : getLocalCourses();
 
       for (const { item, calName } of attempt.rawEntries) {
         if (item.status === 'cancelled') continue;

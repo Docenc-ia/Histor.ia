@@ -914,9 +914,22 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     generateForRange(start1c, end1c, '1c');
     generateForRange(start2c, end2c, '2c');
 
-    // Agregar cualquier fecha personalizada guardada en entriesMap
+    // Agregar cualquier fecha personalizada guardada en entriesMap (ignorando claves de 2°/3° hora como YYYY-MM-DD__1)
     Object.keys(entriesMap).forEach((dStr) => {
-      if (entriesMap[dStr]?.isCustomDate || !dateSet.has(dStr)) {
+      if (dStr.includes('__') || !/^\d{4}-\d{2}-\d{2}$/.test(dStr)) return;
+      const savedEntry = entriesMap[dStr];
+      if (!savedEntry) return;
+
+      const hasMeaningfulData = Boolean(
+        savedEntry.isCustomDate ||
+          savedEntry.isHoliday ||
+          savedEntry.contents?.trim() ||
+          savedEntry.observations?.trim() ||
+          savedEntry.teacherSignature?.trim() ||
+          savedEntry.authoritySignature?.trim()
+      );
+
+      if (savedEntry.isCustomDate || (!dateSet.has(dStr) && hasMeaningfulData)) {
         dateSet.add(dStr);
         if (!dateTermMap[dStr]) {
           dateTermMap[dStr] = dStr <= end1c ? '1c' : '2c';
@@ -1244,7 +1257,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  // Eliminar fecha especial agregada manualmente
+  // Eliminar fecha especial agregada manualmente o fecha fuera de los días habituales de cursada
   const handleDeleteCustomDate = (dateStr: string) => {
     setEntriesMap((prev) => {
       const next = { ...prev };
@@ -1255,6 +1268,63 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       persistLibroData(metadata, next, characterOptions, true);
       return next;
     });
+    setToastMsg(`Fila del ${dateStr} eliminada del Libro de Temas.`);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  // Borrar una fila fuera de horario o limpiar todos los datos cargados por error en una fila del calendario
+  const handleDeleteOrClearRow = (row: ScheduledRow) => {
+    const isOutOfSchedule = !activeWeekdays.includes(row.dow) || Boolean(row.entry.isCustomDate);
+    if (isOutOfSchedule) {
+      handleDeleteCustomDate(row.dateStr);
+      return;
+    }
+
+    setEntriesMap((prev) => {
+      const next = { ...prev };
+      delete next[row.rowKey];
+      if (row.slotIndex === 0) {
+        delete next[row.dateStr];
+      }
+      persistLibroData(metadata, next, characterOptions, true);
+      return next;
+    });
+    setToastMsg(
+      `Se borraron los datos cargados en la fila del ${row.day}/${row.month}${
+        row.timeLabel ? ` (${row.timeLabel})` : ''
+      }.`
+    );
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  // Filas que quedaron en días de semana que no pertenecen al horario actual del curso
+  const outOfScheduleDates = useMemo(() => {
+    const dates = new Set<string>();
+    scheduledRows.forEach((r) => {
+      if (!activeWeekdays.includes(r.dow) && !r.entry.isCustomDate) {
+        dates.add(r.dateStr);
+      }
+    });
+    return Array.from(dates);
+  }, [scheduledRows, activeWeekdays]);
+
+  const handleRemoveAllOutOfScheduleDates = () => {
+    if (outOfScheduleDates.length === 0) return;
+    setEntriesMap((prev) => {
+      const next = { ...prev };
+      outOfScheduleDates.forEach((dStr) => {
+        delete next[dStr];
+        Object.keys(next).forEach((k) => {
+          if (k.startsWith(`${dStr}__`)) delete next[k];
+        });
+      });
+      persistLibroData(metadata, next, characterOptions, true);
+      return next;
+    });
+    setToastMsg(
+      `Se eliminaron ${outOfScheduleDates.length} fecha(s) que no correspondían a los días actuales de cursada.`
+    );
+    setTimeout(() => setToastMsg(null), 3500);
   };
 
   // Filtrado de filas para la tabla
@@ -1702,7 +1772,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       ];
 
       const dataRows = scheduledRows.map((row) => {
-        const entry = workingEntries[row.rowKey] || workingEntries[row.dateStr] || row.entry;
+        const entry =
+          workingEntries[row.rowKey] ||
+          (row.slotIndex === 0 ? workingEntries[row.dateStr] : undefined) ||
+          row.entry;
         const isHol = Boolean(entry.isHoliday);
         return [
           row.dateStr,
@@ -2440,10 +2513,23 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
                           try {
                             await api.updateCourse(courseId, { schedule: scheduleToSave });
+                            const { calendarService } = await import('../../services/workspace/calendarService');
+                            await calendarService.syncCourseScheduleToGoogle(
+                              {
+                                id: courseId,
+                                name: courseName,
+                                subject: courseSubject || courseName,
+                                grade: '',
+                                studentsCount: 0,
+                                schedule: scheduleToSave,
+                              },
+                              scheduleToSave,
+                              'primary'
+                            );
                             if (onRefreshCourse) onRefreshCourse();
                           } catch (_) {}
 
-                          setToastMsg('Días y horas de cursada guardados correctamente.');
+                          setToastMsg('Días y horas de cursada guardados y sincronizados con Google Calendar.');
                           setTimeout(() => setToastMsg(null), 3500);
                         }}
                         className="inline-flex items-center gap-1 px-3 py-1 rounded-md text-[11px] font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xs cursor-pointer"
@@ -2681,6 +2767,40 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 >
                   {isHol ? `Evento: ${noClassBadgeText} (Editar)` : 'Marcar Sin clase / Evento'}
                 </button>
+
+                {(!activeWeekdays.includes(row.dow) ||
+                  row.entry.isCustomDate ||
+                  Boolean(
+                    row.entry.contents.trim() ||
+                      row.entry.unitNumber.trim() ||
+                      row.entry.classCharacter.trim() ||
+                      row.entry.observations.trim() ||
+                      row.entry.teacherSignature.trim() ||
+                      row.entry.authoritySignature.trim() ||
+                      row.entry.isHoliday
+                  )) && (
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteOrClearRow(row)}
+                    className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all cursor-pointer font-semibold inline-flex items-center gap-1 shrink-0 ${
+                      isDarkMode
+                        ? 'bg-red-950/50 border-red-800/80 text-red-300 hover:bg-red-900/60'
+                        : 'bg-red-50 border-red-200 text-red-700 hover:bg-red-100'
+                    }`}
+                    title={
+                      !activeWeekdays.includes(row.dow) || row.entry.isCustomDate
+                        ? 'Eliminar esta fecha fuera del horario de cursada'
+                        : 'Borrar / limpiar lo cargado en esta hora'
+                    }
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>
+                      {!activeWeekdays.includes(row.dow) || row.entry.isCustomDate
+                        ? 'Eliminar fila'
+                        : 'Limpiar hora'}
+                    </span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2962,6 +3082,32 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         );
       })()}
 
+      {/* Aviso si existen fechas cargadas en días que no coinciden con los días actuales de cursada */}
+      {outOfScheduleDates.length > 0 && (
+        <div
+          className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 text-xs ${
+            isDarkMode
+              ? 'bg-amber-950/40 border-amber-800/80 text-amber-200'
+              : 'bg-amber-50 border-amber-200 text-amber-900'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span>
+              Hay <strong>{outOfScheduleDates.length}</strong> fecha(s) en la tabla que no corresponden a tus días actuales de cursada (<strong>{activeWeekdaysLabel}</strong>). Podés borrarlas con el botón de papelera al final de la fila o quitar todas juntas.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={handleRemoveAllOutOfScheduleDates}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-700 text-white shadow-2xs transition-colors cursor-pointer shrink-0"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Eliminar fechas fuera de horario ({outOfScheduleDates.length})</span>
+          </button>
+        </div>
+      )}
+
       {/* ===================================================================== */}
       {/* TABLA OFICIAL DEL LIBRO DE TEMAS (PÁGINA IZQUIERDA + PÁGINA DERECHA)  */}
       {/* ===================================================================== */}
@@ -3190,7 +3336,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           isDarkMode ? 'border-slate-800' : 'border-neutral-200'
                         }`}
                       >
-                        <div className="flex flex-col items-center justify-center leading-tight">
+                        <div className="flex flex-col items-center justify-center leading-tight gap-0.5">
                           {row.timeLabel ? (
                             <>
                               <span className="text-[11px] font-bold text-neutral-800 dark:text-slate-200 whitespace-nowrap">
@@ -3205,6 +3351,17 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           ) : row.totalSlotsForDay > 1 ? (
                             <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">
                               {row.slotIndex + 1}° Hora
+                            </span>
+                          ) : !activeWeekdays.includes(row.dow) ? (
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-sans font-bold ${
+                                isDarkMode
+                                  ? 'bg-red-950/70 text-red-300 border border-red-800/70'
+                                  : 'bg-red-50 text-red-700 border border-red-200'
+                              }`}
+                              title="Esta fecha no pertenece a los días habituales configurados en el curso"
+                            >
+                              Fuera de horario
                             </span>
                           ) : (
                             <span className="text-[10px] text-neutral-400">-</span>
@@ -3441,7 +3598,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                         )}
                       </td>
 
-                      {/* COLUMNA 8: FIRMA DE LA AUTORIDAD */}
+                      {/* COLUMNA 8: FIRMA DE LA AUTORIDAD + ACCIÓN BORRAR/LIMPIAR FILA */}
                       <td className="py-2 px-2 align-middle text-center">
                         <div className="flex items-center gap-1">
                           <input
@@ -3460,12 +3617,34 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                                 : 'bg-white border-neutral-200 text-neutral-700 placeholder:text-neutral-300'
                             }`}
                           />
-                          {row.entry.isCustomDate && (
+                          {(!activeWeekdays.includes(row.dow) ||
+                            row.entry.isCustomDate ||
+                            Boolean(
+                              row.entry.contents.trim() ||
+                                row.entry.unitNumber.trim() ||
+                                row.entry.classCharacter.trim() ||
+                                row.entry.observations.trim() ||
+                                row.entry.teacherSignature.trim() ||
+                                row.entry.authoritySignature.trim() ||
+                                row.entry.isHoliday
+                            )) && (
                             <button
                               type="button"
-                              onClick={() => handleDeleteCustomDate(row.dateStr)}
-                              className="p-1 text-neutral-400 hover:text-red-500 cursor-pointer shrink-0"
-                              title="Eliminar esta fecha agregada manualmente"
+                              onClick={() => handleDeleteOrClearRow(row)}
+                              className={`p-1.5 rounded-md border transition-colors cursor-pointer shrink-0 ${
+                                !activeWeekdays.includes(row.dow) || row.entry.isCustomDate
+                                  ? isDarkMode
+                                    ? 'bg-red-950/60 border-red-800 text-red-300 hover:bg-red-900'
+                                    : 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100'
+                                  : isDarkMode
+                                  ? 'border-slate-700 text-slate-400 hover:text-red-400 hover:border-red-800 hover:bg-red-950/40'
+                                  : 'border-neutral-200 text-neutral-400 hover:text-red-600 hover:border-red-200 hover:bg-red-50'
+                              }`}
+                              title={
+                                !activeWeekdays.includes(row.dow) || row.entry.isCustomDate
+                                  ? 'Eliminar esta fila fuera del horario habitual de cursada'
+                                  : 'Borrar / limpiar los datos cargados en esta fila'
+                              }
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

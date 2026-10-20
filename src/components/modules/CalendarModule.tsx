@@ -1,12 +1,13 @@
 /**
  * Google Calendar Oficial Module
- * Vista exclusiva y directa de Google Calendar oficial.
- * Solo muestra "Mi Calendario Docente" por defecto, con la opción directa
- * de agregar otros calendarios por su ID de Google Calendar (como el calendario
- * oficial del colegio o el de evaluaciones) justo al lado.
+ * Vista directa y en tiempo real de Google Calendar oficial.
+ * Utiliza la API oficial de Google Calendar v3 (con token OAuth) y el cruce automático
+ * con las Materias del docente para mostrar siempre los nombres reales de las materias
+ * y eventos (evitando el bloqueo "No disponible" del widget iframe por privacidad/cookies),
+ * además de permitir actualizar los nombres de las materias directamente en Google Calendar.
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Calendar as CalendarIcon,
   ExternalLink,
@@ -24,11 +25,23 @@ import {
   Eye,
   EyeOff,
   Sparkles,
-  Layers,
+  ChevronLeft,
+  ChevronRight,
+  BookOpen,
+  MapPin,
+  CheckCircle2,
+  AlertCircle,
+  LayoutGrid,
+  Globe,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { calendarService } from '../../services/workspace/calendarService';
-import { GoogleCalendarInfo, Course } from '../../types';
+import {
+  calendarService,
+  getEffectiveCourseSchedule,
+  formatCourseCalendarTitle,
+} from '../../services/workspace/calendarService';
+import { GoogleCalendarInfo, Course, CalendarEventItem } from '../../types';
+import { getLocalCourses } from '../../services/storageHelpers';
 
 export interface CalendarModuleProps {
   courses?: Course[];
@@ -40,11 +53,17 @@ export interface CalendarModuleProps {
 export interface ConfiguredCalendar {
   id: string;          // Google Calendar ID or email address
   name: string;        // Human readable name (e.g., "Evaluaciones", "Colegio Oficial")
-  color: string;       // Hex color for Google Calendar embed
+  color: string;       // Hex color for Google Calendar
   enabled: boolean;    // Whether it is visible in the current view
   isPrimary?: boolean; // Primary user calendar
   description?: string;
 }
+
+type EnrichedCalendarEvent = CalendarEventItem & {
+  calendarName?: string;
+  courseDivision?: string;
+  courseRoom?: string;
+};
 
 const PRESET_COLORS = [
   { name: 'Azul Google', hex: '#1a73e8' },
@@ -57,15 +76,68 @@ const PRESET_COLORS = [
   { name: 'Gris Grafito', hex: '#5f6368' },
 ];
 
+const COURSE_PALETTE = [
+  '#1a73e8',
+  '#0d904f',
+  '#9334e6',
+  '#e65100',
+  '#00897b',
+  '#d93025',
+  '#3949ab',
+  '#c2185b',
+];
+
 const STORAGE_KEY = 'fds_google_calendars_configured_v3';
 
 type GCalViewMode = 'WEEK' | 'MONTH' | 'AGENDA';
+type CalendarRenderMode = 'LIVE_API' | 'IFRAME';
 
-export const CalendarModule: React.FC<CalendarModuleProps> = () => {
-  const { isDarkMode, user, token, loginWithGoogle } = useWorkspaceAuth();
-  const userEmail = user?.email || 'jorge.cano@fds-esc.edu.ar';
+const SHORT_DAYS_ES = ['DOM', 'LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB'];
+const FULL_DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+const MONTHS_ES = [
+  'Enero',
+  'Febrero',
+  'Marzo',
+  'Abril',
+  'Mayo',
+  'Junio',
+  'Julio',
+  'Agosto',
+  'Septiembre',
+  'Octubre',
+  'Noviembre',
+  'Diciembre',
+];
 
-  // Load configured calendars: ONLY user calendar by default (no hardcoded presets)
+const toLocalYMD = (d: Date): string => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+export const CalendarModule: React.FC<CalendarModuleProps> = ({
+  courses: propCourses,
+  onNavigateToCourseDetail,
+}) => {
+  const { isDarkMode, user, token } = useWorkspaceAuth();
+  const userEmail = user?.email || 'primary';
+
+  const activeCourses = useMemo(() => {
+    if (propCourses && propCourses.length > 0) return propCourses;
+    return getLocalCourses();
+  }, [propCourses]);
+
+  // Assign a consistent color per course
+  const courseColorMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    activeCourses.forEach((c, idx) => {
+      map[c.id] = COURSE_PALETTE[idx % COURSE_PALETTE.length];
+    });
+    return map;
+  }, [activeCourses]);
+
+  // Load configured calendars: ONLY user calendar by default
   const [calendars, setCalendars] = useState<ConfiguredCalendar[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -73,7 +145,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            // Strip out any legacy hardcoded mock presets if present
             const filtered = parsed.filter(
               (c: any) =>
                 c.id !== 'colegio@fds-esc.edu.ar' &&
@@ -86,18 +157,33 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
       } catch (_) {}
     }
 
-    // Default: ONLY "Mi Calendario Docente"
     return [
       {
         id: userEmail,
         name: 'Mi Calendario Docente',
-        color: '#1a73e8', // Blue
+        color: '#1a73e8',
         enabled: true,
         isPrimary: true,
-        description: 'Clases, horarios y eventos de tu cuenta personal institucional',
+        description: 'Clases, horarios y eventos de tu cuenta vinculada',
       },
     ];
   });
+
+  // Ensure primary calendar ID always matches the currently logged-in user's email
+  useEffect(() => {
+    if (!user?.email) return;
+    setCalendars((prev) => {
+      const needsUpdate = prev.some(
+        (c) => (c.isPrimary || c.id === 'jorge.cano@fds-esc.edu.ar' || c.id === 'primary') && c.id !== user.email
+      );
+      if (!needsUpdate) return prev;
+      return prev.map((c, idx) =>
+        c.isPrimary || idx === 0 || c.id === 'jorge.cano@fds-esc.edu.ar' || c.id === 'primary'
+          ? { ...c, id: user.email, isPrimary: true }
+          : c
+      );
+    });
+  }, [user?.email]);
 
   const [hasHydratedFromCloud, setHasHydratedFromCloud] = useState<boolean>(false);
 
@@ -110,9 +196,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         if (!uid) return;
         const cloudCals = await firestoreSync.loadUserSetting<ConfiguredCalendar[]>(uid, 'google_calendars_configured');
         if (mounted && Array.isArray(cloudCals) && cloudCals.length > 0) {
-          setCalendars(cloudCals);
+          const updated = cloudCals.map((c, idx) =>
+            (c.isPrimary || idx === 0) && user?.email ? { ...c, id: user.email, isPrimary: true } : c
+          );
+          setCalendars(updated);
           try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(cloudCals));
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
           } catch (_) {}
         }
       })
@@ -142,14 +231,25 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   }, [calendars, hasHydratedFromCloud]);
 
   const [viewMode, setViewMode] = useState<GCalViewMode>('WEEK');
+  const [renderMode, setRenderMode] = useState<CalendarRenderMode>('LIVE_API');
+  const [currentDate, setCurrentDate] = useState<Date>(() => new Date());
   const [refreshKey, setRefreshKey] = useState<number>(Date.now());
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  // Live events fetched via OAuth API + merged with Materias
+  const [liveEvents, setLiveEvents] = useState<EnrichedCalendarEvent[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState<boolean>(false);
+  const [selectedEventDetail, setSelectedEventDetail] = useState<EnrichedCalendarEvent | null>(null);
+
+  // Confirmation modal for writing/updating Materia names in Google Calendar
+  const [isConfirmSyncToGoogleOpen, setIsConfirmSyncToGoogleOpen] = useState<boolean>(false);
+  const [isPushingCourseNames, setIsPushingCourseNames] = useState<boolean>(false);
 
   // Modal / dialog for adding calendar by ID
   const [isAddByIdOpen, setIsAddByIdOpen] = useState<boolean>(false);
   const [newCalendarId, setNewCalendarId] = useState<string>('');
   const [newCalendarName, setNewCalendarName] = useState<string>('');
-  const [newCalendarColor, setNewCalendarColor] = useState<string>('#0d904f'); // Green default for 2nd calendar
+  const [newCalendarColor, setNewCalendarColor] = useState<string>('#0d904f');
   const [newCalendarDesc, setNewCalendarDesc] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -186,7 +286,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     };
   }, [token]);
 
-  // Active calendars for the iframe
+  // Active calendars
   const enabledCalendars = useMemo(() => {
     const list = calendars.filter((c) => c.enabled && c.id.trim().length > 0);
     if (list.length === 0 && calendars.length > 0) {
@@ -195,23 +295,154 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     return list;
   }, [calendars]);
 
+  // Compute date range for current view
+  const dateRange = useMemo(() => {
+    const base = new Date(currentDate);
+    base.setHours(0, 0, 0, 0);
+
+    if (viewMode === 'WEEK') {
+      const dow = base.getDay();
+      const mondayOffset = dow === 0 ? -6 : 1 - dow;
+      const start = new Date(base);
+      start.setDate(base.getDate() + mondayOffset);
+      start.setHours(0, 0, 0, 0);
+
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      end.setHours(23, 59, 59, 999);
+
+      const days: Date[] = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        days.push(d);
+      }
+      return { start, end, days };
+    }
+
+    if (viewMode === 'MONTH') {
+      const firstOfMonth = new Date(base.getFullYear(), base.getMonth(), 1);
+      const startDow = firstOfMonth.getDay();
+      const mondayOffset = startDow === 0 ? -6 : 1 - startDow;
+      const start = new Date(firstOfMonth);
+      start.setDate(firstOfMonth.getDate() + mondayOffset);
+      start.setHours(0, 0, 0, 0);
+
+      const days: Date[] = [];
+      for (let i = 0; i < 42; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        days.push(d);
+      }
+      const end = new Date(days[41]);
+      end.setHours(23, 59, 59, 999);
+      return { start, end, days };
+    }
+
+    // AGENDA: 30 days starting from Monday of current week
+    const dow = base.getDay();
+    const mondayOffset = dow === 0 ? -6 : 1 - dow;
+    const start = new Date(base);
+    start.setDate(base.getDate() + mondayOffset);
+    start.setHours(0, 0, 0, 0);
+
+    const end = new Date(start);
+    end.setDate(start.getDate() + 27);
+    end.setHours(23, 59, 59, 999);
+
+    const days: Date[] = [];
+    for (let i = 0; i < 28; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      days.push(d);
+    }
+    return { start, end, days };
+  }, [currentDate, viewMode]);
+
+  // Fetch live events from Google Calendar API + enrich with Materia names
+  const loadCalendarEvents = useCallback(async () => {
+    setIsLoadingEvents(true);
+    try {
+      const res = await calendarService.fetchMultiCalendarLiveEvents(
+        enabledCalendars,
+        dateRange.start.toISOString(),
+        dateRange.end.toISOString(),
+        activeCourses
+      );
+      if (res.success) {
+        setLiveEvents(res.events);
+      }
+    } catch (e) {
+      console.warn('Error loading live calendar events:', e);
+    } finally {
+      setIsLoadingEvents(false);
+    }
+  }, [enabledCalendars, dateRange.start, dateRange.end, activeCourses]);
+
+  useEffect(() => {
+    loadCalendarEvents();
+  }, [loadCalendarEvents, refreshKey, token]);
+
   // Google Calendar Embed URL constructed with multiple &src= parameters
   const iframeSrc = useMemo(() => {
-    const base = 'https://calendar.google.com/calendar/embed?ctz=America%2FArgentina%2FBuenos_Aires&showTitle=0&showNav=1&showDate=1&showPrint=1&showTabs=1&showCalendars=1';
+    const base =
+      'https://calendar.google.com/calendar/embed?ctz=America%2FArgentina%2FBuenos_Aires&showTitle=0&showNav=1&showDate=1&showPrint=1&showTabs=1&showCalendars=1';
     const viewParam = `&mode=${viewMode}`;
 
     const calendarParams = enabledCalendars
-      .map((c) => `&src=${encodeURIComponent(c.id.trim())}&color=${encodeURIComponent(c.color || '#1a73e8')}`)
+      .map((c) => {
+        const srcId = c.isPrimary && user?.email ? user.email : c.id.trim();
+        return `&src=${encodeURIComponent(srcId)}&color=${encodeURIComponent(c.color || '#1a73e8')}`;
+      })
       .join('');
 
     return `${base}${viewParam}${calendarParams}`;
-  }, [enabledCalendars, viewMode]);
+  }, [enabledCalendars, viewMode, user?.email]);
+
+  // Navigation handlers
+  const handlePrevPeriod = () => {
+    setCurrentDate((prev) => {
+      const next = new Date(prev);
+      if (viewMode === 'MONTH') {
+        next.setMonth(next.getMonth() - 1);
+      } else {
+        next.setDate(next.getDate() - 7);
+      }
+      return next;
+    });
+  };
+
+  const handleNextPeriod = () => {
+    setCurrentDate((prev) => {
+      const next = new Date(prev);
+      if (viewMode === 'MONTH') {
+        next.setMonth(next.getMonth() + 1);
+      } else {
+        next.setDate(next.getDate() + 7);
+      }
+      return next;
+    });
+  };
+
+  const handleToday = () => {
+    setCurrentDate(new Date());
+  };
+
+  const periodHeaderLabel = useMemo(() => {
+    if (viewMode === 'MONTH') {
+      return `${MONTHS_ES[currentDate.getMonth()]} de ${currentDate.getFullYear()}`;
+    }
+    const s = dateRange.start;
+    const e = dateRange.days[Math.min(6, dateRange.days.length - 1)];
+    if (s.getMonth() === e.getMonth()) {
+      return `${s.getDate()} – ${e.getDate()} de ${MONTHS_ES[s.getMonth()]} ${s.getFullYear()}`;
+    }
+    return `${s.getDate()} ${MONTHS_ES[s.getMonth()].slice(0, 3)} – ${e.getDate()} ${MONTHS_ES[e.getMonth()].slice(0, 3)} ${e.getFullYear()}`;
+  }, [viewMode, currentDate, dateRange]);
 
   // Toggle calendar visibility
   const toggleCalendar = (id: string) => {
-    setCalendars((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c))
-    );
+    setCalendars((prev) => prev.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)));
     setRefreshKey(Date.now());
   };
 
@@ -228,7 +459,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
       return;
     }
 
-    // Auto-generate name if user left it blank
     if (!cleanName) {
       if (cleanId.includes('@')) {
         const prefix = cleanId.split('@')[0];
@@ -238,7 +468,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
       }
     }
 
-    // Check duplicate ID
     if (calendars.some((c) => c.id.toLowerCase() === cleanId.toLowerCase())) {
       setFormError('Este calendario ya está incorporado en tu lista.');
       return;
@@ -265,9 +494,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     e.preventDefault();
     if (!editingCalendar) return;
 
-    setCalendars((prev) =>
-      prev.map((c) => (c.id === editingCalendar.id ? editingCalendar : c))
-    );
+    setCalendars((prev) => prev.map((c) => (c.id === editingCalendar.id ? editingCalendar : c)));
     setEditingCalendar(null);
     setRefreshKey(Date.now());
   };
@@ -283,7 +510,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     setRefreshKey(Date.now());
   };
 
-  // Fetch available Google Calendars into the dropdown (or sync only the selected one)
+  // Sync selected calendar from dropdown
   const handleSyncSelectedCalendar = async (overrideCalendarId?: string) => {
     setIsAutoDetecting(true);
     setAutoDetectMsg(null);
@@ -312,7 +539,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         return;
       }
 
-      const effectiveId = chosenCal.primary ? userEmail : chosenCal.id;
+      const effectiveId = chosenCal.primary ? (user?.email || 'primary') : chosenCal.id;
 
       setCalendars((prev) => {
         const exists = prev.some(
@@ -343,7 +570,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
 
       setAutoDetectMsg(`¡Calendario "${chosenCal.summary}" sincronizado y activado!`);
       setRefreshKey(Date.now());
-    } catch (err: any) {
+    } catch (_) {
       setAutoDetectMsg('Error al sincronizar el calendario seleccionado.');
     } finally {
       setIsAutoDetecting(false);
@@ -351,13 +578,73 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
     }
   };
 
+  // Push and update Materia names directly into Google Calendar
+  const handleConfirmPushCourseNamesToGoogle = async () => {
+    setIsPushingCourseNames(true);
+    try {
+      const res = await calendarService.syncAllCoursesToGoogleCalendar(
+        activeCourses,
+        selectedGoogleCalendarId || 'primary'
+      );
+      setAutoDetectMsg(res.message);
+      setIsConfirmSyncToGoogleOpen(false);
+      setRefreshKey(Date.now());
+      await loadCalendarEvents();
+    } catch (_) {
+      setAutoDetectMsg('No se pudieron actualizar los eventos en Google Calendar.');
+    } finally {
+      setIsPushingCourseNames(false);
+      setTimeout(() => setAutoDetectMsg(null), 6000);
+    }
+  };
+
+  const todayYMD = useMemo(() => toLocalYMD(new Date()), []);
+
+  // Group events by YYYY-MM-DD for quick lookup in Week / Month / Agenda views
+  const eventsByDateMap = useMemo(() => {
+    const map: Record<string, EnrichedCalendarEvent[]> = {};
+    for (const ev of liveEvents) {
+      const dateStr = (ev.start || '').slice(0, 10);
+      if (!dateStr) continue;
+      if (!map[dateStr]) map[dateStr] = [];
+      map[dateStr].push(ev);
+    }
+    for (const dKey of Object.keys(map)) {
+      map[dKey].sort((a, b) => (a.startTime || '00:00').localeCompare(b.startTime || '00:00'));
+    }
+    return map;
+  }, [liveEvents]);
+
+  // Courses with configured schedules for the confirmation summary
+  const coursesWithSchedules = useMemo(() => {
+    return activeCourses
+      .map((c) => ({
+        course: c,
+        schedule: getEffectiveCourseSchedule(c),
+        title: formatCourseCalendarTitle(c),
+      }))
+      .filter((x) => x.schedule.trim().length > 0);
+  }, [activeCourses]);
+
+  // Visible weekdays for WEEK view: Monday to Friday (plus Saturday/Sunday if there are events on weekend)
+  const weekViewDays = useMemo(() => {
+    if (viewMode !== 'WEEK') return dateRange.days;
+    const hasWeekendEvents = dateRange.days.some((d) => {
+      const dow = d.getDay();
+      if (dow !== 0 && dow !== 6) return false;
+      const ymd = toLocalYMD(d);
+      return (eventsByDateMap[ymd]?.length || 0) > 0;
+    });
+    return hasWeekendEvents ? dateRange.days : dateRange.days.filter((d) => d.getDay() >= 1 && d.getDay() <= 5);
+  }, [viewMode, dateRange.days, eventsByDateMap]);
+
   return (
     <div className={`space-y-4 ${isFullscreen ? 'fixed inset-0 z-50 p-4 bg-white dark:bg-slate-950 overflow-auto' : ''}`}>
       {/* ------------------------------------------------------------- */}
       {/* TOP HEADER: TITULO, CONTROLES DE VISTA Y ACCIONES             */}
       {/* ------------------------------------------------------------- */}
       <div
-        className={`p-5 rounded-2xl border shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
+        className={`p-5 rounded-2xl border shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-colors ${
           isDarkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white border-neutral-200'
         }`}
       >
@@ -373,13 +660,13 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               </h1>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                 <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
-                Oficial y en tiempo real
+                Nombres de materias sincronizados
               </span>
             </div>
             <p className={`text-xs mt-0.5 flex items-center gap-1.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
               <Clock className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               <span>
-                {enabledCalendars.length === 1 ? '1 calendario activo' : `${enabledCalendars.length} calendarios superpuestos`} • Zona horaria: America/Argentina/Buenos_Aires (GMT-3)
+                {enabledCalendars.length === 1 ? '1 calendario activo' : `${enabledCalendars.length} calendarios superpuestos`} • {activeCourses.length} materia(s) vinculadas
               </span>
             </p>
           </div>
@@ -387,6 +674,44 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
 
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* Switch between Live API Grid (with Materia names) and Raw Google Iframe */}
+          <div
+            className={`inline-flex p-1 rounded-xl border text-xs font-semibold ${
+              isDarkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-neutral-100 border-neutral-200'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => setRenderMode('LIVE_API')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                renderMode === 'LIVE_API'
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+              title="Muestra todos tus eventos y materias con sus nombres reales usando tu conexión de Google"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Con Nombres de Materias</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRenderMode('IFRAME')}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                renderMode === 'IFRAME'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+              title="Vista embebida directa de calendar.google.com"
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span>Widget Web</span>
+            </button>
+          </div>
+
           {/* Mode switch buttons (Semana / Mes / Agenda) */}
           <div
             className={`inline-flex p-1 rounded-xl border text-xs font-semibold ${
@@ -394,8 +719,9 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
             }`}
           >
             <button
+              type="button"
               onClick={() => setViewMode('WEEK')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                 viewMode === 'WEEK'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : isDarkMode
@@ -406,8 +732,9 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               Semana
             </button>
             <button
+              type="button"
               onClick={() => setViewMode('MONTH')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                 viewMode === 'MONTH'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : isDarkMode
@@ -418,8 +745,9 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               Mes
             </button>
             <button
+              type="button"
               onClick={() => setViewMode('AGENDA')}
-              className={`px-3 py-1.5 rounded-lg transition-all ${
+              className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                 viewMode === 'AGENDA'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : isDarkMode
@@ -431,23 +759,36 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
             </button>
           </div>
 
-          {/* Refresh iframe */}
+          {/* Button to push/rename Materia names directly into Google Calendar */}
           <button
+            type="button"
+            onClick={() => setIsConfirmSyncToGoogleOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition-all active:scale-95 cursor-pointer"
+            title="Actualiza en tu Google Calendar oficial los bloques sin nombre o 'No disponible' poniéndoles el nombre de cada materia"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Poner nombres en Google Calendar</span>
+          </button>
+
+          {/* Refresh */}
+          <button
+            type="button"
             onClick={() => setRefreshKey(Date.now())}
-            className={`p-2 rounded-xl border text-xs font-semibold transition-all active:scale-95 ${
+            className={`p-2 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${
               isDarkMode
                 ? 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
                 : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 shadow-sm'
             }`}
-            title="Recargar vista de Google Calendar"
+            title="Recargar eventos de Google Calendar"
           >
-            <RotateCw className="w-4 h-4" />
+            <RotateCw className={`w-4 h-4 ${isLoadingEvents ? 'animate-spin text-blue-500' : ''}`} />
           </button>
 
           {/* Toggle Fullscreen */}
           <button
+            type="button"
             onClick={() => setIsFullscreen(!isFullscreen)}
-            className={`p-2 rounded-xl border text-xs font-semibold transition-all active:scale-95 ${
+            className={`p-2 rounded-xl border text-xs font-semibold transition-all active:scale-95 cursor-pointer ${
               isDarkMode
                 ? 'border-slate-700 bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700'
                 : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50 shadow-sm'
@@ -479,7 +820,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         }`}
       >
         <div className="flex items-center gap-2.5 overflow-x-auto pb-1 md:pb-0 scrollbar-none flex-wrap">
-          {/* List of Calendars (Starting with Mi Calendario Docente) */}
           {calendars.map((cal) => (
             <div
               key={cal.id}
@@ -493,11 +833,10 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
                   : 'bg-white border-dashed border-neutral-200 text-neutral-400 line-through opacity-60'
               }`}
             >
-              {/* Click to toggle on/off */}
               <button
                 type="button"
                 onClick={() => toggleCalendar(cal.id)}
-                className="inline-flex items-center gap-2 outline-none"
+                className="inline-flex items-center gap-2 outline-none cursor-pointer"
                 title={cal.enabled ? `Ocultar ${cal.name}` : `Mostrar ${cal.name}`}
               >
                 <span
@@ -516,13 +855,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
                 )}
               </button>
 
-              {/* Action for custom added calendars: Edit or Delete */}
               {!cal.isPrimary && (
                 <div className="flex items-center gap-1 border-l pl-1.5 border-neutral-200 dark:border-slate-700 opacity-60 group-hover:opacity-100 transition-opacity">
                   <button
                     type="button"
                     onClick={() => setEditingCalendar({ ...cal })}
-                    className="p-1 hover:text-blue-500 rounded transition-colors"
+                    className="p-1 hover:text-blue-500 rounded transition-colors cursor-pointer"
                     title="Editar nombre o color"
                   >
                     <Edit2 className="w-3 h-3" />
@@ -530,7 +868,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
                   <button
                     type="button"
                     onClick={() => handleDeleteCalendar(cal.id)}
-                    className="p-1 hover:text-rose-500 rounded transition-colors"
+                    className="p-1 hover:text-rose-500 rounded transition-colors cursor-pointer"
                     title="Eliminar este calendario"
                   >
                     <Trash2 className="w-3 h-3" />
@@ -540,14 +878,13 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
             </div>
           ))}
 
-          {/* BOTON SOLICITADO: Agregar calendario por ID DIRECTAMENTE AL LADO */}
           <button
             type="button"
             onClick={() => {
               setFormError(null);
               setIsAddByIdOpen(true);
             }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-500/50 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70 font-semibold text-xs shadow-sm transition-all active:scale-95"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-blue-500/50 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/70 font-semibold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
             title="Incorpora el calendario oficial del colegio, de evaluaciones o de materias pegando su ID de Google Calendar"
           >
             <Plus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -555,7 +892,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
           </button>
         </div>
 
-        {/* Right side: Dropdown selector for choosing a specific Google Calendar + helper link */}
+        {/* Right side: Dropdown selector for choosing a specific Google Calendar */}
         <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-auto">
           <div className="flex items-center gap-1.5">
             <select
@@ -602,7 +939,7 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
           <button
             type="button"
             onClick={() => setShowIdGuide(true)}
-            className="text-[11px] font-medium text-neutral-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-1"
+            className="text-[11px] font-medium text-neutral-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-1 cursor-pointer"
           >
             <HelpCircle className="w-3 h-3" />
             <span>¿Dónde encuentro la ID?</span>
@@ -612,38 +949,639 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
 
       {/* Auto-detect notification toast if active */}
       {autoDetectMsg && (
-        <div className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2.5 ${isDarkMode ? 'bg-blue-950/40 border-blue-800 text-blue-200' : 'bg-blue-50 border-blue-200 text-blue-900'}`}>
+        <div
+          className={`p-3 rounded-xl border text-xs flex items-center justify-between gap-2.5 ${
+            isDarkMode
+              ? 'bg-emerald-950/40 border-emerald-800 text-emerald-200'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+          }`}
+        >
           <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-blue-500 shrink-0" />
-            <span>{autoDetectMsg}</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+            <span className="font-medium">{autoDetectMsg}</span>
           </div>
-          <button onClick={() => setAutoDetectMsg(null)} className="text-neutral-400 hover:text-neutral-600">
+          <button onClick={() => setAutoDetectMsg(null)} className="text-neutral-400 hover:text-neutral-600 cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* IFRAME PRINCIPAL DE GOOGLE CALENDAR OFICIAL                    */}
+      {/* VISTA 1: GRILLA OFICIAL CON NOMBRES DE MATERIAS (API OAUTH)    */}
       {/* ------------------------------------------------------------- */}
-      <div
-        className={`rounded-2xl border shadow-sm overflow-hidden bg-white ${
-          isDarkMode ? 'border-slate-800' : 'border-neutral-200'
-        }`}
-        style={{ height: isFullscreen ? 'calc(100vh - 180px)' : 'calc(100vh - 270px)', minHeight: '680px' }}
-      >
-        <iframe
-          key={refreshKey}
-          title="Google Calendar Oficial"
-          src={iframeSrc}
-          style={{ border: 0 }}
-          width="100%"
-          height="100%"
-          frameBorder="0"
-          scrolling="no"
-          className="w-full h-full"
-        />
-      </div>
+      {renderMode === 'LIVE_API' ? (
+        <div
+          className={`rounded-2xl border shadow-sm overflow-hidden flex flex-col ${
+            isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
+          }`}
+          style={{ minHeight: '640px' }}
+        >
+          {/* Sub-header: Date Navigation + Course Legend */}
+          <div
+            className={`px-4 py-3 border-b flex flex-wrap items-center justify-between gap-3 ${
+              isDarkMode ? 'bg-slate-850 border-slate-800' : 'bg-neutral-50/70 border-neutral-200'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleToday}
+                className={`px-3 py-1.5 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-slate-200 hover:bg-slate-700'
+                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-neutral-100 shadow-2xs'
+                }`}
+              >
+                Hoy
+              </button>
+              <div className="inline-flex items-center rounded-lg border border-neutral-200 dark:border-slate-700 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={handlePrevPeriod}
+                  className={`p-1.5 transition-colors cursor-pointer ${
+                    isDarkMode ? 'bg-slate-800 hover:bg-slate-700 text-slate-200' : 'bg-white hover:bg-neutral-100 text-neutral-700'
+                  }`}
+                  title="Período anterior"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNextPeriod}
+                  className={`p-1.5 border-l border-neutral-200 dark:border-slate-700 transition-colors cursor-pointer ${
+                    isDarkMode ? 'bg-slate-800 hover:bg-slate-700 text-slate-200' : 'bg-white hover:bg-neutral-100 text-neutral-700'
+                  }`}
+                  title="Período siguiente"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+              <h2 className={`text-sm sm:text-base font-bold ml-1 ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
+                {periodHeaderLabel}
+              </h2>
+            </div>
+
+            {/* Course pills legend */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {coursesWithSchedules.map(({ course, title }) => {
+                const cColor = courseColorMap[course.id] || '#1a73e8';
+                return (
+                  <button
+                    key={course.id}
+                    type="button"
+                    onClick={() => onNavigateToCourseDetail && onNavigateToCourseDetail(course.id)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all cursor-pointer hover:opacity-90 ${
+                      isDarkMode ? 'bg-slate-800 border-slate-700 text-slate-200' : 'bg-white border-neutral-200 text-neutral-800 shadow-2xs'
+                    }`}
+                    title={`Ir a ${title}`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cColor }} />
+                    <span className="truncate max-w-[170px]">{title}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* WEEK VIEW */}
+          {viewMode === 'WEEK' && (
+            <div className="grid grid-cols-1 md:grid-cols-5 divide-y md:divide-y-0 md:divide-x divide-neutral-200 dark:divide-slate-800 flex-1">
+              {weekViewDays.map((dayDate) => {
+                const ymd = toLocalYMD(dayDate);
+                const isToday = ymd === todayYMD;
+                const dayEvents = eventsByDateMap[ymd] || [];
+                const dow = dayDate.getDay();
+
+                return (
+                  <div
+                    key={ymd}
+                    className={`flex flex-col min-h-[520px] ${
+                      isToday
+                        ? isDarkMode
+                          ? 'bg-blue-950/15'
+                          : 'bg-blue-50/30'
+                        : ''
+                    }`}
+                  >
+                    {/* Column Day Header */}
+                    <div
+                      className={`p-3 border-b text-center ${
+                        isDarkMode ? 'border-slate-800 bg-slate-900/60' : 'border-neutral-200 bg-neutral-50/50'
+                      }`}
+                    >
+                      <div
+                        className={`text-[11px] font-bold uppercase tracking-wider ${
+                          isToday ? 'text-blue-600 dark:text-blue-400' : isDarkMode ? 'text-slate-400' : 'text-neutral-500'
+                        }`}
+                      >
+                        {SHORT_DAYS_ES[dow]}
+                      </div>
+                      <div
+                        className={`mt-1 inline-flex items-center justify-center w-8 h-8 rounded-full text-sm font-extrabold ${
+                          isToday
+                            ? 'bg-blue-600 text-white shadow-xs'
+                            : isDarkMode
+                            ? 'text-slate-100'
+                            : 'text-neutral-800'
+                        }`}
+                      >
+                        {dayDate.getDate()}
+                      </div>
+                    </div>
+
+                    {/* Day Events List */}
+                    <div className="p-2.5 space-y-2 flex-1">
+                      {dayEvents.length === 0 ? (
+                        <div className="h-32 flex items-center justify-center text-[11px] text-neutral-400 dark:text-slate-600 italic">
+                          Sin eventos
+                        </div>
+                      ) : (
+                        dayEvents.map((ev) => {
+                          const accentColor = ev.courseId
+                            ? courseColorMap[ev.courseId] || ev.color || '#1a73e8'
+                            : ev.color || '#1a73e8';
+
+                          return (
+                            <div
+                              key={ev.id}
+                              onClick={() => setSelectedEventDetail(ev)}
+                              className={`group rounded-xl p-2.5 border text-left transition-all cursor-pointer shadow-2xs hover:shadow-md ${
+                                isDarkMode
+                                  ? 'bg-slate-800/90 hover:bg-slate-800 border-slate-700 text-white'
+                                  : 'bg-white hover:bg-blue-50/40 border-neutral-200 text-neutral-900'
+                              }`}
+                              style={{ borderLeftWidth: '4px', borderLeftColor: accentColor }}
+                            >
+                              {ev.startTime ? (
+                                <div className="flex items-center justify-between gap-1 text-[11px] font-bold text-blue-600 dark:text-blue-400 mb-1">
+                                  <span className="inline-flex items-center gap-1">
+                                    <Clock className="w-3 h-3 shrink-0" />
+                                    {ev.startTime}
+                                    {ev.endTime ? ` - ${ev.endTime}` : ''}
+                                  </span>
+                                  {ev.courseId && (
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-extrabold uppercase bg-blue-500/10 text-blue-600 dark:text-blue-300">
+                                      Materia
+                                    </span>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400 mb-1">
+                                  Todo el día
+                                </div>
+                              )}
+
+                              <div className="text-xs font-extrabold leading-snug break-words">
+                                {ev.title}
+                              </div>
+
+                              {(ev.courseRoom || ev.location) && (
+                                <div className="mt-1 flex items-center gap-1 text-[10px] text-neutral-500 dark:text-slate-400">
+                                  <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate">{ev.location || `Aula ${ev.courseRoom}`}</span>
+                                </div>
+                              )}
+
+                              {ev.courseId && onNavigateToCourseDetail && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onNavigateToCourseDetail(ev.courseId!);
+                                  }}
+                                  className="mt-2 w-full inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold bg-blue-600/10 hover:bg-blue-600 text-blue-600 dark:text-blue-300 hover:text-white transition-colors cursor-pointer"
+                                >
+                                  <BookOpen className="w-3 h-3" />
+                                  <span>Abrir materia</span>
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* MONTH VIEW */}
+          {viewMode === 'MONTH' && (
+            <div className="flex-1 flex flex-col">
+              <div className="grid grid-cols-7 border-b border-neutral-200 dark:border-slate-800">
+                {['LUN', 'MAR', 'MIÉ', 'JUE', 'VIE', 'SÁB', 'DOM'].map((d) => (
+                  <div
+                    key={d}
+                    className={`py-2 text-center text-[11px] font-bold uppercase ${
+                      isDarkMode ? 'text-slate-400 bg-slate-900' : 'text-neutral-500 bg-neutral-50'
+                    }`}
+                  >
+                    {d}
+                  </div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 flex-1 divide-x divide-y divide-neutral-200 dark:divide-slate-800">
+                {dateRange.days.map((dayDate) => {
+                  const ymd = toLocalYMD(dayDate);
+                  const isCurrentMonth = dayDate.getMonth() === currentDate.getMonth();
+                  const isToday = ymd === todayYMD;
+                  const dayEvents = eventsByDateMap[ymd] || [];
+
+                  return (
+                    <div
+                      key={ymd}
+                      className={`min-h-[105px] p-1.5 flex flex-col gap-1 ${
+                        !isCurrentMonth
+                          ? isDarkMode
+                            ? 'bg-slate-950/50 opacity-50'
+                            : 'bg-neutral-50/80 opacity-60'
+                          : ''
+                      }`}
+                    >
+                      <div className="flex justify-end">
+                        <span
+                          className={`w-6 h-6 rounded-full text-xs font-bold inline-flex items-center justify-center ${
+                            isToday
+                              ? 'bg-blue-600 text-white'
+                              : isDarkMode
+                              ? 'text-slate-300'
+                              : 'text-neutral-700'
+                          }`}
+                        >
+                          {dayDate.getDate()}
+                        </span>
+                      </div>
+                      <div className="space-y-1 overflow-y-auto max-h-24 pr-0.5">
+                        {dayEvents.map((ev) => {
+                          const accentColor = ev.courseId
+                            ? courseColorMap[ev.courseId] || ev.color || '#1a73e8'
+                            : ev.color || '#1a73e8';
+                          return (
+                            <button
+                              key={ev.id}
+                              type="button"
+                              onClick={() => setSelectedEventDetail(ev)}
+                              className="w-full text-left px-1.5 py-0.5 rounded text-[10px] font-bold text-white truncate transition-opacity hover:opacity-90 cursor-pointer"
+                              style={{ backgroundColor: accentColor }}
+                              title={`${ev.startTime ? `${ev.startTime} ` : ''}${ev.title}`}
+                            >
+                              {ev.startTime ? `${ev.startTime} ` : ''}
+                              {ev.title}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* AGENDA VIEW */}
+          {viewMode === 'AGENDA' && (
+            <div className="p-4 space-y-3 flex-1 overflow-y-auto">
+              {dateRange.days.map((dayDate) => {
+                const ymd = toLocalYMD(dayDate);
+                const dayEvents = eventsByDateMap[ymd] || [];
+                if (dayEvents.length === 0) return null;
+                const isToday = ymd === todayYMD;
+
+                return (
+                  <div
+                    key={ymd}
+                    className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-start gap-4 ${
+                      isDarkMode ? 'bg-slate-800/50 border-slate-800' : 'bg-neutral-50/70 border-neutral-200'
+                    }`}
+                  >
+                    <div className="w-36 shrink-0 flex items-center gap-2.5">
+                      <div
+                        className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center font-extrabold text-xs ${
+                          isToday
+                            ? 'bg-blue-600 text-white'
+                            : isDarkMode
+                            ? 'bg-slate-800 text-slate-200 border border-slate-700'
+                            : 'bg-white text-neutral-800 border border-neutral-200'
+                        }`}
+                      >
+                        <span>{dayDate.getDate()}</span>
+                        <span className="text-[9px] uppercase">{SHORT_DAYS_ES[dayDate.getDay()]}</span>
+                      </div>
+                      <div>
+                        <div className={`text-xs font-bold ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
+                          {FULL_DAYS_ES[dayDate.getDay()]}
+                        </div>
+                        <div className="text-[11px] text-neutral-500 dark:text-slate-400">
+                          {dayDate.getDate()} de {MONTHS_ES[dayDate.getMonth()]}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex-1 space-y-2">
+                      {dayEvents.map((ev) => {
+                        const accentColor = ev.courseId
+                          ? courseColorMap[ev.courseId] || ev.color || '#1a73e8'
+                          : ev.color || '#1a73e8';
+                        return (
+                          <div
+                            key={ev.id}
+                            onClick={() => setSelectedEventDetail(ev)}
+                            className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 cursor-pointer transition-colors ${
+                              isDarkMode
+                                ? 'bg-slate-900 hover:bg-slate-850 border-slate-700 text-white'
+                                : 'bg-white hover:bg-blue-50/30 border-neutral-200 text-neutral-900'
+                            }`}
+                            style={{ borderLeftWidth: '4px', borderLeftColor: accentColor }}
+                          >
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-blue-600 dark:text-blue-400">
+                                  {ev.startTime
+                                    ? `${ev.startTime}${ev.endTime ? ` – ${ev.endTime}` : ''}`
+                                    : 'Todo el día'}
+                                </span>
+                                <span className="text-xs font-extrabold">{ev.title}</span>
+                              </div>
+                              {(ev.description || ev.location) && (
+                                <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                                  {ev.location ? `${ev.location} • ` : ''}
+                                  {ev.description}
+                                </p>
+                              )}
+                            </div>
+
+                            {ev.courseId && onNavigateToCourseDetail && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onNavigateToCourseDetail(ev.courseId!);
+                                }}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-2xs cursor-pointer"
+                              >
+                                <BookOpen className="w-3.5 h-3.5" />
+                                <span>Ir a la materia</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        /* ------------------------------------------------------------- */
+        /* VISTA 2: IFRAME WEB EMBEBIDO DE GOOGLE CALENDAR               */
+        /* ------------------------------------------------------------- */
+        <div className="space-y-3">
+          <div
+            className={`p-3.5 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              isDarkMode
+                ? 'bg-amber-950/30 border-amber-800/70 text-amber-200'
+                : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">
+                  ¿Por qué el widget web de Google a veces muestra «No disponible» en lugar del nombre de la materia?
+                </p>
+                <p className="text-[11px] opacity-90 mt-0.5">
+                  Por privacidad, el visor externo de Google oculta los títulos de calendarios privados como «No disponible». Usá la vista{' '}
+                  <strong>Con Nombres de Materias</strong> o hacé clic en{' '}
+                  <strong>Poner nombres en Google Calendar</strong> para marcar tus bloques de clase como visibles con el nombre de cada materia.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsConfirmSyncToGoogleOpen(true)}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer"
+              >
+                Poner nombres en Google Calendar
+              </button>
+              <button
+                type="button"
+                onClick={() => setRenderMode('LIVE_API')}
+                className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs cursor-pointer"
+              >
+                Ver con Nombres
+              </button>
+            </div>
+          </div>
+
+          <div
+            className={`rounded-2xl border shadow-sm overflow-hidden bg-white ${
+              isDarkMode ? 'border-slate-800' : 'border-neutral-200'
+            }`}
+            style={{ height: isFullscreen ? 'calc(100vh - 220px)' : 'calc(100vh - 310px)', minHeight: '640px' }}
+          >
+            <iframe
+              key={refreshKey}
+              title="Google Calendar Oficial"
+              src={iframeSrc}
+              style={{ border: 0 }}
+              width="100%"
+              height="100%"
+              frameBorder="0"
+              scrolling="no"
+              className="w-full h-full"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL DE DETALLE DE EVENTO / MATERIA                          */}
+      {/* ------------------------------------------------------------- */}
+      {selectedEventDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div
+              className={`p-4 border-b flex items-center justify-between ${
+                isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <CalendarIcon className="w-4 h-4 text-blue-500" />
+                <span className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                  {selectedEventDetail.courseId ? 'Clase de Materia' : 'Evento de Calendario'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedEventDetail(null)}
+                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-3 text-xs">
+              <h3 className="text-base font-extrabold">{selectedEventDetail.title}</h3>
+
+              <div className="flex items-center gap-2 text-neutral-600 dark:text-slate-300">
+                <Clock className="w-4 h-4 text-blue-500 shrink-0" />
+                <span>
+                  {selectedEventDetail.start.slice(0, 10)}{' '}
+                  {selectedEventDetail.startTime
+                    ? `• ${selectedEventDetail.startTime}${selectedEventDetail.endTime ? ` a ${selectedEventDetail.endTime}` : ''}`
+                    : '(Todo el día)'}
+                </span>
+              </div>
+
+              {(selectedEventDetail.location || selectedEventDetail.courseRoom) && (
+                <div className="flex items-center gap-2 text-neutral-600 dark:text-slate-300">
+                  <MapPin className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>{selectedEventDetail.location || `Aula ${selectedEventDetail.courseRoom}`}</span>
+                </div>
+              )}
+
+              {selectedEventDetail.description && (
+                <p className="p-3 rounded-xl bg-neutral-100 dark:bg-slate-800 text-neutral-700 dark:text-slate-300 whitespace-pre-line">
+                  {selectedEventDetail.description}
+                </p>
+              )}
+
+              <div className="pt-3 flex items-center justify-end gap-2 border-t border-neutral-200 dark:border-slate-800">
+                {selectedEventDetail.htmlLink && (
+                  <a
+                    href={selectedEventDetail.htmlLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border font-semibold ${
+                      isDarkMode
+                        ? 'border-slate-700 text-slate-200 hover:bg-slate-800'
+                        : 'border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                    }`}
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Ver en Google Calendar</span>
+                  </a>
+                )}
+                {selectedEventDetail.courseId && onNavigateToCourseDetail && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const cId = selectedEventDetail.courseId!;
+                      setSelectedEventDetail(null);
+                      onNavigateToCourseDetail(cId);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs cursor-pointer"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Ir a la Materia</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL DE CONFIRMACIÓN: ACTUALIZAR NOMBRES EN GOOGLE CALENDAR  */}
+      {/* ------------------------------------------------------------- */}
+      {isConfirmSyncToGoogleOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div
+              className={`p-5 border-b flex items-center justify-between ${
+                isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-200 bg-neutral-50'
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold">Poner nombres de materias en Google Calendar</h3>
+                  <p className="text-xs text-neutral-500 dark:text-slate-400">
+                    Actualiza tus eventos en Google Calendar para que no figuren como «No disponible»
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsConfirmSyncToGoogleOpen(false)}
+                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <p className="text-neutral-600 dark:text-slate-300 leading-relaxed">
+                ¿Confirmás actualizar en tu Google Calendar los bloques horarios de tus materias para que muestren el{' '}
+                <strong>nombre de cada materia</strong> con visibilidad pública de título?
+              </p>
+
+              {coursesWithSchedules.length > 0 ? (
+                <div
+                  className={`p-3 rounded-xl border space-y-2 max-h-48 overflow-y-auto ${
+                    isDarkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-neutral-50 border-neutral-200'
+                  }`}
+                >
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
+                    Materias y horarios a actualizar ({coursesWithSchedules.length}):
+                  </div>
+                  {coursesWithSchedules.map(({ course, schedule, title }) => (
+                    <div key={course.id} className="flex items-center justify-between gap-2 py-1 border-b last:border-b-0 border-neutral-200/60 dark:border-slate-700/60">
+                      <span className="font-bold">{title}</span>
+                      <span className="text-[11px] text-blue-600 dark:text-blue-400 font-medium">{schedule}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200">
+                  Aún no hay horarios específicos guardados en las materias. También se actualizará la visibilidad de los eventos existentes en tu calendario.
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isPushingCourseNames}
+                  onClick={() => setIsConfirmSyncToGoogleOpen(false)}
+                  className={`px-3.5 py-2 rounded-xl border font-semibold cursor-pointer ${
+                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                  }`}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={isPushingCourseNames}
+                  onClick={handleConfirmPushCourseNamesToGoogle}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {isPushingCourseNames ? (
+                    <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Check className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isPushingCourseNames ? 'Actualizando en Google...' : 'Confirmar y Actualizar'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ------------------------------------------------------------- */}
       {/* MODAL: AGREGAR CALENDARIO POR ID                              */}
@@ -655,7 +1593,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
             }`}
           >
-            {/* Header */}
             <div className={`p-5 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-900' : 'border-neutral-200 bg-neutral-50/80'}`}>
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex items-center justify-center">
@@ -679,7 +1616,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               </button>
             </div>
 
-            {/* Form */}
             <form onSubmit={handleAddCalendar} className="p-6 space-y-4">
               {formError && (
                 <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">

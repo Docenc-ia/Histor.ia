@@ -43,7 +43,7 @@ interface StudentAttendanceRowProps {
   isDarkMode: boolean;
 }
 
-export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
+export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.memo(({
   student,
   isSelected,
   onToggleSelect,
@@ -396,4 +396,5 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = ({
       </td>
     </tr>
   );
-};
+});
+

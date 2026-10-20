@@ -27,6 +27,15 @@ export interface GradeHistoryEntry {
   }>;
 }
 
+let cachedXlsxPromise: Promise<typeof import('xlsx')> | null = null;
+
+function loadXlsxModule(): Promise<typeof import('xlsx')> {
+  if (!cachedXlsxPromise) {
+    cachedXlsxPromise = import('xlsx');
+  }
+  return cachedXlsxPromise;
+}
+
 /**
  * Exporta el historial de calificaciones / importaciones a un archivo Excel (.xlsx)
  */
@@ -34,7 +43,7 @@ export async function exportGradeHistoryToExcel(
   courseName: string,
   history: GradeHistoryEntry[]
 ) {
-  const XLSX = await import('xlsx');
+  const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
 
   // Hoja 1: Resumen del Historial
@@ -136,7 +145,7 @@ export async function exportCourseClassHistoryToExcel(
     timestamp?: number;
   }>
 ) {
-  const XLSX = await import('xlsx');
+  const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
 
   const sorted = [...historyItems].sort(
@@ -179,7 +188,7 @@ export async function exportGradebookMatrixToExcel(
   categories: GradeCategory[],
   gradesMap: StudentGradesMap
 ) {
-  const XLSX = await import('xlsx');
+  const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
 
   // Construir columnas: N°, Apellido y Nombre, Email, [cada subcategoría], Promedio / Final
@@ -256,7 +265,7 @@ export async function exportCourseDispositionToExcel(
   map1c: Record<string, any>,
   map2c: Record<string, any>
 ) {
-  const XLSX = await import('xlsx');
+  const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
 
   // Hoja 1: 1° Cuatrimestre

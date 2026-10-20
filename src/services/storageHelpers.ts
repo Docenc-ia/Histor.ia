@@ -5,6 +5,11 @@
 
 import { Course, Student } from '../types';
 import { getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
+import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
+import { emitAppEvent } from '../utils/appEventBus';
+
+// Run non-destructive storage compaction once on startup
+runStorageMaintenanceOnce();
 
 // LocalStorage keys for client-side persistence (Vercel & static deployment support)
 export const STORAGE_KEYS = {
@@ -213,25 +218,25 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
     }
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
     const dataStr = JSON.stringify(cleanList);
-    localStorage.setItem(key, dataStr);
+    safeSetLocalStorageItem(key, dataStr);
     if (isOwner) {
-      localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
-      localStorage.setItem('docencia_persisted_courses', dataStr);
+      safeSetLocalStorageItem(STORAGE_KEYS.COURSES, dataStr);
+      safeSetLocalStorageItem('docencia_persisted_courses', dataStr);
     }
     cachedCourses = { userId: getActiveUserId(), rawRef: dataStr, list: cleanList };
     if (cleanList.length > 0) {
       localStorage.removeItem('docencia_courses_explicitly_cleared');
     } else if (forceClear) {
       if (isOwner) {
-        localStorage.setItem('docencia_courses_explicitly_cleared', 'true');
+        safeSetLocalStorageItem('docencia_courses_explicitly_cleared', 'true');
         for (let i = 0; i < localStorage.length; i++) {
           const k = localStorage.key(i);
           if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
-            localStorage.setItem(k, '[]');
+            safeSetLocalStorageItem(k, '[]');
           }
         }
       } else {
-        localStorage.setItem(key, '[]');
+        safeSetLocalStorageItem(key, '[]');
       }
     }
   } catch (_) {}
@@ -297,10 +302,10 @@ export function saveLocalStudents(courseIdOrList: string | Student[], studentsLi
       updated = deduplicateStudents([...rest, ...(studentsList || [])]);
     }
     const dataStr = JSON.stringify(updated);
-    localStorage.setItem(key, dataStr);
+    safeSetLocalStorageItem(key, dataStr);
     if (isOwner) {
-      localStorage.setItem(STORAGE_KEYS.STUDENTS, dataStr);
-      localStorage.setItem('docencia_persisted_students', dataStr);
+      safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
+      safeSetLocalStorageItem('docencia_persisted_students', dataStr);
     }
     cachedStudents = { userId: getActiveUserId(), rawRef: dataStr, list: updated };
   } catch (_) {}
@@ -335,9 +340,9 @@ export function setUserScopedItem(baseKey: string, value: string): void {
   if (typeof window === 'undefined') return;
   try {
     const scopedKey = getUserStorageKey(baseKey);
-    localStorage.setItem(scopedKey, value);
+    safeSetLocalStorageItem(scopedKey, value);
     if (isPrimaryOwnerAccount() && scopedKey !== baseKey) {
-      localStorage.setItem(baseKey, value);
+      safeSetLocalStorageItem(baseKey, value);
     }
   } catch (_) {}
 }
@@ -402,10 +407,10 @@ export function saveAllDispositionStorage(
     const uniqueHistKeys = Array.from(new Set(keysHist));
 
     for (const k of uniqueDispKeys) {
-      localStorage.setItem(k, dispJson);
+      safeSetLocalStorageItem(k, dispJson);
     }
     for (const k of uniqueHistKeys) {
-      localStorage.setItem(k, histJson);
+      safeSetLocalStorageItem(k, histJson);
     }
 
     cachedDisposition = {
@@ -416,11 +421,10 @@ export function saveAllDispositionStorage(
     };
 
     if (!options?.silent) {
-      window.dispatchEvent(
-        new CustomEvent('docencia_disposition_storage_change', {
-          detail: { disposition, history: cleanHistory },
-        })
-      );
+      emitAppEvent('docencia_disposition_storage_change', {
+        disposition,
+        history: cleanHistory,
+      });
     }
   } catch (err) {
     console.warn('Error saving disposition to storage:', err);

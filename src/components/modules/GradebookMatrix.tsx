@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, Suspense, lazy } from 'react';
 import {
   Plus,
   Trash2,
@@ -25,13 +25,18 @@ import {
   Cloud,
 } from 'lucide-react';
 import { Student } from '../../types';
-import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../../types/grades';
-import { AnnualSummaryView } from './AnnualSummaryView';
-import {
-  PreliminaryValuationModal,
-  PreliminaryValuationRecord,
-} from './PreliminaryValuationModal';
-import { ImportGradesModal } from './ImportGradesModal';
+import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
+import type { PreliminaryValuationRecord } from './PreliminaryValuationModal';
+
+const AnnualSummaryView = lazy(() =>
+  import('./AnnualSummaryView').then((m) => ({ default: m.AnnualSummaryView }))
+);
+const PreliminaryValuationModal = lazy(() =>
+  import('./PreliminaryValuationModal').then((m) => ({ default: m.PreliminaryValuationModal }))
+);
+const ImportGradesModal = lazy(() =>
+  import('./ImportGradesModal').then((m) => ({ default: m.ImportGradesModal }))
+);
 import {
   GradeHistoryEntry,
   exportGradeHistoryToExcel,
@@ -63,34 +68,7 @@ export interface GradebookMatrixProps {
   driveFolderUrl?: string;
 }
 
-export const DEFAULT_CATEGORIES: GradeCategory[] = [
-  {
-    id: 'cat-eval',
-    name: 'Evaluaciones',
-    color: 'bg-blue-500',
-    subcategories: [
-      { id: 'sub-escrita', name: 'Evaluación Escrita', maxScore: 10 },
-      { id: 'sub-oral', name: 'Evaluación Oral', maxScore: 10 },
-    ],
-  },
-  {
-    id: 'cat-tp',
-    name: 'Trabajos Prácticos',
-    color: 'bg-emerald-500',
-    subcategories: [
-      { id: 'sub-tp1', name: 'TP N° 1 Individual', maxScore: 10 },
-      { id: 'sub-tp2', name: 'TP N° 2 Grupal', maxScore: 10 },
-    ],
-  },
-  {
-    id: 'cat-part',
-    name: 'Desempeño y Tareas',
-    color: 'bg-purple-500',
-    subcategories: [
-      { id: 'sub-cuaderno', name: 'Carpeta / Guías', maxScore: 10 },
-    ],
-  },
-];
+export { DEFAULT_CATEGORIES };
 
 const CATEGORY_COLORS = [
   { name: 'Azul', border: 'border-blue-500', headerBg: 'bg-blue-500/10 text-blue-700 dark:text-blue-300 dark:bg-blue-950/40', badge: 'bg-blue-500' },
@@ -1178,19 +1156,21 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       </div>
 
       {currentTerm === 'annual' ? (
-        <AnnualSummaryView
-          courseId={courseId}
-          courseName={courseName}
-          students={students}
-          isDarkMode={isDarkMode}
-          score1cMap={score1cMap}
-          score2cMap={score2cMap}
-          annualOverrides={annualOverrides}
-          onSaveOverride={saveAnnualOverride}
-          onSwitchTerm={(t) => setTerm(t)}
-          driveFolderId={driveFolderId}
-          driveFolderUrl={driveFolderUrl}
-        />
+        <Suspense fallback={<div className="p-8 text-center text-xs text-neutral-500">Cargando Resumen Anual...</div>}>
+          <AnnualSummaryView
+            courseId={courseId}
+            courseName={courseName}
+            students={students}
+            isDarkMode={isDarkMode}
+            score1cMap={score1cMap}
+            score2cMap={score2cMap}
+            annualOverrides={annualOverrides}
+            onSaveOverride={saveAnnualOverride}
+            onSwitchTerm={(t) => setTerm(t)}
+            driveFolderId={driveFolderId}
+            driveFolderUrl={driveFolderUrl}
+          />
+        </Suspense>
       ) : (
         <>
           {/* Top Controls & Configuration Bar */}
@@ -2322,36 +2302,44 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         </div>
       )}
       {/* Modal: Generar Valoración Preliminar (TEA / TEP) */}
-      <PreliminaryValuationModal
-        isOpen={isPreliminaryModalOpen}
-        onClose={() => setIsPreliminaryModalOpen(false)}
-        courseId={courseId}
-        courseName={courseName}
-        term={is2c ? '2c' : '1c'}
-        students={students}
-        categories={categories}
-        gradesMap={gradesMap}
-        isDarkMode={isDarkMode}
-        savedValuation={activePreliminaryValuation}
-        onSaveValuation={handleSavePreliminaryValuation}
-      />
+      {isPreliminaryModalOpen && (
+        <Suspense fallback={null}>
+          <PreliminaryValuationModal
+            isOpen={isPreliminaryModalOpen}
+            onClose={() => setIsPreliminaryModalOpen(false)}
+            courseId={courseId}
+            courseName={courseName}
+            term={is2c ? '2c' : '1c'}
+            students={students}
+            categories={categories}
+            gradesMap={gradesMap}
+            isDarkMode={isDarkMode}
+            savedValuation={activePreliminaryValuation}
+            onSaveValuation={handleSavePreliminaryValuation}
+          />
+        </Suspense>
+      )}
 
       {/* Modal: Importar y Registrar Notas desde Excel o Sheets con Verificación Previa */}
-      <ImportGradesModal
-        isOpen={isImportModalOpen}
-        onClose={() => setIsImportModalOpen(false)}
-        courseId={courseId}
-        courseName={courseName}
-        students={students}
-        categories1c={categories1c}
-        categories2c={categories2c}
-        gradesMap1c={gradesMap1c}
-        gradesMap2c={gradesMap2c}
-        currentTerm={is2c ? '2c' : '1c'}
-        isDarkMode={isDarkMode}
-        onApplyGrades={handleApplyImportedGrades}
-        historyEntries={gradeHistory}
-      />
+      {isImportModalOpen && (
+        <Suspense fallback={null}>
+          <ImportGradesModal
+            isOpen={isImportModalOpen}
+            onClose={() => setIsImportModalOpen(false)}
+            courseId={courseId}
+            courseName={courseName}
+            students={students}
+            categories1c={categories1c}
+            categories2c={categories2c}
+            gradesMap1c={gradesMap1c}
+            gradesMap2c={gradesMap2c}
+            currentTerm={is2c ? '2c' : '1c'}
+            isDarkMode={isDarkMode}
+            onApplyGrades={handleApplyImportedGrades}
+            historyEntries={gradeHistory}
+          />
+        </Suspense>
+      )}
         </>
       )}
     </div>

@@ -41,7 +41,7 @@ interface AttendanceHeaderProps {
   isDarkMode: boolean;
 }
 
-export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
+export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   searchQuery,
   onSearchChange,
   selectedStudentCount,
@@ -317,4 +317,5 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = ({
       </div>
     </div>
   );
-};
+});
+

@@ -14,6 +14,7 @@ import { api } from './services/api';
 import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
+import { subscribeAppEvents } from './utils/appEventBus';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -154,7 +155,7 @@ function AppContent() {
     };
   }, []);
 
-  // Cascaded synchronization of students status across modules and dashboard view
+  // Cascaded synchronization of students status across modules and dashboard view (coalesced via event bus)
   useEffect(() => {
     const handleStudentStatusSync = () => {
       api
@@ -167,12 +168,11 @@ function AppContent() {
         .catch(() => {});
     };
 
-    window.addEventListener('docencia_disposition_storage_change', handleStudentStatusSync);
-    window.addEventListener('docencia_student_status_updated', handleStudentStatusSync);
-    return () => {
-      window.removeEventListener('docencia_disposition_storage_change', handleStudentStatusSync);
-      window.removeEventListener('docencia_student_status_updated', handleStudentStatusSync);
-    };
+    return subscribeAppEvents(
+      ['docencia_disposition_storage_change', 'docencia_student_status_updated'],
+      handleStudentStatusSync,
+      60
+    );
   }, []);
 
   const handleOpenCreateModal = (type: 'course' | 'plan' | 'task' | 'file' = 'course') => {

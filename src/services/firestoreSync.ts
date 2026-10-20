@@ -513,6 +513,112 @@ let snapshotsByUserCache: {
   timestamp: number;
   byCourse: Record<string, Record<string, any>>;
 } | null = null;
+const settingsReadCache = new Map<string, { timestamp: number; value: any }>();
+const gemsReadCache = new Map<string, { timestamp: number; data: CustomGem[] }>();
+
+// ---------------------------------------------------------------------------
+// INCREMENTAL DIRTY-TRACKING & FINGERPRINT ENGINE (Eliminates redundant writes)
+// ---------------------------------------------------------------------------
+const FINGERPRINT_STORAGE_KEY = 'docencia_cloud_sync_fingerprints_v2';
+const lastSyncedFingerprints = new Map<string, string>();
+let fingerprintPersistTimer: any = null;
+
+function hydrateFingerprintsFromSession(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = sessionStorage.getItem(FINGERPRINT_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string') {
+            lastSyncedFingerprints.set(k, v);
+          }
+        }
+      }
+    }
+  } catch (_) {}
+}
+hydrateFingerprintsFromSession();
+
+function schedulePersistFingerprints(): void {
+  if (typeof window === 'undefined') return;
+  if (fingerprintPersistTimer) return;
+  fingerprintPersistTimer = setTimeout(() => {
+    fingerprintPersistTimer = null;
+    try {
+      const obj: Record<string, string> = {};
+      // Keep the most recent 1,500 fingerprints in sessionStorage
+      const entries = Array.from(lastSyncedFingerprints.entries()).slice(-1500);
+      for (const [k, v] of entries) {
+        obj[k] = v;
+      }
+      sessionStorage.setItem(FINGERPRINT_STORAGE_KEY, JSON.stringify(obj));
+    } catch (_) {}
+  }, 500);
+}
+
+const VOLATILE_KEYS = new Set(['updatedAt', 'savedAt', 'lastSyncedAt']);
+
+function canonicalizeValue(val: any): string {
+  if (val === null || val === undefined) return 'null';
+  const t = typeof val;
+  if (t === 'number' || t === 'boolean') return String(val);
+  if (t === 'string') return JSON.stringify(val);
+  if (Array.isArray(val)) {
+    const parts: string[] = [];
+    for (let i = 0; i < val.length; i++) {
+      if (val[i] !== undefined) {
+        parts.push(canonicalizeValue(val[i]));
+      }
+    }
+    return '[' + parts.join(',') + ']';
+  }
+  if (t === 'object') {
+    const keys = Object.keys(val).filter((k) => !VOLATILE_KEYS.has(k) && val[k] !== undefined).sort();
+    const parts: string[] = [];
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      parts.push(JSON.stringify(k) + ':' + canonicalizeValue(val[k]));
+    }
+    return '{' + parts.join(',') + '}';
+  }
+  return '';
+}
+
+function computePayloadFingerprint(payload: any): string {
+  const canonical = canonicalizeValue(payload);
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < canonical.length; i++) {
+    const ch = canonical.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch;
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${canonical.length}:${(h1 >>> 0).toString(36)}:${(h2 >>> 0).toString(36)}`;
+}
+
+function isPayloadDirty(key: string, payload: any): { dirty: boolean; fingerprint: string } {
+  const fp = computePayloadFingerprint(payload);
+  const prev = lastSyncedFingerprints.get(key);
+  return { dirty: prev !== fp, fingerprint: fp };
+}
+
+function markPayloadSynced(key: string, fingerprint: string): void {
+  lastSyncedFingerprints.set(key, fingerprint);
+  schedulePersistFingerprints();
+}
+
+function removeFingerprintPrefix(prefix: string): void {
+  for (const k of Array.from(lastSyncedFingerprints.keys())) {
+    if (k.startsWith(prefix)) {
+      lastSyncedFingerprints.delete(k);
+    }
+  }
+  schedulePersistFingerprints();
+}
 
 function invalidateCoursesCache() {
   coursesReadCache = null;
@@ -535,6 +641,14 @@ export function clearFirestoreMemoryCaches(): void {
   studentsReadCache = null;
   dispositionReadCache = null;
   snapshotsByUserCache = null;
+  settingsReadCache.clear();
+  gemsReadCache.clear();
+  lastSyncedFingerprints.clear();
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.removeItem(FINGERPRINT_STORAGE_KEY);
+    } catch (_) {}
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -726,37 +840,66 @@ async function flushCompactDispositionToCloud(
   const writeIds = getTargetWriteUserIds(userId);
   const nowIso = new Date().toISOString();
 
-  const summaryPayload = sanitizeForFirestore({
+  const summaryCore = {
     version: 2,
     migratedFromLegacy: true,
     disposition: mergedDisp1c,
     disposition2c: mergedDisp2c,
     deletedIds: cleanDeletedIds,
+  };
+  const historyCore = {
+    version: 2,
+    items: cleanHistory,
+  };
+
+  const summaryPayload = sanitizeForFirestore({
+    ...summaryCore,
     updatedAt: nowIso,
   });
 
   const historyPayload = sanitizeForFirestore({
-    version: 2,
-    items: cleanHistory,
+    ...historyCore,
     updatedAt: nowIso,
   });
 
   try {
     for (const targetDb of ALL_DBS) {
       const batch = writeBatch(targetDb);
+      let opsCount = 0;
+      const pendingMarks: Array<{ key: string; fp: string }> = [];
+
       for (const uid of writeIds) {
-        batch.set(
-          doc(targetDb, 'users', uid, 'settings', COMPACT_SUMMARY_DOC_ID),
-          { value: summaryPayload, updatedAt: nowIso },
-          { merge: true }
-        );
-        batch.set(
-          doc(targetDb, 'users', uid, 'settings', COMPACT_HISTORY_DOC_ID),
-          { value: historyPayload, updatedAt: nowIso },
-          { merge: true }
-        );
+        const sumKey = `disp_summary:${uid}`;
+        const histKey = `disp_history:${uid}`;
+        const sumCheck = isPayloadDirty(sumKey, summaryCore);
+        const histCheck = isPayloadDirty(histKey, historyCore);
+
+        if (sumCheck.dirty) {
+          batch.set(
+            doc(targetDb, 'users', uid, 'settings', COMPACT_SUMMARY_DOC_ID),
+            { value: summaryPayload, updatedAt: nowIso },
+            { merge: true }
+          );
+          opsCount++;
+          pendingMarks.push({ key: sumKey, fp: sumCheck.fingerprint });
+        }
+        if (histCheck.dirty) {
+          batch.set(
+            doc(targetDb, 'users', uid, 'settings', COMPACT_HISTORY_DOC_ID),
+            { value: historyPayload, updatedAt: nowIso },
+            { merge: true }
+          );
+          opsCount++;
+          pendingMarks.push({ key: histKey, fp: histCheck.fingerprint });
+        }
       }
-      await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+
+      if (opsCount > 0) {
+        const res = await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+        if (res !== null) {
+          pendingMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
+        }
+      }
     }
     inMemoryPendingRecords.clear();
   } catch (err) {
@@ -831,39 +974,198 @@ function sanitizeForFirestore<T>(input: T): T {
   return input;
 }
 
+// Coalescing queues for high-frequency writes (attendance, snapshots, user settings)
+const pendingAttendanceWrites = new Map<
+  string,
+  { timer: any; userId: string; courseId: string; date: string; records: { studentId: string; status: string }[] }
+>();
+const pendingSnapshotWrites = new Map<
+  string,
+  { timer: any; userId: string; courseId: string; term: string; snapshotData: any }
+>();
+const pendingSettingWrites = new Map<
+  string,
+  { timer: any; userId: string; settingKey: string; payload: any }
+>();
+
+async function flushSingleAttendanceWrite(entry: {
+  userId: string;
+  courseId: string;
+  date: string;
+  records: { studentId: string; status: string }[];
+}): Promise<void> {
+  const { userId, courseId, date, records } = entry;
+  if (!userId || !courseId || !date || Date.now() < firestoreUnavailableUntil) return;
+  const docId = `${courseId}_${date}`;
+  const writeIds = getTargetWriteUserIds(userId);
+  const nowIso = new Date().toISOString();
+  const recordsStr = JSON.stringify(records);
+
+  for (const targetDb of ALL_DBS) {
+    for (const uid of writeIds) {
+      const fpKey = `attendance:${uid}:${docId}`;
+      const check = isPayloadDirty(fpKey, { courseId, date, records: recordsStr });
+      if (!check.dirty) continue;
+
+      const path = `users/${uid}/attendance/${docId}`;
+      executeWithTimeout(
+        setDoc(
+          doc(targetDb, 'users', uid, 'attendance', docId),
+          {
+            courseId,
+            date,
+            records: recordsStr,
+            updatedAt: nowIso,
+          },
+          { merge: true }
+        ),
+        FIRESTORE_TIMEOUT_MS,
+        true
+      )
+        .then((res) => {
+          if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+        })
+        .catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+    }
+  }
+}
+
+async function flushSingleSnapshotWrite(entry: {
+  userId: string;
+  courseId: string;
+  term: string;
+  snapshotData: any;
+}): Promise<void> {
+  const { userId, courseId, term, snapshotData } = entry;
+  if (!userId || !courseId || !term || Date.now() < firestoreUnavailableUntil) return;
+  const docId = `${courseId}_${term}`;
+  const writeIds = getTargetWriteUserIds(userId);
+  const nowIso = new Date().toISOString();
+  const cleanPayload = sanitizeForFirestore({
+    ...snapshotData,
+    courseId,
+    term,
+    updatedAt: nowIso,
+  });
+
+  for (const targetDb of ALL_DBS) {
+    for (const uid of writeIds) {
+      const fpKey = `snapshot:${uid}:${docId}`;
+      const check = isPayloadDirty(fpKey, cleanPayload);
+      if (!check.dirty) continue;
+
+      const path = `users/${uid}/snapshots/${docId}`;
+      executeWithTimeout(
+        setDoc(doc(targetDb, 'users', uid, 'snapshots', docId), cleanPayload, { merge: true }),
+        FIRESTORE_TIMEOUT_MS,
+        true
+      )
+        .then((res) => {
+          if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+        })
+        .catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+    }
+  }
+}
+
+async function flushSingleSettingWrite(entry: {
+  userId: string;
+  settingKey: string;
+  payload: any;
+}): Promise<void> {
+  const { userId, settingKey, payload } = entry;
+  if (!userId || !settingKey || Date.now() < firestoreUnavailableUntil) return;
+  const writeIds = getTargetWriteUserIds(userId);
+  const nowIso = new Date().toISOString();
+  const cleanPayload = sanitizeForFirestore({ value: payload, updatedAt: nowIso });
+
+  for (const targetDb of ALL_DBS) {
+    for (const uid of writeIds) {
+      const fpKey = `setting:${uid}:${settingKey}`;
+      const check = isPayloadDirty(fpKey, payload);
+      if (!check.dirty) continue;
+
+      const path = `users/${uid}/settings/${settingKey}`;
+      executeWithTimeout(
+        setDoc(doc(targetDb, 'users', uid, 'settings', settingKey), cleanPayload, { merge: true }),
+        FIRESTORE_TIMEOUT_MS,
+        true
+      )
+        .then((res) => {
+          if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+        })
+        .catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+    }
+  }
+}
+
+registerCloudFlushHandler('incremental_queues_flush', () => {
+  pendingAttendanceWrites.forEach((entry, key) => {
+    clearTimeout(entry.timer);
+    pendingAttendanceWrites.delete(key);
+    notifyDebouncedSyncPending(`att_${key}`, false);
+    flushSingleAttendanceWrite(entry).catch(() => {});
+  });
+  pendingSnapshotWrites.forEach((entry, key) => {
+    clearTimeout(entry.timer);
+    pendingSnapshotWrites.delete(key);
+    notifyDebouncedSyncPending(`snap_${key}`, false);
+    flushSingleSnapshotWrite(entry).catch(() => {});
+  });
+  pendingSettingWrites.forEach((entry, key) => {
+    clearTimeout(entry.timer);
+    pendingSettingWrites.delete(key);
+    notifyDebouncedSyncPending(`set_${key}`, false);
+    flushSingleSettingWrite(entry).catch(() => {});
+  });
+});
+
 export const firestoreSync = {
   clearMemoryCaches: clearFirestoreMemoryCaches,
   clearCaches: clearFirestoreMemoryCaches,
 
   /**
-   * Save teacher profile to Firestore under /users/{userId}
+   * Save teacher profile to Firestore under /users/{userId} (skips if unchanged)
    */
   async saveTeacherProfile(profile: Partial<TeacherProfile> & { id?: string; email?: string }): Promise<void> {
     if (!profile?.email && !profile?.id) return;
     if (Date.now() < firestoreUnavailableUntil) return;
     const userId = profile.id || getActiveUserId();
-    const payload = {
+    const coreProfile = {
       uid: String(userId).slice(0, 128),
       email: String(profile.email || '').slice(0, 256),
       name: String(profile.name || 'Docente Titular').slice(0, 256),
       avatar: String(profile.avatar || '').slice(0, 1024),
       role: String(profile.role || 'Docente Titular').slice(0, 128),
       school: String(profile.school || 'FDS - Educación Secundaria').slice(0, 256),
+    };
+    const payload = {
+      ...coreProfile,
       updatedAt: new Date().toISOString(),
     };
     const writeIds = getTargetWriteUserIds(userId);
     for (const targetDb of ALL_DBS) {
       for (const uid of writeIds) {
+        const fpKey = `teacher_profile:${uid}`;
+        const check = isPayloadDirty(fpKey, coreProfile);
+        if (!check.dirty) continue;
+
         const path = `users/${uid}`;
-        executeWithTimeout(setDoc(doc(targetDb, 'users', uid), payload, { merge: true }), FIRESTORE_TIMEOUT_MS, true).catch((err) => {
-          handleFirestoreError(err, OperationType.WRITE, path);
-        });
+        executeWithTimeout(setDoc(doc(targetDb, 'users', uid), payload, { merge: true }), FIRESTORE_TIMEOUT_MS, true)
+          .then((res) => {
+            if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+          })
+          .catch((err) => {
+            handleFirestoreError(err, OperationType.WRITE, path);
+          });
       }
     }
   },
 
   /**
-   * Save all courses to Firestore using Compact v2 Document (1 single write)
+   * Save courses to Firestore using Incremental Dirty-Tracking:
+   * - Skips write completely if courses list is unchanged
+   * - Only writes individual course docs that actually changed
    */
   async saveCourses(userId: string, courses: Course[]): Promise<void> {
     if (!userId || !Array.isArray(courses) || Date.now() < firestoreUnavailableUntil) return;
@@ -872,24 +1174,41 @@ export const firestoreSync = {
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
 
-    const compactPayload = sanitizeForFirestore({
+    const compactCore = {
       version: 2,
       migratedFromLegacy: true,
       items: cleanCourses,
+    };
+    const compactPayload = sanitizeForFirestore({
+      ...compactCore,
       updatedAt: nowIso,
     });
 
     for (const targetDb of ALL_DBS) {
       try {
         const batch = writeBatch(targetDb);
+        let opsCount = 0;
+        const pendingMarks: Array<{ key: string; fp: string }> = [];
+
         for (const uid of writeIds) {
-          batch.set(
-            doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
-            { value: compactPayload, updatedAt: nowIso },
-            { merge: true }
-          );
-          // Mirror to individual course documents for backwards-compatibility
+          const compactKey = `courses_compact:${uid}`;
+          const compactCheck = isPayloadDirty(compactKey, compactCore);
+          if (compactCheck.dirty) {
+            batch.set(
+              doc(targetDb, 'users', uid, 'settings', 'courses_compact_v2'),
+              { value: compactPayload, updatedAt: nowIso },
+              { merge: true }
+            );
+            opsCount++;
+            pendingMarks.push({ key: compactKey, fp: compactCheck.fingerprint });
+          }
+
+          // Mirror ONLY modified course documents for backwards-compatibility
           for (const course of cleanCourses) {
+            const itemKey = `course_doc:${uid}:${course.id}`;
+            const itemCheck = isPayloadDirty(itemKey, course);
+            if (!itemCheck.dirty) continue;
+
             const ref = doc(targetDb, 'users', uid, 'courses', course.id);
             batch.set(
               ref,
@@ -899,9 +1218,17 @@ export const firestoreSync = {
               }),
               { merge: true }
             );
+            opsCount++;
+            pendingMarks.push({ key: itemKey, fp: itemCheck.fingerprint });
           }
         }
-        await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+
+        if (opsCount > 0) {
+          const res = await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+          if (res !== null) {
+            pendingMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
+          }
+        }
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/courses_compact_v2`);
       }
@@ -910,7 +1237,7 @@ export const firestoreSync = {
 
   /**
    * Load courses from Firestore using Compact v2 Document (1 read instead of N reads)
-   * with automatic backwards-compatible migration.
+   * with automatic backwards-compatible migration and fingerprint seeding.
    */
   async loadCourses(userId: string): Promise<Course[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
@@ -924,6 +1251,7 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
     const coursesMap = new Map<string, Course>();
 
     try {
@@ -979,18 +1307,32 @@ export const firestoreSync = {
       const courses = Array.from(coursesMap.values());
       if (courses.length > 0) {
         coursesReadCache = { userId, timestamp: Date.now(), data: courses };
+        // Seed fingerprints so subsequent saveCourses with identical data skips writes
+        for (const uid of writeIds) {
+          for (const c of courses) {
+            markPayloadSynced(`course_doc:${uid}:${c.id}`, computePayloadFingerprint(c));
+          }
+          if (hasMigratedDoc) {
+            markPayloadSynced(
+              `courses_compact:${uid}`,
+              computePayloadFingerprint({ version: 2, migratedFromLegacy: true, items: courses })
+            );
+          }
+        }
       }
 
       // If we just migrated from legacy, save the compact v2 bundle in background
       if (!hasMigratedDoc && courses.length > 0) {
         const nowIso = new Date().toISOString();
-        const compactPayload = sanitizeForFirestore({
+        const compactCore = {
           version: 2,
           migratedFromLegacy: true,
           items: courses,
+        };
+        const compactPayload = sanitizeForFirestore({
+          ...compactCore,
           updatedAt: nowIso,
         });
-        const writeIds = getTargetWriteUserIds(userId);
         for (const targetDb of ALL_DBS) {
           for (const uid of writeIds) {
             executeWithTimeout(
@@ -999,7 +1341,13 @@ export const firestoreSync = {
                 { value: compactPayload, updatedAt: nowIso },
                 { merge: true }
               )
-            ).catch(() => {});
+            )
+              .then((res) => {
+                if (res !== null) {
+                  markPayloadSynced(`courses_compact:${uid}`, computePayloadFingerprint(compactCore));
+                }
+              })
+              .catch(() => {});
           }
         }
       }
@@ -1048,9 +1396,11 @@ export const firestoreSync = {
       }
     } catch (_) {}
 
-    // 2. Remove legacy document
+    // 2. Remove legacy document and its cached fingerprint
     for (const targetDb of ALL_DBS) {
       for (const uid of candidateIds) {
+        removeFingerprintPrefix(`course_doc:${uid}:${courseId}`);
+        removeFingerprintPrefix(`courses_compact:${uid}`);
         executeWithTimeout(deleteDoc(doc(targetDb, 'users', uid, 'courses', courseId))).catch(() => {});
       }
     }
@@ -1063,6 +1413,10 @@ export const firestoreSync = {
     if (!userId || Date.now() < firestoreUnavailableUntil) return;
     invalidateCoursesCache();
     invalidateStudentsCache();
+    removeFingerprintPrefix('course_doc:');
+    removeFingerprintPrefix('courses_compact:');
+    removeFingerprintPrefix('student_doc:');
+    removeFingerprintPrefix('students_compact:');
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
 
@@ -1118,15 +1472,34 @@ export const firestoreSync = {
   },
 
   /**
-   * Save students roster for a course to Firestore globally using Compact v2 Document (1 single write)
+   * Save students roster for a course to Firestore globally using Incremental Dirty-Tracking:
+   * - Preserves students from all other courses (using memory cache + localStorage fallback)
+   * - Skips write completely if nothing changed
+   * - Only writes individual student docs that actually changed
    */
   async saveStudents(userId: string, courseId: string, students: Student[]): Promise<void> {
     if (!userId || !courseId || !Array.isArray(students) || Date.now() < firestoreUnavailableUntil) return;
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
 
-    // Reconcile complete student list across all courses
+    // Reconcile complete student list across all courses (seed from cache and localStorage so no course is ever dropped)
     const currentStudentsMap = new Map<string, Student>();
+    if (typeof window !== 'undefined') {
+      try {
+        const localKey = `docencia_local_students_${userId}`;
+        const rawLocal =
+          localStorage.getItem(localKey) ||
+          (isPrimaryOwnerAccount() ? localStorage.getItem('docencia_local_students') : null);
+        if (rawLocal) {
+          const parsedLocal = JSON.parse(rawLocal);
+          if (Array.isArray(parsedLocal)) {
+            for (const s of parsedLocal) {
+              if (s?.id) currentStudentsMap.set(s.id, s);
+            }
+          }
+        }
+      } catch (_) {}
+    }
     (studentsReadCache?.data || []).forEach((s) => {
       if (s?.id) currentStudentsMap.set(s.id, s);
     });
@@ -1146,38 +1519,63 @@ export const firestoreSync = {
     const fullCleanStudents = Array.from(currentStudentsMap.values());
     studentsReadCache = { userId, timestamp: Date.now(), data: fullCleanStudents };
 
-    const compactPayload = sanitizeForFirestore({
+    const compactCore = {
       version: 2,
       migratedFromLegacy: true,
       items: fullCleanStudents,
+    };
+    const compactPayload = sanitizeForFirestore({
+      ...compactCore,
       updatedAt: nowIso,
     });
 
     for (const targetDb of ALL_DBS) {
       try {
         const batch = writeBatch(targetDb);
+        let opsCount = 0;
+        const pendingMarks: Array<{ key: string; fp: string }> = [];
+
         for (const uid of writeIds) {
-          batch.set(
-            doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
-            { value: compactPayload, updatedAt: nowIso },
-            { merge: true }
-          );
-          // Mirror course students to legacy subcollection for backwards-compatibility
+          const compactKey = `students_compact:${uid}`;
+          const compactCheck = isPayloadDirty(compactKey, compactCore);
+          if (compactCheck.dirty) {
+            batch.set(
+              doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
+              { value: compactPayload, updatedAt: nowIso },
+              { merge: true }
+            );
+            opsCount++;
+            pendingMarks.push({ key: compactKey, fp: compactCheck.fingerprint });
+          }
+
+          // Mirror ONLY modified course students to legacy subcollection
           for (const st of students) {
             if (!st?.id) continue;
+            const normalizedStudent = { ...st, courseId };
+            const itemKey = `student_doc:${uid}:${st.id}`;
+            const itemCheck = isPayloadDirty(itemKey, normalizedStudent);
+            if (!itemCheck.dirty) continue;
+
             const ref = doc(targetDb, 'users', uid, 'students', st.id);
             batch.set(
               ref,
               sanitizeForFirestore({
-                ...st,
-                courseId,
+                ...normalizedStudent,
                 updatedAt: nowIso,
               }),
               { merge: true }
             );
+            opsCount++;
+            pendingMarks.push({ key: itemKey, fp: itemCheck.fingerprint });
           }
         }
-        await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+
+        if (opsCount > 0) {
+          const res = await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
+          if (res !== null) {
+            pendingMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
+          }
+        }
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/students_compact_v2`);
       }
@@ -1186,7 +1584,7 @@ export const firestoreSync = {
 
   /**
    * Load students from Firestore using Compact v2 Document (1 read instead of N reads)
-   * with automatic backwards-compatible migration.
+   * with automatic backwards-compatible migration and fingerprint seeding.
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
@@ -1202,6 +1600,7 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
     const studentsMap = new Map<string, Student>();
 
     try {
@@ -1257,18 +1656,31 @@ export const firestoreSync = {
       const allStudents = Array.from(studentsMap.values());
       if (allStudents.length > 0) {
         studentsReadCache = { userId, timestamp: Date.now(), data: allStudents };
+        for (const uid of writeIds) {
+          for (const st of allStudents) {
+            markPayloadSynced(`student_doc:${uid}:${st.id}`, computePayloadFingerprint(st));
+          }
+          if (hasMigratedDoc) {
+            markPayloadSynced(
+              `students_compact:${uid}`,
+              computePayloadFingerprint({ version: 2, migratedFromLegacy: true, items: allStudents })
+            );
+          }
+        }
       }
 
       // If we just migrated from legacy, save the compact v2 bundle in background
       if (!hasMigratedDoc && allStudents.length > 0) {
         const nowIso = new Date().toISOString();
-        const compactPayload = sanitizeForFirestore({
+        const compactCore = {
           version: 2,
           migratedFromLegacy: true,
           items: allStudents,
+        };
+        const compactPayload = sanitizeForFirestore({
+          ...compactCore,
           updatedAt: nowIso,
         });
-        const writeIds = getTargetWriteUserIds(userId);
         for (const targetDb of ALL_DBS) {
           for (const uid of writeIds) {
             executeWithTimeout(
@@ -1277,7 +1689,13 @@ export const firestoreSync = {
                 { value: compactPayload, updatedAt: nowIso },
                 { merge: true }
               )
-            ).catch(() => {});
+            )
+              .then((res) => {
+                if (res !== null) {
+                  markPayloadSynced(`students_compact:${uid}`, computePayloadFingerprint(compactCore));
+                }
+              })
+              .catch(() => {});
           }
         }
       }
@@ -1290,7 +1708,7 @@ export const firestoreSync = {
   },
 
   /**
-   * Save attendance records for a course and date globally
+   * Save attendance records for a course and date globally (coalesced & fingerprinted)
    */
   async saveAttendance(
     userId: string,
@@ -1299,27 +1717,18 @@ export const firestoreSync = {
     records: { studentId: string; status: string }[]
   ): Promise<void> {
     if (!userId || !courseId || !date || Date.now() < firestoreUnavailableUntil) return;
-    const docId = `${courseId}_${date}`;
-    const writeIds = getTargetWriteUserIds(userId);
-    const nowIso = new Date().toISOString();
-
-    for (const targetDb of ALL_DBS) {
-      for (const uid of writeIds) {
-        const path = `users/${uid}/attendance/${docId}`;
-        executeWithTimeout(
-          setDoc(
-            doc(targetDb, 'users', uid, 'attendance', docId),
-            {
-              courseId,
-              date,
-              records: JSON.stringify(records),
-              updatedAt: nowIso,
-            },
-            { merge: true }
-          )
-        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
-      }
+    const queueKey = `${userId}_${courseId}_${date}`;
+    const existing = pendingAttendanceWrites.get(queueKey);
+    if (existing) {
+      clearTimeout(existing.timer);
     }
+    notifyDebouncedSyncPending(`att_${queueKey}`, true);
+    const timer = setTimeout(() => {
+      pendingAttendanceWrites.delete(queueKey);
+      notifyDebouncedSyncPending(`att_${queueKey}`, false);
+      flushSingleAttendanceWrite({ userId, courseId, date, records }).catch(() => {});
+    }, 650);
+    pendingAttendanceWrites.set(queueKey, { timer, userId, courseId, date, records });
   },
 
   /**
@@ -1586,7 +1995,28 @@ export const firestoreSync = {
 
       dispositionReadCache = { userId, timestamp: Date.now(), data: result };
 
-      if (!hasMigratedCompactDoc) {
+      if (hasMigratedCompactDoc) {
+        const writeIds = getTargetWriteUserIds(userId);
+        const cleanHistory = history.slice(0, 2500);
+        const cleanDeletedIds = Array.from(deleted).slice(-1500);
+        const summaryCore = {
+          version: 2,
+          migratedFromLegacy: true,
+          disposition: finalDisposition1c,
+          disposition2c: finalDisposition2c,
+          deletedIds: cleanDeletedIds,
+        };
+        const historyCore = {
+          version: 2,
+          items: cleanHistory,
+        };
+        const sumFp = computePayloadFingerprint(summaryCore);
+        const histFp = computePayloadFingerprint(historyCore);
+        for (const uid of writeIds) {
+          markPayloadSynced(`disp_summary:${uid}`, sumFp);
+          markPayloadSynced(`disp_history:${uid}`, histFp);
+        }
+      } else {
         const localBundle = readLocalDispositionBundle(userId);
         const combinedHistMap = new Map<string, any>();
         for (const h of [...history, ...localBundle.history]) {
@@ -1614,6 +2044,7 @@ export const firestoreSync = {
 
   /**
    * Save a cuatrimestre gradebook or libro de temas snapshot globally across linked accounts
+   * (Coalesced & fingerprinted so unchanged snapshots consume 0 writes)
    */
   async saveTermSnapshot(
     userId: string,
@@ -1622,8 +2053,6 @@ export const firestoreSync = {
     snapshotData: any
   ): Promise<void> {
     if (!userId || !courseId || !term) return;
-    const docId = `${courseId}_${term}`;
-    const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
     const cleanPayload = sanitizeForFirestore({
       ...snapshotData,
@@ -1640,20 +2069,20 @@ export const firestoreSync = {
       snapshotsByUserCache.timestamp = Date.now();
     }
 
-    for (const targetDb of ALL_DBS) {
-      for (const uid of writeIds) {
-        const path = `users/${uid}/snapshots/${docId}`;
-        executeWithTimeout(
-          setDoc(
-            doc(targetDb, 'users', uid, 'snapshots', docId),
-            cleanPayload,
-            { merge: true }
-          ),
-          FIRESTORE_TIMEOUT_MS,
-          true
-        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
-      }
+    if (Date.now() < firestoreUnavailableUntil) return;
+
+    const queueKey = `${userId}_${courseId}_${term}`;
+    const existing = pendingSnapshotWrites.get(queueKey);
+    if (existing) {
+      clearTimeout(existing.timer);
     }
+    notifyDebouncedSyncPending(`snap_${queueKey}`, true);
+    const timer = setTimeout(() => {
+      pendingSnapshotWrites.delete(queueKey);
+      notifyDebouncedSyncPending(`snap_${queueKey}`, false);
+      flushSingleSnapshotWrite({ userId, courseId, term, snapshotData }).catch(() => {});
+    }, 550);
+    pendingSnapshotWrites.set(queueKey, { timer, userId, courseId, term, snapshotData });
   },
 
   /**
@@ -1674,6 +2103,7 @@ export const firestoreSync = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
     try {
       const queries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
@@ -1699,6 +2129,15 @@ export const firestoreSync = {
           }
         });
       }
+      // Seed snapshot fingerprints so subsequent saves with identical data skip network writes
+      for (const [cId, termsObj] of Object.entries(byCourse)) {
+        for (const [tKey, snapVal] of Object.entries(termsObj)) {
+          const fp = computePayloadFingerprint(snapVal);
+          for (const uid of writeIds) {
+            markPayloadSynced(`snapshot:${uid}:${cId}_${tKey}`, fp);
+          }
+        }
+      }
       snapshotsByUserCache = { userId, timestamp: Date.now(), byCourse };
       return byCourse[courseId] || {};
     } catch (err) {
@@ -1721,35 +2160,43 @@ export const firestoreSync = {
   },
 
   /**
-   * Save user settings (conduct options, templates, etc.) under /users/{uid}/settings/{settingKey}
+   * Save user settings (conduct options, templates, observations, etc.) under /users/{uid}/settings/{settingKey}
+   * (Cached, coalesced & fingerprinted)
    */
   async saveUserSetting(userId: string, settingKey: string, payload: any): Promise<void> {
-    if (!userId || !settingKey || Date.now() < firestoreUnavailableUntil) return;
-    const writeIds = getTargetWriteUserIds(userId);
-    const nowIso = new Date().toISOString();
-    const cleanPayload = sanitizeForFirestore({ value: payload, updatedAt: nowIso });
-    for (const targetDb of ALL_DBS) {
-      for (const uid of writeIds) {
-        const path = `users/${uid}/settings/${settingKey}`;
-        executeWithTimeout(
-          setDoc(
-            doc(targetDb, 'users', uid, 'settings', settingKey),
-            cleanPayload,
-            { merge: true }
-          ),
-          FIRESTORE_TIMEOUT_MS,
-          true
-        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
-      }
+    if (!userId || !settingKey) return;
+    const cacheKey = `${userId}:${settingKey}`;
+    settingsReadCache.set(cacheKey, { timestamp: Date.now(), value: payload });
+
+    if (Date.now() < firestoreUnavailableUntil) return;
+    const queueKey = `${userId}_${settingKey}`;
+    const existing = pendingSettingWrites.get(queueKey);
+    if (existing) {
+      clearTimeout(existing.timer);
     }
+    notifyDebouncedSyncPending(`set_${queueKey}`, true);
+    const timer = setTimeout(() => {
+      pendingSettingWrites.delete(queueKey);
+      notifyDebouncedSyncPending(`set_${queueKey}`, false);
+      flushSingleSettingWrite({ userId, settingKey, payload }).catch(() => {});
+    }, 450);
+    pendingSettingWrites.set(queueKey, { timer, userId, settingKey, payload });
   },
 
   /**
    * Load user setting (conduct options, templates, etc.) across candidate accounts using direct document lookup
+   * with in-memory read caching and fingerprint seeding.
    */
   async loadUserSetting<T = any>(userId: string, settingKey: string): Promise<T | null> {
     if (!settingKey || Date.now() < firestoreUnavailableUntil) return null;
+    const cacheKey = `${userId}:${settingKey}`;
+    const cached = settingsReadCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < READ_CACHE_TTL_MS && cached.value !== null && cached.value !== undefined) {
+      return cached.value as T;
+    }
+
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
     try {
       const queries: Promise<any>[] = [];
       for (const targetDb of ALL_DBS) {
@@ -1772,6 +2219,13 @@ export const firestoreSync = {
           }
         }
       }
+      if (latestValue !== null && latestValue !== undefined) {
+        settingsReadCache.set(cacheKey, { timestamp: Date.now(), value: latestValue });
+        const fp = computePayloadFingerprint(latestValue);
+        for (const uid of writeIds) {
+          markPayloadSynced(`setting:${uid}:${settingKey}`, fp);
+        }
+      }
       return latestValue;
     } catch (_) {
       return null;
@@ -1783,25 +2237,40 @@ export const firestoreSync = {
    */
   async saveCustomGem(userId: string, gem: CustomGem): Promise<void> {
     if (!userId || !gem?.id || Date.now() < firestoreUnavailableUntil) return;
+    gemsReadCache.delete(userId);
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
     const cleanPayload = sanitizeForFirestore({ ...gem, updatedAt: nowIso });
     for (const targetDb of ALL_DBS) {
       for (const uid of writeIds) {
+        const fpKey = `gem:${uid}:${gem.id}`;
+        const check = isPayloadDirty(fpKey, gem);
+        if (!check.dirty) continue;
+
         const path = `users/${uid}/gems/${gem.id}`;
         executeWithTimeout(
           setDoc(doc(targetDb, 'users', uid, 'gems', gem.id), cleanPayload, { merge: true })
-        ).catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+        )
+          .then((res) => {
+            if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+          })
+          .catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
       }
     }
   },
 
   /**
-   * Load Custom Gems from Firestore across candidate accounts
+   * Load Custom Gems from Firestore across candidate accounts (with read caching)
    */
   async loadCustomGems(userId: string): Promise<CustomGem[]> {
     if (Date.now() < firestoreUnavailableUntil) return [];
+    const cached = gemsReadCache.get(userId);
+    if (cached && Date.now() - cached.timestamp < READ_CACHE_TTL_MS && cached.data.length > 0) {
+      return cached.data;
+    }
+
     const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
     const gemsMap = new Map<string, CustomGem>();
     try {
       const queries: Promise<any>[] = [];
@@ -1820,7 +2289,16 @@ export const firestoreSync = {
           }
         });
       }
-      return Array.from(gemsMap.values());
+      const list = Array.from(gemsMap.values());
+      if (list.length > 0) {
+        gemsReadCache.set(userId, { timestamp: Date.now(), data: list });
+        for (const uid of writeIds) {
+          for (const g of list) {
+            markPayloadSynced(`gem:${uid}:${g.id}`, computePayloadFingerprint(g));
+          }
+        }
+      }
+      return list;
     } catch (_) {
       return [];
     }
@@ -1831,9 +2309,11 @@ export const firestoreSync = {
    */
   async deleteCustomGem(userId: string, gemId: string): Promise<void> {
     if (!gemId || Date.now() < firestoreUnavailableUntil) return;
+    gemsReadCache.delete(userId);
     const candidateIds = getCandidateUserIds(userId);
     for (const targetDb of ALL_DBS) {
       for (const uid of candidateIds) {
+        removeFingerprintPrefix(`gem:${uid}:${gemId}`);
         executeWithTimeout(deleteDoc(doc(targetDb, 'users', uid, 'gems', gemId))).catch(() => {});
       }
     }

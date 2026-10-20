@@ -54,6 +54,7 @@ import {
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { copyTableToClipboard, isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import { api, getUserStorageKey } from '../../services/api';
+import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../utils/attendanceCalculations';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -89,15 +90,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   driveFolderId,
   driveFolderUrl,
 }) => {
-  const [internalTerm, setInternalTerm] = useState<GradebookTerm>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(`fds_grades_active_term_${courseId}`);
-        if (saved === '1c' || saved === '2c' || saved === 'annual') return saved as GradebookTerm;
-      } catch (_) {}
-    }
-    return '1c';
-  });
+  const [internalTerm, setInternalTerm] = useState<GradebookTerm>(() =>
+    getCurrentCalendarTerm(getGlobalAttendanceSettings())
+  );
   const currentTerm = activeTerm || internalTerm;
   const setTerm = (t: GradebookTerm) => {
     setInternalTerm(t);

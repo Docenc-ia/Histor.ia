@@ -66,6 +66,38 @@ export function calculateWeeksBetweenDates(startStr?: string, endStr?: string, d
   }
 }
 
+/**
+ * Determines the current active cuatrimestre ('1c' | '2c') based on the calendar date
+ * and the configured school term dates (1°C vs 2°C).
+ */
+export function getCurrentCalendarTerm(
+  settings?: Partial<AttendanceSettings>,
+  now: Date = new Date()
+): '1c' | '2c' {
+  const end1c =
+    settings?.termEndDate1c || DEFAULT_ATTENDANCE_SETTINGS.termEndDate1c || '2026-07-10';
+  const start2c =
+    settings?.termStartDate2c || DEFAULT_ATTENDANCE_SETTINGS.termStartDate2c || '2026-08-03';
+
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+
+  if (end1c.slice(0, 4) === String(now.getFullYear())) {
+    if (todayStr >= start2c || todayStr > end1c) {
+      return '2c';
+    }
+    return '1c';
+  }
+
+  const todayMMDD = todayStr.slice(5);
+  const end1cMMDD = end1c.slice(5);
+  const start2cMMDD = start2c.slice(5);
+  if (todayMMDD >= start2cMMDD || todayMMDD > end1cMMDD) {
+    return '2c';
+  }
+  return '1c';
+}
+
 export interface StudentAttendanceTrafficLight {
   studentId: string;
   totalClasses: number;

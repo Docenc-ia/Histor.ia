@@ -137,6 +137,7 @@ import {
   loadCourseAttendanceSettingsFromCloud,
   computeStudentAttendanceTrafficLight,
   computeCourseAttendanceSummary,
+  getCurrentCalendarTerm,
 } from '../../utils/attendanceCalculations';
 
 interface ClassesModuleProps {
@@ -316,23 +317,40 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return {};
   });
 
-  // Academic term for Attendance & Disposition: '1c' | '2c' | 'annual'
-  const [attendanceTerm, setAttendanceTerm] = useState<'1c' | '2c' | 'annual'>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('fds_attendance_active_term');
-        if (saved === '1c' || saved === '2c' || saved === 'annual') return saved;
-      } catch (_) {}
+  // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
+  // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
+  // while allowing the teacher to freely move/switch between 1°C, 2°C and Resumen Anual.
+  const [hasManuallySelectedTerm, setHasManuallySelectedTerm] = useState(false);
+  const [attendanceTerm, setAttendanceTerm] = useState<'1c' | '2c' | 'annual'>(() =>
+    getCurrentCalendarTerm(attendanceSettings)
+  );
+
+  // Keep default term aligned with calendar settings unless the teacher manually moved it
+  useEffect(() => {
+    if (!hasManuallySelectedTerm) {
+      setAttendanceTerm(getCurrentCalendarTerm(attendanceSettings));
     }
-    return '1c';
-  });
+  }, [
+    attendanceSettings.termStartDate1c,
+    attendanceSettings.termEndDate1c,
+    attendanceSettings.termStartDate2c,
+    attendanceSettings.termEndDate2c,
+    hasManuallySelectedTerm,
+  ]);
+
+  const activeConcreteTerm: '1c' | '2c' =
+    attendanceTerm === '1c' || attendanceTerm === '2c'
+      ? attendanceTerm
+      : getCurrentCalendarTerm(attendanceSettings);
 
   const setAttendanceTermHandler = (term: '1c' | '2c' | 'annual') => {
+    setHasManuallySelectedTerm(true);
     setAttendanceTerm(term);
     if (typeof window !== 'undefined') {
       localStorage.setItem('fds_attendance_active_term', term);
       if (activeCourse?.id) {
         localStorage.setItem(`fds_attendance_active_term_${activeCourse.id}`, term);
+        localStorage.setItem(`fds_grades_active_term_${activeCourse.id}`, term);
       }
     }
   };
@@ -1932,11 +1950,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     } else if (type === 'history') {
       exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
     } else if (type === 'grades') {
-      const cats1c = localStorage.getItem(`fds_grades_categories_${activeCourse.id}_1c`) || localStorage.getItem(`fds_grades_categories_${activeCourse.id}`);
-      const parsedCats = cats1c ? JSON.parse(cats1c) : DEFAULT_CATEGORIES;
-      const gradesData = localStorage.getItem(`fds_grades_data_${activeCourse.id}_1c`) || localStorage.getItem(`fds_grades_data_${activeCourse.id}`);
+      const termToExport = activeConcreteTerm;
+      const termLabel = termToExport === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
+      const catsRaw =
+        localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${termToExport}`)) ||
+        localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${termToExport}`) ||
+        (termToExport === '1c' ? localStorage.getItem(`fds_grades_categories_${activeCourse.id}`) : null);
+      const parsedCats = catsRaw ? JSON.parse(catsRaw) : DEFAULT_CATEGORIES;
+      const gradesData =
+        localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${termToExport}`)) ||
+        localStorage.getItem(`fds_grades_data_${activeCourse.id}_${termToExport}`) ||
+        (termToExport === '1c' ? localStorage.getItem(`fds_grades_data_${activeCourse.id}`) : null);
       const parsedGrades = gradesData ? JSON.parse(gradesData) : {};
-      exportGradebookMatrixToExcel(activeCourse.name, '1° Cuatrimestre', courseStudents, parsedCats, parsedGrades);
+      exportGradebookMatrixToExcel(activeCourse.name, termLabel, courseStudents, parsedCats, parsedGrades);
     } else {
       // Export package: both disposition and history
       exportCourseDispositionToExcel(activeCourse.name, courseStudents, dispositionMap, dispositionMap2c);
@@ -2534,7 +2560,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     const timestamp = Date.now();
     const id = `rec-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
 
     // Visual feedback
     setPulsingStudentId(`abs-${student.id}`);
@@ -3259,7 +3285,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setPulsingStudentId(`disp-${student.id}`);
     setTimeout(() => setPulsingStudentId(null), 600);
 
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const current = getStudentMetrics(student.id, targetTerm);
     const currentDisp = current.totalDisposition !== undefined ? current.totalDisposition : 10;
     const newDisposition = Math.min(10, Math.max(0, currentDisp + delta));
@@ -3523,7 +3549,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 4b. Borrar última falta del estudiante (por ejemplo, si llegó más tarde o fue un error)
   const handleDeleteLatestAbsence = async (student: Student) => {
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     // Buscar la falta más reciente registrada para este alumno en este curso o en general
     const studentAbsences = historyList
       .filter(
@@ -3573,7 +3599,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 4b2. Borrar última llegada tarde del estudiante
   const handleDeleteLatestLate = async (student: Student) => {
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const studentLates = historyList
       .filter(
         (h) =>
@@ -3628,7 +3654,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const time = formatLocalTimeHMS(now);
     const timestamp = Date.now();
     const id = `rec-late-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
 
     // Visual feedback
     setPulsingStudentId(`late-${student.id}`);
@@ -3896,7 +3922,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 7a. Abrir modal para editar manualmente la nota de disposición (por ej. si usó papel o no trajo computadora)
   const handleOpenEditDisposition = (student: Student, termOverride?: '1c' | '2c') => {
-    const termToUse: '1c' | '2c' = termOverride || (attendanceTerm === '2c' ? '2c' : '1c');
+    const termToUse: '1c' | '2c' = termOverride || activeConcreteTerm;
     const currentMetrics = getStudentMetrics(student.id, termToUse);
     setEditingDispositionStudent(student);
     setEditingDispositionTerm(termToUse);
@@ -4033,7 +4059,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 7b. Abrir modal para editar la cantidad de faltas (pasaje de papel, fecha retroactiva y aviso)
   const handleOpenEditAbsences = (student: Student, termOverride?: '1c' | '2c') => {
-    const termToUse: '1c' | '2c' = termOverride || (attendanceTerm === '2c' ? '2c' : '1c');
+    const termToUse: '1c' | '2c' = termOverride || activeConcreteTerm;
     const currentMetrics = getStudentMetrics(student.id, termToUse);
     const today = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
@@ -4517,7 +4543,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         courseId: activeCourse.id,
         date: formatLocalDateDMY(),
         time: timeStr,
-        term: attendanceTerm === '2c' ? '2c' : '1c',
+        term: activeConcreteTerm,
         action: `Mensaje directo enviado: "${subject}"`,
         category: 'Disposición',
         pointsChange: 0,
@@ -4531,8 +4557,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const updated = deduplicateHistory([newHistoryItem, ...historyList]);
       setHistoryList(updated);
       saveTermDisposition(
-        attendanceTerm === '2c' ? '2c' : '1c',
-        attendanceTerm === '2c' ? dispositionMap2c : dispositionMap,
+        activeConcreteTerm,
+        activeConcreteTerm === '2c' ? dispositionMap2c : dispositionMap,
         updated
       );
       api.recordDisposition({
@@ -5152,7 +5178,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // 7b. Reiniciar / Borrar disposición por alumno individual
   const handleResetSingleStudentDisposition = async (student: Student, clearHistory: boolean = false) => {
     if (!activeCourse || !student) return;
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const current = baseMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
     const updatedMap: Record<string, StudentDispositionData> = {
@@ -5236,7 +5262,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // 7b. Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
   const handleResetCourseDisposition = (clearHistory: boolean = false) => {
     if (!activeCourse) return;
-    const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const updated: Record<string, StudentDispositionData> = { ...baseMap };
     courseStudents.forEach((st) => {
@@ -5314,7 +5340,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     shouldNavigateToGrades = false
   ) => {
     if (!activeCourse) return;
-    const term: '1c' | '2c' = targetTermOverride || (attendanceTerm === '2c' ? '2c' : '1c');
+    const term: '1c' | '2c' = targetTermOverride || activeConcreteTerm;
     const courseId = activeCourse.id;
 
     const catKey = getUserStorageKey(`fds_grades_categories_${courseId}_${term}`);
@@ -6840,7 +6866,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                               type="button"
                               onClick={() => setIsSendDispositionModalOpen(true)}
                               className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-950/80 dark:hover:bg-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 transition-all cursor-pointer shadow-2xs"
-                              title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+                              title={`Mandar notas de disposición a Calificaciones (${activeConcreteTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
                             >
                               <Award className="w-3 h-3 text-amber-500" />
                               <span>Mandar a Calificaciones</span>
@@ -7045,6 +7071,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 courseName={activeCourse.name}
                 students={courseStudents}
                 isDarkMode={isDarkMode}
+                activeTerm={attendanceTerm}
+                onTermChange={setAttendanceTermHandler}
                 driveFolderId={activeCourse.driveFolderId}
                 driveFolderUrl={activeCourse.driveFolderUrl}
               />
@@ -7417,7 +7445,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             categories2c={getCategoriesForImport('2c')}
             gradesMap1c={getGradesMapForImport('1c')}
             gradesMap2c={getGradesMapForImport('2c')}
-            currentTerm={attendanceTerm === '2c' ? '2c' : '1c'}
+            currentTerm={activeConcreteTerm}
             isDarkMode={isDarkMode}
             onApplyGrades={handleApplyImportFromClassesModule}
             historyEntries={(() => {

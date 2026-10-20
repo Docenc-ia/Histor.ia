@@ -17,6 +17,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
+import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../../utils/attendanceCalculations';
 
 export interface ConductRecordModalState {
   isOpen: boolean;
@@ -1000,7 +1001,10 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
 }) => {
   if (!isOpen || !activeCourse) return null;
 
-  const activeTargetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+  const activeTargetTerm: '1c' | '2c' =
+    attendanceTerm === '1c' || attendanceTerm === '2c'
+      ? attendanceTerm
+      : getCurrentCalendarTerm(getGlobalAttendanceSettings());
   const activeTermLabel = activeTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
 
   return (

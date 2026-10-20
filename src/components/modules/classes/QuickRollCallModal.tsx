@@ -21,6 +21,7 @@ import { Student, StudentDispositionData, StudentHistoryItem } from '../../../ty
 import {
   AttendanceSettings,
   computeStudentAttendanceTrafficLight,
+  getCurrentCalendarTerm,
 } from '../../../utils/attendanceCalculations';
 import { isSameCalendarDay, formatLocalDateDMY } from '../../../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../../../services/firestoreSync';
@@ -76,7 +77,10 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
   const [sessionMarks, setSessionMarks] = useState<Record<string, RollCallStatus>>({});
   const [animatingStatus, setAnimatingStatus] = useState<RollCallStatus | null>(null);
 
-  const activeTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
+  const activeTerm: '1c' | '2c' =
+    attendanceTerm === '1c' || attendanceTerm === '2c'
+      ? attendanceTerm
+      : getCurrentCalendarTerm(attendanceSettings);
   const todayDateStr = useMemo(() => formatLocalDateDMY(new Date()), []);
   const storageKey = useMemo(() => {
     const safeCourseKey = (courseId || courseName || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');

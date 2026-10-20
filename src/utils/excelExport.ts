@@ -1,4 +1,3 @@
-import * as XLSX from 'xlsx';
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 
@@ -31,10 +30,11 @@ export interface GradeHistoryEntry {
 /**
  * Exporta el historial de calificaciones / importaciones a un archivo Excel (.xlsx)
  */
-export function exportGradeHistoryToExcel(
+export async function exportGradeHistoryToExcel(
   courseName: string,
   history: GradeHistoryEntry[]
 ) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Hoja 1: Resumen del Historial
@@ -125,7 +125,7 @@ export function exportGradeHistoryToExcel(
 /**
  * Exporta el historial de asistencia y actividades del curso a un archivo Excel (.xlsx)
  */
-export function exportCourseClassHistoryToExcel(
+export async function exportCourseClassHistoryToExcel(
   courseName: string,
   historyItems: Array<{
     studentName: string;
@@ -136,6 +136,7 @@ export function exportCourseClassHistoryToExcel(
     timestamp?: number;
   }>
 ) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   const sorted = [...historyItems].sort(
@@ -171,13 +172,14 @@ export function exportCourseClassHistoryToExcel(
 /**
  * Exporta la matriz completa de calificaciones a un archivo Excel (.xlsx) con columnas organizadas
  */
-export function exportGradebookMatrixToExcel(
+export async function exportGradebookMatrixToExcel(
   courseName: string,
   termLabel: string,
   students: Student[],
   categories: GradeCategory[],
   gradesMap: StudentGradesMap
 ) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Construir columnas: N°, Apellido y Nombre, Email, [cada subcategoría], Promedio / Final
@@ -248,12 +250,13 @@ export function exportGradebookMatrixToExcel(
 /**
  * Exporta Asistencia y Disposición (1C, 2C y Resumen Anual) a un archivo Excel (.xlsx) nativo
  */
-export function exportCourseDispositionToExcel(
+export async function exportCourseDispositionToExcel(
   courseName: string,
   students: Student[],
   map1c: Record<string, any>,
   map2c: Record<string, any>
 ) {
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
 
   // Hoja 1: 1° Cuatrimestre

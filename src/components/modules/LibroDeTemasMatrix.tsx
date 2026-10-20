@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import * as XLSX from 'xlsx';
 import {
   BookOpen,
   Calendar,
@@ -1821,8 +1820,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   };
 
   // Descargar Libro de Temas en formato Excel (.xlsx)
-  const handleDownloadLibro = () => {
+  const handleDownloadLibro = async () => {
     try {
+      const XLSX = await import('xlsx');
       const wb = XLSX.utils.book_new();
       const aoa: any[][] = [
         [

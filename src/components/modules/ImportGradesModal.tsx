@@ -24,7 +24,7 @@ import {
   History,
   Layers,
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import type * as XLSXType from 'xlsx';
 import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import {
@@ -112,7 +112,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   const [fileName, setFileName] = useState<string>('');
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheetName, setSelectedSheetName] = useState<string>('');
-  const [rawWorkbook, setRawWorkbook] = useState<XLSX.WorkBook | null>(null);
+  const [rawWorkbook, setRawWorkbook] = useState<XLSXType.WorkBook | null>(null);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [selectedNameColumn, setSelectedNameColumn] = useState<string>('');
   const [selectedScoreColumn, setSelectedScoreColumn] = useState<string>('');
@@ -313,15 +313,16 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     setFileName(file.name);
     const reader = new FileReader();
 
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
+        const XLSX = await import('xlsx');
         const data = evt.target?.result;
         const wb = XLSX.read(data, { type: 'binary' });
         setRawWorkbook(wb);
         setSheetNames(wb.SheetNames);
         const firstSheet = wb.SheetNames[0];
         setSelectedSheetName(firstSheet);
-        parseSheet(wb, firstSheet);
+        await parseSheet(wb, firstSheet);
       } catch (err) {
         console.error('Error al procesar archivo Excel:', err);
         alert('Hubo un error al leer el archivo. Asegúrate de que sea un Excel válido (.xlsx, .xls o .csv)');
@@ -334,10 +335,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   /**
    * Extrae filas y columnas de una hoja seleccionada
    */
-  const parseSheet = (wb: XLSX.WorkBook, sheetName: string) => {
+  const parseSheet = async (wb: XLSXType.WorkBook, sheetName: string) => {
     const ws = wb.Sheets[sheetName];
     if (!ws) return;
 
+    const XLSX = await import('xlsx');
     const jsonData: Array<Record<string, any>> = XLSX.utils.sheet_to_json(ws, { defval: '' });
     if (jsonData.length === 0) {
       alert('La hoja seleccionada no tiene filas de datos.');

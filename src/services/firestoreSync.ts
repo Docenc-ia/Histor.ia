@@ -357,16 +357,37 @@ export async function testFirestoreConnection(): Promise<boolean> {
 }
 testFirestoreConnection().catch(() => {});
 
+let lastRawProfileStr: string | null = null;
+let lastParsedProfileObj: { id?: string; email?: string } | null = null;
+
+function getCachedStoredProfile(): { id?: string; email?: string } | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
+    if (!saved) {
+      lastRawProfileStr = null;
+      lastParsedProfileObj = null;
+      return null;
+    }
+    if (saved === lastRawProfileStr && lastParsedProfileObj) {
+      return lastParsedProfileObj;
+    }
+    const parsed = JSON.parse(saved);
+    lastRawProfileStr = saved;
+    lastParsedProfileObj = parsed;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
 // Helper to get active teacher email
 export function getActiveUserEmail(): string {
   if (auth.currentUser?.email) return auth.currentUser.email.trim().toLowerCase();
   if (typeof window !== 'undefined') {
     try {
-      const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.email) return String(parsed.email).trim().toLowerCase();
-      }
+      const parsed = getCachedStoredProfile();
+      if (parsed?.email) return String(parsed.email).trim().toLowerCase();
       const email = sessionStorage.getItem('docencia_teacher_email') || localStorage.getItem('docencia_teacher_email');
       if (email) return email.trim().toLowerCase();
     } catch (_) {}
@@ -396,13 +417,12 @@ export function getActiveUserId(): string {
   if (auth.currentUser?.uid) return auth.currentUser.uid;
   if (typeof window !== 'undefined') {
     try {
-      const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.id && !String(parsed.id).startsWith('user-')) {
-          return parsed.id;
+      const parsed = getCachedStoredProfile();
+      if (parsed) {
+        if (parsed.id && !String(parsed.id).startsWith('user-')) {
+          return String(parsed.id);
         }
-        if (parsed?.email) {
+        if (parsed.email) {
           return 'teacher_' + String(parsed.email).trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
         }
       }

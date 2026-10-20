@@ -138,21 +138,46 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
   return result;
 }
 
+// In-memory read caches invalidated immediately on writes or cross-tab storage changes
+let cachedCourses: { userId: string; rawRef: string | null; list: Course[] } | null = null;
+let cachedStudents: { userId: string; rawRef: string | null; list: Student[] } | null = null;
+let cachedDisposition: {
+  userId: string;
+  rawDispRef: string | null;
+  rawHistRef: string | null;
+  data: { disposition: Record<string, any>; history: any[] };
+} | null = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', () => {
+    cachedCourses = null;
+    cachedStudents = null;
+    cachedDisposition = null;
+  });
+}
+
 export function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
+    const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const explicitlyCleared = localStorage.getItem('docencia_courses_explicitly_cleared') === 'true';
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
+    const primaryRaw = localStorage.getItem(key);
+    if (cachedCourses && cachedCourses.userId === userId && cachedCourses.rawRef === primaryRaw && primaryRaw) {
+      return cachedCourses.list;
+    }
     const candidateKeys = isOwner ? [key, STORAGE_KEYS.COURSES, 'docencia_persisted_courses'] : [key];
 
     for (const k of candidateKeys) {
-      const raw = localStorage.getItem(k);
+      const raw = k === key ? primaryRaw : localStorage.getItem(k);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            return deduplicateCourses(parsed);
+            const deduped = deduplicateCourses(parsed);
+            cachedCourses = { userId, rawRef: primaryRaw, list: deduped };
+            return deduped;
           }
         } catch (_) {}
       }
@@ -193,6 +218,7 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
       localStorage.setItem(STORAGE_KEYS.COURSES, dataStr);
       localStorage.setItem('docencia_persisted_courses', dataStr);
     }
+    cachedCourses = { userId: getActiveUserId(), rawRef: dataStr, list: cleanList };
     if (cleanList.length > 0) {
       localStorage.removeItem('docencia_courses_explicitly_cleared');
     } else if (forceClear) {
@@ -214,9 +240,13 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
 export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
+    const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     let raw = localStorage.getItem(key);
+    if (cachedStudents && cachedStudents.userId === userId && cachedStudents.rawRef === raw && raw) {
+      return courseId ? cachedStudents.list.filter((s) => s.courseId === courseId) : cachedStudents.list;
+    }
     if (isOwner && !raw && key !== STORAGE_KEYS.STUDENTS) {
       raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
     }
@@ -227,6 +257,7 @@ export function getLocalStudents(courseId?: string): Student[] {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         const clean = deduplicateStudents(parsed);
+        cachedStudents = { userId, rawRef: localStorage.getItem(key), list: clean };
         return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
       }
     }
@@ -271,6 +302,7 @@ export function saveLocalStudents(courseIdOrList: string | Student[], studentsLi
       localStorage.setItem(STORAGE_KEYS.STUDENTS, dataStr);
       localStorage.setItem('docencia_persisted_students', dataStr);
     }
+    cachedStudents = { userId: getActiveUserId(), rawRef: dataStr, list: updated };
   } catch (_) {}
 }
 
@@ -325,6 +357,7 @@ export function markHistoryIdDeleted(id: string): void {
     const set = getDeletedHistoryIds();
     set.add(id);
     setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
+    cachedDisposition = null;
   } catch (_) {}
 }
 
@@ -375,6 +408,13 @@ export function saveAllDispositionStorage(
       localStorage.setItem(k, histJson);
     }
 
+    cachedDisposition = {
+      userId,
+      rawDispRef: dispJson,
+      rawHistRef: histJson,
+      data: { disposition: disposition || {}, history: cleanHistory },
+    };
+
     if (!options?.silent) {
       window.dispatchEvent(
         new CustomEvent('docencia_disposition_storage_change', {
@@ -389,12 +429,27 @@ export function saveAllDispositionStorage(
 
 export function getAllDispositionStorage(): { disposition: Record<string, any>; history: any[] } {
   if (typeof window === 'undefined') return { disposition: {}, history: [] };
+  const userId = getActiveUserId();
   const isOwner = isPrimaryOwnerAccount();
+  const primaryDispRaw = localStorage.getItem(
+    isOwner ? PRIMARY_DISPOSITION_KEY : `docencia_disposition_data_${userId}`
+  );
+  const primaryHistRaw = localStorage.getItem(
+    isOwner ? PRIMARY_HISTORY_KEY : `docencia_disposition_history_${userId}`
+  );
+  if (
+    cachedDisposition &&
+    cachedDisposition.userId === userId &&
+    cachedDisposition.rawDispRef === primaryDispRaw &&
+    cachedDisposition.rawHistRef === primaryHistRaw &&
+    primaryDispRaw !== null
+  ) {
+    return cachedDisposition.data;
+  }
+
   const deleted = getDeletedHistoryIds();
   let disposition: Record<string, any> = {};
   let history: any[] = [];
-
-  const userId = getActiveUserId();
   const keysDisp = new Set<string>(
     isOwner
       ? [
@@ -466,7 +521,14 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
   }
   history = deduplicateHistoryItems(mergedHistory);
 
-  return { disposition, history };
+  const result = { disposition, history };
+  cachedDisposition = {
+    userId,
+    rawDispRef: primaryDispRaw,
+    rawHistRef: primaryHistRaw,
+    data: result,
+  };
+  return result;
 }
 
 export function getLocalDisposition2c(): Record<string, any> {

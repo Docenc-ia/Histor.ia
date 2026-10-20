@@ -75,7 +75,25 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;500;600;700&family=Libre+Caslon+Display&family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Roboto:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Docenc.IA" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <script>
+      // Register Service Worker for PWA and offline resilience
+      if ('serviceWorker' in navigator && !window.location.hostname.includes('localhost') && window.location.protocol === 'https:') {
+        window.addEventListener('load', function() {
+          navigator.serviceWorker.register('/sw.js').then(function(reg) {
+            console.log('Docenc.IA PWA ServiceWorker registrado con éxito en scope:', reg.scope);
+          }).catch(function(err) {
+            console.warn('Docenc.IA PWA ServiceWorker no se pudo registrar:', err);
+          });
+        });
+      }
+    </script>
   </head>
   <body class="bg-[#f8fafd] text-[#1f1f1f] antialiased selection:bg-blue-100 selection:text-blue-900 font-['Roboto',sans-serif]">
     <div id="root"></div>

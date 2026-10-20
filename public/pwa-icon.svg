@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2563eb" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+    <linearGradient id="owl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e0e7ff" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+  </defs>
+  <!-- Background with rounded corners -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <!-- Inner shadow / highlight -->
+  <rect x="16" y="16" width="480" height="480" rx="96" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="8" />
+  
+  <!-- Graduation Mortarboard Hat -->
+  <path d="M256 100 L390 160 L256 220 L122 160 Z" fill="url(#accent)" />
+  <path d="M210 200 L210 240 C210 260 302 260 302 240 L302 200" fill="none" stroke="url(#accent)" stroke-width="12" stroke-linecap="round" />
+  <path d="M370 170 L395 240 L385 245 L360 175" fill="#d97706" />
+
+  <!-- Owl Body -->
+  <ellipse cx="256" cy="320" rx="140" ry="130" fill="url(#owl)" />
+  
+  <!-- Owl Belly -->
+  <ellipse cx="256" cy="350" rx="90" ry="85" fill="#eff6ff" />
+  <!-- Feather pattern -->
+  <path d="M220 320 Q256 340 292 320 M230 350 Q256 370 282 350 M240 380 Q256 395 272 380" fill="none" stroke="#93c5fd" stroke-width="6" stroke-linecap="round" />
+
+  <!-- Eyes - outer circles -->
+  <circle cx="205" cy="285" r="45" fill="#ffffff" stroke="#cbd5e1" stroke-width="6" />
+  <circle cx="307" cy="285" r="45" fill="#ffffff" stroke="#cbd5e1" stroke-width="6" />
+  
+  <!-- Eye Pupils -->
+  <circle cx="210" cy="285" r="26" fill="#1e293b" />
+  <circle cx="302" cy="285" r="26" fill="#1e293b" />
+  
+  <!-- Eye Reflections -->
+  <circle cx="200" cy="275" r="8" fill="#ffffff" />
+  <circle cx="292" cy="275" r="8" fill="#ffffff" />
+  <circle cx="218" cy="293" r="4" fill="#ffffff" />
+  <circle cx="310" cy="293" r="4" fill="#ffffff" />
+
+  <!-- Beak -->
+  <polygon points="256,295 242,325 270,325" fill="url(#accent)" />
+</svg>

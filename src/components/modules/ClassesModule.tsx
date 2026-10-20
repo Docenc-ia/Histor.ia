@@ -95,6 +95,7 @@ import { driveService, CourseFolderStructure } from '../../services/workspace/dr
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
 import { extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
+import { enqueueOfflineAction, flushOfflineSyncQueue } from '../../services/offlineSyncQueue';
 import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
 import { AttendanceHeader } from './classes/AttendanceHeader';
 import { StudentAttendanceRow } from './classes/StudentAttendanceRow';
@@ -1109,42 +1110,71 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return {};
   });
 
-  // Load student observations from Firestore on mount to keep PC and mobile synced
+  // Load student observations from Firestore on mount & whenever user or network changes
   useEffect(() => {
     let isMounted = true;
-    const uid = getActiveUserId();
-    if (uid) {
-      firestoreSync
-        .loadStudentObservationsMap(uid)
-        .then((cloudMap) => {
-          if (!isMounted || !cloudMap || typeof cloudMap !== 'object') return;
-          setStudentObservations((prev) => {
-            const merged: Record<string, StudentObservation[]> = { ...prev };
-            let changed = false;
-            for (const [stId, cloudList] of Object.entries(cloudMap)) {
-              if (!Array.isArray(cloudList)) continue;
-              const localList = merged[stId] || [];
-              const existingIds = new Set(localList.map((o) => o.id));
-              const newItems = cloudList.filter((o) => o && o.id && !existingIds.has(o.id));
-              if (newItems.length > 0 || (localList.length === 0 && cloudList.length > 0)) {
-                merged[stId] = [...localList, ...newItems].sort(
-                  (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
-                );
-                changed = true;
-              }
+
+    const loadCloudObservations = async () => {
+      const uid = getActiveUserId();
+      if (!uid) return;
+      try {
+        const cloudMap = await firestoreSync.loadStudentObservationsMap(uid);
+        if (!isMounted || !cloudMap || typeof cloudMap !== 'object') return;
+        setStudentObservations((prev) => {
+          const merged: Record<string, StudentObservation[]> = { ...prev };
+          let changed = false;
+          for (const [stId, cloudList] of Object.entries(cloudMap)) {
+            if (!Array.isArray(cloudList)) continue;
+            const localList = merged[stId] || [];
+            const existingIds = new Set(localList.map((o) => o.id));
+            const newItems = cloudList.filter((o) => o && o.id && !existingIds.has(o.id));
+            if (newItems.length > 0 || (localList.length === 0 && cloudList.length > 0)) {
+              merged[stId] = [...localList, ...newItems].sort(
+                (a, b) => (b.timestamp || 0) - (a.timestamp || 0)
+              );
+              changed = true;
             }
-            if (changed && typeof window !== 'undefined') {
-              setUserScopedItem('fds_student_observations', JSON.stringify(merged));
-            }
-            return changed ? merged : prev;
-          });
-        })
-        .catch(() => {});
-    }
+          }
+          if (changed && typeof window !== 'undefined') {
+            setUserScopedItem('fds_student_observations', JSON.stringify(merged));
+          }
+          return changed ? merged : prev;
+        });
+      } catch (_) {}
+    };
+
+    loadCloudObservations();
+
+    // Automatically flush pending offline observations and re-sync when network returns
+    const handleNetworkRestored = () => {
+      flushOfflineSyncQueue(async (action) => {
+        const uid = getActiveUserId();
+        if (!uid) return false;
+        try {
+          if (action.type === 'observation_save' && action.payload?.obs) {
+            await firestoreSync.saveStudentObservation(uid, action.payload.obs, action.payload.map);
+            return true;
+          } else if (action.type === 'observation_delete' && action.payload?.map) {
+            await firestoreSync.saveStudentObservationsMap(uid, action.payload.map);
+            return true;
+          }
+        } catch (_) {
+          return false;
+        }
+        return true;
+      });
+      loadCloudObservations();
+    };
+
+    window.addEventListener('docencia_network_restored', handleNetworkRestored);
+    window.addEventListener('docencia_trigger_queue_flush', handleNetworkRestored);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('docencia_network_restored', handleNetworkRestored);
+      window.removeEventListener('docencia_trigger_queue_flush', handleNetworkRestored);
     };
-  }, []);
+  }, [user?.email, user?.id, activeCourse?.id]);
 
   // Exportación directa de la Ficha de Seguimiento del Alumno a Google Drive como Google Doc (.gdoc) editable
   const [showProfileDocConfirm, setShowProfileDocConfirm] = useState(false);
@@ -4681,7 +4711,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         }
         const uid = getActiveUserId();
         if (uid) {
-          firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {});
+          firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {
+            enqueueOfflineAction('observation_save', { obs: newObs, map: updatedMap });
+          });
+        } else {
+          enqueueOfflineAction('observation_save', { obs: newObs, map: updatedMap });
         }
       } catch (_) {}
     }
@@ -4709,7 +4743,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         }
         const uid = getActiveUserId();
         if (uid) {
-          firestoreSync.saveStudentObservationsMap(uid, updatedMap).catch(() => {});
+          firestoreSync.saveStudentObservationsMap(uid, updatedMap).catch(() => {
+            enqueueOfflineAction('observation_delete', { map: updatedMap });
+          });
+        } else {
+          enqueueOfflineAction('observation_delete', { map: updatedMap });
         }
       } catch (_) {}
     }

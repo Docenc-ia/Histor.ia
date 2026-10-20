@@ -100,6 +100,17 @@
         "updatedAt": { "type": "string", "maxLength": 64 }
       },
       "required": ["courseId", "term"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User custom settings, student observations map, and configuration",
+      "type": "object",
+      "properties": {
+        "settingKey": { "type": "string", "maxLength": 128 },
+        "data": { "type": "string", "maxLength": 100000 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["settingKey"]
     }
   },
   "firestore": {
@@ -126,6 +137,10 @@
     "/users/{userId}/snapshots/{snapshotId}": {
       "schema": "TermSnapshot",
       "description": "Gradebook snapshots for each course and term"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": "UserSettings",
+      "description": "Teacher custom settings and student observations"
     }
   }
 }

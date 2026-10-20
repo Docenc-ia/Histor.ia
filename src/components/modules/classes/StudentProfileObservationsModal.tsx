@@ -13,6 +13,7 @@ import {
   BookOpen,
   Calendar,
   Layers,
+  Cloud,
 } from 'lucide-react';
 import { Course, Student, StudentDispositionData, StudentObservation } from '../../../types';
 import { AttendanceSettings } from '../../../utils/attendanceCalculations';
@@ -358,13 +359,20 @@ export const StudentProfileObservationsModal: React.FC<StudentProfileObservation
 
           {/* Historial de Observaciones Guardadas */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <h4 className="font-bold text-neutral-800 dark:text-slate-200 text-base flex items-center gap-2">
                 <span>Historial de Observaciones e Informes</span>
                 <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-neutral-200 dark:bg-slate-800 text-neutral-600 dark:text-slate-300">
                   {currentObservations.length}
                 </span>
               </h4>
+              <div
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
+                title="Las observaciones se sincronizan automáticamente con Firebase Firestore en la nube"
+              >
+                <Cloud className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span>Sincronizado con Firestore</span>
+              </div>
             </div>
 
             {currentObservations.length === 0 ? (

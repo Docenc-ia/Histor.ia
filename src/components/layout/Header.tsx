@@ -20,6 +20,7 @@ import {
   FileSpreadsheet,
   ShieldCheck,
   Share2,
+  Smartphone,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
@@ -83,6 +84,49 @@ export const Header: React.FC<HeaderProps> = ({
     return unsub;
   }, []);
 
+  // PWA Install Prompt State
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const isStandalone =
+        window.matchMedia('(display-mode: standalone)').matches ||
+        (window.navigator as any).standalone === true;
+      setIsAppInstalled(isStandalone);
+
+      const handleBeforeInstall = (e: Event) => {
+        e.preventDefault();
+        setDeferredInstallPrompt(e);
+      };
+
+      const handleAppInstalled = () => {
+        setIsAppInstalled(true);
+        setDeferredInstallPrompt(null);
+      };
+
+      window.addEventListener('beforeinstallprompt', handleBeforeInstall);
+      window.addEventListener('appinstalled', handleAppInstalled);
+
+      return () => {
+        window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
+        window.removeEventListener('appinstalled', handleAppInstalled);
+      };
+    }
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (!deferredInstallPrompt) return;
+    try {
+      deferredInstallPrompt.prompt();
+      const choice = await deferredInstallPrompt.userChoice;
+      if (choice && choice.outcome === 'accepted') {
+        setIsAppInstalled(true);
+        setDeferredInstallPrompt(null);
+      }
+    } catch (_) {}
+  };
+
   // Listen for custom event to open full backup modal from anywhere
   useEffect(() => {
     const handleOpenFullBackup = () => setIsFullBackupOpen(true);
@@ -113,6 +157,21 @@ export const Header: React.FC<HeaderProps> = ({
           await firestoreSync.saveStudents(uid, cid, list);
         }
       }
+      // Sync student observations map to Firestore
+      if (uid) {
+        try {
+          const rawObs =
+            localStorage.getItem(getUserStorageKey('fds_student_observations')) ||
+            (isPrimaryOwnerAccount() ? localStorage.getItem('fds_student_observations') : null);
+          if (rawObs) {
+            const obsMap = JSON.parse(rawObs);
+            if (obsMap && typeof obsMap === 'object') {
+              await firestoreSync.saveStudentObservationsMap(uid, obsMap);
+            }
+          }
+        } catch (_) {}
+      }
+      window.dispatchEvent(new Event('docencia_trigger_queue_flush'));
       await Promise.all([api.getCourses(), api.getStudents()]);
       window.dispatchEvent(new Event('docencia_student_status_updated'));
     } catch (_) {
@@ -481,6 +540,23 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
 
+        {/* PWA Install Button */}
+        {deferredInstallPrompt && !isAppInstalled && (
+          <button
+            type="button"
+            onClick={handleInstallApp}
+            className={`hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-semibold shadow-2xs transition-all cursor-pointer ${
+              isDarkMode
+                ? 'bg-indigo-950/60 hover:bg-indigo-900/70 border-indigo-700/60 text-indigo-200'
+                : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
+            }`}
+            title="Instalar Docenc.IA como aplicación nativa en tu dispositivo (Windows, Mac o móvil)"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-indigo-500" />
+            <span>Instalar App</span>
+          </button>
+        )}
+
         {/* 1-Click Full Backup Button */}
         <button
           type="button"
@@ -762,6 +838,26 @@ export const Header: React.FC<HeaderProps> = ({
                   <span>Configuración de Scopes & APIs</span>
                   <ExternalLink className="w-3.5 h-3.5 text-neutral-400" />
                 </button>
+
+                {deferredInstallPrompt && !isAppInstalled && (
+                  <button
+                    onClick={() => {
+                      handleInstallApp();
+                      setShowProfileMenu(false);
+                    }}
+                    className={`w-full flex items-center justify-between px-2 py-2 text-left rounded-lg transition-colors font-medium ${
+                      isDarkMode
+                        ? 'text-indigo-300 hover:bg-slate-800'
+                        : 'text-indigo-700 hover:bg-indigo-50'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <Smartphone className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Instalar Docenc.IA como App</span>
+                    </span>
+                    <Download className="w-3.5 h-3.5 text-indigo-500" />
+                  </button>
+                )}
               </div>
 
               <div

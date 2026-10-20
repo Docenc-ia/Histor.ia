@@ -371,14 +371,14 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                                   <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 stroke-[3]" />
                                   <span>Enviado</span>
                                 </span>
-                              ) : item.omitNotification || item.notificationMethod === 'omitted' ? (
+                              ) : item.omitNotification || item.notificationMethod === 'omitted' || item.notificationMethod === 'none' || item.notifiedAt === 'No enviar' || item.notifiedAt === 'Omitido' ? (
                                 <div className="inline-flex items-center gap-1.5 justify-center">
                                   <span
                                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border border-neutral-200 dark:border-slate-700"
-                                    title="Aviso omitido por el docente. Queda guardado en tu historial sin mandar notificación."
+                                    title="No enviar mensaje. Queda registrado en tu historial docente sin envíos pendientes."
                                   >
                                     <BellOff className="w-2.5 h-2.5 text-neutral-400" />
-                                    <span>No mandar</span>
+                                    <span>No enviar</span>
                                   </span>
                                   <button
                                     type="button"
@@ -427,8 +427,8 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                               </p>
                             ) : (
                               <span className="text-[11px] text-neutral-400 dark:text-slate-500 italic">
-                                {item.omitNotification || item.notificationMethod === 'omitted'
-                                  ? 'Sin aviso (guardado en historial)'
+                                {item.omitNotification || item.notificationMethod === 'omitted' || item.notificationMethod === 'none' || item.notifiedAt === 'No enviar' || item.notifiedAt === 'Omitido'
+                                  ? 'Sin aviso / No enviar (guardado en historial)'
                                   : item.category === 'Ausencia' || item.category === 'Disposición'
                                   ? 'Pendiente de envío'
                                   : 'N/A'}

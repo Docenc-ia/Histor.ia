@@ -579,8 +579,27 @@ export const sheetsService = {
         ? (item.pointsChange > 0 ? `+${item.pointsChange} pto` : `${item.pointsChange} pto`)
         : '-';
 
-      const messageSentTick = item.messageSent ? '✓' : 'Pendiente';
-      const messageContent = item.messageText || (item.messageSent ? '(Sin texto adicional)' : '-');
+      const isOmittedOrNone =
+        item.omitNotification ||
+        item.notificationMethod === 'omitted' ||
+        item.notificationMethod === 'none' ||
+        item.notifiedAt === 'No enviar' ||
+        item.notifiedAt === 'Omitido';
+
+      let messageSentTick = '-';
+      if (item.category === 'Ausencia' || item.category === 'Disposición') {
+        if (item.messageSent) {
+          messageSentTick = '✓';
+        } else if (isOmittedOrNone) {
+          messageSentTick = 'No enviar';
+        } else {
+          messageSentTick = 'Pendiente';
+        }
+      }
+
+      const messageContent =
+        item.messageText ||
+        (item.messageSent ? '(Sin texto adicional)' : isOmittedOrNone ? '(Sin mensaje)' : '-');
 
       return [
         item.date,
@@ -1414,6 +1433,19 @@ export const sheetsService = {
         ? (item.pointsChange > 0 ? `+${item.pointsChange} pto` : `${item.pointsChange} pto`)
         : '-';
 
+      const isOmittedOrNone =
+        item.omitNotification ||
+        item.notificationMethod === 'omitted' ||
+        item.notificationMethod === 'none' ||
+        item.notifiedAt === 'No enviar' ||
+        item.notifiedAt === 'Omitido';
+
+      const sentStatus = item.messageSent
+        ? 'Enviado'
+        : isOmittedOrNone
+        ? 'No enviar'
+        : (item.category === 'Ausencia' || item.category === 'Disposición' ? 'Pendiente' : '-');
+
       return [
         item.date,
         item.time,
@@ -1422,8 +1454,8 @@ export const sheetsService = {
         item.action,
         impact,
         studentScore,
-        item.messageSent ? 'Enviado' : 'Pendiente',
-        item.messageText || '-',
+        sentStatus,
+        item.messageText || (isOmittedOrNone ? '(Sin mensaje)' : '-'),
       ];
     });
 
@@ -1965,8 +1997,20 @@ export const sheetsService = {
     const historyHeaders = ['Fecha', 'Hora', 'Estudiante', 'Categoría', 'Motivo de Conducta', 'Impacto', 'Disposición Resultante', 'Mensaje enviado', 'Mensaje'];
     const historyRows = historyList.map((h) => {
       const score = dispositionMap[h.studentId]?.totalDisposition ?? 10;
-      const sentTick = h.messageSent ? '✓' : 'Pendiente';
-      const cleanMsg = (h.messageText || (h.messageSent ? '(Sin texto adicional)' : '-')).replace(/"/g, '""');
+      const isOmittedOrNone =
+        h.omitNotification ||
+        h.notificationMethod === 'omitted' ||
+        h.notificationMethod === 'none' ||
+        h.notifiedAt === 'No enviar' ||
+        h.notifiedAt === 'Omitido';
+
+      const sentTick = h.messageSent
+        ? '✓'
+        : isOmittedOrNone
+        ? 'No enviar'
+        : (h.category === 'Ausencia' || h.category === 'Disposición' ? 'Pendiente' : '-');
+
+      const cleanMsg = (h.messageText || (h.messageSent ? '(Sin texto adicional)' : isOmittedOrNone ? '(Sin mensaje)' : '-')).replace(/"/g, '""');
 
       const isItemAbsence =
         h.category === 'Ausencia' ||

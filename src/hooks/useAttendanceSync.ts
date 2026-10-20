@@ -249,7 +249,7 @@ export function useAttendanceSync({
         return;
       }
 
-      if (onToast) onToast(`Sincronizando con Google Sheets para "${activeCourse.name}"...`);
+      if (onToast) onToast(`Subiendo información de la app a Google Sheets para "${activeCourse.name}"...`);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
       const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
       const isS2NatCourse =
@@ -265,65 +265,6 @@ export function useAttendanceSync({
         (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID)
           ? activeCourse.dispositionSheetId
           : undefined);
-
-      let map1cToSync = dispositionMap;
-      let map2cToSync = dispositionMap2c;
-      let pulledChangesCount = 0;
-
-      // Double entry (Pull): Check if teacher edited in Google Sheets directly
-      if (realExistingId) {
-        try {
-          const pullRes = await sheetsService.pullDispositionSheetFromGoogle(
-            activeCourse,
-            currentStudents,
-            dispositionMap,
-            dispositionMap2c,
-            realExistingId,
-            activeToken
-          );
-          if (pullRes.success && pullRes.changesCount > 0) {
-            pulledChangesCount = pullRes.changesCount;
-            map1cToSync = pullRes.updatedMap1c;
-            map2cToSync = pullRes.updatedMap2c;
-            setDispositionMap(pullRes.updatedMap1c);
-            setDispositionMap2c(pullRes.updatedMap2c);
-
-            if (typeof window !== 'undefined' && activeCourse?.id) {
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(pullRes.updatedMap1c));
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(pullRes.updatedMap2c));
-            }
-
-            const now = new Date();
-            const dateStr = formatLocalDateDMY(now);
-            const timeStr = formatLocalTimeHMS(now);
-            const newHistoryItems: StudentHistoryItem[] = pullRes.changes.map((change, idx) => ({
-              id: `sheet-pull-${Date.now()}-${idx}`,
-              studentId: change.studentId,
-              studentName: change.studentName,
-              courseId: activeCourse.id,
-              date: dateStr,
-              time: timeStr,
-              timestamp: now.getTime(),
-              category: change.field === 'totalAbsences' ? 'Ausencia' : change.field === 'totalLates' ? 'Llegada tarde' : 'Disposición',
-              action: `Actualizado desde Google Sheets (${change.termLabel}): ${change.fieldLabel} cambió de ${change.oldValue} a ${change.newValue}`,
-              messageSent: true,
-              notificationMethod: 'none',
-              omitNotification: true,
-            }));
-
-            setHistoryList((prev) => [...newHistoryItems, ...prev]);
-
-            if (onShowPullDiffsModal) {
-              onShowPullDiffsModal({
-                count: pullRes.changesCount,
-                changes: pullRes.changes,
-              });
-            }
-          }
-        } catch (pullErr) {
-          console.warn('Advertencia al leer modificaciones previas en Google Sheets:', pullErr);
-        }
-      }
 
       // Ensure course Drive folder exists
       let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
@@ -352,16 +293,17 @@ export function useAttendanceSync({
         } catch (_) {}
       }
 
+      // App is the source of truth: Upload all data to Google Sheets (1°C, 2°C, Resumen Anual e Historial)
       const historyForCourse = historyList.filter((h) => h.courseId === activeCourse.id);
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
-        map1cToSync,
+        dispositionMap,
         historyForCourse,
         realExistingId,
         targetFolderId,
         activeToken,
-        map2cToSync
+        dispositionMap2c
       );
 
       const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
@@ -390,11 +332,7 @@ export function useAttendanceSync({
           })
           .catch(() => {});
 
-        const msgSuccess =
-          pulledChangesCount > 0
-            ? `¡Sincronizado! Se incorporaron ${pulledChangesCount} cambio(s) desde Sheets y se actualizó la planilla.`
-            : `¡Planilla de Google Sheets sincronizada con éxito! (${res.updatedAt})`;
-        if (onToast) onToast(msgSuccess);
+        if (onToast) onToast(`✓ Información de la materia subida a Google Sheets con éxito (${res.updatedAt})`);
       } else {
         if (res.errorCode === 'UNAUTHORIZED') {
           setCachedAccessToken(null);

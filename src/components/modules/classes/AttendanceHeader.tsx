@@ -171,10 +171,10 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                   ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
                   : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
               }`}
-              title="Sincronizar con Sheets: Doble entrada bidireccional."
+              title="Subir y actualizar toda la información de la materia desde la app hacia la planilla de Google Sheets"
             >
               <RefreshCw className={`w-3.5 h-3.5 text-blue-500 ${isSyncActive ? 'animate-spin' : ''}`} />
-              <span>{isSyncActive ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
+              <span>{isSyncActive ? 'Subiendo a Sheets...' : 'Sincronizar con Sheets'}</span>
             </button>
           </div>
 

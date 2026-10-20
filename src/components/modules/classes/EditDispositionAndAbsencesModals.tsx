@@ -22,7 +22,7 @@ export interface EditStudentDispositionModalProps {
   activeCourse: Course | undefined;
   editingDispositionTerm: '1c' | '2c';
   handleChangeEditingTerm: (term: '1c' | '2c') => void;
-  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all') => StudentDispositionData;
+  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all' | 'annual') => StudentDispositionData;
   editingDispositionScore: string;
   setEditingDispositionScore: React.Dispatch<React.SetStateAction<string>>;
   editingDispositionReason: string;
@@ -341,7 +341,7 @@ export interface EditStudentAbsencesModalProps {
   activeCourse: Course | undefined;
   editingAbsenceTerm: '1c' | '2c';
   handleChangeEditingAbsenceTerm: (term: '1c' | '2c') => void;
-  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all') => StudentDispositionData;
+  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all' | 'annual') => StudentDispositionData;
   editingAbsenceCount: string;
   setEditingAbsenceCount: React.Dispatch<React.SetStateAction<string>>;
   editingAbsenceDate: string;

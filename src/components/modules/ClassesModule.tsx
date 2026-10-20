@@ -833,9 +833,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     student: Student | null;
     channel: 'classroom' | 'gmail';
     messageText: string;
-    selectedPresetId?: string;
-    showSavePresetInput?: boolean;
-    newPresetName?: string;
+    selectedPresetId: string;
+    showSavePresetInput: boolean;
+    newPresetName: string;
     isSending: boolean;
   }>({
     isOpen: false,
@@ -2387,9 +2387,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // Helper to get student disposition data (reconciled with historyList and dispositionMap per term)
   const getStudentMetrics = (
     studentId: string,
-    targetTerm: '1c' | '2c' | 'annual' = attendanceTerm
+    targetTerm: '1c' | '2c' | 'annual' | 'all' = attendanceTerm
   ): StudentDispositionData => {
-    if (targetTerm === 'annual') {
+    if (targetTerm === 'annual' || targetTerm === 'all') {
       const m1 = getStudentMetrics(studentId, '1c');
       const m2 = getStudentMetrics(studentId, '2c');
       const totalAbsences = m1.totalAbsences + m2.totalAbsences;
@@ -3175,6 +3175,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     saveAllDispositionStorage(dispositionMap, updatedHistory);
     setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
 
+    // Sincronizar inmediatamente a Google Sheets para que figure 'No enviar' y no 'Pendiente'
+    triggerSheetsSync(dispositionMap, updatedHistory, dispositionMap2c);
+
     api
       .recordDisposition({
         id: item.id,
@@ -3188,6 +3191,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         timestamp: item.timestamp,
         messageSent: false,
         notificationMethod: 'omitted',
+        omitNotification: true,
+        notifiedAt: 'No enviar',
       })
       .catch(() => {});
 
@@ -4201,6 +4206,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           ? `${actionText} - ${reasonTrimmed}`
           : actionText;
 
+        const willSendNotification = editingAbsenceSendNotif && editingAbsenceMessageText.trim().length > 0;
         newHistoryEntry = {
           id: `rec-abs-edit-${student.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           studentId: student.id,
@@ -4214,8 +4220,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           pointsChange: 0,
           timestamp: recordTimestamp,
           messageSent: false,
-          messageText: '',
-          notificationMethod: 'none',
+          messageText: willSendNotification ? editingAbsenceMessageText.trim() : '',
+          notificationMethod: willSendNotification ? editingAbsenceChannel : ('omitted' as const),
+          omitNotification: !willSendNotification,
+          notifiedAt: !willSendNotification ? 'No enviar' : undefined,
         };
         newHistoryEntries.push(newHistoryEntry);
       }
@@ -6005,10 +6013,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             ? 'bg-blue-950/70 hover:bg-blue-900 text-blue-300 border-blue-700'
                             : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
                         }`}
-                        title="Sincronizar con Sheets: Doble entrada bidireccional. Si modificaste ausencias, tardanzas o notas en el Sheet, las trae a la app y actualiza la planilla en Google Drive"
+                        title="Subir información de la app a la planilla de Google Sheets"
                       >
                         <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin' : ''}`} />
-                        <span className="truncate">{isSyncingSheet || isPullingFromSheet ? 'Sincronizando...' : 'Sincronizar con Sheets'}</span>
+                        <span className="truncate">{isSyncingSheet || isPullingFromSheet ? 'Subiendo...' : 'Sincronizar con Sheets'}</span>
                       </button>
                     </div>
                   ) : (
@@ -6951,7 +6959,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                           );
                           const studentHistory = historyList.filter((h) => h.studentId === student.id);
                           const hasPendingAbsence = historyList.some(
-                            (h) => h.courseId === activeCourse.id && h.studentId === student.id && h.category === 'Ausencia' && !h.messageSent
+                            (h) =>
+                              h.courseId === activeCourse.id &&
+                              h.studentId === student.id &&
+                              h.category === 'Ausencia' &&
+                              !h.messageSent &&
+                              !h.omitNotification &&
+                              h.notificationMethod !== 'omitted' &&
+                              h.notificationMethod !== 'none'
                           );
                           const isSelected = selectedStudentIds.includes(student.id);
 
@@ -7015,8 +7030,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               courseStudents={courseStudents}
               isPermHistoryCollapsed={isPermHistoryCollapsed}
               setIsPermHistoryCollapsed={setIsPermHistoryCollapsed}
-              permHistoryCategory={permHistoryCategory}
-              setPermHistoryCategory={setPermHistoryCategory}
+              permHistoryCategory={(permHistoryCategory === 'Ausencia' || permHistoryCategory === 'Disposición') ? permHistoryCategory : 'all'}
+              setPermHistoryCategory={setPermHistoryCategory as any}
               permHistorySearch={permHistorySearch}
               setPermHistorySearch={setPermHistorySearch}
               selectedPendingHistoryIds={selectedPendingHistoryIds}
@@ -7029,8 +7044,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               handleMarkOmitNotification={handleMarkOmitNotification}
               handleDeleteHistoryEntry={handleDeleteHistoryEntry}
               handleMarkAllPendingAsOmitted={handleMarkAllPendingAsOmitted}
-              handleOpenBatchFromPending={handleOpenBatchFromPending}
-              setActiveTab={setActiveTab}
+              handleOpenBatchFromPending={(filter) => handleOpenBatchFromPending(filter === 'Ausencia' ? 'absences' : filter === 'Disposición' ? 'conduct' : 'all')}
+              setActiveTab={(tab) => setActiveTab(tab === 'attendance' ? 'roster' : tab)}
               setToastMessage={setToastMessage}
             />
           </div>
@@ -7338,6 +7353,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         handleSaveNotifSettings={handleSaveNotifSettings}
         setToastMessage={setToastMessage}
         sendNotificationForItem={sendNotificationForItem}
+        handleMarkOmitNotification={handleMarkOmitNotification}
         isDarkMode={isDarkMode}
       />
 

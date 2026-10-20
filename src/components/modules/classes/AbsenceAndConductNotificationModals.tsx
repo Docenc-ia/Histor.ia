@@ -17,6 +17,7 @@ import {
   Search,
   Plus,
   Trash2,
+  BellOff,
 } from 'lucide-react';
 import {
   Course,
@@ -107,6 +108,7 @@ interface IndividualAbsenceNotificationModalProps {
     channel: 'classroom' | 'gmail',
     messageText: string
   ) => Promise<void>;
+  handleMarkOmitNotification?: (item: StudentHistoryItem) => void;
 }
 
 export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotificationModalProps> = ({
@@ -131,6 +133,7 @@ export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotif
   handleSaveNotifSettings,
   setToastMessage,
   sendNotificationForItem,
+  handleMarkOmitNotification,
 }) => {
   if (!absenceNotifModal.isOpen) return null;
 
@@ -694,22 +697,46 @@ export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotif
 
         {/* Footer */}
         <div className={`p-4 border-t flex flex-wrap items-center justify-between gap-2 ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
-          <button
-            type="button"
-            onClick={() => {
-              setAbsenceNotifModal((prev) => ({ ...prev, isOpen: false }));
-              setToastMessage(
-                `${isDisposition ? 'Conducta' : 'Falta'} registrada para ${absenceNotifModal.student?.lastName || 'el estudiante'}. El aviso quedó pendiente para mandarlo al final junto con los demás.`
-              );
-              setTimeout(() => setToastMessage(null), 4000);
-            }}
-            className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
-              isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-            }`}
-            title="Cierra esta ventana dejando la anotación registrada; podrás mandar todos los avisos pendientes juntos al final de la clase"
-          >
-            Enviar al final (junto con los demás)
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (absenceNotifModal.historyItem && handleMarkOmitNotification) {
+                  handleMarkOmitNotification(absenceNotifModal.historyItem);
+                } else {
+                  setToastMessage('Anotación registrada en el historial sin enviar mensaje.');
+                  setTimeout(() => setToastMessage(null), 3500);
+                }
+                setAbsenceNotifModal((prev) => ({ ...prev, isOpen: false }));
+              }}
+              className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer inline-flex items-center gap-1.5 transition-colors ${
+                isDarkMode
+                  ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-750'
+                  : 'border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100 shadow-2xs'
+              }`}
+              title="No enviar mensaje: se guarda la anotación en tu historial docente sin dejar ningún aviso pendiente"
+            >
+              <BellOff className="w-3.5 h-3.5 text-neutral-500 dark:text-slate-400" />
+              <span>No enviar mensaje</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setAbsenceNotifModal((prev) => ({ ...prev, isOpen: false }));
+                setToastMessage(
+                  `${isDisposition ? 'Conducta' : 'Falta'} registrada para ${absenceNotifModal.student?.lastName || 'el estudiante'}. El aviso quedó pendiente para mandarlo al final junto con los demás.`
+                );
+                setTimeout(() => setToastMessage(null), 4000);
+              }}
+              className={`px-3.5 py-2 rounded-xl border text-xs font-semibold cursor-pointer ${
+                isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+              }`}
+              title="Cierra esta ventana dejando la anotación registrada; podrás mandar todos los avisos pendientes juntos al final de la clase"
+            >
+              Enviar al final
+            </button>
+          </div>
 
           <button
             type="button"

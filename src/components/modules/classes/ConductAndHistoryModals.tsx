@@ -31,8 +31,8 @@ export interface ConductRecordModalState {
 export interface ConductRecordModalProps {
   conductRecordModal: ConductRecordModalState;
   setConductRecordModal: React.Dispatch<React.SetStateAction<ConductRecordModalState>>;
-  attendanceTerm: '1c' | '2c' | 'all';
-  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all') => StudentDispositionData;
+  attendanceTerm: '1c' | '2c' | 'all' | 'annual';
+  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all' | 'annual') => StudentDispositionData;
   teacherConductOptions: string[];
   handleConfirmConductRecord: (e: React.FormEvent) => void;
   isDarkMode: boolean;
@@ -728,7 +728,7 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
 export interface StudentIndividualHistoryModalProps {
   selectedStudentForHistory: Student | null;
   setSelectedStudentForHistory: React.Dispatch<React.SetStateAction<Student | null>>;
-  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all') => StudentDispositionData;
+  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all' | 'annual') => StudentDispositionData;
   handleOpenEditAbsences: (student: Student) => void;
   handleDeleteLatestAbsence: (student: Student) => void;
   handleDeleteLatestLate: (student: Student) => void;
@@ -983,8 +983,8 @@ export interface SendDispositionToGradesModalProps {
   onClose: () => void;
   activeCourse: Course | undefined;
   courseStudents: Student[];
-  attendanceTerm: '1c' | '2c' | 'all';
-  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all') => StudentDispositionData;
+  attendanceTerm: '1c' | '2c' | 'all' | 'annual';
+  getStudentMetrics: (studentId: string, termOverride?: '1c' | '2c' | 'all' | 'annual') => StudentDispositionData;
   handleSendDispositionToGrades: (term: '1c' | '2c', goToGrades: boolean) => void;
   isDarkMode: boolean;
 }

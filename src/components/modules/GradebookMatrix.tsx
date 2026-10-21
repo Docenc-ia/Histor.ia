@@ -43,6 +43,7 @@ import {
   exportGradebookMatrixToExcel,
 } from '../../utils/excelExport';
 import { sheetsService } from '../../services/workspace/sheetsService';
+import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
 import {
   firestoreSync,
   getActiveUserId,
@@ -221,14 +222,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     let gradesToSync = is2c ? { ...gradesMap2c } : { ...gradesMap1c };
 
     try {
-      const courseSheet: any = await api.getCourseDispositionSheet(courseId).catch(() => ({}));
-      const realExistingId = isRealGoogleSpreadsheetId(courseSheet?.spreadsheetId)
-        ? (courseSheet.spreadsheetId as string)
-        : undefined;
+      const realExistingId = await sheetsService.resolveGradesSpreadsheetId(
+        courseId,
+        courseName,
+        undefined,
+        driveFolderId,
+        token || undefined
+      );
 
       let pulledCount = 0;
 
-      // 1. Doble entrada (Pull): Si ya existe el sheet vinculado, traemos cambios hechos por el docente en Sheets
+      // 1. Doble entrada (Pull): Si ya existe el sheet de Calificaciones vinculado, traemos cambios hechos por el docente en Sheets
       if (realExistingId) {
         try {
           const pullRes = await sheetsService.pullGradebookMatrixFromGoogle(
@@ -238,7 +242,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             catsToSync,
             gradesToSync,
             realExistingId,
-            token || undefined
+            token || undefined,
+            driveFolderId
           );
 
           if (pullRes.success && pullRes.changesCount > 0) {
@@ -246,10 +251,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             gradesToSync = pullRes.updatedGradesMap;
             if (is2c) {
               setGradesMap2c(gradesToSync);
-              localStorage.setItem(`gradebook_matrix_grades_2c_${courseId}`, JSON.stringify(gradesToSync));
+              localStorage.setItem(getGradesKey('2c'), JSON.stringify(gradesToSync));
             } else {
               setGradesMap1c(gradesToSync);
-              localStorage.setItem(`gradebook_matrix_grades_1c_${courseId}`, JSON.stringify(gradesToSync));
+              localStorage.setItem(getGradesKey('1c'), JSON.stringify(gradesToSync));
             }
           }
         } catch (pullErr) {
@@ -257,7 +262,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         }
       }
 
-      // 2. Push: Subir las notas completas actualizadas a Google Sheets
+      // 2. Push: Subir las notas completas actualizadas al documento de Calificaciones en Google Sheets
       const res = await sheetsService.syncGradebookMatrixToSheet(
         { id: courseId, name: courseName },
         termToSync,
@@ -265,18 +270,19 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         catsToSync,
         gradesToSync,
         realExistingId,
-        undefined,
+        driveFolderId,
         token || undefined
       );
 
-      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
-        await api
-          .saveCourseDispositionSheet(courseId, {
+      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && typeof window !== 'undefined') {
+        localStorage.setItem(
+          `fds_grades_sheet_${courseId}`,
+          JSON.stringify({
             spreadsheetId: res.spreadsheetId,
             url: res.url,
             lastSyncedAt: res.updatedAt,
           })
-          .catch(() => {});
+        );
       }
 
       // Guardar snapshot del término en Firestore
@@ -384,6 +390,34 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     };
   }, [courseId]);
 
+  const enqueueBackgroundSheetsSync = (
+    targetTerm: '1c' | '2c',
+    targetCats: GradeCategory[],
+    targetGrades: StudentGradesMap
+  ) => {
+    if (!token || !linkedCuatrSheetId || !isRealGoogleSpreadsheetId(linkedCuatrSheetId)) return;
+    sheetsSyncQueue.enqueue(
+      courseId,
+      'grades',
+      async () => {
+        const res = await sheetsService.syncGradebookMatrixToSheet(
+          { id: courseId, name: courseName },
+          targetTerm,
+          students,
+          targetCats,
+          targetGrades,
+          driveFolderId,
+          linkedCuatrSheetId,
+          token
+        );
+        if (res.isLiveGoogle && res.updatedAt) {
+          setLastSyncedCuatrTime(res.updatedAt);
+        }
+      },
+      3500
+    );
+  };
+
   // Save changes to localStorage and Firestore for active term
   const saveCategories = (newCategories: GradeCategory[]) => {
     if (is2c) {
@@ -392,6 +426,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(getCatKey('2c'), JSON.stringify(newCategories));
       }
       persistTermSnapshotToCloud('2c', newCategories, gradesMap2c);
+      enqueueBackgroundSheetsSync('2c', newCategories, gradesMap2c);
     } else {
       setCategories1c(newCategories);
       if (typeof window !== 'undefined') {
@@ -399,6 +434,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(newCategories));
       }
       persistTermSnapshotToCloud('1c', newCategories, gradesMap1c);
+      enqueueBackgroundSheetsSync('1c', newCategories, gradesMap1c);
     }
   };
 
@@ -409,6 +445,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(getGradesKey('2c'), JSON.stringify(newGrades));
       }
       persistTermSnapshotToCloud('2c', categories2c, newGrades);
+      enqueueBackgroundSheetsSync('2c', categories2c, newGrades);
     } else {
       setGradesMap1c(newGrades);
       if (typeof window !== 'undefined') {
@@ -416,6 +453,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(newGrades));
       }
       persistTermSnapshotToCloud('1c', categories1c, newGrades);
+      enqueueBackgroundSheetsSync('1c', categories1c, newGrades);
     }
   };
 
@@ -650,6 +688,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   // Import Grades Modal & Grade History state
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importSourceType, setImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
   const [gradeHistory, setGradeHistory] = useState<GradeHistoryEntry[]>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -732,6 +771,65 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     window.dispatchEvent(
       new CustomEvent('fds-grades-updated', {
         detail: { term: data.term, courseId },
+      })
+    );
+  };
+
+  const handleApplyMultiImport = (payload: any) => {
+    const isTarget2c = payload.term === '2c';
+    if (isTarget2c) {
+      setCategories2c(payload.updatedCategories);
+      setGradesMap2c(payload.updatedGradesMap);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(getCatKey('2c'), JSON.stringify(payload.updatedCategories));
+        localStorage.setItem(getGradesKey('2c'), JSON.stringify(payload.updatedGradesMap));
+      }
+    } else {
+      setCategories1c(payload.updatedCategories);
+      setGradesMap1c(payload.updatedGradesMap);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(getCatKey('1c'), JSON.stringify(payload.updatedCategories));
+        localStorage.setItem(getGradesKey('1c'), JSON.stringify(payload.updatedGradesMap));
+      }
+    }
+
+    if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
+      const updatedHistory = [...payload.historyEntries, ...gradeHistory];
+      setGradeHistory(updatedHistory);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(
+          getUserStorageKey(`fds_grade_history_${courseId}`),
+          JSON.stringify(updatedHistory)
+        );
+      }
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync
+        .saveTermSnapshot(userId, courseId, payload.term, {
+          courseId,
+          term: payload.term,
+          termLabel: payload.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+          categories: payload.updatedCategories,
+          gradesMap: payload.updatedGradesMap,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }
+
+    window.dispatchEvent(
+      new CustomEvent('fds-grades-updated', {
+        detail: { term: payload.term, courseId },
+      })
+    );
+
+    window.dispatchEvent(
+      new CustomEvent('fds-multi-import-applied', {
+        detail: {
+          courseId,
+          ...payload,
+        },
       })
     );
   };
@@ -819,6 +917,45 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       },
     };
     saveGrades(updated);
+  };
+
+  // Excel-like keyboard navigation across grade cells (Enter / ArrowUp / ArrowDown / ArrowLeft / ArrowRight)
+  const handleGradeCellKeyDown = (
+    e: React.KeyboardEvent<HTMLInputElement>,
+    rowIdx: number,
+    colIdx: number
+  ) => {
+    let nextRow = rowIdx;
+    let nextCol = colIdx;
+
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      nextRow = rowIdx + 1;
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      nextRow = rowIdx - 1;
+    } else if (
+      e.key === 'ArrowRight' &&
+      e.currentTarget.selectionStart === e.currentTarget.value.length
+    ) {
+      e.preventDefault();
+      nextCol = colIdx + 1;
+    } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
+      e.preventDefault();
+      nextCol = colIdx - 1;
+    } else {
+      return;
+    }
+
+    if (tableRef.current) {
+      const target = tableRef.current.querySelector<HTMLInputElement>(
+        `input[data-grade-row="${nextRow}"][data-grade-col="${nextCol}"]`
+      );
+      if (target) {
+        target.focus();
+        target.select();
+      }
+    }
   };
 
   // Modals / State for adding & editing categories/subcategories
@@ -1170,13 +1307,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         <>
           {/* Top Controls & Configuration Bar */}
           <div
-            className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${
+            className={`p-4 rounded-xl border flex flex-col gap-3.5 transition-colors ${
               isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
             }`}
           >
-            {/* Título: Planilla de Calificaciones y abajo 1º Cuatrimestre */}
-            <div className="shrink-0">
-              <div className="flex items-center gap-2 flex-wrap">
+            {/* Arriba: Título Planilla de Calificaciones y Cuatrimestre */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-neutral-200/80 dark:border-slate-800">
+              <div className="flex items-center gap-2.5 flex-wrap">
                 <h3 className={`font-bold text-base lg:text-lg leading-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
                   Planilla de Calificaciones
                 </h3>
@@ -1206,7 +1343,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   </span>
                 </span>
               </div>
-              <div className="flex items-center gap-2 mt-1">
+
+              <div className="flex items-center gap-2">
                 <span className={`text-xs font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                   {currentTerm === '1c' ? '1º Cuatrimestre' : '2º Cuatrimestre'}
                 </span>
@@ -1228,8 +1366,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               </div>
             </div>
 
-            {/* Tres columnas a la derecha */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3 w-full lg:max-w-3xl items-start">
+            {/* Abajo de Planilla de Calificaciones (en el mismo cuadrado): Opciones con las 2 de Importar en una columna nueva al final */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 w-full items-start">
               {/* Columna 1: Descargar Excel y Descargar CSV */}
               <div className="flex flex-col gap-1.5">
                 <button
@@ -1261,24 +1399,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 </button>
               </div>
 
-              {/* Columna 2: Importar Notas y Sincronizar Notas en Sheets */}
+              {/* Columna 2: Sincronizar Notas en Sheets */}
               <div className="flex flex-col gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setIsImportModalOpen(true)}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                  title="Importar archivo Excel (.xlsx, .xls) o pegar notas desde Google Sheets con verificación previa de alumnos"
-                >
-                  <Upload className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Importar Notas</span>
-                </button>
-
                 <button
                   type="button"
                   onClick={handleSyncCuatrimestreWithSheets}
                   disabled={isSavingSheets}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
-                  title="Sincronizar notas con Google Sheets (doble entrada bidireccional): detecta y trae modificaciones del Sheet y actualiza la planilla en Drive"
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
+                  title="Sincronizar notas con el documento de Calificaciones en la carpeta de Google Drive de la materia"
                 >
                   {isSavingSheets ? (
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
@@ -1307,7 +1435,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 px-1.5 py-0.5 font-semibold rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:underline truncate"
-                        title="Abrir pestaña en Google Sheets"
+                        title="Abrir documento de Calificaciones en Google Sheets"
                       >
                         <ExternalLink className="w-2.5 h-2.5 shrink-0" />
                         <span>Ver Sheet</span>
@@ -1367,6 +1495,39 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                       : '📊 Promedio'}
                   </button>
                 </div>
+              </div>
+
+              {/* Columna 4 (al final): Importar desde Excel e Importar desde Sheets */}
+              <div className="flex flex-col gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportSourceType('file');
+                    setIsImportModalOpen(true);
+                  }}
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                  title="Subir archivo Excel (.xlsx, .xls, .csv) para que la app detecte las notas y categorías con comprobación previa"
+                >
+                  <Upload className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Importar desde Excel</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImportSourceType('sheets');
+                    setIsImportModalOpen(true);
+                  }}
+                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs ${
+                    isDarkMode
+                      ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
+                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                  }`}
+                  title="Importar documento existente de Google Sheets para que la app detecte las notas y categorías con comprobación previa"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="truncate">Importar desde Sheets</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1542,8 +1703,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {/* Student info fixed cols */}
                 <th
                   rowSpan={2}
-                  className={`p-3 font-bold border-r uppercase tracking-wider text-[11px] min-w-[200px] w-64 ${
-                    isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
+                  className={`sticky left-0 z-20 p-3 font-bold border-r uppercase tracking-wider text-[11px] min-w-[200px] w-64 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.08)] ${
+                    isDarkMode ? 'bg-slate-950 border-slate-800 text-slate-300' : 'bg-neutral-100 border-neutral-200 text-neutral-700'
                   }`}
                 >
                   Estudiante ({students.length})
@@ -1739,20 +1900,23 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 students.map((student, idx) => {
                   const studentGrades = gradesMap[student.id] || {};
                   const finalScore = getFinalScore(student.id);
+                  let runningColIdx = 0;
 
                   return (
                     <tr
                       key={student.id}
-                      className={`transition-colors ${
+                      className={`group transition-colors ${
                         isDarkMode
                           ? 'hover:bg-slate-800/40'
                           : 'hover:bg-neutral-50/80'
                       }`}
                     >
-                      {/* Student Name */}
+                      {/* Student Name (Sticky on horizontal scroll) */}
                       <td
-                        className={`p-3 border-r font-medium flex items-center gap-2.5 ${
-                          isDarkMode ? 'border-slate-800 text-slate-200' : 'border-neutral-200 text-neutral-800'
+                        className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center gap-2.5 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
+                          isDarkMode
+                            ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
+                            : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
                         }`}
                       >
                         <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
@@ -1771,12 +1935,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         // Si no tiene subcategorías, celda directa para la categoría
                         if (cat.subcategories.length === 0) {
                           const val = studentGrades[cat.id] || '';
+                          const thisColIdx = runningColIdx++;
                           return (
                             <td key={cat.id} className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
                               <input
                                 type="text"
+                                data-grade-row={idx}
+                                data-grade-col={thisColIdx}
                                 value={val}
                                 onChange={(e) => handleScoreChange(student.id, cat.id, e.target.value)}
+                                onKeyDown={(e) => handleGradeCellKeyDown(e, idx, thisColIdx)}
                                 placeholder="-"
                                 className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
                                   isDarkMode
@@ -1793,6 +1961,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           <React.Fragment key={cat.id}>
                             {cat.subcategories.map((sub) => {
                               const val = studentGrades[sub.id] || '';
+                              const thisColIdx = runningColIdx++;
                               return (
                                 <td
                                   key={sub.id}
@@ -1800,8 +1969,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                 >
                                   <input
                                     type="text"
+                                    data-grade-row={idx}
+                                    data-grade-col={thisColIdx}
                                     value={val}
                                     onChange={(e) => handleScoreChange(student.id, sub.id, e.target.value)}
+                                    onKeyDown={(e) => handleGradeCellKeyDown(e, idx, thisColIdx)}
                                     placeholder="-"
                                     className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
                                       isDarkMode
@@ -1887,18 +2059,26 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         }`}
                       >
                         {overallCalculation === 'manual_final' ? (
-                          <input
-                            type="text"
-                            value={studentGrades['__final__'] || ''}
-                            onChange={(e) => handleScoreChange(student.id, '__final__', e.target.value)}
-                            placeholder="-"
-                            className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
-                              isDarkMode
-                                ? 'bg-purple-950/40 border-purple-800/80 text-purple-300 focus:border-purple-500'
-                                : 'bg-purple-50 border-purple-200 text-purple-900 focus:border-purple-400'
-                            }`}
-                            title="Nota final asignada a criterio del docente"
-                          />
+                          (() => {
+                            const finalColIdx = runningColIdx++;
+                            return (
+                              <input
+                                type="text"
+                                data-grade-row={idx}
+                                data-grade-col={finalColIdx}
+                                value={studentGrades['__final__'] || ''}
+                                onChange={(e) => handleScoreChange(student.id, '__final__', e.target.value)}
+                                onKeyDown={(e) => handleGradeCellKeyDown(e, idx, finalColIdx)}
+                                placeholder="-"
+                                className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
+                                  isDarkMode
+                                    ? 'bg-purple-950/40 border-purple-800/80 text-purple-300 focus:border-purple-500'
+                                    : 'bg-purple-50 border-purple-200 text-purple-900 focus:border-purple-400'
+                                }`}
+                                title="Nota final asignada a criterio del docente"
+                              />
+                            );
+                          })()
                         ) : (
                           <span className={getScoreColorClass(finalScore)}>
                             {finalScore || '-'}
@@ -2311,6 +2491,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             isDarkMode={isDarkMode}
             savedValuation={activePreliminaryValuation}
             onSaveValuation={handleSavePreliminaryValuation}
+            driveFolderId={driveFolderId}
           />
         </Suspense>
       )}
@@ -2330,7 +2511,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             gradesMap2c={gradesMap2c}
             currentTerm={is2c ? '2c' : '1c'}
             isDarkMode={isDarkMode}
+            initialSourceType={importSourceType}
+            importContext="grades"
             onApplyGrades={handleApplyImportedGrades}
+            onApplyMultiImport={handleApplyMultiImport}
             historyEntries={gradeHistory}
           />
         </Suspense>

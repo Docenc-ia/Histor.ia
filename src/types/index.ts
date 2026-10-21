@@ -21,6 +21,10 @@ export interface Course {
   dispositionSheetUrl?: string;
   gradesSheetId?: string;
   gradesSheetUrl?: string;
+  libroDeTemasSheetId?: string;
+  libroDeTemasSheetUrl?: string;
+  reportsFolderId?: string;
+  reportsFolderUrl?: string;
   code?: string;
   gradeLevel?: string;
   studentCount?: number;

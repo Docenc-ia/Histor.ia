@@ -39,35 +39,6 @@ export const GoogleSyncManager: React.FC<GoogleSyncManagerProps> = ({
 }) => {
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* Session expired friendly prompt */}
-      {isTokenExpired && (
-        <div
-          role="alert"
-          className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs animate-in slide-in-from-top-1 ${
-            isDarkMode
-              ? 'bg-amber-950/50 border-amber-800 text-amber-200'
-              : 'bg-amber-50 border-amber-300 text-amber-900'
-          }`}
-        >
-          <div className="flex items-center gap-2.5">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span className="font-semibold">
-              Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.
-            </span>
-          </div>
-          {onRenewToken && (
-            <button
-              type="button"
-              onClick={onRenewToken}
-              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg bg-amber-600 hover:bg-amber-700 text-white cursor-pointer active:scale-95 transition-all self-end sm:self-auto shrink-0 shadow-2xs"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Reconectar sesión</span>
-            </button>
-          )}
-        </div>
-      )}
-
       {/* Main Google Sheets bar */}
       <div
         className={`p-4 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-4 transition-colors ${

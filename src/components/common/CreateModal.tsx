@@ -22,6 +22,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'course' | 'plan' | 'task' | 'file'>(initialType);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Course Form state
   const [courseName, setCourseName] = useState('');
@@ -64,6 +65,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
     e.preventDefault();
     if (!courseName.trim() || !courseSubject.trim()) return;
     setIsSubmitting(true);
+    setErrorMsg(null);
     try {
       await api.createCourse({
         name: courseName,
@@ -76,7 +78,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
       onCreated('course', `Curso "${courseName}" creado con éxito.`);
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Error al crear curso');
+      setErrorMsg(err.message || 'Error al crear curso');
     } finally {
       setIsSubmitting(false);
     }
@@ -86,6 +88,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
     e.preventDefault();
     if (!planTitle.trim() || !planCourseId) return;
     setIsSubmitting(true);
+    setErrorMsg(null);
     try {
       await api.createLessonPlan({
         courseId: planCourseId,
@@ -103,7 +106,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
       onCreated('plan', `Planificación "${planTitle}" lista para Google Docs.`);
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Error al guardar planificación');
+      setErrorMsg(err.message || 'Error al guardar planificación');
     } finally {
       setIsSubmitting(false);
     }
@@ -113,6 +116,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
     e.preventDefault();
     if (!taskTitle.trim() || !taskCourseId) return;
     setIsSubmitting(true);
+    setErrorMsg(null);
     try {
       await api.createTask({
         courseId: taskCourseId,
@@ -135,7 +139,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
       onCreated('task', `Tarea "${taskTitle}" creada y asignada a los estudiantes.`);
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Error al publicar tarea');
+      setErrorMsg(err.message || 'Error al publicar tarea');
     } finally {
       setIsSubmitting(false);
     }
@@ -145,6 +149,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
     e.preventDefault();
     if (!fileName.trim()) return;
     setIsSubmitting(true);
+    setErrorMsg(null);
     try {
       await api.uploadDriveFile({
         name: fileName.includes('.') ? fileName : `${fileName}.${fileType === 'sheet' ? 'xlsx' : fileType === 'doc' ? 'docx' : fileType === 'slide' ? 'pptx' : 'pdf'}`,
@@ -155,7 +160,7 @@ export const CreateModal: React.FC<CreateModalProps> = ({
       onCreated('file', `Recurso "${fileName}" guardado en Google Drive.`);
       onClose();
     } catch (err: any) {
-      alert(err.message || 'Error al subir archivo a Drive');
+      setErrorMsg(err.message || 'Error al subir archivo a Drive');
     } finally {
       setIsSubmitting(false);
     }
@@ -177,6 +182,19 @@ export const CreateModal: React.FC<CreateModalProps> = ({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {errorMsg && (
+          <div className="mx-5 mt-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs font-medium flex items-center justify-between gap-2">
+            <span>{errorMsg}</span>
+            <button
+              type="button"
+              onClick={() => setErrorMsg(null)}
+              className="text-red-400 hover:text-red-600"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Tab switcher */}
         <div className="flex border-b border-neutral-200 bg-neutral-50/70 p-1.5 gap-1 text-xs font-semibold">

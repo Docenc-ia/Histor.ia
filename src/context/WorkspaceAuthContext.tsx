@@ -25,6 +25,7 @@ import {
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
 import { firestoreSync } from '../services/firestoreSync';
+import { sheetsSyncQueue } from '../services/workspace/sheetsSyncQueue';
 
 export interface ServiceStatus {
   id: string;
@@ -154,7 +155,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isTokenExpired, setIsTokenExpired] = useState<boolean>(false);
 
-  // Google OAuth session monitoring
+  // Google OAuth session monitoring: only show the banner when a Google API request actually reports 401
   useEffect(() => {
     let isCancelled = false;
 
@@ -176,21 +177,12 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       window.addEventListener('google_session_renewed', handleRenewedEvent);
     }
 
-    // Periodic check every 30 seconds: check if token expired based on timestamp
-    const intervalId = setInterval(() => {
-      if (mode !== 'connected' || isCancelled) return;
-      if (isGoogleSessionExpired()) {
-        setIsTokenExpired(true);
-      }
-    }, 30000);
-
     return () => {
       isCancelled = true;
       if (typeof window !== 'undefined') {
         window.removeEventListener('google_session_expired', handleExpiredEvent);
         window.removeEventListener('google_session_renewed', handleRenewedEvent);
       }
-      clearInterval(intervalId);
     };
   }, [mode]);
 
@@ -312,6 +304,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           if (data.authenticated && data.user && data.user.email) {
             setUser(data.user);
             setMode('connected');
+            if ((data as any).token && isValidGoogleAccessToken((data as any).token) && !getCachedAccessToken()) {
+              setCachedAccessToken((data as any).token, data.user.email);
+              setToken((data as any).token);
+            }
             if (typeof window !== 'undefined') {
               sessionStorage.setItem('docencia_session_active', 'true');
               sessionStorage.setItem('docencia_user_profile', JSON.stringify(data.user));
@@ -554,6 +550,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const logout = async () => {
     const currentEmail = user?.email;
+    try {
+      sheetsSyncQueue.flushAllPending();
+    } catch (_) {}
     firestoreSync.clearCaches();
     if (typeof window !== 'undefined') {
       sessionStorage.removeItem('docencia_session_active');

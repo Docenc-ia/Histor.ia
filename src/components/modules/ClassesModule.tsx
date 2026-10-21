@@ -61,6 +61,7 @@ import {
   GradeHistoryEntry,
 } from '../../utils/excelExport';
 import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 
 const GradebookMatrix = lazy(() =>
   import('./GradebookMatrix').then((m) => ({ default: m.GradebookMatrix }))
@@ -98,9 +99,11 @@ import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { enqueueOfflineAction, flushOfflineSyncQueue } from '../../services/offlineSyncQueue';
 import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
 import { AttendanceHeader } from './classes/AttendanceHeader';
+import { CourseHeaderCard } from './classes/CourseHeaderCard';
 import { StudentAttendanceRow } from './classes/StudentAttendanceRow';
 import { GoogleSyncManager } from './classes/GoogleSyncManager';
 import { GoogleSessionExpiryBanner } from './classes/GoogleSessionExpiryBanner';
+import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
 import { AttendanceSettingsModal } from './classes/AttendanceSettingsModal';
 import { BackupRestoreModal } from './classes/BackupRestoreModal';
 import { QuickRollCallModal } from './classes/QuickRollCallModal';
@@ -1220,8 +1223,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // Modal / Selector de Exportar Excel en la cabecera
   const [isHeaderExportExcelModalOpen, setIsHeaderExportExcelModalOpen] = useState(false);
 
-  // Modal de Importar desde Excel / Sheets en la cabecera
+  // Modal de Importar desde Excel / Sheets en Asistencia y Disposición
   const [isHeaderImportModalOpen, setIsHeaderImportModalOpen] = useState(false);
+  const [headerImportSourceType, setHeaderImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
+  const [headerImportContext, setHeaderImportContext] = useState<'grades' | 'attendance'>('attendance');
 
   // Permanent history controls (always visible in roster tab & history tab)
   const [permHistorySearch, setPermHistorySearch] = useState('');
@@ -1234,10 +1239,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [driveFolderModalOpen, setDriveFolderModalOpen] = useState<boolean>(false);
   const [courseDriveStructure, setCourseDriveStructure] = useState<{
     mainFolder: { id: string; name: string; url: string };
+    reportsFolder?: { id: string; name: string; url: string };
     attendanceFolder: { id: string; name: string; url: string };
     gradesFolder: { id: string; name: string; url: string };
     attendanceSheetUrl?: string;
     gradesSheetUrl?: string;
+    libroDeTemasSheetUrl?: string;
   } | null>(null);
 
   // Course and Student report modal state
@@ -2114,6 +2121,158 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setToastMessage(`✓ ¡Se importaron y registraron ${Object.keys(data.updates).length} nota(s) con éxito!`);
     setTimeout(() => setToastMessage(null), 4500);
   };
+
+  const handleApplyMultiImportFromClassesModule = async (payload: {
+    term: '1c' | '2c';
+    updatedCategories: GradeCategory[];
+    updatedGradesMap: StudentGradesMap;
+    historyEntries: any[];
+    attendanceUpdates: Record<
+      string,
+      {
+        absences?: number;
+        lates?: number;
+        disposition?: number;
+      }
+    >;
+    newStudentsToCreate: Array<{
+      id: string;
+      firstName: string;
+      lastName: string;
+      email: string;
+    }>;
+    sourceLabel: string;
+    fromGradebookEvent?: boolean;
+  }) => {
+    if (!activeCourse) return;
+    try {
+      // 1. Si no vino ya guardado desde GradebookMatrix, persistir categorías y notas
+      if (!payload.fromGradebookEvent) {
+        const catKey = getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${payload.term}`);
+        const gradesKey = getUserStorageKey(`fds_grades_data_${activeCourse.id}_${payload.term}`);
+        localStorage.setItem(catKey, JSON.stringify(payload.updatedCategories));
+        localStorage.setItem(gradesKey, JSON.stringify(payload.updatedGradesMap));
+
+        if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
+          const hKey = getUserStorageKey(`fds_grade_history_${activeCourse.id}`);
+          const savedHist = localStorage.getItem(hKey);
+          const prevHist = savedHist ? JSON.parse(savedHist) : [];
+          const updatedHist = [...payload.historyEntries, ...prevHist];
+          localStorage.setItem(hKey, JSON.stringify(updatedHist));
+        }
+
+        const userId = getActiveUserId();
+        if (userId) {
+          firestoreSync
+            .saveTermSnapshot(userId, activeCourse.id, payload.term, {
+              courseId: activeCourse.id,
+              term: payload.term,
+              termLabel: payload.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
+              categories: payload.updatedCategories,
+              gradesMap: payload.updatedGradesMap,
+              updatedAt: new Date().toISOString(),
+            })
+            .catch(() => {});
+        }
+
+        window.dispatchEvent(
+          new CustomEvent('fds-grades-updated', {
+            detail: { term: payload.term, courseId: activeCourse.id },
+          })
+        );
+      }
+
+      // 2. Crear alumnos nuevos detectados en el archivo si corresponde (tanto desde Asistencia como desde Calificaciones)
+      if (Array.isArray(payload.newStudentsToCreate) && payload.newStudentsToCreate.length > 0) {
+        const userId = getActiveUserId();
+        for (const st of payload.newStudentsToCreate) {
+          const newStudentObj: Student = {
+            id: st.id,
+            firstName: st.firstName,
+            lastName: st.lastName,
+            email:
+              st.email ||
+              `${st.firstName.toLowerCase()}.${st.lastName.toLowerCase()}@alumno.edu.ar`.replace(
+                /\s+/g,
+                ''
+              ),
+            courseId: activeCourse.id,
+            status: 'present',
+            attendanceRate: 100,
+            averageGrade: 0,
+          };
+          await api.createStudent(newStudentObj as any).catch(() => {});
+          if (userId) {
+            firestoreSync.saveStudent(userId, newStudentObj).catch(() => {});
+          }
+        }
+        onRefreshData();
+      }
+
+      // 3. Aplicar actualizaciones de asistencia y disposición si el documento tenía columnas de faltas/tardanzas/disposición
+      const attEntries = Object.entries(payload.attendanceUpdates || {});
+      if (attEntries.length > 0) {
+        setDispositionByTerm((prev) => {
+          const termBucket = { ...(prev[payload.term] || {}) };
+          attEntries.forEach(([stId, upd]) => {
+            const current = termBucket[stId] || getStudentMetrics(stId, payload.term);
+            termBucket[stId] = {
+              ...current,
+              totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
+              totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
+              totalDisposition:
+                upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
+            };
+          });
+          const nextState = {
+            ...prev,
+            [payload.term]: termBucket,
+          };
+          try {
+            localStorage.setItem(
+              getUserStorageKey(`fds_disposition_by_term_${activeCourse.id}`),
+              JSON.stringify(nextState)
+            );
+          } catch (_) {}
+          return nextState;
+        });
+      }
+
+      const summaryParts: string[] = [];
+      if (payload.historyEntries?.length > 0) {
+        summaryParts.push(`${payload.historyEntries.length} columna(s) de notas`);
+      }
+      if (attEntries.length > 0) {
+        summaryParts.push(`asistencia/disposición de ${attEntries.length} alumno(s)`);
+      }
+      if (payload.newStudentsToCreate?.length > 0) {
+        summaryParts.push(`${payload.newStudentsToCreate.length} alumno(s) nuevo(s)`);
+      }
+
+      setIsHeaderImportModalOpen(false);
+      setToastMessage(
+        `✓ ¡Importación completada (${summaryParts.join(', ') || 'datos actualizados'}) en ${
+          payload.term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'
+        }!`
+      );
+      setTimeout(() => setToastMessage(null), 4500);
+    } catch (err) {
+      console.error('Error aplicando importación múltiple:', err);
+    }
+  };
+
+  useEffect(() => {
+    const onMultiImportEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !activeCourse || detail.courseId !== activeCourse.id) return;
+      handleApplyMultiImportFromClassesModule({
+        ...detail,
+        fromGradebookEvent: true,
+      });
+    };
+    window.addEventListener('fds-multi-import-applied', onMultiImportEvent);
+    return () => window.removeEventListener('fds-multi-import-applied', onMultiImportEvent);
+  }, [activeCourse?.id, courseStudents]);
 
   const handleOpenInSheetsNew = async () => {
     if (!activeCourse) return;
@@ -3902,7 +4061,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const handleCopyForGoogleSheets = () => {
     const courseHistory = historyList.filter((h) => h.courseId === activeCourse?.id);
     if (courseHistory.length === 0) {
-      alert('Aún no hay registros en el historial de este curso para copiar.');
+      setToastMessage('Aún no hay registros en el historial de este curso para copiar.');
+      setTimeout(() => setToastMessage(null), 3500);
       return;
     }
 
@@ -4797,35 +4957,58 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       if (!activeCourse) return [];
       try {
         const catRaw =
+          localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${term}`)) ||
+          localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
+          (term === '1c'
+            ? localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}`)) ||
+              localStorage.getItem(`fds_grades_categories_${activeCourse.id}`)
+            : null) ||
           localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null) ||
-          localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_grade_categories_v1_${activeCourse.id}`) : null);
+          (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null);
         const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
 
         const gradesRaw =
+          localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${term}`)) ||
+          localStorage.getItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
+          (term === '1c'
+            ? localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}`)) ||
+              localStorage.getItem(`fds_grades_data_${activeCourse.id}`)
+            : null) ||
           localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null) ||
-          localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_student_grades_v1_${activeCourse.id}`) : null);
+          (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null);
         const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
         const stGrades = gMap[student.id] || {};
 
         const items: { id: string; name: string; weight: number; score: number | null }[] = [];
         for (const cat of cats) {
           if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
-          for (const sub of cat.subcategories || []) {
-            const rawVal = stGrades[sub.id];
+          if (!cat.subcategories || cat.subcategories.length === 0) {
+            const rawVal = stGrades[cat.id];
             const parsedNum =
               rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
                 ? Number(String(rawVal).replace(',', '.'))
                 : NaN;
             items.push({
-              id: sub.id,
-              name: sub.name,
-              weight: (sub as any).weight ?? cat.weight ?? 0,
+              id: cat.id,
+              name: cat.name,
+              weight: (cat as any).weight ?? 0,
               score: !isNaN(parsedNum) ? parsedNum : null,
             });
+          } else {
+            for (const sub of cat.subcategories) {
+              if (/disposici[oó]n|conducta/i.test(sub.name)) continue;
+              const rawVal = stGrades[sub.id];
+              const parsedNum =
+                rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
+                  ? Number(String(rawVal).replace(',', '.'))
+                  : NaN;
+              items.push({
+                id: sub.id,
+                name: sub.name,
+                weight: (sub as any).weight ?? (cat as any).weight ?? 0,
+                score: !isNaN(parsedNum) ? parsedNum : null,
+              });
+            }
           }
         }
         return items;
@@ -5615,25 +5798,31 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   };
 
   // Google Drive Folder Structure Handler:
-  // Creates or finds:
+  // Creates or finds inside the Course Folder:
   // [Nombre de la Materia]
-  //   ├── Asistencia y Disposición (con hoja de Asistencia y Disposición)
-  //   └── Calificaciones (con hoja de Calificaciones)
+  //   ├── 📄 Asistencia y Disposición - [Materia]
+  //   ├── 📄 Libro de Temas - [Materia] (reproduciendo la tabla de temas)
+  //   ├── 📄 Calificaciones - [Materia]
+  //   └── 📁 Informes (subcarpeta)
   const handleOpenCourseDriveFolder = async () => {
-    if (!activeCourse) return;
+    if (!activeCourse || isSettingUpDriveFolder) return;
     setIsSettingUpDriveFolder(true);
     try {
-      // 1. Ensure course folder and subfolders exist in Google Drive
+      // 1. Ensure course folder and "Informes" subfolder exist in Google Drive
       const structure = await driveService.setupCourseFolderStructure(
         activeCourse.name,
         activeCourse.driveFolderId
       );
 
-      // 2. Synchronize sheets into their respective subfolders
+      // 2. Generate/update the 3 function documents inside the main course folder
       let dispSheetUrl: string | undefined = activeCourse.dispositionSheetUrl;
+      let dispSheetId: string | undefined = activeCourse.dispositionSheetId;
+      let libroSheetUrl: string | undefined = activeCourse.libroDeTemasSheetUrl;
+      let libroSheetId: string | undefined = activeCourse.libroDeTemasSheetId;
       let gradesSheetUrl: string | undefined = activeCourse.gradesSheetUrl;
+      let gradesSheetId: string | undefined = activeCourse.gradesSheetId;
 
-      // Sync disposition sheet to "Asistencia y Disposición" subfolder
+      // 2a. Documento 1: Asistencia y Disposición
       try {
         const dispRes = await sheetsService.syncDispositionSheet(
           activeCourse,
@@ -5641,28 +5830,87 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           dispositionMap,
           historyList,
           activeCourse.dispositionSheetId,
-          structure.attendanceFolder.id
+          structure.mainFolder.id
         );
         if (dispRes.url) dispSheetUrl = dispRes.url;
+        if (dispRes.spreadsheetId && isRealGoogleSpreadsheetId(dispRes.spreadsheetId)) {
+          dispSheetId = dispRes.spreadsheetId;
+        }
       } catch (err) {
         console.warn('Could not auto-sync disposition sheet to Drive folder:', err);
       }
 
-      // Sync gradebook sheet to "Calificaciones" subfolder
+      // 2b. Documento 2: Libro de Temas (reproduciendo la tabla de temas del curso)
       try {
-        const evaluations = ['Diagnóstica', 'Trabajo Práctico 1', 'Evaluación Escrita', 'Desempeño'];
-        const gradesRes = await sheetsService.syncGradebookToSheet(
-          activeCourse,
-          courseStudents,
-          evaluations,
-          [],
-          structure.gradesFolder.id,
-          activeCourse.gradesSheetId
+        const libroRes = await sheetsService.syncLibroDeTemasToSheet(
+          {
+            id: activeCourse.id,
+            name: activeCourse.name,
+            subject: activeCourse.subject,
+            schedule: activeCourse.schedule,
+          },
+          undefined,
+          structure.mainFolder.id,
+          activeCourse.libroDeTemasSheetId
         );
-        if (gradesRes.url) gradesSheetUrl = gradesRes.url;
-        if (gradesRes.spreadsheetId && isRealGoogleSpreadsheetId(gradesRes.spreadsheetId)) {
-          activeCourse.gradesSheetId = gradesRes.spreadsheetId;
-          activeCourse.gradesSheetUrl = gradesRes.url;
+        if (libroRes.url) libroSheetUrl = libroRes.url;
+        if (libroRes.spreadsheetId && isRealGoogleSpreadsheetId(libroRes.spreadsheetId)) {
+          libroSheetId = libroRes.spreadsheetId;
+        }
+      } catch (err) {
+        console.warn('Could not auto-sync Libro de Temas sheet to Drive folder:', err);
+      }
+
+      // 2c. Documento 3: Calificaciones (sincroniza la matriz real de 1°C y 2°C del curso)
+      try {
+        const loadStoredTermGrades = (term: '1c' | '2c') => {
+          const catRaw =
+            localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${term}`)) ||
+            localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
+            (term === '1c'
+              ? localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}`)) ||
+                localStorage.getItem(`fds_grades_categories_${activeCourse.id}`)
+              : null);
+          const gradesRaw =
+            localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${term}`)) ||
+            localStorage.getItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
+            (term === '1c'
+              ? localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}`)) ||
+                localStorage.getItem(`fds_grades_data_${activeCourse.id}`)
+              : null);
+          const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
+          const gMap: Record<string, Record<string, string>> = gradesRaw ? JSON.parse(gradesRaw) : {};
+          return { cats, gMap, hasSavedData: Boolean(catRaw || gradesRaw) };
+        };
+
+        const term1Data = loadStoredTermGrades('1c');
+        const gradesRes1c = await sheetsService.syncGradebookMatrixToSheet(
+          activeCourse,
+          '1c',
+          courseStudents,
+          term1Data.cats,
+          term1Data.gMap,
+          activeCourse.gradesSheetId,
+          structure.mainFolder.id
+        );
+        if (gradesRes1c.url) gradesSheetUrl = gradesRes1c.url;
+        if (gradesRes1c.spreadsheetId && isRealGoogleSpreadsheetId(gradesRes1c.spreadsheetId)) {
+          gradesSheetId = gradesRes1c.spreadsheetId;
+          activeCourse.gradesSheetId = gradesRes1c.spreadsheetId;
+          activeCourse.gradesSheetUrl = gradesRes1c.url;
+        }
+
+        const term2Data = loadStoredTermGrades('2c');
+        if (term2Data.hasSavedData && gradesSheetId) {
+          await sheetsService.syncGradebookMatrixToSheet(
+            activeCourse,
+            '2c',
+            courseStudents,
+            term2Data.cats,
+            term2Data.gMap,
+            gradesSheetId,
+            structure.mainFolder.id
+          );
         }
       } catch (err) {
         console.warn('Could not auto-sync gradebook sheet to Drive folder:', err);
@@ -5672,11 +5920,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const updatedCourseData: Partial<Course> = {
         driveFolderId: structure.mainFolder.id,
         driveFolderUrl: structure.mainFolder.url,
-        attendanceFolderId: structure.attendanceFolder.id,
-        attendanceFolderUrl: structure.attendanceFolder.url,
-        gradesFolderId: structure.gradesFolder.id,
-        gradesFolderUrl: structure.gradesFolder.url,
+        reportsFolderId: structure.reportsFolder.id,
+        reportsFolderUrl: structure.reportsFolder.url,
+        dispositionSheetId: dispSheetId,
         dispositionSheetUrl: dispSheetUrl,
+        libroDeTemasSheetId: libroSheetId,
+        libroDeTemasSheetUrl: libroSheetUrl,
+        gradesSheetId: gradesSheetId,
         gradesSheetUrl: gradesSheetUrl,
       };
 
@@ -5686,16 +5936,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       setCourseDriveStructure({
         ...structure,
         attendanceSheetUrl: dispSheetUrl,
+        libroDeTemasSheetUrl: libroSheetUrl,
         gradesSheetUrl: gradesSheetUrl,
       });
 
-      // 4. Open the main folder in a new tab
-      window.open(structure.mainFolder.url, '_blank');
-
-      // 5. Also show confirmation modal with direct links to both subfolders and sheets
+      // 4. Show modal with direct links to the 3 documents and the Informes subfolder
       setDriveFolderModalOpen(true);
-      setToastMessage(`Carpeta de Drive "${activeCourse.name}" creada/abierta con sus 2 subcarpetas.`);
-      setTimeout(() => setToastMessage(null), 4000);
+      setToastMessage(
+        `Carpeta de Drive "${activeCourse.name}" preparada con los 3 documentos (Asistencia y Disposición, Libro de Temas, Calificaciones) y la subcarpeta Informes.`
+      );
+      setTimeout(() => setToastMessage(null), 4500);
     } catch (err: any) {
       console.error('Error creating Google Drive folders:', err);
       setToastMessage('Aviso: Se intentó abrir Drive. Si no estás conectado, inicia sesión con Google.');
@@ -5767,8 +6017,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
-      <GoogleSessionExpiryBanner />
-
       {/* ------------------------------------------------------------- */}
       {/* TOP HEADER                                                    */}
       {/* ------------------------------------------------------------- */}
@@ -5786,296 +6034,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* ------------------------------------------------------------- */}
           {/* ACTIVE COURSE HEADER CARD & WORKSPACE LINKS                   */}
           {/* ------------------------------------------------------------- */}
-          <div
-            className={`rounded-xl border p-5 shadow-xs flex flex-col gap-4 transition-colors ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-slate-200' : 'bg-white border-neutral-200'
-            }`}
-          >
-            {/* Información del aula (nombre de la materia, división, horario, etc.) */}
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-neutral-200/80 dark:border-slate-800">
-              <div className="space-y-1.5 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    {activeCourse.grade} • {activeCourse.room}
-                  </span>
-                  {activeCourse.classroomSynced && (
-                    <span
-                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
-                        isDarkMode
-                          ? 'text-emerald-300 bg-emerald-950/60 border-emerald-800/60'
-                          : 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                      }`}
-                    >
-                      <Check className="w-3 h-3" /> Conectado con Classroom
-                    </span>
-                  )}
-                </div>
-
-                {/* Nombre de la materia */}
-                <div>
-                  <h3 className={`text-xl sm:text-2xl font-bold tracking-tight ${isDarkMode ? 'text-white' : 'text-neutral-900'}`}>
-                    {activeCourse.name}
-                  </h3>
-                  <p className={`text-xs sm:text-sm font-medium ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                    {activeCourse.subject}
-                  </p>
-                </div>
-              </div>
-              
-              {/* Horario con sincronización desde Google Calendar y edición */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                  <span className={`font-semibold ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                    Horario:
-                  </span>
-                  {activeCourse.schedule &&
-                  activeCourse.schedule !== 'Lunes y Miércoles' &&
-                  !activeCourse.schedule.toLowerCase().includes('coordinar') ? (
-                    <span
-                      className={`font-semibold px-2 py-0.5 rounded-md ${
-                        isDarkMode
-                          ? 'bg-slate-800 text-blue-300 border border-slate-700'
-                          : 'bg-blue-50 text-blue-800 border border-blue-200'
-                      }`}
-                    >
-                      {activeCourse.schedule}
-                    </span>
-                  ) : (
-                    <span
-                      className={`font-medium italic px-2 py-0.5 rounded-md ${
-                        isDarkMode
-                          ? 'bg-amber-950/40 text-amber-300 border border-amber-800/40'
-                          : 'bg-amber-50 text-amber-800 border border-amber-200'
-                      }`}
-                      title="Horario pendiente de sincronizar con Google Calendar"
-                    >
-                      Pendiente de sincronizar con Calendar
-                    </span>
-                  )}
-                </div>
-
-                {/* Botón para sincronizar desde Google Calendar */}
-                <button
-                  type="button"
-                  onClick={() => handleOpenCalendarSyncModal(activeCourse)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                    isDarkMode
-                      ? 'bg-blue-950/50 hover:bg-blue-900/60 text-blue-300 border-blue-800/70'
-                      : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-200'
-                  }`}
-                  title="Ver eventos y seleccionar módulos de tu Google Calendar"
-                >
-                  <Calendar className="w-3.5 h-3.5 text-blue-500" />
-                  <span>Sincronizar con Calendar</span>
-                </button>
-
-                {/* Botón para editar datos específicos del curso */}
-                <button
-                  type="button"
-                  onClick={() => handleOpenEditCourseDetailsModal(activeCourse)}
-                  className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
-                    isDarkMode
-                      ? 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                      : 'border-neutral-200 text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
-                  }`}
-                  title="Editar aula, división, nombre y detalles específicos de la materia"
-                >
-                  <Pencil className="w-3 h-3" />
-                  <span>Editar datos</span>
-                </button>
-              </div>
-            </div>
-
-            {/* ------------------------------------------------------------- */}
-            {/* TRES COLUMNAS DE ACCIONES                                     */}
-            {/* ------------------------------------------------------------- */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-2">
-              {/* Columna 1: Classroom y Sincronizar Estudiantes */}
-              <div
-                className={`p-3 rounded-xl border flex flex-col gap-2 ${
-                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
-                }`}
-              >
-                <div className="flex items-center justify-between px-0.5">
-                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Classroom y Estudiantes
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2 flex-1 justify-center">
-                  <button
-                    type="button"
-                    onClick={() => onNavigate('classroom', activeCourse.id)}
-                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-green-950/40 hover:bg-green-950/60 text-green-300 border-green-800/60'
-                        : 'bg-green-50 hover:bg-green-100 text-green-800 border-green-200'
-                    }`}
-                    title="Ir a Google Classroom de este curso"
-                  >
-                    <GraduationCap className={`w-4 h-4 ${isDarkMode ? 'text-white' : 'text-green-700'}`} />
-                    <span>Classroom</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={handleSyncRoster}
-                    disabled={isSyncingClassroomRoster}
-                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-blue-950/40 hover:bg-blue-950/60 text-blue-300 border-blue-800/60'
-                        : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-200'
-                    }`}
-                    title="Sincronizar nómina real desde Google Classroom"
-                  >
-                    <RefreshCw className={`w-4 h-4 text-blue-500 ${isSyncingClassroomRoster ? 'animate-spin' : ''}`} />
-                    <span>{isSyncingClassroomRoster ? 'Sincronizando...' : 'Sincronizar Estudiantes'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Columna 2: Carpeta Drive y Hacer informe */}
-              <div
-                className={`p-3 rounded-xl border flex flex-col gap-2 ${
-                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
-                }`}
-              >
-                <div className="flex items-center justify-between px-0.5">
-                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Carpeta Drive e Informes
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2 flex-1 justify-center">
-                  <button
-                    type="button"
-                    onClick={handleOpenCourseDriveFolder}
-                    disabled={isSettingUpDriveFolder}
-                    className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
-                        : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
-                    }`}
-                    title={`Crear y abrir carpeta en Google Drive ("${activeCourse.name}") con subcarpetas Asistencia y Disposición y Calificaciones`}
-                  >
-                    {isSettingUpDriveFolder ? (
-                      <Loader2 className="w-4 h-4 text-amber-500 animate-spin" />
-                    ) : (
-                      <FolderClosed className="w-4 h-4 text-amber-500" />
-                    )}
-                    <span>{isSettingUpDriveFolder ? 'Abriendo Drive...' : 'Carpeta Drive'}</span>
-                  </button>
-
-                  <div className="flex items-center gap-1.5 w-full">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCourseReportModalStudentId('all');
-                        setCourseReportModalTab('course');
-                        setCourseReportModalOpen(true);
-                      }}
-                      className={`flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-purple-950/40 hover:bg-purple-950/60 text-purple-300 border-purple-800/60'
-                          : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
-                      }`}
-                      title={`Generar informe oficial del curso "${activeCourse.name}" o constancias individuales de 1 página por alumno para guardar en Drive o imprimir`}
-                    >
-                      <FileText className="w-4 h-4 text-purple-500" />
-                      <span>Hacer Informe</span>
-                    </button>
-                    <a
-                      href={`?course=${activeCourse.id}&view=course_detail&openReport=true${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`p-2 rounded-lg border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
-                        isDarkMode
-                          ? 'bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 border-purple-800/60'
-                          : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-200 shadow-2xs'
-                      }`}
-                      title="Abrir Hacer Informe en otra pestaña o ventana"
-                    >
-                      <ExternalLink className="w-4 h-4 text-purple-500" />
-                    </a>
-                  </div>
-                </div>
-              </div>
-
-              {/* Columna 3: Importar desde Excel y Vincular Sheet */}
-              <div
-                className={`p-3 rounded-xl border flex flex-col gap-2 ${
-                  isDarkMode ? 'bg-slate-950/40 border-slate-800/80' : 'bg-neutral-50/80 border-neutral-200/80'
-                }`}
-              >
-                <div className="flex items-center justify-between px-0.5">
-                  <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Excel y Google Sheets
-                  </span>
-                </div>
-                <div className="flex flex-col gap-2 flex-1 justify-center">
-                  <button
-                    type="button"
-                    onClick={() => setIsHeaderImportModalOpen(true)}
-                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border border-emerald-600/30 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
-                    title="Subir y verificar notas desde un archivo Excel (.xlsx, .xls, .csv) o Google Sheets"
-                  >
-                    <Upload className="w-4 h-4" />
-                    <span>Importar desde Excel</span>
-                  </button>
-
-                  {sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) ? (
-                    <div className="grid grid-cols-2 gap-1.5 w-full">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const url = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
-                          window.open(url, '_blank');
-                        }}
-                        className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                          isDarkMode
-                            ? 'bg-green-950/70 hover:bg-green-900 text-green-300 border-green-700'
-                            : 'bg-green-100 hover:bg-green-200 text-green-800 border-green-300'
-                        }`}
-                        title="Abrir hoja vinculada de Google Sheets en una nueva pestaña"
-                      >
-                        <FileSpreadsheet className="w-3.5 h-3.5 text-green-600 dark:text-green-400 shrink-0" />
-                        <span className="truncate">Sheet Vinculado</span>
-                        <ExternalLink className="w-3 h-3 opacity-80 shrink-0" />
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={handleManualSheetsSync}
-                        disabled={isSyncingSheet || isPullingFromSheet}
-                        className={`inline-flex items-center justify-center gap-1 px-2 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                          isDarkMode
-                            ? 'bg-blue-950/70 hover:bg-blue-900 text-blue-300 border-blue-700'
-                            : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
-                        }`}
-                        title="Subir información de la app a la planilla de Google Sheets"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncingSheet || isPullingFromSheet ? 'animate-spin' : ''}`} />
-                        <span className="truncate">{isSyncingSheet || isPullingFromSheet ? 'Subiendo...' : 'Sincronizar con Sheets'}</span>
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setShowSheetsConnectModal(true)}
-                      className={`w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                        isDarkMode
-                          ? 'bg-green-950/60 hover:bg-green-900 text-green-300 border-green-800'
-                          : 'bg-green-50 hover:bg-green-100 text-green-800 border-green-300'
-                      }`}
-                      title="Vincular una hoja de cálculo de Google Sheets con esta materia para sincronización bidireccional de doble entrada"
-                    >
-                      <FileSpreadsheet className="w-4 h-4 text-green-600 dark:text-green-400" />
-                      <span>Vincular Sheet</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+          <CourseHeaderCard
+            activeCourse={activeCourse}
+            isDarkMode={isDarkMode}
+            userEmail={user?.email}
+            isSettingUpDriveFolder={isSettingUpDriveFolder}
+            onOpenCalendarSyncModal={handleOpenCalendarSyncModal}
+            onOpenEditCourseDetailsModal={handleOpenEditCourseDetailsModal}
+            onOpenCourseDriveFolder={handleOpenCourseDriveFolder}
+            onOpenCourseReport={() => {
+              setCourseReportModalStudentId('all');
+              setCourseReportModalTab('course');
+              setCourseReportModalOpen(true);
+            }}
+          />
 
           {/* Roster Permission Notice if Google 403 */}
           {needsRosterPermission && (
@@ -6247,6 +6219,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               onManualSheetsSync={handleManualSheetsSync}
               isOpeningSheet={isOpeningSheet}
               onOpenGoogleSheet={handleOpenGoogleSheet}
+              onOpenImportExcel={() => {
+                setHeaderImportContext('attendance');
+                setHeaderImportSourceType('file');
+                setIsHeaderImportModalOpen(true);
+              }}
+              onOpenImportSheets={() => {
+                setHeaderImportContext('attendance');
+                setHeaderImportSourceType('sheets');
+                setIsHeaderImportModalOpen(true);
+              }}
               attendanceTerm={attendanceTerm}
               onSelectTerm={setAttendanceTermHandler}
               attendanceSummary={currentAttendanceSummary}
@@ -7095,41 +7077,51 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* TAB 1.5: LIBRO DE TEMAS (COORDINADO CON EL CALENDARIO)        */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'libro_temas' && (
-            <Suspense fallback={null}>
-              <LibroDeTemasMatrix
-                courseId={activeCourse.id}
-                courseName={activeCourse.name}
-                courseSubject={activeCourse.subject}
-                courseSchedule={activeCourse.schedule}
-                teacherName={user?.name}
-                attendanceSettings={attendanceSettings}
-                onUpdateAttendanceSettings={(next) => setAttendanceSettings(next)}
-                onRefreshCourse={onRefreshData}
-                onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
-                onOpenBackupModal={() => setIsBackupModalOpen(true)}
-                isDarkMode={isDarkMode}
-                driveFolderId={activeCourse.driveFolderId}
-                driveFolderUrl={activeCourse.driveFolderUrl}
-              />
-            </Suspense>
+            <ErrorBoundary
+              key={`eb-libro-${activeCourse.id}`}
+              fallbackTitle="Se produjo un inconveniente al cargar el Libro de Temas"
+            >
+              <Suspense fallback={null}>
+                <LibroDeTemasMatrix
+                  courseId={activeCourse.id}
+                  courseName={activeCourse.name}
+                  courseSubject={activeCourse.subject}
+                  courseSchedule={activeCourse.schedule}
+                  teacherName={user?.name}
+                  attendanceSettings={attendanceSettings}
+                  onUpdateAttendanceSettings={(next) => setAttendanceSettings(next)}
+                  onRefreshCourse={onRefreshData}
+                  onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
+                  onOpenBackupModal={() => setIsBackupModalOpen(true)}
+                  isDarkMode={isDarkMode}
+                  driveFolderId={activeCourse.driveFolderId}
+                  driveFolderUrl={activeCourse.driveFolderUrl}
+                />
+              </Suspense>
+            </ErrorBoundary>
           )}
 
           {/* ------------------------------------------------------------- */}
           {/* TAB 2: CALIFICACIONES (CATEGORÍAS Y SUBCATEGORÍAS CUSTOM)     */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'grades' && (
-            <Suspense fallback={null}>
-              <GradebookMatrix
-                courseId={activeCourse.id}
-                courseName={activeCourse.name}
-                students={courseStudents}
-                isDarkMode={isDarkMode}
-                activeTerm={attendanceTerm}
-                onTermChange={setAttendanceTermHandler}
-                driveFolderId={activeCourse.driveFolderId}
-                driveFolderUrl={activeCourse.driveFolderUrl}
-              />
-            </Suspense>
+            <ErrorBoundary
+              key={`eb-grades-${activeCourse.id}`}
+              fallbackTitle="Se produjo un inconveniente al cargar la Planilla de Calificaciones"
+            >
+              <Suspense fallback={null}>
+                <GradebookMatrix
+                  courseId={activeCourse.id}
+                  courseName={activeCourse.name}
+                  students={courseStudents}
+                  isDarkMode={isDarkMode}
+                  activeTerm={attendanceTerm}
+                  onTermChange={setAttendanceTermHandler}
+                  driveFolderId={activeCourse.driveFolderId}
+                  driveFolderUrl={activeCourse.driveFolderUrl}
+                />
+              </Suspense>
+            </ErrorBoundary>
           )}
 
           {/* ------------------------------------------------------------- */}
@@ -7501,10 +7493,37 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
             gradesMap2c={getGradesMapForImport('2c')}
             currentTerm={activeConcreteTerm}
             isDarkMode={isDarkMode}
+            initialSourceType={headerImportSourceType}
+            importContext={headerImportContext}
+            currentDispositionMap1c={(() => {
+              const map: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
+              courseStudents.forEach((s) => {
+                const m = getStudentMetrics(s.id, '1c');
+                map[s.id] = {
+                  totalAbsences: m.totalAbsences,
+                  totalLates: m.totalLates || 0,
+                  totalDisposition: m.totalDisposition,
+                };
+              });
+              return map;
+            })()}
+            currentDispositionMap2c={(() => {
+              const map: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
+              courseStudents.forEach((s) => {
+                const m = getStudentMetrics(s.id, '2c');
+                map[s.id] = {
+                  totalAbsences: m.totalAbsences,
+                  totalLates: m.totalLates || 0,
+                  totalDisposition: m.totalDisposition,
+                };
+              });
+              return map;
+            })()}
             onApplyGrades={handleApplyImportFromClassesModule}
+            onApplyMultiImport={handleApplyMultiImportFromClassesModule}
             historyEntries={(() => {
               try {
-                const hKey = `fds_grade_history_${activeCourse.id}`;
+                const hKey = getUserStorageKey(`fds_grade_history_${activeCourse.id}`);
                 const savedHist = localStorage.getItem(hKey);
                 return savedHist ? JSON.parse(savedHist) : [];
               } catch (_) {

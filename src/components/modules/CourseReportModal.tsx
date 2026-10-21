@@ -1230,13 +1230,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     setDriveSavedResult(null);
 
     try {
-      // 1. Resolve or prepare the folder structure for the course
+      // 1. Resolve or prepare the folder structure for the course (including "Informes" subfolder)
       const folderStructure = await driveService.setupCourseFolderStructure(
         courseName,
         driveFolderId
       );
-      const targetFolderId = folderStructure.mainFolder.id;
-      const targetFolderName = folderStructure.mainFolder.name;
+      const targetFolderId = folderStructure.reportsFolder?.id || folderStructure.mainFolder.id;
+      const targetFolderName = folderStructure.reportsFolder
+        ? `${folderStructure.mainFolder.name} / ${folderStructure.reportsFolder.name}`
+        : folderStructure.mainFolder.name;
 
       // 2. Generate HTML report and convert to native Google Doc (.gdoc)
       const htmlContent = generateHtmlDocument(activeTab);

@@ -637,6 +637,11 @@ function invalidateSnapshotsCache() {
 }
 
 export function clearFirestoreMemoryCaches(): void {
+  // Flush any pending debounced writes for the current user before clearing session caches
+  try {
+    flushAllPendingCloudWrites();
+  } catch (_) {}
+
   coursesReadCache = null;
   studentsReadCache = null;
   dispositionReadCache = null;
@@ -644,6 +649,11 @@ export function clearFirestoreMemoryCaches(): void {
   settingsReadCache.clear();
   gemsReadCache.clear();
   lastSyncedFingerprints.clear();
+  inMemoryPendingRecords.clear();
+  inMemoryDeletedIds.clear();
+  pendingCompactUserId = null;
+  lastRawProfileStr = null;
+  lastParsedProfileObj = null;
   if (typeof window !== 'undefined') {
     try {
       sessionStorage.removeItem(FINGERPRINT_STORAGE_KEY);
@@ -1364,15 +1374,42 @@ export const firestoreSync = {
    */
   async deleteCourse(userId: string, courseId: string): Promise<void> {
     if (!courseId || Date.now() < firestoreUnavailableUntil) return;
-    invalidateCoursesCache();
-    invalidateStudentsCache();
     const candidateIds = getCandidateUserIds(userId);
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
 
-    // 1. Remove from compact courses & compact students
+    // Capture current courses BEFORE invalidating cache, and merge with localStorage so other courses are never lost
+    const knownCoursesMap = new Map<string, Course>();
+    (coursesReadCache?.data || []).forEach((c) => {
+      if (c?.id) knownCoursesMap.set(c.id, c);
+    });
+    if (typeof window !== 'undefined') {
+      try {
+        const localKeys = isPrimaryOwnerAccount()
+          ? [`docencia_courses_${userId}`, 'docencia_courses', 'docencia_persisted_courses']
+          : [`docencia_courses_${userId}`];
+        for (const k of localKeys) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+              for (const c of parsed) {
+                if (c?.id) knownCoursesMap.set(c.id, c);
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    invalidateCoursesCache();
+    invalidateStudentsCache();
+
+    // 1. Remove deleted course from compact courses store while preserving all other courses
     try {
-      const remainingCourses = (coursesReadCache?.data || []).filter((c) => c.id !== courseId);
+      const remainingCourses = Array.from(knownCoursesMap.values()).filter(
+        (c) => c.id !== courseId && c.classroomCourseId !== courseId
+      );
       coursesReadCache = { userId, timestamp: Date.now(), data: remainingCourses };
 
       for (const targetDb of ALL_DBS) {
@@ -1486,15 +1523,23 @@ export const firestoreSync = {
     const currentStudentsMap = new Map<string, Student>();
     if (typeof window !== 'undefined') {
       try {
-        const localKey = `docencia_local_students_${userId}`;
-        const rawLocal =
-          localStorage.getItem(localKey) ||
-          (isPrimaryOwnerAccount() ? localStorage.getItem('docencia_local_students') : null);
-        if (rawLocal) {
-          const parsedLocal = JSON.parse(rawLocal);
-          if (Array.isArray(parsedLocal)) {
-            for (const s of parsedLocal) {
-              if (s?.id) currentStudentsMap.set(s.id, s);
+        const candidateStorageKeys = isPrimaryOwnerAccount()
+          ? [
+              `docencia_students_${userId}`,
+              `docencia_local_students_${userId}`,
+              'docencia_students',
+              'docencia_persisted_students',
+              'docencia_local_students',
+            ]
+          : [`docencia_students_${userId}`, `docencia_local_students_${userId}`];
+        for (const k of candidateStorageKeys) {
+          const rawLocal = localStorage.getItem(k);
+          if (rawLocal) {
+            const parsedLocal = JSON.parse(rawLocal);
+            if (Array.isArray(parsedLocal)) {
+              for (const s of parsedLocal) {
+                if (s?.id) currentStudentsMap.set(s.id, s);
+              }
             }
           }
         }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../types';
 import { sheetsService } from '../services/workspace/sheetsService';
+import { sheetsSyncQueue } from '../services/workspace/sheetsSyncQueue';
 import { driveService } from '../services/workspace/driveService';
 import { api } from '../services/api';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
@@ -103,9 +104,9 @@ export function useAttendanceSync({
     };
   }, [activeCourse?.id]);
 
-  // Real-time synchronization with Google Sheets (automatic background updates when marking)
+  // Real-time synchronization with Google Sheets (debounced automatic background updates when marking)
   const triggerSheetsSync = useCallback(
-    async (
+    (
       customMap?: Record<string, StudentDispositionData>,
       customHistory?: StudentHistoryItem[],
       customMap2c?: Record<string, StudentDispositionData>
@@ -118,100 +119,108 @@ export function useAttendanceSync({
         return;
       }
 
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+      const courseSnapshot = activeCourse;
+      const map1cToUse = customMap || dispositionMap;
+      const map2cToUse = customMap2c || dispositionMap2c;
+      const historyToUse = customHistory
+        ? customHistory.filter((h) => h.courseId === courseSnapshot.id)
+        : historyList.filter((h) => h.courseId === courseSnapshot.id);
+      const currentStudents = students.filter((s) => s.courseId === courseSnapshot.id);
 
-      setIsSyncingSheet(true);
-      try {
-        const map1cToUse = customMap || dispositionMap;
-        const map2cToUse = customMap2c || dispositionMap2c;
-        const historyToUse = customHistory
-          ? customHistory.filter((h) => h.courseId === activeCourse.id)
-          : historyList.filter((h) => h.courseId === activeCourse.id);
-        const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-        const realExistingId =
-          (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
-          (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-            ? sheetConfig?.spreadsheetId
-            : undefined) ||
-          (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) &&
-          (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID)
-            ? activeCourse.dispositionSheetId
-            : undefined);
+      sheetsSyncQueue.enqueue(
+        courseSnapshot.id,
+        'attendance',
+        async () => {
+          const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+          const isS2NatCourse =
+            (courseSnapshot.name || '').toLowerCase().includes('s2 nat') ||
+            (courseSnapshot.grade || '').toLowerCase().includes('s2 nat');
 
-        // Ensure course Drive folder exists
-        let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
-        if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+          setIsSyncingSheet(true);
           try {
-            const folderStruct = await driveService.setupCourseFolderStructure(
-              activeCourse.name,
-              undefined,
-              activeToken
+            const realExistingId =
+              (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
+              (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+                ? sheetConfig?.spreadsheetId
+                : undefined) ||
+              (isRealGoogleSpreadsheetId(courseSnapshot.dispositionSheetId) &&
+              (isS2NatCourse || courseSnapshot.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID)
+                ? courseSnapshot.dispositionSheetId
+                : undefined);
+
+            let targetFolderId = courseSnapshot.attendanceFolderId || courseSnapshot.driveFolderId;
+            if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+              try {
+                const folderStruct = await driveService.setupCourseFolderStructure(
+                  courseSnapshot.name,
+                  undefined,
+                  activeToken
+                );
+                targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
+                courseSnapshot.attendanceFolderId = folderStruct.attendanceFolder.id;
+                courseSnapshot.attendanceFolderUrl = folderStruct.attendanceFolder.url;
+                courseSnapshot.gradesFolderId = folderStruct.gradesFolder.id;
+                courseSnapshot.gradesFolderUrl = folderStruct.gradesFolder.url;
+                courseSnapshot.driveFolderId = folderStruct.mainFolder.id;
+                courseSnapshot.driveFolderUrl = folderStruct.mainFolder.url;
+                api.updateCourse(courseSnapshot.id, {
+                  attendanceFolderId: folderStruct.attendanceFolder.id,
+                  attendanceFolderUrl: folderStruct.attendanceFolder.url,
+                  gradesFolderId: folderStruct.gradesFolder.id,
+                  gradesFolderUrl: folderStruct.gradesFolder.url,
+                  driveFolderId: folderStruct.mainFolder.id,
+                  driveFolderUrl: folderStruct.mainFolder.url,
+                }).catch(() => {});
+              } catch (_) {}
+            }
+
+            const res = await sheetsService.syncDispositionSheet(
+              courseSnapshot,
+              currentStudents,
+              map1cToUse,
+              historyToUse,
+              realExistingId,
+              targetFolderId,
+              activeToken,
+              map2cToUse
             );
-            targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
-            activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
-            activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
-            activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
-            activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
-            activeCourse.driveFolderId = folderStruct.mainFolder.id;
-            activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
-            api.updateCourse(activeCourse.id, {
-              attendanceFolderId: folderStruct.attendanceFolder.id,
-              attendanceFolderUrl: folderStruct.attendanceFolder.url,
-              gradesFolderId: folderStruct.gradesFolder.id,
-              gradesFolderUrl: folderStruct.gradesFolder.url,
-              driveFolderId: folderStruct.mainFolder.id,
-              driveFolderUrl: folderStruct.mainFolder.url,
-            }).catch(() => {});
-          } catch (_) {}
-        }
 
-        const res = await sheetsService.syncDispositionSheet(
-          activeCourse,
-          currentStudents,
-          map1cToUse,
-          historyToUse,
-          realExistingId,
-          targetFolderId,
-          activeToken,
-          map2cToUse
-        );
+            const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
 
-        const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
-
-        setSheetConfig({
-          spreadsheetId: res.spreadsheetId,
-          url: isLive ? res.url : (sheetConfig?.url || ''),
-          isLiveGoogle: isLive,
-          lastSyncedAt: res.updatedAt,
-        });
-
-        if (isLive) {
-          activeCourse.dispositionSheetId = res.spreadsheetId;
-          activeCourse.dispositionSheetUrl = res.url;
-          api
-            .saveCourseDispositionSheet(activeCourse.id, {
+            setSheetConfig({
               spreadsheetId: res.spreadsheetId,
-              url: res.url,
+              url: isLive ? res.url : (sheetConfig?.url || ''),
+              isLiveGoogle: isLive,
               lastSyncedAt: res.updatedAt,
-            })
-            .catch(() => {});
-          api
-            .updateCourse(activeCourse.id, {
-              dispositionSheetId: res.spreadsheetId,
-              dispositionSheetUrl: res.url,
-            })
-            .catch(() => {});
-        } else if (res.errorCode === 'UNAUTHORIZED') {
-          notifyGoogleSessionExpired('attendance_sync_unauthorized');
-        }
-      } catch (err) {
-        console.warn('Background sync to Google Sheets error:', err);
-      } finally {
-        setIsSyncingSheet(false);
-      }
+            });
+
+            if (isLive) {
+              courseSnapshot.dispositionSheetId = res.spreadsheetId;
+              courseSnapshot.dispositionSheetUrl = res.url;
+              api
+                .saveCourseDispositionSheet(courseSnapshot.id, {
+                  spreadsheetId: res.spreadsheetId,
+                  url: res.url,
+                  lastSyncedAt: res.updatedAt,
+                })
+                .catch(() => {});
+              api
+                .updateCourse(courseSnapshot.id, {
+                  dispositionSheetId: res.spreadsheetId,
+                  dispositionSheetUrl: res.url,
+                })
+                .catch(() => {});
+            } else if (res.errorCode === 'UNAUTHORIZED') {
+              notifyGoogleSessionExpired('attendance_sync_unauthorized');
+            }
+          } catch (err) {
+            console.warn('Background sync to Google Sheets error:', err);
+          } finally {
+            setIsSyncingSheet(false);
+          }
+        },
+        3000
+      );
     },
     [activeCourse, token, dispositionMap, dispositionMap2c, historyList, students, sheetConfig]
   );

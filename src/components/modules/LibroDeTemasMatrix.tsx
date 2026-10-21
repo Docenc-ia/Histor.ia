@@ -44,7 +44,9 @@ import {
   getCachedAccessToken,
   requestGoogleAccessToken,
   isValidGoogleAccessToken,
+  fetchGoogleApiWithRetry,
 } from '../../services/workspace/googleAuth';
+import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import {
   firestoreSync,
@@ -631,6 +633,22 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     } else {
       notifyDebouncedSyncPending(flushKey, true);
       cloudSyncTimeoutRef.current = window.setTimeout(syncToCloud, 1400);
+    }
+
+    // Si ya hay una planilla de Google Sheets vinculada, encolar sincronización automática con debounce
+    const activeSpreadsheetId = nextSheetInfo?.spreadsheetId || sheetInfo?.spreadsheetId;
+    if (activeSpreadsheetId && isRealGoogleSpreadsheetId(activeSpreadsheetId)) {
+      const token = getCachedAccessToken();
+      if (token && isValidGoogleAccessToken(token)) {
+        sheetsSyncQueue.enqueue(
+          courseId,
+          'libro_de_temas',
+          async () => {
+            await pushLibroSnapshotToSheets(activeSpreadsheetId, nextMetadata, nextEntries);
+          },
+          3500
+        );
+      }
     }
   };
 
@@ -1563,6 +1581,105 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     }
   };
 
+  // Función interna para enviar instantánea del Libro de Temas a un Google Sheet existente (usada por la cola automática)
+  const pushLibroSnapshotToSheets = async (
+    targetSpreadsheetId: string,
+    metaToPush: LibroDeTemasMetadata,
+    entriesToPush: Record<string, LibroDeTemasEntry>
+  ) => {
+    const token = getCachedAccessToken();
+    if (!token || !isValidGoogleAccessToken(token) || !isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+      return;
+    }
+
+    const tabName = 'Libro de Temas';
+    const nowStr = `${new Date().toLocaleDateString('es-AR')} ${new Date().toLocaleTimeString('es-AR')}`;
+    const metaRow = [
+      'ASIGNATURA:',
+      metaToPush.asignatura,
+      'PROF. TITULAR:',
+      metaToPush.profTitular,
+      'DÍAS DE CLASE:',
+      activeWeekdaysLabel,
+      'ÚLTIMA SINCRONIZACIÓN:',
+      nowStr,
+      '',
+      '',
+    ];
+    const emptyRow = ['', '', '', '', '', '', '', '', '', ''];
+    const headerRow = [
+      'Fecha (ISO)',
+      'FECHA (Día / Mes)',
+      'Horario / Módulo',
+      'Clase N°',
+      'Unidad N°',
+      'CONTENIDOS',
+      'Carácter de la clase',
+      'OBSERVACIONES',
+      'Firma del Profesor',
+      'Firma de la Autoridad',
+    ];
+
+    const dataRows = scheduledRows.map((row) => {
+      const entry =
+        entriesToPush[row.rowKey] ||
+        (row.slotIndex === 0 ? entriesToPush[row.dateStr] : undefined) ||
+        row.entry;
+      const isHol = Boolean(entry.isHoliday);
+      return [
+        row.dateStr,
+        `${row.day}/${row.month}`,
+        row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-'),
+        row.computedClassNumber,
+        isHol ? '-' : entry.unitNumber || '',
+        entry.contents || '',
+        isHol ? '-' : entry.classCharacter || '',
+        entry.observations || '',
+        entry.teacherSignature || '',
+        entry.authoritySignature || '',
+      ];
+    });
+
+    try {
+      await fetchGoogleApiWithRetry(
+        `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1:Z600`)}:clear`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        },
+        token
+      );
+    } catch (_) {}
+
+    const updateRes = await fetchGoogleApiWithRetry(
+      `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1`)}?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          values: [metaRow, emptyRow, headerRow, ...dataRows],
+        }),
+      },
+      token
+    );
+
+    if (updateRes.ok) {
+      const sheetUrl = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
+      const nextSheetInfo: LibroDeTemasSheetInfo = {
+        spreadsheetId: targetSpreadsheetId,
+        url: sheetUrl,
+        lastSyncedAt: new Date().toLocaleTimeString('es-AR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      };
+      setSheetInfo(nextSheetInfo);
+    }
+  };
+
   // Crear o sincronizar el Libro de Temas con Google Sheets en la carpeta de Drive de la materia
   const handleSyncWithSheets = async (openAfterSync = false) => {
     if (isSyncingSheet) return;
@@ -1598,47 +1715,81 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       // 1. Doble entrada (Pull): Si ya existe la hoja de Google Sheets, leer cambios hechos por el docente en Sheets
       if (targetSpreadsheetId) {
         try {
-          const range = encodeURIComponent(`'${tabName}'!A4:I500`);
-          const getRes = await fetch(
+          const range = encodeURIComponent(`'${tabName}'!A3:J500`);
+          const getRes = await fetchGoogleApiWithRetry(
             `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${range}`,
-            {
-              headers: { Authorization: `Bearer ${token}` },
-            }
+            { method: 'GET' },
+            token
           );
 
           if (getRes.ok) {
             const data = await getRes.json();
-            const sheetRows: any[][] = data.values || [];
+            const rawRows: any[][] = data.values || [];
+            const headerRowInSheet: any[] = rawRows[0] || [];
+            const sheetRows: any[][] = rawRows.slice(1);
+
+            // Detectar si la planilla tiene la columna "Horario / Módulo" en índice 2 (10 columnas) o formato anterior (9 columnas)
+            const hasTimeCol =
+              headerRowInSheet.length >= 10 ||
+              String(headerRowInSheet[2] || '').toLowerCase().includes('hora') ||
+              String(headerRowInSheet[2] || '').toLowerCase().includes('módulo') ||
+              String(headerRowInSheet[2] || '').toLowerCase().includes('modulo');
+            const colOffset = hasTimeCol ? 1 : 0;
+
+            // Contabilizar ocurrencias por fecha para soportar múltiples módulos/horas en el mismo día
+            const dateOccurrenceCounter: Record<string, number> = {};
 
             sheetRows.forEach((r) => {
               const dateIso = String(r[0] || '').trim();
               if (!/^\d{4}-\d{2}-\d{2}$/.test(dateIso)) return;
 
-              const unitCell = String(r[3] ?? '').trim();
-              const contentsCell = String(r[4] ?? '').trim();
-              const characterCell = String(r[5] ?? '').trim();
-              const obsCell = String(r[6] ?? '').trim();
-              const profSigCell = String(r[7] ?? '').trim();
-              const authSigCell = String(r[8] ?? '').trim();
+              const occurrenceIdx = dateOccurrenceCounter[dateIso] ?? 0;
+              dateOccurrenceCounter[dateIso] = occurrenceIdx + 1;
 
-              const existing = workingEntries[dateIso] || {
-                date: dateIso,
-                isHoliday: Boolean(holidaysByDate[dateIso]),
-                holidayName: holidaysByDate[dateIso]?.name,
-                unitNumber: holidaysByDate[dateIso] ? '-' : '1',
-                contents: holidaysByDate[dateIso]
-                  ? `Feriado: ${holidaysByDate[dateIso].name}`
-                  : '',
-                classCharacter: holidaysByDate[dateIso]
-                  ? '-'
-                  : characterOptions[0] || 'Teórico - Práctica',
-                observations: '',
-                teacherSignature: '',
-                authoritySignature: '',
-              };
+              const timeCell = hasTimeCol ? String(r[2] ?? '').trim() : '';
+              const unitCell = String(r[3 + colOffset] ?? '').trim();
+              const contentsCell = String(r[4 + colOffset] ?? '').trim();
+              const characterCell = String(r[5 + colOffset] ?? '').trim();
+              const obsCell = String(r[6 + colOffset] ?? '').trim();
+              const profSigCell = String(r[7 + colOffset] ?? '').trim();
+              const authSigCell = String(r[8 + colOffset] ?? '').trim();
+
+              // Identificar la fila correspondiente (por fecha y horario/slotIndex)
+              const matchingScheduled =
+                scheduledRows.find(
+                  (sr) =>
+                    sr.dateStr === dateIso &&
+                    ((timeCell && sr.timeLabel === timeCell) || sr.slotIndex === occurrenceIdx)
+                ) || scheduledRows.find((sr) => sr.dateStr === dateIso);
+
+              const targetRowKey = matchingScheduled
+                ? matchingScheduled.rowKey
+                : occurrenceIdx === 0
+                ? dateIso
+                : `${dateIso}__${occurrenceIdx}`;
+
+              const existing = workingEntries[targetRowKey] ||
+                (occurrenceIdx === 0 ? workingEntries[dateIso] : undefined) ||
+                matchingScheduled?.entry || {
+                  date: dateIso,
+                  slotIndex: occurrenceIdx,
+                  timeLabel: timeCell !== '-' ? timeCell : undefined,
+                  isHoliday: Boolean(holidaysByDate[dateIso]),
+                  holidayName: holidaysByDate[dateIso]?.name,
+                  unitNumber: holidaysByDate[dateIso] ? '-' : '1',
+                  contents: holidaysByDate[dateIso]
+                    ? `Feriado: ${holidaysByDate[dateIso].name}`
+                    : '',
+                  classCharacter: holidaysByDate[dateIso]
+                    ? '-'
+                    : characterOptions[0] || 'Teórico - Práctica',
+                  observations: '',
+                  teacherSignature: '',
+                  authoritySignature: '',
+                };
 
               let rowChanged = false;
-              const updatedEntry = { ...existing };
+              const updatedEntry: LibroDeTemasEntry = { ...existing };
 
               if (!existing.isHoliday) {
                 if (unitCell && unitCell !== '-' && unitCell !== existing.unitNumber) {
@@ -1669,7 +1820,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               }
 
               if (rowChanged) {
-                workingEntries[dateIso] = updatedEntry;
+                workingEntries[targetRowKey] = updatedEntry;
+                if (occurrenceIdx === 0) {
+                  workingEntries[dateIso] = updatedEntry;
+                }
                 pulledChangesCount++;
               }
             });
@@ -1685,28 +1839,31 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
       // 2. Si no existe aún el Google Sheet para el Libro de Temas de esta materia, crearlo dentro de la carpeta de Drive de la materia
       if (!targetSpreadsheetId) {
-        const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            properties: { title: sheetTitle },
-            sheets: [
-              {
-                properties: {
-                  title: tabName,
-                  gridProperties: {
-                    rowCount: Math.max(120, scheduledRows.length + 20),
-                    columnCount: 10,
-                    frozenRowCount: 3,
+        const createRes = await fetchGoogleApiWithRetry(
+          'https://sheets.googleapis.com/v4/spreadsheets',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              properties: { title: sheetTitle },
+              sheets: [
+                {
+                  properties: {
+                    title: tabName,
+                    gridProperties: {
+                      rowCount: Math.max(120, scheduledRows.length + 20),
+                      columnCount: 10,
+                      frozenRowCount: 3,
+                    },
                   },
                 },
-              },
-            ],
-          }),
-        });
+              ],
+            }),
+          },
+          token
+        );
 
         if (!createRes.ok) {
           throw new Error('No se pudo crear la hoja de Google Sheets');
@@ -1756,6 +1913,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         'ÚLTIMA SINCRONIZACIÓN:',
         nowStr,
         '',
+        '',
       ];
       const emptyRow = ['', '', '', '', '', '', '', '', '', ''];
       const headerRow = [
@@ -1793,27 +1951,29 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
       // Limpiar rango previo y actualizar valores
       try {
-        await fetch(
+        await fetchGoogleApiWithRetry(
           `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1:Z600`)}:clear`,
           {
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
-          }
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          },
+          token
         );
       } catch (_) {}
 
-      const updateRes = await fetch(
+      const updateRes = await fetchGoogleApiWithRetry(
         `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1`)}?valueInputOption=USER_ENTERED`,
         {
           method: 'PUT',
           headers: {
-            Authorization: `Bearer ${token}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             values: [metaRow, emptyRow, headerRow, ...dataRows],
           }),
-        }
+        },
+        token
       );
 
       if (updateRes.ok && targetSpreadsheetId) {
@@ -1913,6 +2073,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         [
           'Día',
           'Mes',
+          'Horario / Módulo',
           'Clase N°',
           'Unidad N°',
           'CONTENIDOS',
@@ -1926,6 +2087,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           return [
             row.day,
             row.month,
+            row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-'),
             row.computedClassNumber,
             isHol ? '-' : row.entry.unitNumber || '',
             row.entry.contents || '',
@@ -1941,6 +2103,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       ws['!cols'] = [
         { wch: 6 },
         { wch: 6 },
+        { wch: 16 },
         { wch: 10 },
         { wch: 10 },
         { wch: 48 },

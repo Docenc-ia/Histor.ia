@@ -51,7 +51,7 @@ provider.setCustomParameters({
 const TOKEN_STORAGE_KEY = 'docencia_workspace_access_token';
 const TOKEN_EXPIRY_KEY = 'docencia_workspace_token_expires_at';
 const TOKEN_ISSUED_KEY = 'docencia_workspace_token_issued_at';
-const TOKEN_LIFETIME_MS = 55 * 60 * 1000; // 55 minutes threshold (tokens last 60m)
+const TOKEN_LIFETIME_MS = 59 * 60 * 1000; // 59 minutes threshold (tokens last 60m)
 
 let cachedAccessToken: string | null = null;
 let tokenIssuedAt: number | null = null;
@@ -157,10 +157,14 @@ export const isGoogleSessionExpired = (): boolean => {
     localStorage.getItem('docencia_session_active') === 'true';
   if (!isSessionActive) return false;
 
-  const currentToken = getCachedAccessToken();
-  if (!currentToken) return true;
-  if (!tokenIssuedAt) return false;
-  return Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS;
+  const storedExpiry = Number(
+    sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
+      localStorage.getItem(TOKEN_EXPIRY_KEY) ||
+      0
+  );
+  // Only report expired if a Google OAuth token was actually issued and its expiry timestamp has passed
+  if (!storedExpiry) return false;
+  return Date.now() > storedExpiry;
 };
 
 export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
@@ -268,16 +272,16 @@ export const clearAuthSession = (): void => {
   setCachedAccessToken(null);
 };
 
-// Listen to Firebase Auth state
+// Listen to Firebase Auth state (never wipe a valid GIS OAuth token stored in localStorage/sessionStorage)
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user && cachedAccessToken) {
-      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-    } else if (!isSigningIn) {
-      cachedAccessToken = null;
+    const activeToken = getCachedAccessToken();
+    if (user && activeToken) {
+      if (onAuthSuccess) onAuthSuccess(user, activeToken);
+    } else if (!isSigningIn && !activeToken) {
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -642,8 +646,15 @@ export const logoutUser = async (): Promise<void> => {
  * If called without a recent user gesture, it gracefully returns null instead of triggering
  * the browser's popup blocker.
  */
+let inFlightSilentRenewalPromise: Promise<string | null> | null = null;
+
 export const renewGoogleSessionSilently = async (userEmail?: string): Promise<string | null> => {
   if (typeof window === 'undefined') return null;
+
+  // Deduplicate concurrent renewal requests
+  if (inFlightSilentRenewalPromise) {
+    return inFlightSilentRenewalPromise;
+  }
 
   // Modern browsers require a user gesture to open popups.
   // Do not attempt window.open without a user gesture as it will be blocked.
@@ -657,14 +668,18 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
 
   const email = (userEmail || getActiveTeacherEmail()).trim().toLowerCase();
 
-  return new Promise<string | null>((resolve) => {
+  inFlightSilentRenewalPromise = new Promise<string | null>((resolve) => {
     try {
       let isSettled = false;
+      const finish = (val: string | null) => {
+        if (isSettled) return;
+        isSettled = true;
+        inFlightSilentRenewalPromise = null;
+        resolve(val);
+      };
+
       const timeoutId = setTimeout(() => {
-        if (!isSettled) {
-          isSettled = true;
-          resolve(null);
-        }
+        finish(null);
       }, 7000);
 
       const client = google.accounts.oauth2.initTokenClient({
@@ -673,12 +688,10 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
         prompt: '',
         ...(email ? { hint: email } : {}),
         callback: async (tokenResponse: any) => {
-          if (isSettled) return;
-          isSettled = true;
           clearTimeout(timeoutId);
 
           if (tokenResponse?.error || !tokenResponse?.access_token) {
-            resolve(null);
+            finish(null);
             return;
           }
           const freshToken = tokenResponse.access_token;
@@ -688,16 +701,14 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
             window.dispatchEvent(
               new CustomEvent('google_session_renewed', { detail: { token: freshToken } })
             );
-            resolve(freshToken);
+            finish(freshToken);
           } else {
-            resolve(null);
+            finish(null);
           }
         },
         error_callback: () => {
-          if (isSettled) return;
-          isSettled = true;
           clearTimeout(timeoutId);
-          resolve(null);
+          finish(null);
         },
       });
 
@@ -706,9 +717,12 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
         ...(email ? { hint: email } : {}),
       });
     } catch (_) {
+      inFlightSilentRenewalPromise = null;
       resolve(null);
     }
   });
+
+  return inFlightSilentRenewalPromise;
 };
 
 /**

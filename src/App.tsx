@@ -15,6 +15,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 import { subscribeAppEvents } from './utils/appEventBus';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -32,13 +33,13 @@ const lazyWithRetry = (componentImport: () => Promise<any>) =>
 const CalendarModule = lazyWithRetry(() =>
   import('./components/modules/CalendarModule').then((m) => ({ default: m.CalendarModule }))
 );
-const ImportClassroomModal = lazy(() =>
+const ImportClassroomModal = lazyWithRetry(() =>
   import('./components/dashboard/ImportClassroomModal').then((m) => ({ default: m.ImportClassroomModal }))
 );
-const CreateModal = lazy(() =>
+const CreateModal = lazyWithRetry(() =>
   import('./components/common/CreateModal').then((m) => ({ default: m.CreateModal }))
 );
-const AttendanceSettingsModal = lazy(() =>
+const AttendanceSettingsModal = lazyWithRetry(() =>
   import('./components/modules/classes/AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
 );
 
@@ -395,52 +396,63 @@ function AppContent() {
 
               {/* 2. Módulo de Estudiantes: Asistencia, Disposición y Classroom */}
               {currentView === 'course_detail' && (
-                <Suspense
-                  fallback={
-                    <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
-                      Cargando espacio de materia...
-                    </div>
-                  }
+                <ErrorBoundary
+                  key={`eb-course-${selectedCourse?.id || 'none'}`}
+                  fallbackTitle="Se produjo un inconveniente al mostrar la materia"
+                  onReset={loadData}
                 >
-                  <CourseWorkspaceView
-                    course={selectedCourse}
-                    courses={courses}
-                    students={students}
-                    initialSubTab={initialCourseSubTab}
-                    onBackToCourses={() => setCurrentView('courses')}
-                    onSelectCourse={(id) => setSelectedCourseId(id)}
-                    onDeleteCourse={handleDeleteCourse}
-                    onRefreshData={loadData}
-                    onNavigate={handleNavigate}
-                    onOpenNewModal={handleOpenCreateModal}
-                  />
-                </Suspense>
+                  <Suspense
+                    fallback={
+                      <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
+                        Cargando espacio de materia...
+                      </div>
+                    }
+                  >
+                    <CourseWorkspaceView
+                      course={selectedCourse}
+                      courses={courses}
+                      students={students}
+                      initialSubTab={initialCourseSubTab}
+                      onBackToCourses={() => setCurrentView('courses')}
+                      onSelectCourse={(id) => setSelectedCourseId(id)}
+                      onDeleteCourse={handleDeleteCourse}
+                      onRefreshData={loadData}
+                      onNavigate={handleNavigate}
+                      onOpenNewModal={handleOpenCreateModal}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               )}
 
               {/* 3. Módulo de Google Calendar Oficial y Horarios */}
               {currentView === 'calendar' && (
-                <Suspense
-                  fallback={
-                    <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
-                      Cargando agenda y horarios...
-                    </div>
-                  }
+                <ErrorBoundary
+                  fallbackTitle="Se produjo un inconveniente al cargar el calendario"
+                  onReset={loadData}
                 >
-                  <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
-                    <CalendarModule
-                      courses={courses}
-                      selectedCourseId={selectedCourseId}
-                      onSelectCourse={(id) => {
-                        setSelectedCourseId(id);
-                        setCurrentView('course_detail');
-                      }}
-                      onNavigateToCourseDetail={(id) => {
-                        setSelectedCourseId(id);
-                        setCurrentView('course_detail');
-                      }}
-                    />
-                  </div>
-                </Suspense>
+                  <Suspense
+                    fallback={
+                      <div className="p-8 text-center text-xs text-neutral-500 animate-pulse">
+                        Cargando agenda y horarios...
+                      </div>
+                    }
+                  >
+                    <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
+                      <CalendarModule
+                        courses={courses}
+                        selectedCourseId={selectedCourseId}
+                        onSelectCourse={(id) => {
+                          setSelectedCourseId(id);
+                          setCurrentView('course_detail');
+                        }}
+                        onNavigateToCourseDetail={(id) => {
+                          setSelectedCourseId(id);
+                          setCurrentView('course_detail');
+                        }}
+                      />
+                    </div>
+                  </Suspense>
+                </ErrorBoundary>
               )}
             </>
           )}
@@ -502,8 +514,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <WorkspaceAuthProvider>
-      <AppContent />
-    </WorkspaceAuthProvider>
+    <ErrorBoundary fallbackTitle="Ocurrió un inconveniente inesperado en la aplicación">
+      <WorkspaceAuthProvider>
+        <AppContent />
+      </WorkspaceAuthProvider>
+    </ErrorBoundary>
   );
 }

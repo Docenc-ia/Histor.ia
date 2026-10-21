@@ -12,6 +12,7 @@ import {
   Loader2,
   Database,
   Smartphone,
+  Upload,
 } from 'lucide-react';
 
 import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
@@ -32,6 +33,8 @@ interface AttendanceHeaderProps {
   onManualSheetsSync: () => void;
   isOpeningSheet: boolean;
   onOpenGoogleSheet: () => void;
+  onOpenImportExcel?: () => void;
+  onOpenImportSheets?: () => void;
   attendanceTerm: '1c' | '2c' | 'annual';
   onSelectTerm: (term: '1c' | '2c' | 'annual') => void;
   attendanceSummary?: CourseAttendanceSummary;
@@ -57,6 +60,8 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   onManualSheetsSync,
   isOpeningSheet,
   onOpenGoogleSheet,
+  onOpenImportExcel,
+  onOpenImportSheets,
   attendanceTerm,
   onSelectTerm,
   attendanceSummary,
@@ -69,13 +74,13 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
 
   return (
     <div className="space-y-3">
-      {/* Search & Actions Bar Organizado en 4 Columnas */}
+      {/* Search & Actions Bar Organizado en 5 Columnas */}
       <div
         className={`p-3.5 rounded-xl border transition-colors ${
           isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
         }`}
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
           {/* COLUMNA 1: Buscar estudiante y Agregar Alumno */}
           <div className="flex flex-col gap-2 justify-center">
             <div className="relative flex items-center w-full">
@@ -117,7 +122,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               title="Configurar mensajes preestablecidos y opciones de Classroom / Gmail"
             >
               <Bookmark className="w-3.5 h-3.5 text-blue-500" />
-              <span>Mensajes Preestablecidos</span>
+              <span className="truncate">Mensajes Preestablecidos</span>
             </button>
 
             {selectedStudentCount > 0 ? (
@@ -128,7 +133,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 title="Enviar aviso de inasistencia a todos los estudiantes seleccionados"
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>Avisar a seleccionados ({selectedStudentCount})</span>
+                <span className="truncate">Avisar a seleccionados ({selectedStudentCount})</span>
               </button>
             ) : (
               <button
@@ -145,23 +150,13 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 title="Enviar avisos pendientes a todos los estudiantes (ausencias y conductas)"
               >
                 <Bell className="w-3.5 h-3.5" />
-                <span>Avisos pendientes ({pendingCount})</span>
+                <span className="truncate">Avisos pendientes ({pendingCount})</span>
               </button>
             )}
           </div>
 
-          {/* COLUMNA 3: Mandar a Calificaciones y Sincronizar con Sheets */}
+          {/* COLUMNA 3: Sincronizar con Sheets y Abrir en Sheets */}
           <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
-            <button
-              type="button"
-              onClick={onOpenSendDispositionModal}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
-              title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
-            >
-              <Award className="w-3.5 h-3.5 text-amber-300" />
-              <span>Mandar a Calificaciones</span>
-            </button>
-
             <button
               type="button"
               onClick={onManualSheetsSync}
@@ -171,15 +166,12 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                   ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
                   : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
               }`}
-              title="Subir y actualizar toda la información de la materia desde la app hacia la planilla de Google Sheets"
+              title="Subir y actualizar el documento de Asistencia y Disposición en la carpeta de Google Drive de la materia"
             >
-              <RefreshCw className={`w-3.5 h-3.5 text-blue-500 ${isSyncActive ? 'animate-spin' : ''}`} />
-              <span>{isSyncActive ? 'Subiendo a Sheets...' : 'Sincronizar con Sheets'}</span>
+              <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncActive ? 'animate-spin' : ''}`} />
+              <span className="truncate">{isSyncActive ? 'Subiendo a Sheets...' : 'Sincronizar con Sheets'}</span>
             </button>
-          </div>
 
-          {/* COLUMNA 4: Abrir en Sheets y Copia de Seguridad */}
-          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
             <button
               type="button"
               onClick={onOpenGoogleSheet}
@@ -189,14 +181,27 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                   ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
                   : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
               }`}
-              title="Abrir la planilla vinculada en Google Sheets"
+              title="Abrir el documento de Asistencia y Disposición en Google Sheets"
             >
               {isOpeningSheet ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               ) : (
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
               )}
-              <span>Abrir en Sheets</span>
+              <span className="truncate">Abrir en Sheets</span>
+            </button>
+          </div>
+
+          {/* COLUMNA 4: Mandar a Calificaciones y Copia de Seguridad */}
+          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
+            <button
+              type="button"
+              onClick={onOpenSendDispositionModal}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
+              title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+            >
+              <Award className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+              <span className="truncate">Mandar a Calificaciones</span>
             </button>
 
             {onOpenBackupModal && (
@@ -210,10 +215,37 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 }`}
                 title="Copia de seguridad local: Descargar respaldo o restaurar observaciones y ajustes del curso"
               >
-                <Database className="w-3.5 h-3.5 text-indigo-500" />
-                <span>Copia de Seguridad</span>
+                <Database className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                <span className="truncate">Copia de Seguridad</span>
               </button>
             )}
+          </div>
+
+          {/* COLUMNA 5 (al final): Importar desde Excel e Importar desde Sheets */}
+          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
+            <button
+              type="button"
+              onClick={onOpenImportExcel}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+              title="Subir archivo Excel (.xlsx, .xls, .csv) para detectar asistencia, disposición, notas y categorías con comprobación previa"
+            >
+              <Upload className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Importar desde Excel</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenImportSheets}
+              className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
+                isDarkMode
+                  ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
+                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+              }`}
+              title="Importar un documento existente desde Google Sheets detectando asistencia, disposición, notas y categorías con comprobación previa"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span className="truncate">Importar desde Sheets</span>
+            </button>
           </div>
         </div>
       </div>

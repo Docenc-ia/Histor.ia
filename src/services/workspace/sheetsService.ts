@@ -87,9 +87,14 @@ export const sheetsService = {
     folderId?: string,
     providedToken?: string
   ): Promise<string | undefined> {
-    // 1. If explicit real Google Spreadsheet ID is already provided and not a placeholder
+    const token = providedToken || getCachedAccessToken();
+
+    // 1. If explicit real Google Spreadsheet ID is already provided and not trashed
     if (existingId && isRealGoogleSpreadsheetId(existingId)) {
-      return existingId;
+      const isActive = await driveService.verifyFileIsActive(existingId, token || undefined);
+      if (isActive) {
+        return existingId;
+      }
     }
 
     // 2. Fetch specific spreadsheet associated with this courseId from persistent storage
@@ -97,18 +102,19 @@ export const sheetsService = {
       try {
         const stored = await api.getCourseDispositionSheet(courseId);
         if (stored?.spreadsheetId && isRealGoogleSpreadsheetId(stored.spreadsheetId)) {
-          return stored.spreadsheetId;
+          const isActive = await driveService.verifyFileIsActive(stored.spreadsheetId, token || undefined);
+          if (isActive) {
+            return stored.spreadsheetId;
+          }
         }
       } catch (_) {}
     }
 
     // 3. Search Google Drive within the course folder if user is authenticated
-    const token = providedToken || getCachedAccessToken();
     if (token) {
       try {
-        const driveSheet = await driveService.findCourseSpreadsheet(folderId, courseName, token);
+        const driveSheet = await driveService.findCourseSpreadsheet(folderId, courseName, token, 'Asistencia');
         if (driveSheet?.id && isRealGoogleSpreadsheetId(driveSheet.id)) {
-          // Immediately persist the relationship to this specific courseId
           if (courseId) {
             await api
               .saveCourseDispositionSheet(courseId, {
@@ -117,6 +123,61 @@ export const sheetsService = {
                 lastSyncedAt: new Date().toISOString(),
               })
               .catch(() => {});
+          }
+          return driveSheet.id;
+        }
+      } catch (_) {}
+    }
+
+    return undefined;
+  },
+
+  /**
+   * Helper to resolve or find the dedicated Calificaciones Google Spreadsheet ID associated with a courseId.
+   * Ensures Calificaciones is a separate document from Asistencia y Disposición and verifies it is not in Drive trash.
+   */
+  async resolveGradesSpreadsheetId(
+    courseId: string,
+    courseName?: string,
+    existingId?: string,
+    folderId?: string,
+    providedToken?: string
+  ): Promise<string | undefined> {
+    const token = providedToken || getCachedAccessToken();
+
+    if (existingId && isRealGoogleSpreadsheetId(existingId)) {
+      const isActive = await driveService.verifyFileIsActive(existingId, token || undefined);
+      if (isActive) {
+        return existingId;
+      }
+    }
+
+    if (courseId && typeof window !== 'undefined') {
+      try {
+        const localSaved = localStorage.getItem(`fds_grades_sheet_${courseId}`);
+        if (localSaved) {
+          const parsed = JSON.parse(localSaved);
+          if (parsed?.spreadsheetId && isRealGoogleSpreadsheetId(parsed.spreadsheetId)) {
+            const isActive = await driveService.verifyFileIsActive(parsed.spreadsheetId, token || undefined);
+            if (isActive) {
+              return parsed.spreadsheetId;
+            } else {
+              localStorage.removeItem(`fds_grades_sheet_${courseId}`);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (token) {
+      try {
+        const driveSheet = await driveService.findCourseSpreadsheet(folderId, courseName, token, 'Calificaciones');
+        if (driveSheet?.id && isRealGoogleSpreadsheetId(driveSheet.id)) {
+          if (courseId && typeof window !== 'undefined') {
+            localStorage.setItem(
+              `fds_grades_sheet_${courseId}`,
+              JSON.stringify({ spreadsheetId: driveSheet.id, url: driveSheet.url })
+            );
           }
           return driveSheet.id;
         }
@@ -141,12 +202,12 @@ export const sheetsService = {
     const token = providedToken && isValidGoogleAccessToken(providedToken) ? providedToken : getCachedAccessToken();
     const courseId: string = typeof course === 'object' && course ? course.id : '';
     const courseName: string = typeof course === 'object' && course ? course.name : typeof course === 'string' && course ? course : 'Materia';
-    const sheetTitle = `📊 Planilla de Calificaciones - ${courseName}`;
+    const sheetTitle = `📊 Calificaciones - ${courseName}`;
 
-    // Resolve spreadsheet specifically tied to courseId instead of static path
+    // Resolve dedicated grades spreadsheet specifically tied to courseId
     let targetSpreadsheetId: string | undefined = undefined;
     if (courseId) {
-      targetSpreadsheetId = await this.resolveCourseSpreadsheetId(
+      targetSpreadsheetId = await this.resolveGradesSpreadsheetId(
         courseId,
         courseName,
         existingSpreadsheetId,
@@ -1630,7 +1691,7 @@ export const sheetsService = {
 
     if (token) {
       try {
-        let sheetIdToUse = await this.resolveCourseSpreadsheetId(
+        let sheetIdToUse = await this.resolveGradesSpreadsheetId(
           course.id,
           course.name,
           existingSpreadsheetId,
@@ -1639,15 +1700,14 @@ export const sheetsService = {
         );
 
         if (!sheetIdToUse || sheetIdToUse.startsWith('sheet-disp-') || sheetIdToUse.startsWith('sheet-grades-')) {
-          // If no existing sheet, create a new one for course grades
-          const createRes = await fetch('https://sheets.googleapis.com/v4/spreadsheets', {
+          // If no existing grades sheet, create a new dedicated one for course grades
+          const createRes = await fetchGoogleApiWithRetry('https://sheets.googleapis.com/v4/spreadsheets', {
             method: 'POST',
             headers: {
-              Authorization: `Bearer ${token}`,
               'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-              properties: { title: `📊 Planilla de Calificaciones (${termLabel}) - ${course.name}` },
+              properties: { title: `📊 Calificaciones - ${course.name}` },
               sheets: [
                 {
                   properties: {
@@ -1657,7 +1717,7 @@ export const sheetsService = {
                 },
               ],
             }),
-          });
+          }, token);
           if (createRes.ok) {
             const sheetData = await createRes.json();
             sheetIdToUse = sheetData.spreadsheetId;
@@ -1672,13 +1732,11 @@ export const sheetsService = {
               await driveService.moveFileToFolder(sheetIdToUse, targetFolderId, token);
             }
             const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetIdToUse}/edit`;
-            api
-              .saveCourseDispositionSheet(course.id, {
-                spreadsheetId: sheetIdToUse,
-                url: sheetUrl,
-                lastSyncedAt: new Date().toLocaleTimeString(),
-              })
-              .catch(() => {});
+            if (typeof window !== 'undefined') {
+              const payloadStr = JSON.stringify({ spreadsheetId: sheetIdToUse, url: sheetUrl, lastSyncedAt: new Date().toLocaleTimeString() });
+              localStorage.setItem(`fds_grades_sheet_${course.id}`, payloadStr);
+              localStorage.setItem(getUserStorageKey(`fds_grades_sheet_${course.id}`), payloadStr);
+            }
             api
               .updateCourse(course.id, {
                 gradesSheetId: sheetIdToUse,
@@ -1693,26 +1751,28 @@ export const sheetsService = {
 
           // Clear previous data in tab
           try {
-            await fetch(
+            await fetchGoogleApiWithRetry(
               `https://sheets.googleapis.com/v4/spreadsheets/${sheetIdToUse}/values/${encodeURIComponent(`'${tabName}'!A1:Z500`)}:clear`,
               {
                 method: 'POST',
-                headers: { Authorization: `Bearer ${token}` },
-              }
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+              },
+              token
             );
           } catch (_) {}
 
           // Write updated grades matrix
-          const updateRes = await fetch(
+          const updateRes = await fetchGoogleApiWithRetry(
             `https://sheets.googleapis.com/v4/spreadsheets/${sheetIdToUse}/values/${encodeURIComponent(`'${tabName}'!A1`)}?valueInputOption=USER_ENTERED`,
             {
               method: 'PUT',
               headers: {
-                Authorization: `Bearer ${token}`,
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({ values: [headers, ...rows] }),
-            }
+            },
+            token
           );
 
           if (updateRes.ok) {
@@ -2196,5 +2256,354 @@ export const sheetsService = {
       isLiveGoogle: isReal,
       updatedAt: new Date().toLocaleTimeString(),
     };
+  },
+
+  /**
+   * Create or update the dedicated "Libro de Temas" Google Spreadsheet inside the course's Drive folder,
+   * reproducing the complete table of topics from the course's Libro de Temas state.
+   */
+  async syncLibroDeTemasToSheet(
+    course: { id: string; name: string; subject?: string; schedule?: string },
+    teacherName?: string,
+    folderId?: string,
+    existingSpreadsheetId?: string,
+    providedToken?: string
+  ): Promise<{ spreadsheetId: string; url?: string; isLiveGoogle: boolean }> {
+    const token = providedToken && isValidGoogleAccessToken(providedToken) ? providedToken : getCachedAccessToken();
+    const tabName = 'Libro de Temas';
+    const sheetTitle = `📖 Libro de Temas - ${course.name}`;
+
+    // Read stored Libro de Temas state from localStorage if available
+    let storedEntries: Record<string, any> = {};
+    let storedMeta: { asignatura?: string; profTitular?: string } = {};
+    let targetSpreadsheetId =
+      existingSpreadsheetId && isRealGoogleSpreadsheetId(existingSpreadsheetId)
+        ? existingSpreadsheetId
+        : undefined;
+
+    if (typeof window !== 'undefined') {
+      try {
+        // Check user-scoped or general key (both fds_libro_temas_<courseId> and fds_libro_temas_v1_<courseId>)
+        const keysToTry = [
+          getUserStorageKey(`fds_libro_temas_${course.id}`),
+          `fds_libro_temas_${course.id}`,
+          `fds_libro_temas_v1_${course.id}`,
+          ...Object.keys(localStorage).filter(
+            (k) => k.endsWith(`fds_libro_temas_${course.id}`) || k.endsWith(`fds_libro_temas_v1_${course.id}`)
+          ),
+        ];
+        for (const k of keysToTry) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed?.entries && Object.keys(parsed.entries).length > 0) {
+              storedEntries = parsed.entries;
+            }
+            if (parsed?.metadata) {
+              storedMeta = parsed.metadata;
+            }
+            if (!targetSpreadsheetId && parsed?.sheetInfo?.spreadsheetId && isRealGoogleSpreadsheetId(parsed.sheetInfo.spreadsheetId)) {
+              targetSpreadsheetId = parsed.sheetInfo.spreadsheetId;
+            }
+            if (Object.keys(storedEntries).length > 0 || parsed?.metadata) {
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (token) {
+      try {
+        if (targetSpreadsheetId) {
+          const isActive = await driveService.verifyFileIsActive(targetSpreadsheetId, token);
+          if (!isActive) {
+            targetSpreadsheetId = undefined;
+          }
+        }
+        if (!targetSpreadsheetId) {
+          const found = await driveService.findCourseSpreadsheet(folderId, course.name, token, 'Libro de Temas');
+          if (found?.id && isRealGoogleSpreadsheetId(found.id)) {
+            targetSpreadsheetId = found.id;
+          }
+        }
+
+        // Build rows from storedEntries or generate initial schedule rows
+        const sortedEntryKeys = Object.keys(storedEntries).filter((k) => {
+          // If both YYYY-MM-DD and YYYY-MM-DD__0 exist, avoid duplicating slot 0
+          return !k.endsWith('__0');
+        }).sort();
+        const nowStr = `${new Date().toLocaleDateString('es-AR')} ${new Date().toLocaleTimeString('es-AR')}`;
+        const metaRow = [
+          'ASIGNATURA:',
+          storedMeta.asignatura || course.subject || course.name,
+          'PROF. TITULAR:',
+          storedMeta.profTitular || teacherName || 'Docente',
+          'HORARIO:',
+          course.schedule || 'A coordinar',
+          'ÚLTIMA SINCRONIZACIÓN:',
+          nowStr,
+          '',
+          '',
+        ];
+        const emptyRow = ['', '', '', '', '', '', '', '', '', ''];
+        const headerRow = [
+          'Fecha (ISO)',
+          'FECHA (Día / Mes)',
+          'Horario / Módulo',
+          'Clase N°',
+          'Unidad N°',
+          'CONTENIDOS',
+          'Carácter de la clase',
+          'OBSERVACIONES',
+          'Firma del Profesor',
+          'Firma de la Autoridad',
+        ];
+
+        let classCounter = 1;
+        const dataRows = sortedEntryKeys.map((key) => {
+          const entry = storedEntries[key] || {};
+          const dateStr = String(entry.date || key.split('__')[0] || '');
+          const parts = dateStr.split('-');
+          const dayMonth = parts.length === 3 ? `${Number(parts[2])}/${Number(parts[1])}` : dateStr;
+          const isHol = Boolean(entry.isHoliday);
+          const classNum = isHol ? '-' : entry.customClassNumber?.trim() || String(classCounter++);
+          return [
+            dateStr,
+            dayMonth,
+            entry.timeLabel || (key.includes('__') ? `${Number(key.split('__')[1] || 0) + 1}° Hora` : '-'),
+            classNum,
+            isHol ? '-' : entry.unitNumber || '1',
+            entry.contents || (isHol && entry.holidayName ? `Feriado: ${entry.holidayName}` : ''),
+            isHol ? '-' : entry.classCharacter || 'Teórico - Práctica',
+            entry.observations || '',
+            entry.teacherSignature || '',
+            entry.authoritySignature || '',
+          ];
+        });
+
+        if (!targetSpreadsheetId) {
+          const createRes = await fetchGoogleApiWithRetry('https://sheets.googleapis.com/v4/spreadsheets', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              properties: { title: sheetTitle },
+              sheets: [
+                {
+                  properties: {
+                    title: tabName,
+                    gridProperties: {
+                      rowCount: Math.max(120, dataRows.length + 20),
+                      columnCount: 10,
+                      frozenRowCount: 3,
+                    },
+                  },
+                },
+              ],
+            }),
+          }, token);
+          if (createRes.ok) {
+            const created = await createRes.json();
+            targetSpreadsheetId = created.spreadsheetId;
+            if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
+              await driveService.moveFileToFolder(targetSpreadsheetId!, folderId, token);
+            }
+          }
+        }
+
+        if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+          await this.ensureSheetsExist(targetSpreadsheetId, token, [tabName]);
+          await fetchGoogleApiWithRetry(
+            `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1`)}?valueInputOption=USER_ENTERED`,
+            {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                values: [metaRow, emptyRow, headerRow, ...dataRows],
+              }),
+            },
+            token
+          );
+
+          const url = `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit`;
+          api.updateCourse(course.id, { libroDeTemasSheetId: targetSpreadsheetId, libroDeTemasSheetUrl: url }).catch(() => {});
+          return {
+            spreadsheetId: targetSpreadsheetId,
+            url,
+            isLiveGoogle: true,
+          };
+        }
+      } catch (err) {
+        console.warn('Error syncing Libro de Temas to Google Sheets:', err);
+      }
+    }
+
+    return {
+      spreadsheetId: targetSpreadsheetId || `sheet-libro-${course.id}`,
+      url: targetSpreadsheetId ? `https://docs.google.com/spreadsheets/d/${targetSpreadsheetId}/edit` : undefined,
+      isLiveGoogle: false,
+    };
+  },
+
+  /**
+   * Read an existing Google Spreadsheet (by URL or ID) so the teacher can import grades, categories,
+   * or attendance/disposition data with pre-verification in the UI.
+   */
+  async fetchArbitrarySpreadsheetData(
+    spreadsheetIdOrUrl: string,
+    targetSheetTitle?: string,
+    providedToken?: string
+  ): Promise<{
+    spreadsheetId: string;
+    title: string;
+    sheetNames: string[];
+    selectedSheet: string;
+    headers: string[];
+    rows: Array<Record<string, any>>;
+  }> {
+    // Extract spreadsheet ID from URL or raw string
+    const trimmed = spreadsheetIdOrUrl.trim();
+    const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    const spreadsheetId = match ? match[1] : trimmed;
+
+    if (!spreadsheetId || spreadsheetId.length < 10) {
+      throw new Error('El enlace o ID de Google Sheets no es válido.');
+    }
+
+    let token = providedToken || getCachedAccessToken();
+    if (!token || !isValidGoogleAccessToken(token)) {
+      try {
+        token = await requestGoogleAccessToken();
+      } catch (_) {}
+    }
+
+    // 1. Try authenticated Google Sheets v4 API first
+    if (token && isValidGoogleAccessToken(token)) {
+      const metaRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties.title`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        const title = meta.properties?.title || 'Documento de Google Sheets';
+        const sheetNames: string[] = (meta.sheets || []).map((s: any) => s.properties?.title).filter(Boolean);
+        const selectedSheet =
+          targetSheetTitle && sheetNames.includes(targetSheetTitle)
+            ? targetSheetTitle
+            : sheetNames[0] || 'Hoja 1';
+
+        const range = encodeURIComponent(`'${selectedSheet}'!A1:ZZ500`);
+        const valRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+          {
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          const rawValues: any[][] = valData.values || [];
+          const { headers, rows } = this.convert2DArrayToTableObjects(rawValues);
+          return {
+            spreadsheetId,
+            title,
+            sheetNames,
+            selectedSheet,
+            headers,
+            rows,
+          };
+        }
+      }
+    }
+
+    // 2. Fallback: public CSV export endpoint if shared by link
+    const csvUrl = targetSheetTitle
+      ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(targetSheetTitle)}`
+      : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`;
+
+    const csvRes = await fetch(csvUrl);
+    if (!csvRes.ok) {
+      throw new Error(
+        'No se pudo acceder a la hoja de Google Sheets. Asegúrate de haber iniciado sesión con tu cuenta de Google o que el documento sea accesible.'
+      );
+    }
+
+    const csvText = await csvRes.text();
+    const XLSX = await import('xlsx');
+    const wb = XLSX.read(csvText, { type: 'string' });
+    const firstSheet = wb.SheetNames[0];
+    const ws = wb.Sheets[firstSheet];
+    const rawValues: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const { headers, rows } = this.convert2DArrayToTableObjects(rawValues);
+
+    return {
+      spreadsheetId,
+      title: 'Hoja de Google Sheets',
+      sheetNames: [targetSheetTitle || 'Hoja 1'],
+      selectedSheet: targetSheetTitle || 'Hoja 1',
+      headers,
+      rows,
+    };
+  },
+
+  /**
+   * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
+   * and converts the subsequent rows into objects keyed by column header.
+   */
+  convert2DArrayToTableObjects(rawValues: any[][]): {
+    headers: string[];
+    rows: Array<Record<string, any>>;
+  } {
+    if (!rawValues || rawValues.length === 0) {
+      return { headers: [], rows: [] };
+    }
+
+    // Find the best header row within the first 10 rows
+    let headerRowIndex = 0;
+    let bestScore = -1;
+
+    for (let i = 0; i < Math.min(10, rawValues.length); i++) {
+      const r = rawValues[i] || [];
+      const nonEmptyCells = r.filter((c) => String(c || '').trim() !== '');
+      if (nonEmptyCells.length < 2) continue;
+
+      let score = nonEmptyCells.length;
+      const joined = nonEmptyCells.map((c) => String(c).toLowerCase()).join(' ');
+      if (/alumno|estudiante|apellido|nombre|email|correo/i.test(joined)) score += 20;
+      if (/nota|tp|eval|examen|parcial|falta|ausencia|disposicion|conducta|1c|2c/i.test(joined)) score += 15;
+
+      if (score > bestScore) {
+        bestScore = score;
+        headerRowIndex = i;
+      }
+    }
+
+    const rawHeaders = rawValues[headerRowIndex] || [];
+    const headers: string[] = rawHeaders.map((h, idx) => {
+      const clean = String(h || '').trim();
+      return clean || `Columna ${idx + 1}`;
+    });
+
+    const rows: Array<Record<string, any>> = [];
+    for (let r = headerRowIndex + 1; r < rawValues.length; r++) {
+      const rowArr = rawValues[r] || [];
+      const nonEmpty = rowArr.some((cell) => String(cell ?? '').trim() !== '');
+      if (!nonEmpty) continue;
+
+      const obj: Record<string, any> = {};
+      headers.forEach((h, idx) => {
+        obj[h] = rowArr[idx] !== undefined ? rowArr[idx] : '';
+      });
+      rows.push(obj);
+    }
+
+    return { headers, rows };
   },
 };

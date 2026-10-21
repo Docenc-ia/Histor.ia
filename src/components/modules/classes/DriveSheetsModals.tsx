@@ -22,7 +22,13 @@ interface DriveFolderModalProps {
   isOpen: boolean;
   onClose: () => void;
   activeCourse: Course;
-  courseDriveStructure: (CourseFolderStructure & { attendanceSheetUrl?: string; gradesSheetUrl?: string }) | null;
+  courseDriveStructure:
+    | (CourseFolderStructure & {
+        attendanceSheetUrl?: string;
+        gradesSheetUrl?: string;
+        libroDeTemasSheetUrl?: string;
+      })
+    | null;
   isDarkMode: boolean;
 }
 
@@ -60,7 +66,7 @@ export const DriveFolderModal: React.FC<DriveFolderModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg hover:bg-neutral-200 dark:hover:bg-slate-800 text-neutral-400 hover:text-neutral-700 dark:hover:text-white"
+            className="p-1 rounded-lg hover:bg-neutral-200 dark:hover:bg-slate-800 text-neutral-400 hover:text-neutral-700 dark:hover:text-white cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -69,7 +75,7 @@ export const DriveFolderModal: React.FC<DriveFolderModalProps> = ({
         {/* Body */}
         <div className="p-5 space-y-4 text-xs">
           <p className="text-neutral-600 dark:text-slate-300">
-            Se ha sincronizado la estructura oficial de la materia en tu <strong>Google Drive institucional</strong> con sus dos subcarpetas didácticas:
+            Se ha sincronizado la carpeta de la materia en tu <strong>Google Drive</strong> con un documento para cada función y la subcarpeta de informes:
           </p>
 
           {/* Carpeta Principal */}
@@ -84,102 +90,170 @@ export const DriveFolderModal: React.FC<DriveFolderModalProps> = ({
                 <span className="font-bold text-neutral-900 dark:text-white text-xs block">
                   📁 {courseDriveStructure.mainFolder.name}
                 </span>
-                <span className="text-[11px] text-neutral-500 dark:text-slate-400">Carpeta principal de la cátedra</span>
+                <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                  Carpeta principal de la materia
+                </span>
               </div>
             </div>
             <a
               href={courseDriveStructure.mainFolder.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-colors shadow-2xs"
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs transition-colors shadow-2xs shrink-0"
             >
-              <span>Abrir</span>
+              <span>Abrir Carpeta</span>
               <ExternalLink className="w-3 h-3" />
             </a>
           </div>
 
-          {/* Subcarpetas */}
+          {/* 3 Documentos de Función + Subcarpeta Informes */}
           <div className="space-y-2.5 pl-3 border-l-2 border-amber-300 dark:border-amber-700">
-            {/* 1. Asistencia y Disposición */}
+            {/* 1. Documento: Asistencia y Disposición */}
             <div
-              className={`p-3 rounded-xl border ${
+              className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
                 isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-white border-neutral-200 shadow-2xs'
               }`}
             >
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2">
-                  <FolderClosed className="w-4 h-4 text-purple-500" />
-                  <span className="font-bold text-neutral-900 dark:text-white">
-                    1. {courseDriveStructure.attendanceFolder.name}
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet className="w-4 h-4 text-emerald-500 shrink-0" />
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-white block">
+                    1. Asistencia y Disposición
+                  </span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    Documento de registro de asistencia, tardanzas, disposición e historial
                   </span>
                 </div>
+              </div>
+              {courseDriveStructure.attendanceSheetUrl ? (
                 <a
-                  href={courseDriveStructure.attendanceFolder.url}
+                  href={courseDriveStructure.attendanceSheetUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-purple-600 dark:text-purple-400 hover:underline"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 text-[11px] font-semibold hover:underline shrink-0"
                 >
-                  <span>Abrir subcarpeta</span>
+                  <span>Abrir Sheet</span>
                   <ExternalLink className="w-3 h-3" />
                 </a>
-              </div>
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800 text-[11px]">
-                <span className="text-neutral-500 dark:text-slate-400 flex items-center gap-1.5">
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                  Hoja de Asistencia, Disposición e Historial
-                </span>
-                {courseDriveStructure.attendanceSheetUrl && (
-                  <a
-                    href={courseDriveStructure.attendanceSheetUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
-                  >
-                    Ver Sheet ↗
-                  </a>
-                )}
-              </div>
+              ) : (
+                <a
+                  href={courseDriveStructure.mainFolder.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline shrink-0"
+                >
+                  <span>Ver en Carpeta</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </div>
 
-            {/* 2. Calificaciones */}
+            {/* 2. Documento: Libro de Temas */}
             <div
-              className={`p-3 rounded-xl border ${
+              className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
                 isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-white border-neutral-200 shadow-2xs'
               }`}
             >
-              <div className="flex items-center justify-between gap-2 mb-2">
-                <div className="flex items-center gap-2">
-                  <FolderClosed className="w-4 h-4 text-blue-500" />
-                  <span className="font-bold text-neutral-900 dark:text-white">
-                    2. {courseDriveStructure.gradesFolder.name}
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet className="w-4 h-4 text-indigo-500 shrink-0" />
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-white block">
+                    2. Libro de Temas
+                  </span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    Documento con la tabla completa de clases, unidades, contenidos y carácter
                   </span>
                 </div>
+              </div>
+              {courseDriveStructure.libroDeTemasSheetUrl ? (
                 <a
-                  href={courseDriveStructure.gradesFolder.url}
+                  href={courseDriveStructure.libroDeTemasSheetUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-[11px] font-semibold hover:underline shrink-0"
                 >
-                  <span>Abrir subcarpeta</span>
+                  <span>Abrir Sheet</span>
                   <ExternalLink className="w-3 h-3" />
                 </a>
+              ) : (
+                <a
+                  href={courseDriveStructure.mainFolder.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline shrink-0"
+                >
+                  <span>Ver en Carpeta</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+
+            {/* 3. Documento: Calificaciones */}
+            <div
+              className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-white border-neutral-200 shadow-2xs'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet className="w-4 h-4 text-blue-500 shrink-0" />
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-white block">
+                    3. Calificaciones
+                  </span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    Documento con la planilla matriz de categorías, evaluaciones y promedios
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800 text-[11px]">
-                <span className="text-neutral-500 dark:text-slate-400 flex items-center gap-1.5">
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500" />
-                  Planilla Matriz de Calificaciones y Notas
-                </span>
-                {courseDriveStructure.gradesSheetUrl && (
-                  <a
-                    href={courseDriveStructure.gradesSheetUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                  >
-                    Ver Sheet ↗
-                  </a>
-                )}
+              {courseDriveStructure.gradesSheetUrl ? (
+                <a
+                  href={courseDriveStructure.gradesSheetUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-[11px] font-semibold hover:underline shrink-0"
+                >
+                  <span>Abrir Sheet</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              ) : (
+                <a
+                  href={courseDriveStructure.mainFolder.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:underline shrink-0"
+                >
+                  <span>Ver en Carpeta</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+
+            {/* 4. Subcarpeta: Informes */}
+            <div
+              className={`p-3 rounded-xl border flex items-center justify-between gap-2 ${
+                isDarkMode ? 'bg-slate-800/40 border-slate-700/80' : 'bg-purple-50/40 border-purple-200 shadow-2xs'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <FolderClosed className="w-4 h-4 text-purple-500 shrink-0" />
+                <div>
+                  <span className="font-bold text-neutral-900 dark:text-white block">
+                    📁 Subcarpeta: {courseDriveStructure.reportsFolder?.name || 'Informes'}
+                  </span>
+                  <span className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    Subcarpeta dedicada para informes del curso y fichas pedagógicas individuales
+                  </span>
+                </div>
               </div>
+              <a
+                href={courseDriveStructure.reportsFolder?.url || courseDriveStructure.mainFolder.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-[11px] font-semibold hover:underline shrink-0"
+              >
+                <span>Abrir Subcarpeta</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
             </div>
           </div>
         </div>
@@ -300,7 +374,6 @@ export const SheetsConnectModal: React.FC<SheetsConnectModalProps> = ({
 
         {/* Body */}
         <div className="p-5 space-y-4 text-xs">
-          <GoogleSessionExpiryBanner />
           <div
             className={`p-3.5 rounded-xl border flex items-start gap-3 ${
               isDarkMode

@@ -12,9 +12,41 @@ export interface CourseFolderStructure {
   attendanceFolder: { id: string; name: string; url: string };
   gradesFolder: { id: string; name: string; url: string };
   libroDeTemasFolder?: { id: string; name: string; url: string };
+  reportsFolder?: { id: string; name: string; url: string };
+  attendanceSheetUrl?: string;
+  gradesSheetUrl?: string;
+  libroDeTemasSheetUrl?: string;
 }
 
 export const driveService = {
+  /**
+   * Verify if a Google Drive file or spreadsheet still exists and is NOT in the trash (trashed = false).
+   * Prevents stale localStorage / DB IDs from failing when a teacher deletes a file in Drive.
+   */
+  async verifyFileIsActive(fileId?: string, providedToken?: string): Promise<boolean> {
+    if (!fileId || fileId.startsWith('folder-') || fileId.startsWith('f-') || fileId.startsWith('sheet-')) {
+      return false;
+    }
+    const token = providedToken || getCachedAccessToken();
+    if (!token) return true; // Assume valid if offline/unauthenticated
+
+    try {
+      const res = await fetchGoogleApiWithRetry(
+        `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,trashed`,
+        {},
+        token
+      );
+      if (res.status === 404) return false;
+      if (res.ok) {
+        const data = await res.json();
+        return data.trashed !== true;
+      }
+    } catch {
+      // On network failure, don't invalidate cached ID
+    }
+    return true;
+  },
+
   /**
    * Find or create a folder in Google Drive (optionally inside a parent folder)
    */
@@ -136,8 +168,10 @@ export const driveService = {
   /**
    * Set up full Course Folder Structure in Google Drive:
    * Main Folder: [Nombre de la Materia]
-   *   ├── Subfolder 1: "Asistencia y Disposición"
-   *   └── Subfolder 2: "Calificaciones"
+   *   ├── Documento 1: Asistencia y Disposición (en carpeta principal)
+   *   ├── Documento 2: Libro de Temas (en carpeta principal)
+   *   ├── Documento 3: Calificaciones (en carpeta principal)
+   *   └── Subcarpeta: "Informes"
    */
   async setupCourseFolderStructure(
     courseName: string,
@@ -176,20 +210,16 @@ export const driveService = {
       mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
     }
 
-    // Create subfolder 1: "Asistencia y Disposición" inside main folder
-    const attendanceFolder = await this.findOrCreateFolder('Asistencia y Disposición', mainFolder.id, token);
+    // Create subfolder "Informes" inside the main course folder
+    const reportsFolder = await this.findOrCreateFolder('Informes', mainFolder.id, token);
 
-    // Create subfolder 2: "Calificaciones" inside main folder
-    const gradesFolder = await this.findOrCreateFolder('Calificaciones', mainFolder.id, token);
-
-    // Create subfolder 3: "Libro de Temas" inside main folder
-    const libroDeTemasFolder = await this.findOrCreateFolder('Libro de Temas', mainFolder.id, token);
-
+    // The 3 function documents (Asistencia y Disposición, Libro de Temas, Calificaciones) live directly inside mainFolder
     return {
       mainFolder,
-      attendanceFolder,
-      gradesFolder,
-      libroDeTemasFolder,
+      attendanceFolder: mainFolder,
+      gradesFolder: mainFolder,
+      libroDeTemasFolder: mainFolder,
+      reportsFolder,
     };
   },
 
@@ -236,11 +266,13 @@ export const driveService = {
 
   /**
    * Search for an existing Google Spreadsheet file associated with a course or inside its folder
+   * Optionally filter by function typeKeyword ('Asistencia', 'Calificaciones', 'Libro de Temas')
    */
   async findCourseSpreadsheet(
     folderId?: string,
     courseName?: string,
-    providedToken?: string
+    providedToken?: string,
+    typeKeyword?: string
   ): Promise<{ id: string; name: string; url: string } | null> {
     const token = providedToken || getCachedAccessToken();
     if (!token) return null;
@@ -256,8 +288,13 @@ export const driveService = {
         return null;
       }
 
+      if (typeKeyword) {
+        const safeType = typeKeyword.replace(/'/g, "\\'");
+        query += ` and name contains '${safeType}'`;
+      }
+
       const searchRes = await fetchGoogleApiWithRetry(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)&orderBy=modifiedTime desc&pageSize=1`,
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,webViewLink)&orderBy=modifiedTime desc&pageSize=5`,
         {},
         token
       );
@@ -277,6 +314,47 @@ export const driveService = {
       console.warn('Notice searching for course spreadsheet in Drive:', err);
     }
     return null;
+  },
+
+  /**
+   * List existing Google Spreadsheets from the teacher's Google Drive so they can import any existing sheet
+   */
+  async listUserSpreadsheets(
+    searchQuery?: string,
+    providedToken?: string
+  ): Promise<Array<{ id: string; name: string; modifiedTime?: string; url: string }>> {
+    let token = providedToken || getCachedAccessToken();
+    if (!token) {
+      try {
+        token = await requestGoogleAccessToken();
+      } catch {}
+    }
+    if (!token) return [];
+
+    try {
+      let query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false";
+      if (searchQuery && searchQuery.trim()) {
+        const safeQ = searchQuery.trim().replace(/'/g, "\\'");
+        query += ` and name contains '${safeQ}'`;
+      }
+      const res = await fetchGoogleApiWithRetry(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=25`,
+        {},
+        token
+      );
+      if (res.ok) {
+        const data = await res.json();
+        return (data.files || []).map((f: any) => ({
+          id: f.id,
+          name: f.name,
+          modifiedTime: f.modifiedTime,
+          url: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
+        }));
+      }
+    } catch (err) {
+      console.warn('Error listing spreadsheets from Google Drive:', err);
+    }
+    return [];
   },
 
   /**

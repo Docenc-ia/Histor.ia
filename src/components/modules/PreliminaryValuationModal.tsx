@@ -17,10 +17,12 @@ import {
   Copy,
   Check,
   Loader2,
+  Folder,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { sheetsService } from '../../services/workspace/sheetsService';
+import { driveService } from '../../services/workspace/driveService';
 
 export type QualitativeTrajectory = 'TEA' | 'TEP' | 'TED' | '';
 
@@ -48,6 +50,7 @@ export interface PreliminaryValuationModalProps {
   isDarkMode: boolean;
   savedValuation: PreliminaryValuationRecord | null;
   onSaveValuation: (record: PreliminaryValuationRecord) => void;
+  driveFolderId?: string;
 }
 
 export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps> = ({
@@ -62,6 +65,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   isDarkMode,
   savedValuation,
   onSaveValuation,
+  driveFolderId,
 }) => {
   if (!isOpen) return null;
 
@@ -138,6 +142,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
     savedValuation?.spreadsheetId
   );
   const [isSyncingSheets, setIsSyncingSheets] = useState(false);
+  const [isSavingToDrive, setIsSavingToDrive] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [copiedToClipboard, setCopiedToClipboard] = useState(false);
 
@@ -424,6 +429,76 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   // Print view
   const handlePrint = () => {
     window.print();
+  };
+
+  // Save Preliminary Valuation report directly into the course's "Informes" subfolder in Google Drive
+  const handleSaveToReportsDriveFolder = async () => {
+    setIsSavingToDrive(true);
+    try {
+      const folderStructure = await driveService.setupCourseFolderStructure(courseName, driveFolderId);
+      const targetFolderId = folderStructure.reportsFolder?.id || folderStructure.mainFolder.id;
+      const docTitle = `📋 Valoración Preliminar (${termLabel}) - ${courseName}`;
+
+      const rowsHtml = studentRows
+        .map((r, idx) => {
+          const stGrades = gradesMap[r.student.id] || {};
+          const cells = selectedAssessmentsMeta
+            .map((a) => `<td style="text-align:center;padding:6px;border:1px solid #cbd5e1;">${stGrades[a.id] || '—'}</td>`)
+            .join('');
+          const badgeBg =
+            r.trajectory === 'TEA'
+              ? '#dcfce7;color:#15803d'
+              : r.trajectory === 'TEP'
+              ? '#fef3c7;color:#b45309'
+              : r.trajectory === 'TED'
+              ? '#fee2e2;color:#b91c1c'
+              : '#f1f5f9;color:#475569';
+          return `<tr>
+            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;">${idx + 1}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;font-weight:bold;">${r.student.lastName}, ${r.student.firstName}</td>
+            ${cells}
+            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;">${r.averageScoreStr || '—'}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;background:${badgeBg};">${r.trajectory || 'Pendiente'}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;">${r.observation || '—'}</td>
+          </tr>`;
+        })
+        .join('');
+
+      const htmlContent = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><title>${docTitle}</title></head>
+<body style="font-family:Arial,sans-serif;color:#1e293b;padding:24px;">
+  <h2 style="color:#1e3a8a;margin-bottom:4px;">${docTitle}</h2>
+  <p style="font-size:12px;color:#64748b;margin-top:0;">Fecha de emisión: ${new Date().toLocaleDateString('es-AR')} — Alumnos: ${students.length} (TEA: ${stats.teaCount} | TEP: ${stats.tepCount} | TED: ${stats.tedCount})</p>
+  <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:16px;">
+    <thead>
+      <tr style="background:#f1f5f9;">
+        <th style="padding:8px;border:1px solid #cbd5e1;">#</th>
+        <th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">Estudiante</th>
+        ${selectedAssessmentsMeta.map((a) => `<th style="padding:8px;border:1px solid #cbd5e1;">${a.name}</th>`).join('')}
+        <th style="padding:8px;border:1px solid #cbd5e1;">Promedio</th>
+        <th style="padding:8px;border:1px solid #cbd5e1;">Valoración</th>
+        <th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">Observación Pedagógica</th>
+      </tr>
+    </thead>
+    <tbody>${rowsHtml}</tbody>
+  </table>
+</body>
+</html>`;
+
+      const res = await driveService.uploadReportFile(docTitle, htmlContent, targetFolderId, 'text/html', undefined, true);
+      setToastMessage(
+        res.isLiveGoogle
+          ? `¡Informe guardado en la subcarpeta "Informes" de ${courseName}!`
+          : `Informe archivado localmente en carpeta Informes (${courseName}).`
+      );
+    } catch (err) {
+      console.error('Error saving valuation report to Drive:', err);
+      setToastMessage('No se pudo guardar en Google Drive. Verifica tu conexión.');
+    } finally {
+      setIsSavingToDrive(false);
+      setTimeout(() => setToastMessage(null), 5000);
+    }
   };
 
   return (
@@ -905,6 +980,24 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
                   {isSyncingSheets ? 'Sincronizando...' : 'Importar a Google Sheets'}
                 </span>
                 <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
+              </button>
+
+              {/* Archivar en subcarpeta Informes de Drive */}
+              <button
+                type="button"
+                onClick={handleSaveToReportsDriveFolder}
+                disabled={isSavingToDrive}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs transition-all cursor-pointer disabled:opacity-50"
+                title="Guarda este informe como Google Doc directamente dentro de la subcarpeta Informes de la materia en Google Drive"
+              >
+                {isSavingToDrive ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Folder className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {isSavingToDrive ? 'Guardando en Informes...' : 'Guardar en Carpeta Informes'}
+                </span>
               </button>
 
               {/* Copiar para Sheets (Ctrl+V) */}

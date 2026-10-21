@@ -558,3 +558,31 @@ export function saveLocalDisposition2c(disposition2c: Record<string, any>): void
   } catch (_) {}
 }
 
+export function getRemovedStudentIds(courseId: string): Set<string> {
+  if (typeof window === 'undefined' || !courseId) return new Set();
+  try {
+    const raw = getUserScopedItem(`fds_removed_students_${courseId}`);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (_) {}
+  return new Set();
+}
+
+export function markStudentRemoved(courseId: string, studentId: string): void {
+  if (typeof window === 'undefined' || !courseId || !studentId) return;
+  try {
+    const set = getRemovedStudentIds(courseId);
+    set.add(studentId);
+    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+  } catch (_) {}
+}
+
+export function unmarkStudentRemoved(courseId: string, studentId: string): void {
+  if (typeof window === 'undefined' || !courseId || !studentId) return;
+  try {
+    const set = getRemovedStudentIds(courseId);
+    set.delete(studentId);
+    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+  } catch (_) {}
+}
+
+

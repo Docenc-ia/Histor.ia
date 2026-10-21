@@ -36,6 +36,9 @@ import {
   getAllDispositionStorage,
   getLocalDisposition2c,
   saveLocalDisposition2c,
+  getRemovedStudentIds,
+  markStudentRemoved,
+  unmarkStudentRemoved,
 } from './storageHelpers';
 
 export {
@@ -60,6 +63,9 @@ export {
   getAllDispositionStorage,
   getLocalDisposition2c,
   saveLocalDisposition2c,
+  getRemovedStudentIds,
+  markStudentRemoved,
+  unmarkStudentRemoved,
 };
 
 
@@ -571,12 +577,17 @@ export const api = {
 
     const mergedStudents = enrichStudents(deduplicateStudents([...local, ...cloudStudents, ...serverStudents]));
 
-    if (mergedStudents.length > 0) {
+    const filteredStudents = mergedStudents.filter((st) => {
+      if (st.courseId && getRemovedStudentIds(st.courseId).has(st.id)) return false;
+      return true;
+    });
+
+    if (filteredStudents.length > 0) {
       if (courseId) {
-        saveLocalStudents(courseId, mergedStudents);
+        saveLocalStudents(courseId, filteredStudents);
       } else {
         const byCourse = new Map<string, Student[]>();
-        for (const st of mergedStudents) {
+        for (const st of filteredStudents) {
           if (!st.courseId) continue;
           const arr = byCourse.get(st.courseId) || [];
           arr.push(st);
@@ -588,7 +599,7 @@ export const api = {
       }
     }
 
-    return mergedStudents;
+    return filteredStudents;
   },
 
   async createStudent(studentData: Partial<Student> & { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {
@@ -680,20 +691,23 @@ export const api = {
       };
     });
 
-    saveLocalStudents(courseId, formattedStudents);
+    const removedSet = getRemovedStudentIds(courseId);
+    const activeFormatted = formattedStudents.filter((st) => !removedSet.has(st.id));
+
+    saveLocalStudents(courseId, activeFormatted);
 
     // Also update course studentsCount
     const courses = getLocalCourses();
     const courseIndex = courses.findIndex((c) => c.id === courseId);
     if (courseIndex >= 0) {
-      courses[courseIndex].studentsCount = formattedStudents.length;
+      courses[courseIndex].studentsCount = activeFormatted.length;
       courses[courseIndex].classroomSynced = true;
       saveLocalCourses(courses);
     }
 
     const userId = getActiveUserId();
     if (userId) {
-      firestoreSync.saveStudents(userId, courseId, formattedStudents).catch((e) => console.warn('Firestore sync students warning:', e));
+      firestoreSync.saveStudents(userId, courseId, activeFormatted).catch((e) => console.warn('Firestore sync students warning:', e));
       if (courseIndex >= 0) {
         firestoreSync.saveCourses(userId, courses).catch(() => {});
       }
@@ -704,7 +718,7 @@ export const api = {
         const res = await fetch('/api/students/sync', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ courseId, students }),
+          body: JSON.stringify({ courseId, students: activeFormatted }),
         });
         if (res.ok) {
           const data = await res.json();
@@ -715,9 +729,57 @@ export const api = {
 
     return {
       success: true,
-      count: formattedStudents.length,
-      students: formattedStudents,
+      count: activeFormatted.length,
+      students: activeFormatted,
     };
+  },
+
+  async removeStudentFromCourse(studentId: string, courseId: string): Promise<{ success: boolean; message: string }> {
+    markStudentRemoved(courseId, studentId);
+    const current = getLocalStudents(courseId);
+    const updated = current.filter((s) => s.id !== studentId);
+    saveLocalStudents(courseId, updated);
+
+    const courses = getLocalCourses();
+    const courseIndex = courses.findIndex((c) => c.id === courseId);
+    if (courseIndex >= 0) {
+      courses[courseIndex].studentsCount = Math.max(0, updated.length);
+      saveLocalCourses(courses);
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveStudents(userId, courseId, updated).catch(() => {});
+      if (courseIndex >= 0) {
+        firestoreSync.saveCourses(userId, courses).catch(() => {});
+      }
+    }
+
+    return { success: true, message: 'Estudiante quitado de la lista en esta app' };
+  },
+
+  async restoreStudentInCourse(student: Student, courseId: string): Promise<{ success: boolean; message: string }> {
+    unmarkStudentRemoved(courseId, student.id);
+    const current = getLocalStudents(courseId);
+    const updated = deduplicateStudents([...current, student]);
+    saveLocalStudents(courseId, updated);
+
+    const courses = getLocalCourses();
+    const courseIndex = courses.findIndex((c) => c.id === courseId);
+    if (courseIndex >= 0) {
+      courses[courseIndex].studentsCount = updated.length;
+      saveLocalCourses(courses);
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveStudents(userId, courseId, updated).catch(() => {});
+      if (courseIndex >= 0) {
+        firestoreSync.saveCourses(userId, courses).catch(() => {});
+      }
+    }
+
+    return { success: true, message: 'Estudiante reincorporado a la lista' };
   },
 
   async cleanMockStudents(): Promise<{ success: boolean; remaining: number }> {

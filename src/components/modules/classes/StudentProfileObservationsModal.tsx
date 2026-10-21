@@ -65,6 +65,7 @@ interface StudentProfileObservationsModalProps {
   setCourseReportModalStudentId: (id: string | undefined) => void;
   setCourseReportModalTab: (tab: 'course' | 'individual') => void;
   setCourseReportModalOpen: (open: boolean) => void;
+  onDeleteStudent?: (student: Student) => void;
 }
 
 const QUICK_TAGS = [
@@ -99,6 +100,7 @@ export const StudentProfileObservationsModal: React.FC<StudentProfileObservation
   setCourseReportModalStudentId,
   setCourseReportModalTab,
   setCourseReportModalOpen,
+  onDeleteStudent,
 }) => {
   const [selectedTag, setSelectedTag] = useState<string>('');
 
@@ -179,6 +181,21 @@ export const StudentProfileObservationsModal: React.FC<StudentProfileObservation
                       <Pencil className="w-3 h-3" />
                       <span>Editar correo</span>
                     </button>
+
+                    {onDeleteStudent && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteStudent(selectedStudentForProfile);
+                          setSelectedStudentForProfile(null);
+                        }}
+                        className="text-xs text-red-600 dark:text-red-400 hover:underline inline-flex items-center gap-1 cursor-pointer font-medium ml-2"
+                        title="Quitar a este alumno de la lista de la materia en esta app"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-500" />
+                        <span>Quitar de la materia</span>
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="flex items-center gap-1.5">

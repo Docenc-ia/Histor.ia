@@ -10,6 +10,7 @@ import {
   History,
   FileText,
   ExternalLink,
+  Trash2,
 } from 'lucide-react';
 import { Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
 import {
@@ -41,6 +42,7 @@ interface StudentAttendanceRowProps {
   onOpenConductModal: (student: Student, mode: 'add' | 'subtract') => void;
   onOpenStudentHistory: (student: Student) => void;
   onOpenTrafficLightSettings?: () => void;
+  onDeleteStudent?: (student: Student) => void;
   isDarkMode: boolean;
 }
 
@@ -66,6 +68,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
   onOpenConductModal,
   onOpenStudentHistory,
   onOpenTrafficLightSettings,
+  onDeleteStudent,
   isDarkMode,
 }) => {
   const { user } = useWorkspaceAuth();
@@ -193,6 +196,24 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
               >
                 <ExternalLink className="w-3 h-3" />
               </a>
+
+              {onDeleteStudent && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteStudent(student);
+                  }}
+                  className={`p-1 rounded-md transition-opacity opacity-0 group-hover/row:opacity-100 ${
+                    isDarkMode
+                      ? 'text-slate-400 hover:text-red-400 hover:bg-slate-800'
+                      : 'text-neutral-400 hover:text-red-600 hover:bg-neutral-200/80'
+                  }`}
+                  title={`Quitar a ${student.lastName}, ${student.firstName} de esta materia en la app`}
+                >
+                  <Trash2 className="w-3 h-3 text-red-500/80 hover:text-red-600" />
+                </button>
+              )}
 
               {observationsCount > 0 && (
                 <button

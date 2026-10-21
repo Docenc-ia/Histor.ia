@@ -68,6 +68,7 @@ export interface GradebookMatrixProps {
   onTermChange?: (term: GradebookTerm) => void;
   driveFolderId?: string;
   driveFolderUrl?: string;
+  onDeleteStudent?: (student: Student) => void;
 }
 
 export { DEFAULT_CATEGORIES };
@@ -90,6 +91,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   onTermChange,
   driveFolderId,
   driveFolderUrl,
+  onDeleteStudent,
 }) => {
   const [internalTerm, setInternalTerm] = useState<GradebookTerm>(() =>
     getCurrentCalendarTerm(getGlobalAttendanceSettings())
@@ -1942,21 +1944,34 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     >
                       {/* Student Name (Sticky on horizontal scroll) */}
                       <td
-                        className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center gap-2.5 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
+                        className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center justify-between gap-2 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
                           isDarkMode
                             ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
                             : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
                         }`}
                       >
-                        <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
-                        <div className="min-w-0">
-                          <p className="font-semibold text-xs truncate">
-                            {student.lastName}, {student.firstName}
-                          </p>
-                          <p className="text-[10px] text-neutral-400 dark:text-slate-500 truncate">
-                            {student.email || 'Sin correo'}
-                          </p>
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
+                          <div className="min-w-0">
+                            <p className="font-semibold text-xs truncate">
+                              {student.lastName}, {student.firstName}
+                            </p>
+                            <p className="text-[10px] text-neutral-400 dark:text-slate-500 truncate">
+                              {student.email || 'Sin correo'}
+                            </p>
+                          </div>
                         </div>
+
+                        {onDeleteStudent && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteStudent(student)}
+                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-500 transition-all cursor-pointer shrink-0"
+                            title={`Quitar a ${student.lastName}, ${student.firstName} de la lista de esta materia`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
+                          </button>
+                        )}
                       </td>
 
                       {/* Grade Cells per Category & Subcategory */}

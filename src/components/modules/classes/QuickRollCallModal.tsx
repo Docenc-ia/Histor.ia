@@ -111,6 +111,7 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
         .filter(
           (h) =>
             h.studentId === studentId &&
+            (!courseId || !h.courseId || h.courseId === courseId) &&
             (activeTerm === '2c' ? h.term === '2c' : h.term === '1c' || !h.term) &&
             isSameCalendarDay(h.date, h.timestamp, now)
         )

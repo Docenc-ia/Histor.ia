@@ -515,7 +515,7 @@ export const sheetsService = {
 
     const summaryRows1c = sortedStudents.map((student) => {
       const studentHistory1c = historyList
-        .filter((h) => h.studentId === student.id && (h.term === '1c' || !h.term))
+        .filter((h) => h.studentId === student.id && (!h.courseId || h.courseId === course.id) && (h.term === '1c' || !h.term))
         .sort((a, b) => b.timestamp - a.timestamp);
 
       const historyAbs1c = studentHistory1c.filter(
@@ -584,7 +584,7 @@ export const sheetsService = {
 
     const summaryRows2c = sortedStudents.map((student) => {
       const studentHistory2c = historyList
-        .filter((h) => h.studentId === student.id && h.term === '2c')
+        .filter((h) => h.studentId === student.id && (!h.courseId || h.courseId === course.id) && h.term === '2c')
         .sort((a, b) => b.timestamp - a.timestamp);
 
       const historyAbs2c = studentHistory2c.filter(
@@ -702,7 +702,9 @@ export const sheetsService = {
       'ID Registro',
     ];
 
-    const historyRows = historyList.map((item) => {
+    const historyRows = historyList
+      .filter((h) => !h.courseId || h.courseId === course.id)
+      .map((item) => {
       const is2c = item.term === '2c';
       const termLabel = is2c ? '2° Cuatrimestre' : '1° Cuatrimestre';
       const studentMap = is2c ? map2c : map1c;

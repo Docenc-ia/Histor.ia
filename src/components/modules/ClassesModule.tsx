@@ -321,6 +321,48 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return {};
   });
 
+  // Reload course-scoped disposition data whenever activeCourse changes
+  useEffect(() => {
+    if (!activeCourse?.id) return;
+    try {
+      const course1cKey = `fds_disposition_data_${activeCourse.id}_1c`;
+      const course2cKey = `fds_disposition_data_${activeCourse.id}_2c`;
+
+      const raw1c = getUserScopedItem(course1cKey);
+      if (raw1c) {
+        setDispositionMap(JSON.parse(raw1c));
+      } else {
+        const globalDisp = getAllDispositionStorage().disposition || {};
+        const courseStudentIds = new Set(courseStudents.map((s) => s.id));
+        const filtered: Record<string, StudentDispositionData> = {};
+        for (const [sId, data] of Object.entries(globalDisp)) {
+          if (courseStudentIds.has(sId)) {
+            filtered[sId] = data as StudentDispositionData;
+          }
+        }
+        setDispositionMap(filtered);
+      }
+
+      const raw2c = getUserScopedItem(course2cKey);
+      if (raw2c) {
+        setDispositionMap2c(JSON.parse(raw2c));
+      } else {
+        const global2cRaw = getUserScopedItem('fds_disposition_data_2c');
+        const global2c = global2cRaw ? JSON.parse(global2cRaw) : {};
+        const courseStudentIds = new Set(courseStudents.map((s) => s.id));
+        const filtered2c: Record<string, StudentDispositionData> = {};
+        for (const [sId, data] of Object.entries(global2c)) {
+          if (courseStudentIds.has(sId)) {
+            filtered2c[sId] = data as StudentDispositionData;
+          }
+        }
+        setDispositionMap2c(filtered2c);
+      }
+    } catch (err) {
+      console.warn('Error loading course-specific disposition data:', err);
+    }
+  }, [activeCourse?.id, courseStudents]);
+
   // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
   // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
   // while allowing the teacher to freely move/switch between 1°C, 2°C and Resumen Anual.
@@ -1555,7 +1597,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
       const courseStudentIds = new Set(currentStudents.map((s) => s.id));
       const historyToUse = (customHistory || historyList).filter(
-        (h) => h.courseId === activeCourse.id || courseStudentIds.has(h.studentId)
+        (h) => h.courseId === activeCourse.id || (!h.courseId && courseStudentIds.has(h.studentId))
       );
       const realExistingId =
         (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
@@ -2773,7 +2815,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const is2c = targetTerm === '2c';
     const fromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
     const studentHistory = historyList.filter(
-      (h) => h.studentId === studentId && (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
+      (h) =>
+        h.studentId === studentId &&
+        (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
+        (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
     );
 
     const historyAbsences = studentHistory.filter(
@@ -6090,7 +6135,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       (h) =>
         h.courseId === activeCourse.id ||
         (activeCourse.classroomCourseId && h.courseId === activeCourse.classroomCourseId) ||
-        courseStudentIds.has(h.studentId)
+        (!h.courseId && courseStudentIds.has(h.studentId))
     );
     return deduplicateHistory(relevant).sort((a, b) => b.timestamp - a.timestamp);
   }, [historyList, activeCourse, courseStudents]);
@@ -7105,7 +7150,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                             attendanceTerm,
                             attendanceSettings
                           );
-                          const studentHistory = historyList.filter((h) => h.studentId === student.id);
+                          const studentHistory = historyList.filter(
+                            (h) => h.studentId === student.id && (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id)
+                          );
                           const hasPendingAbsence = historyList.some(
                             (h) =>
                               h.courseId === activeCourse.id &&

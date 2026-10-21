@@ -868,13 +868,21 @@ export const StudentIndividualHistoryModal: React.FC<StudentIndividualHistoryMod
         </div>
 
         <div className="p-4 overflow-y-auto space-y-2 text-xs flex-1">
-          {historyList.filter((h) => h.studentId === selectedStudentForHistory.id).length === 0 ? (
+          {historyList.filter(
+            (h) =>
+              h.studentId === selectedStudentForHistory.id &&
+              (!selectedStudentForHistory.courseId || !h.courseId || h.courseId === selectedStudentForHistory.courseId)
+          ).length === 0 ? (
             <div className="py-8 text-center text-neutral-400">
               <p>No hay conductas ni incidencias registradas para este estudiante.</p>
             </div>
           ) : (
             historyList
-              .filter((h) => h.studentId === selectedStudentForHistory.id)
+              .filter(
+                (h) =>
+                  h.studentId === selectedStudentForHistory.id &&
+                  (!selectedStudentForHistory.courseId || !h.courseId || h.courseId === selectedStudentForHistory.courseId)
+              )
               .map((item) => (
                 <div
                   key={item.id}

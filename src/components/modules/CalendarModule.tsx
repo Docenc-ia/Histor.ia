@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { calendarService } from '../../services/workspace/calendarService';
+import { getUserStorageKey, isPrimaryOwnerAccount } from '../../services/storageHelpers';
 import { GoogleCalendarInfo, Course } from '../../types';
 
 export interface CalendarModuleProps {
@@ -61,19 +62,16 @@ const STORAGE_KEY = 'fds_google_calendars_configured_v3';
 type GCalViewMode = 'WEEK' | 'MONTH' | 'AGENDA';
 
 /**
- * Resuelve siempre el correo institucional del colegio para el docente titular,
- * evitando que si el navegador o AI Studio está logueado con el Gmail personal
- * (canomorenojj@gmail.com) se reemplace el calendario del colegio (jorge.cano@fds-esc.edu.ar)
- * o que el widget muestre "No disponible" por usar la sesión personal en vez de la del colegio.
+ * Resuelve el correo institucional del docente.
+ * Si es el docente propietario titular en su Gmail de desarrollo, redirige a su cuenta oficial de escuela.
+ * Si es cualquier otro colega docente, respeta su cuenta autenticada.
  */
 const resolveInstitutionalCalendarEmail = (email?: string): string => {
   const clean = (email || '').trim().toLowerCase();
-  if (
-    !clean ||
-    clean === 'primary' ||
-    clean.startsWith('canomorenojj@') ||
-    clean.startsWith('jorge.cano@')
-  ) {
+  if (!clean || clean === 'primary') {
+    return 'jorge.cano@fds-esc.edu.ar';
+  }
+  if (clean.startsWith('canomorenojj@') || clean.startsWith('jorge.cano@')) {
     return 'jorge.cano@fds-esc.edu.ar';
   }
   return clean;
@@ -132,11 +130,14 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   const { isDarkMode, user, token, loginWithGoogle } = useWorkspaceAuth();
   const institutionalEmail = resolveInstitutionalCalendarEmail(user?.email);
 
-  // Load configured calendars: school calendar by default, repairing any accidental personal gmail override
+  // Load configured calendars: school calendar by default, user-scoped storage
   const [calendars, setCalendars] = useState<ConfiguredCalendar[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(STORAGE_KEY);
+        const scopedKey = getUserStorageKey(STORAGE_KEY);
+        const saved =
+          localStorage.getItem(scopedKey) ||
+          (isPrimaryOwnerAccount() ? localStorage.getItem(STORAGE_KEY) : null);
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
@@ -184,7 +185,11 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
           const updated = normalizeConfiguredCalendars(cloudCals, institutionalEmail);
           setCalendars(updated);
           try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            const scopedKey = getUserStorageKey(STORAGE_KEY);
+            localStorage.setItem(scopedKey, JSON.stringify(updated));
+            if (isPrimaryOwnerAccount()) {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+            }
           } catch (_) {}
         }
       })
@@ -200,7 +205,11 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   // Save to localStorage and Firestore whenever calendars state changes
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(calendars));
+      const scopedKey = getUserStorageKey(STORAGE_KEY);
+      localStorage.setItem(scopedKey, JSON.stringify(calendars));
+      if (isPrimaryOwnerAccount()) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(calendars));
+      }
     } catch (_) {}
     if (!hasHydratedFromCloud) return;
     import('../../services/firestoreSync')

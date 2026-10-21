@@ -591,7 +591,7 @@ export const api = {
     return mergedStudents;
   },
 
-  async createStudent(studentData: { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {
+  async createStudent(studentData: Partial<Student> & { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {
     if (isPrimaryOwnerAccount()) {
       try {
         const res = await fetch('/api/students', {
@@ -615,15 +615,18 @@ export const api = {
     }
 
     const newStudent: Student = {
-      id: `st-${studentData.courseId}-${Date.now().toString().slice(-4)}`,
+      ...studentData,
+      id: studentData.id || `st-${studentData.courseId}-${Date.now().toString().slice(-4)}`,
       courseId: studentData.courseId,
-      firstName: studentData.firstName,
-      lastName: studentData.lastName,
-      email: studentData.email,
-      attendanceRate: 100,
-      averageGrade: 0,
-      notes: 'Registrado manualmente',
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(studentData.firstName + ' ' + studentData.lastName)}&background=1a73e8&color=ffffff&bold=true`,
+      firstName: studentData.firstName || '',
+      lastName: studentData.lastName || '',
+      email: studentData.email || '',
+      attendanceRate: typeof studentData.attendanceRate === 'number' ? studentData.attendanceRate : 100,
+      averageGrade: typeof studentData.averageGrade === 'number' ? studentData.averageGrade : 0,
+      notes: studentData.notes || 'Registrado manualmente',
+      avatar:
+        studentData.avatar ||
+        `https://ui-avatars.com/api/?name=${encodeURIComponent((studentData.firstName || '') + ' ' + (studentData.lastName || ''))}&background=1a73e8&color=ffffff&bold=true`,
     };
     const current = getLocalStudents(studentData.courseId);
     saveLocalStudents(studentData.courseId, [...current, newStudent]);
@@ -664,6 +667,7 @@ export const api = {
       const lastName = st.lastName || '';
       const fullName = `${firstName} ${lastName}`.trim();
       return {
+        ...st,
         id: st.id || (st as any).userId || `st-${courseId}-${i + 1}`,
         courseId,
         firstName,

@@ -5,6 +5,7 @@
 
 import { Course, Student } from '../types';
 import { getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
+export { isPrimaryOwnerAccount };
 import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
 
@@ -346,6 +347,9 @@ export function setUserScopedItem(baseKey: string, value: string): void {
     }
   } catch (_) {}
 }
+
+export const getStorageItemForUser = getUserScopedItem;
+export const setStorageItemForUser = setUserScopedItem;
 
 export function getDeletedHistoryIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();

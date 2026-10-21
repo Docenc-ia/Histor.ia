@@ -1361,6 +1361,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       gradeCols.push('Exámenes - Parcial 1', 'Trabajos Prácticos - TP 1');
                     }
 
+                    const activeDispositionMap =
+                      selectedTerm === '2c' ? currentDispositionMap2c : currentDispositionMap1c;
+
                     const templateRows = (sorted.length > 0
                       ? sorted
                       : [

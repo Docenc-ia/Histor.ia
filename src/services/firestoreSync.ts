@@ -639,7 +639,7 @@ function invalidateSnapshotsCache() {
 export function clearFirestoreMemoryCaches(): void {
   // Flush any pending debounced writes for the current user before clearing session caches
   try {
-    flushAllPendingCloudWrites();
+    flushAllPendingCloudSaves();
   } catch (_) {}
 
   coursesReadCache = null;

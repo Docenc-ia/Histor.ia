@@ -1319,7 +1319,31 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
     };
     window.addEventListener('docencia_disposition_storage_change', handleStorageChange);
-    return () => window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
+
+    // Cross-tab real-time sync: when another tab updates attendance/disposition
+    const handleCrossTabStorage = (e: StorageEvent) => {
+      if (!e.key) return;
+      if (
+        e.key.includes('fds_disposition') ||
+        e.key.includes('docencia_disposition') ||
+        e.key.includes('fds_grade')
+      ) {
+        try {
+          const stored = getAllDispositionStorage();
+          handleStorageChange({ detail: stored });
+          const raw2c = getUserScopedItem('fds_disposition_data_2c');
+          if (raw2c) {
+            setDispositionMap2c(JSON.parse(raw2c));
+          }
+        } catch (_) {}
+      }
+    };
+    window.addEventListener('storage', handleCrossTabStorage);
+
+    return () => {
+      window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
+      window.removeEventListener('storage', handleCrossTabStorage);
+    };
   }, []);
 
   // Load from Compact v2 Cloud Engine / backend API, keeping localStorage synced (1°C, 2°C & History in a single round-trip)
@@ -2184,7 +2208,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
       // 2. Crear alumnos nuevos detectados en el archivo si corresponde (tanto desde Asistencia como desde Calificaciones)
       if (Array.isArray(payload.newStudentsToCreate) && payload.newStudentsToCreate.length > 0) {
-        const userId = getActiveUserId();
         for (const st of payload.newStudentsToCreate) {
           const newStudentObj: Student = {
             id: st.id,
@@ -2197,14 +2220,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 ''
               ),
             courseId: activeCourse.id,
-            status: 'present',
             attendanceRate: 100,
             averageGrade: 0,
+            notes: (st as any).notes || 'Importado desde archivo',
+            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(st.firstName + ' ' + st.lastName)}&background=1a73e8&color=ffffff&bold=true`,
           };
-          await api.createStudent(newStudentObj as any).catch(() => {});
-          if (userId) {
-            firestoreSync.saveStudent(userId, newStudentObj).catch(() => {});
-          }
+          await api.createStudent(newStudentObj).catch(() => {});
         }
         onRefreshData();
       }
@@ -2212,11 +2233,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       // 3. Aplicar actualizaciones de asistencia y disposición si el documento tenía columnas de faltas/tardanzas/disposición
       const attEntries = Object.entries(payload.attendanceUpdates || {});
       if (attEntries.length > 0) {
-        setDispositionByTerm((prev) => {
-          const termBucket = { ...(prev[payload.term] || {}) };
+        const userId = getActiveUserId();
+        const is2c = payload.term === '2c';
+        let updatedMapForEvent: Record<string, StudentDispositionData>;
+
+        if (is2c) {
+          const updatedMap2c: Record<string, StudentDispositionData> = { ...dispositionMap2c };
           attEntries.forEach(([stId, upd]) => {
-            const current = termBucket[stId] || getStudentMetrics(stId, payload.term);
-            termBucket[stId] = {
+            const current = updatedMap2c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            updatedMap2c[stId] = {
               ...current,
               totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
               totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
@@ -2224,18 +2249,55 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
             };
           });
-          const nextState = {
-            ...prev,
-            [payload.term]: termBucket,
-          };
-          try {
-            localStorage.setItem(
-              getUserStorageKey(`fds_disposition_by_term_${activeCourse.id}`),
-              JSON.stringify(nextState)
-            );
-          } catch (_) {}
-          return nextState;
-        });
+
+          setDispositionMap2c(updatedMap2c);
+          updatedMapForEvent = updatedMap2c;
+          if (typeof window !== 'undefined') {
+            setUserScopedItem('fds_disposition_data_2c', JSON.stringify(updatedMap2c));
+            if (activeCourse?.id) {
+              setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap2c));
+            }
+          }
+          saveAllDispositionStorage(dispositionMap, historyList);
+          if (userId) {
+            firestoreSync.syncCompactDispositionNow(userId, false);
+          }
+          triggerSheetsSync(dispositionMap, historyList, updatedMap2c);
+        } else {
+          const updatedMap1c: Record<string, StudentDispositionData> = { ...dispositionMap };
+          attEntries.forEach(([stId, upd]) => {
+            const current = updatedMap1c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            updatedMap1c[stId] = {
+              ...current,
+              totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
+              totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
+              totalDisposition:
+                upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
+            };
+          });
+
+          setDispositionMap(updatedMap1c);
+          updatedMapForEvent = updatedMap1c;
+          if (typeof window !== 'undefined' && activeCourse?.id) {
+            setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap1c));
+          }
+          saveAllDispositionStorage(updatedMap1c, historyList);
+          if (userId) {
+            firestoreSync.syncCompactDispositionNow(userId, false);
+          }
+          triggerSheetsSync(updatedMap1c, historyList, dispositionMap2c);
+        }
+
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('docencia_disposition_storage_change', {
+              detail: {
+                disposition: updatedMapForEvent,
+                history: historyList,
+              },
+            })
+          );
+        }
       }
 
       const summaryParts: string[] = [];

@@ -242,8 +242,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             catsToSync,
             gradesToSync,
             realExistingId,
-            token || undefined,
-            driveFolderId
+            token || undefined
           );
 
           if (pullRes.success && pullRes.changesCount > 0) {
@@ -395,24 +394,38 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     targetCats: GradeCategory[],
     targetGrades: StudentGradesMap
   ) => {
-    if (!token || !linkedCuatrSheetId || !isRealGoogleSpreadsheetId(linkedCuatrSheetId)) return;
+    if (!token) return;
     sheetsSyncQueue.enqueue(
       courseId,
       'grades',
       async () => {
-        const res = await sheetsService.syncGradebookMatrixToSheet(
-          { id: courseId, name: courseName },
-          targetTerm,
-          students,
-          targetCats,
-          targetGrades,
-          driveFolderId,
-          linkedCuatrSheetId,
-          token
-        );
-        if (res.isLiveGoogle && res.updatedAt) {
-          setLastSyncedCuatrTime(res.updatedAt);
-        }
+        try {
+          const realId = await sheetsService.resolveGradesSpreadsheetId(
+            courseId,
+            courseName,
+            undefined,
+            driveFolderId,
+            token || undefined
+          );
+          if (!realId || !isRealGoogleSpreadsheetId(realId)) return;
+          const res = await sheetsService.syncGradebookMatrixToSheet(
+            { id: courseId, name: courseName },
+            targetTerm,
+            students,
+            targetCats,
+            targetGrades,
+            realId,
+            driveFolderId,
+            token
+          );
+          if (res.isLiveGoogle && res.updatedAt) {
+            setSheetsSavedInfo({
+              url: res.url,
+              tabName: targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre',
+              isLiveGoogle: true,
+            });
+          }
+        } catch (_) {}
       },
       3500
     );
@@ -640,7 +653,20 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     };
 
     window.addEventListener('fds-grades-updated', handleGradesUpdated);
-    return () => window.removeEventListener('fds-grades-updated', handleGradesUpdated);
+
+    // Cross-tab real-time sync for grades
+    const handleCrossTabGradesStorage = (e: StorageEvent) => {
+      if (!e.key) return;
+      if (e.key.includes(`fds_grades_`) && e.key.includes(courseId)) {
+        handleGradesUpdated({});
+      }
+    };
+    window.addEventListener('storage', handleCrossTabGradesStorage);
+
+    return () => {
+      window.removeEventListener('fds-grades-updated', handleGradesUpdated);
+      window.removeEventListener('storage', handleCrossTabGradesStorage);
+    };
   }, [courseId]);
 
   // Preliminary Valuation State (Valoración Preliminar: TEA / TEP)
@@ -817,6 +843,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         })
         .catch(() => {});
     }
+
+    // Automatically enqueue background Google Sheets sync for the updated imported grades
+    enqueueBackgroundSheetsSync(payload.term, payload.updatedCategories, payload.updatedGradesMap);
 
     window.dispatchEvent(
       new CustomEvent('fds-grades-updated', {

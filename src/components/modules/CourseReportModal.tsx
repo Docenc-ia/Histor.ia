@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Printer,
   Download,
@@ -32,6 +32,8 @@ import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { driveService } from '../../services/workspace/driveService';
+import { getStorageItemForUser, setStorageItemForUser } from '../../services/storageHelpers';
+import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import {
   getCourseAttendanceSettings,
   computeStudentAttendanceTrafficLight,
@@ -92,7 +94,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   } | null>(null);
   const [courseObservation, setCourseObservation] = useState<string>(() => {
     try {
-      return localStorage.getItem(`fds_report_course_observation_${courseId}`) || '';
+      return (
+        getStorageItemForUser(`fds_report_course_observation_${courseId}`) ||
+        localStorage.getItem(`fds_report_course_observation_${courseId}`) ||
+        ''
+      );
     } catch {
       return '';
     }
@@ -101,7 +107,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const handleUpdateCourseObservation = (text: string) => {
     setCourseObservation(text);
     try {
-      localStorage.setItem(`fds_report_course_observation_${courseId}`, text);
+      setStorageItemForUser(`fds_report_course_observation_${courseId}`, text);
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync.saveUserSetting(userId, `course_obs_${courseId}`, text).catch(() => {});
+      }
     } catch (err) {
       console.error('Error saving course report observation:', err);
     }
@@ -136,7 +146,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const disp1cMap = useMemo(() => {
     try {
       const raw =
+        getStorageItemForUser(`fds_disposition_data_${courseId}_1c`) ||
         localStorage.getItem(`fds_disposition_data_${courseId}_1c`) ||
+        getStorageItemForUser('fds_disposition_data_1c') ||
         localStorage.getItem('fds_disposition_data_1c');
       return raw ? JSON.parse(raw) : {};
     } catch {
@@ -147,7 +159,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const disp2cMap = useMemo(() => {
     try {
       const raw =
+        getStorageItemForUser(`fds_disposition_data_${courseId}_2c`) ||
         localStorage.getItem(`fds_disposition_data_${courseId}_2c`) ||
+        getStorageItemForUser('fds_disposition_data_2c') ||
         localStorage.getItem('fds_disposition_data_2c');
       return raw ? JSON.parse(raw) : {};
     } catch {
@@ -159,7 +173,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const categories1c = useMemo<GradeCategory[]>(() => {
     try {
       const raw =
+        getStorageItemForUser(`fds_grades_categories_${courseId}_1c`) ||
         localStorage.getItem(`fds_grades_categories_${courseId}_1c`) ||
+        getStorageItemForUser(`fds_grades_categories_${courseId}`) ||
         localStorage.getItem(`fds_grades_categories_${courseId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -171,7 +187,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const categories2c = useMemo<GradeCategory[]>(() => {
     try {
-      const raw = localStorage.getItem(`fds_grades_categories_${courseId}_2c`);
+      const raw =
+        getStorageItemForUser(`fds_grades_categories_${courseId}_2c`) ||
+        localStorage.getItem(`fds_grades_categories_${courseId}_2c`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -187,7 +205,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const gradesData1c = useMemo<StudentGradesMap>(() => {
     try {
       const raw =
+        getStorageItemForUser(`fds_grades_data_${courseId}_1c`) ||
         localStorage.getItem(`fds_grades_data_${courseId}_1c`) ||
+        getStorageItemForUser(`fds_grades_data_${courseId}`) ||
         localStorage.getItem(`fds_grades_data_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
@@ -197,7 +217,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const gradesData2c = useMemo<StudentGradesMap>(() => {
     try {
-      const raw = localStorage.getItem(`fds_grades_data_${courseId}_2c`);
+      const raw =
+        getStorageItemForUser(`fds_grades_data_${courseId}_2c`) ||
+        localStorage.getItem(`fds_grades_data_${courseId}_2c`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -207,7 +229,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const calcMode1c = useMemo<'average_of_categories' | 'manual_final'>(() => {
     try {
       const raw =
+        getStorageItemForUser(`fds_grades_final_calc_${courseId}_1c`) ||
         localStorage.getItem(`fds_grades_final_calc_${courseId}_1c`) ||
+        getStorageItemForUser(`fds_grades_final_calc_${courseId}`) ||
         localStorage.getItem(`fds_grades_final_calc_${courseId}`);
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
@@ -216,7 +240,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const calcMode2c = useMemo<'average_of_categories' | 'manual_final'>(() => {
     try {
-      const raw = localStorage.getItem(`fds_grades_final_calc_${courseId}_2c`);
+      const raw =
+        getStorageItemForUser(`fds_grades_final_calc_${courseId}_2c`) ||
+        localStorage.getItem(`fds_grades_final_calc_${courseId}_2c`);
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
     return 'manual_final';
@@ -232,7 +258,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         'student_observations',
       ];
       for (const key of keysToCheck) {
-        const raw = localStorage.getItem(key);
+        const raw = getStorageItemForUser(key) || localStorage.getItem(key);
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object') {
@@ -249,18 +275,59 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Dedicated observations for reports / certificates
   const [reportObservations, setReportObservations] = useState<Record<string, string>>(() => {
     try {
-      const raw = localStorage.getItem(`fds_report_student_observations_${courseId}`);
+      const raw =
+        getStorageItemForUser(`fds_report_student_observations_${courseId}`) ||
+        localStorage.getItem(`fds_report_student_observations_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
     }
   });
 
+  // Hydrate observations from Firestore cloud if available
+  useEffect(() => {
+    const userId = getActiveUserId();
+    if (!userId || !courseId) return;
+
+    firestoreSync
+      .loadUserSetting<string>(userId, `course_obs_${courseId}`)
+      .then((cloudObs) => {
+        if (cloudObs && typeof cloudObs === 'string') {
+          setCourseObservation((prev) => prev || cloudObs);
+          setStorageItemForUser(`fds_report_course_observation_${courseId}`, cloudObs);
+        }
+      })
+      .catch(() => {});
+
+    firestoreSync
+      .loadUserSetting<Record<string, string>>(userId, `student_report_obs_${courseId}`)
+      .then((cloudMap) => {
+        if (cloudMap && typeof cloudMap === 'object') {
+          setReportObservations((prev) => {
+            const merged = { ...cloudMap, ...prev };
+            setStorageItemForUser(
+              `fds_report_student_observations_${courseId}`,
+              JSON.stringify(merged)
+            );
+            return merged;
+          });
+        }
+      })
+      .catch(() => {});
+  }, [courseId]);
+
   const handleUpdateStudentReportObservation = (studentId: string, text: string) => {
     setReportObservations((prev) => {
       const updated = { ...prev, [studentId]: text };
       try {
-        localStorage.setItem(`fds_report_student_observations_${courseId}`, JSON.stringify(updated));
+        setStorageItemForUser(
+          `fds_report_student_observations_${courseId}`,
+          JSON.stringify(updated)
+        );
+        const userId = getActiveUserId();
+        if (userId) {
+          firestoreSync.saveUserSetting(userId, `student_report_obs_${courseId}`, updated).catch(() => {});
+        }
       } catch (err) {
         console.error('Error saving report observation:', err);
       }

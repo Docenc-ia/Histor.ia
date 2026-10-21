@@ -280,9 +280,9 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
         </div>
       </td>
 
-      {/* Register Attendance Buttons */}
-      <td className="py-2 px-3 text-center">
-        <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
+      {/* Register Attendance Buttons (Fixed width cell and buttons to prevent row/column expansion) */}
+      <td className="py-2 px-2.5 text-center whitespace-nowrap w-[130px]">
+        <div className="inline-flex items-center justify-center gap-1.5">
           <button
             type="button"
             onClick={() => {
@@ -292,7 +292,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
                 onAddAbsence(student);
               }
             }}
-            className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
+            className={`w-[58px] h-7 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center shrink-0 active:scale-90 ${
               isTodayAbsent
                 ? 'bg-red-600 text-white border-red-600 shadow-xs'
                 : pulsingStudentId === `abs-${student.id}`
@@ -303,24 +303,12 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
             }`}
             title={
               isTodayAbsent
-                ? 'Ausente hoy. Clic para desmarcar / quitar falta de hoy.'
-                : 'Marcar falta (suma 1 ausencia sin descontar puntos de disposición)'
+                ? 'Marcado ausente hoy. Clic para desmarcar / borrar falta de hoy.'
+                : 'Marcar falta (suma 1 ausencia)'
             }
           >
-            <span>{isTodayAbsent ? 'Ausente hoy' : 'Falta'}</span>
+            <span>Falta</span>
           </button>
-
-          {(metrics.totalAbsences || 0) > 0 && onDeleteLatestAbsence && (
-            <button
-              type="button"
-              onClick={() => onDeleteLatestAbsence(student)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-red-600 hover:border-red-200 dark:hover:border-red-800/60 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-              title="Borrar falta: elimina la última inasistencia registrada y actualiza el contador"
-            >
-              <RotateCcw className="w-3 h-3 text-red-500" />
-              <span className="text-[11px]">Borrar falta</span>
-            </button>
-          )}
 
           <button
             type="button"
@@ -331,7 +319,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
                 onRecordLateArrival(student);
               }
             }}
-            className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
+            className={`w-[58px] h-7 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center shrink-0 active:scale-90 ${
               isTodayLate
                 ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
                 : pulsingStudentId === `late-${student.id}`
@@ -342,24 +330,12 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
             }`}
             title={
               isTodayLate
-                ? 'Llegó tarde hoy. Clic para desmarcar / quitar tardanza de hoy.'
-                : 'Registrar llegada tarde. Si el alumno tenía una falta registrada hoy, se borra automáticamente.'
+                ? 'Marcado tarde hoy. Clic para desmarcar / borrar tardanza de hoy.'
+                : 'Registrar llegada tarde. Si el alumno tenía una falta hoy, se borra automáticamente.'
             }
           >
-            <span>{isTodayLate ? 'Tarde hoy' : 'Tarde'}</span>
+            <span>Tarde</span>
           </button>
-
-          {(metrics.totalLates || 0) > 0 && (
-            <button
-              type="button"
-              onClick={() => onDeleteLatestLate(student)}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-amber-600 hover:border-amber-200 dark:hover:border-amber-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
-              title="Borrar tardanza: elimina la última llegada tarde registrada y actualiza el contador"
-            >
-              <RotateCcw className="w-3 h-3 text-amber-500" />
-              <span className="text-[11px]">Borrar tarde</span>
-            </button>
-          )}
         </div>
       </td>
 

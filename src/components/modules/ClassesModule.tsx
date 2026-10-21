@@ -3003,8 +3003,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       },
     };
 
-    // Initial history entry (message notification only pending if autoNotify is enabled)
-    const shouldAutoNotify = !!notifSettings.autoNotify;
+    // Initial history entry for absence (ready for sending message)
     const newHistoryEntry: StudentHistoryItem = {
       id,
       studentId: student.id,
@@ -3019,9 +3018,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       timestamp,
       messageSent: false,
       messageText: '',
-      notificationMethod: shouldAutoNotify ? (notifSettings.channel || 'classroom') : 'omitted',
-      omitNotification: !shouldAutoNotify,
-      notifiedAt: !shouldAutoNotify ? 'No enviar' : undefined,
+      notificationMethod: notifSettings.channel || 'classroom',
+      omitNotification: false,
     };
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
@@ -3067,9 +3065,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         timestamp,
         messageSent: false,
         messageText: '',
-        notificationMethod: shouldAutoNotify ? (notifSettings.channel || 'classroom') : 'omitted',
-        omitNotification: !shouldAutoNotify,
-        notifiedAt: !shouldAutoNotify ? 'No enviar' : undefined,
+        notificationMethod: notifSettings.channel || 'classroom',
+        omitNotification: false,
         expectedSummary: {
           totalAbsences: newAbsences,
           totalLates: newLates,
@@ -3083,7 +3080,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     // Check if teacher has selected a default preset or standard
     const activePreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-    const channelToUse = activePreset.channel !== 'any' ? activePreset.channel : notifSettings.channel;
+    const channelToUse = activePreset.channel !== 'any' ? activePreset.channel : (notifSettings.channel || 'classroom');
     const personalizedMessage = formatTemplateForStudent(
       activePreset.text,
       student,
@@ -3093,8 +3090,21 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     );
 
     if (notifSettings.autoNotify) {
-      // Auto-send directly only if teacher configured automatic notification
+      // Auto-send directly if teacher configured automatic notification
       sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
+    } else if (!notifSettings.dontShowPopupOnAbsence) {
+      // Open message sending popup immediately upon marking absence
+      setAbsenceNotifModal({
+        isOpen: true,
+        historyItem: newHistoryEntry,
+        student,
+        channel: channelToUse,
+        messageText: personalizedMessage,
+        selectedPresetId: activePreset.id,
+        showSavePresetInput: false,
+        newPresetName: '',
+        isSending: false,
+      });
     }
   };
 

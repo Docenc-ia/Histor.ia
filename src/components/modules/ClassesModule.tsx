@@ -863,10 +863,17 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     return historyList.filter(
       (h) =>
         h.courseId === activeCourse.id &&
-        h.category === 'Ausencia' &&
+        (h.category === 'Ausencia' || h.action === 'Ausencia') &&
+        h.category !== 'Sistema' &&
+        !h.action?.toLowerCase().includes('actualizada') &&
+        !h.action?.toLowerCase().includes('verificación') &&
+        !h.action?.toLowerCase().includes('ajuste') &&
         !h.messageSent &&
         !h.omitNotification &&
-        h.notificationMethod !== 'omitted'
+        h.notificationMethod !== 'omitted' &&
+        h.notificationMethod !== 'none' &&
+        h.notifiedAt !== 'No enviar' &&
+        h.notifiedAt !== 'Omitido'
     );
   }, [historyList, activeCourse?.id]);
 
@@ -877,9 +884,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       (h) =>
         h.courseId === activeCourse.id &&
         h.category === 'Disposición' &&
+        !h.action?.toLowerCase().includes('actualizada') &&
+        !h.action?.toLowerCase().includes('verificación') &&
+        !h.action?.toLowerCase().includes('ajuste') &&
         !h.messageSent &&
         !h.omitNotification &&
-        h.notificationMethod !== 'omitted'
+        h.notificationMethod !== 'omitted' &&
+        h.notificationMethod !== 'none' &&
+        h.notifiedAt !== 'No enviar' &&
+        h.notifiedAt !== 'Omitido'
     );
   }, [historyList, activeCourse?.id]);
 
@@ -1282,27 +1295,49 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   useEffect(() => {
     const handleStorageChange = (e: any) => {
       if (e?.detail) {
-        const { disposition, history } = e.detail;
+        const { disposition, history, term } = e.detail;
         if (disposition && typeof disposition === 'object') {
-          setDispositionMap((prev) => {
-            const incomingKeys = Object.keys(disposition);
-            const prevKeys = Object.keys(prev);
-            let hasChanged = incomingKeys.length !== prevKeys.length;
-            if (!hasChanged) {
-              for (const k of incomingKeys) {
-                if (
-                  !prev[k] ||
-                  prev[k].totalAbsences !== disposition[k].totalAbsences ||
-                  prev[k].totalLates !== disposition[k].totalLates ||
-                  prev[k].totalDisposition !== disposition[k].totalDisposition
-                ) {
-                  hasChanged = true;
-                  break;
+          if (term === '2c') {
+            setDispositionMap2c((prev) => {
+              const incomingKeys = Object.keys(disposition);
+              const prevKeys = Object.keys(prev);
+              let hasChanged = incomingKeys.length !== prevKeys.length;
+              if (!hasChanged) {
+                for (const k of incomingKeys) {
+                  if (
+                    !prev[k] ||
+                    prev[k].totalAbsences !== disposition[k].totalAbsences ||
+                    prev[k].totalLates !== disposition[k].totalLates ||
+                    prev[k].totalDisposition !== disposition[k].totalDisposition
+                  ) {
+                    hasChanged = true;
+                    break;
+                  }
                 }
               }
-            }
-            return hasChanged ? { ...prev, ...disposition } : prev;
-          });
+              return hasChanged ? { ...prev, ...disposition } : prev;
+            });
+          } else {
+            setDispositionMap((prev) => {
+              const incomingKeys = Object.keys(disposition);
+              const prevKeys = Object.keys(prev);
+              let hasChanged = incomingKeys.length !== prevKeys.length;
+              if (!hasChanged) {
+                for (const k of incomingKeys) {
+                  if (
+                    !prev[k] ||
+                    prev[k].totalAbsences !== disposition[k].totalAbsences ||
+                    prev[k].totalLates !== disposition[k].totalLates ||
+                    prev[k].totalDisposition !== disposition[k].totalDisposition
+                  ) {
+                    hasChanged = true;
+                    break;
+                  }
+                }
+              }
+              return hasChanged ? { ...prev, ...disposition } : prev;
+            });
+          }
         }
         if (Array.isArray(history)) {
           setHistoryList((prev) => {
@@ -1475,10 +1510,53 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     try {
       const map1cToUse = customMap || dispositionMap;
       const map2cToUse = customMap2c || dispositionMap2c;
-      const historyToUse = customHistory
-        ? customHistory.filter((h) => h.courseId === activeCourse.id)
-        : historyList.filter((h) => h.courseId === activeCourse.id);
-      const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+
+      // Guarantee all students enrolled or tracked in this course are included
+      const studentMap = new Map<string, Student>();
+      for (const s of courseStudents) {
+        studentMap.set(s.id, s);
+      }
+      for (const s of students) {
+        if (s.courseId === activeCourse.id && !studentMap.has(s.id)) {
+          studentMap.set(s.id, s);
+        }
+      }
+      const allKnownIds = new Set([...Object.keys(map1cToUse || {}), ...Object.keys(map2cToUse || {})]);
+      for (const stId of allKnownIds) {
+        if (!studentMap.has(stId)) {
+          const histItem = (customHistory || historyList).find((h) => h.studentId === stId);
+          studentMap.set(stId, {
+            id: stId,
+            courseId: activeCourse.id,
+            firstName: histItem?.studentName?.split(' ')[0] || 'Estudiante',
+            lastName: histItem?.studentName?.split(' ').slice(1).join(' ') || stId,
+            email: '',
+            avatar: '',
+            attendanceRate: 100,
+            averageGrade: 10,
+            notes: '',
+          });
+        }
+      }
+      const currentStudents = Array.from(studentMap.values()).sort((a, b) => {
+        const lastA = (a.lastName || '').trim();
+        const lastB = (b.lastName || '').trim();
+        const cmp = lastA.localeCompare(lastB, 'es', { sensitivity: 'base' });
+        if (cmp !== 0) return cmp;
+        return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
+      });
+
+      const fullMap1c: Record<string, StudentDispositionData> = {};
+      const fullMap2c: Record<string, StudentDispositionData> = {};
+      for (const s of currentStudents) {
+        fullMap1c[s.id] = (map1cToUse && map1cToUse[s.id]) || getStudentMetrics(s.id, '1c');
+        fullMap2c[s.id] = (map2cToUse && map2cToUse[s.id]) || getStudentMetrics(s.id, '2c');
+      }
+
+      const courseStudentIds = new Set(currentStudents.map((s) => s.id));
+      const historyToUse = (customHistory || historyList).filter(
+        (h) => h.courseId === activeCourse.id || courseStudentIds.has(h.studentId)
+      );
       const realExistingId =
         (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
         (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
@@ -1513,12 +1591,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       const res = await sheetsService.syncDispositionSheet(
         activeCourse,
         currentStudents,
-        map1cToUse,
+        fullMap1c,
         historyToUse,
         realExistingId,
         targetFolderId,
         activeToken,
-        map2cToUse
+        fullMap2c
       );
 
       const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
@@ -1588,7 +1666,41 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
 
       setToastMessage(`Sincronizando con Google Sheets para "${activeCourse.name}"...`);
-      const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
+      // Guarantee all students enrolled or tracked in this course are included
+      const studentMap = new Map<string, Student>();
+      for (const s of courseStudents) {
+        studentMap.set(s.id, s);
+      }
+      for (const s of students) {
+        if (s.courseId === activeCourse.id && !studentMap.has(s.id)) {
+          studentMap.set(s.id, s);
+        }
+      }
+      const allKnownIds = new Set([...Object.keys(dispositionMap || {}), ...Object.keys(dispositionMap2c || {})]);
+      for (const stId of allKnownIds) {
+        if (!studentMap.has(stId)) {
+          const histItem = historyList.find((h) => h.studentId === stId);
+          studentMap.set(stId, {
+            id: stId,
+            courseId: activeCourse.id,
+            firstName: histItem?.studentName?.split(' ')[0] || 'Estudiante',
+            lastName: histItem?.studentName?.split(' ').slice(1).join(' ') || stId,
+            email: '',
+            avatar: '',
+            attendanceRate: 100,
+            averageGrade: 10,
+            notes: '',
+          });
+        }
+      }
+      const currentStudents = Array.from(studentMap.values()).sort((a, b) => {
+        const lastA = (a.lastName || '').trim();
+        const lastB = (b.lastName || '').trim();
+        const cmp = lastA.localeCompare(lastB, 'es', { sensitivity: 'base' });
+        if (cmp !== 0) return cmp;
+        return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
+      });
+
       const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
       const isS2NatCourse =
         (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
@@ -1635,11 +1747,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               studentName: change.studentName,
               courseId: activeCourse.id,
               term: change.term,
-              category: change.field === 'totalAbsences' ? 'Ausencia' : change.field === 'totalLates' ? 'Llegada tarde' : 'Disposición',
+              category: 'Sistema',
               action: `Sincronización Sheets (${change.termLabel}): ${change.fieldLabel} modificado en Google Sheet de ${change.oldValue} a ${change.newValue}`,
               date: dateStr,
               time: timeStr,
               timestamp: Date.now() + idx,
+              messageSent: false,
+              messageText: '',
+              notificationMethod: 'omitted',
+              omitNotification: true,
+              notifiedAt: 'No enviar',
             }));
 
             const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
@@ -2661,19 +2778,24 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const historyAbsences = studentHistory.filter(
       (h) =>
-        h.category === 'Ausencia' ||
-        h.action === 'Ausencia' ||
-        h.action?.toLowerCase().includes('ausencia') ||
-        h.action?.toLowerCase().includes('falta')
+        (h.category === 'Ausencia' ||
+          h.action === 'Ausencia' ||
+          h.action?.toLowerCase().includes('ausencia') ||
+          h.action?.toLowerCase().includes('falta')) &&
+        h.category !== 'Sistema' &&
+        !h.action?.toLowerCase().includes('actualizada') &&
+        !h.action?.toLowerCase().includes('verificación') &&
+        !h.action?.toLowerCase().includes('ajuste')
     ).length;
 
     const historyLates = studentHistory.filter(
       (h) =>
-        h.category === 'Llegada tarde' ||
-        h.action === 'Llegada tarde' ||
-        h.action?.toLowerCase().includes('llegada tarde') ||
-        h.action?.toLowerCase().includes('tarde') ||
-        h.action?.toLowerCase().includes('tardanza')
+        (h.category === 'Llegada tarde' ||
+          h.action === 'Llegada tarde' ||
+          h.action?.toLowerCase().includes('llegada tarde') ||
+          h.action?.toLowerCase().includes('tarde') ||
+          h.action?.toLowerCase().includes('tardanza')) &&
+        h.category !== 'Sistema'
     ).length;
 
     let calculatedDisp = 10;
@@ -2695,34 +2817,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     let totalAbsences = 0;
-    if (fromMap?.totalAbsences !== undefined) {
-      totalAbsences = fromMap.totalAbsences;
+    if (fromMap?.totalAbsences !== undefined && fromMap?.totalAbsences !== null) {
+      totalAbsences = Math.max(0, Number(fromMap.totalAbsences) || 0);
     } else {
       totalAbsences = historyAbsences;
-    }
-    if (historyAbsences > totalAbsences) {
-      totalAbsences = historyAbsences;
-    }
-    if (historyAbsences === 0 && (!fromMap || fromMap.totalAbsences === undefined)) {
-      totalAbsences = 0;
     }
 
     let totalLates = 0;
-    if (fromMap?.totalLates !== undefined) {
-      totalLates = fromMap.totalLates;
+    if (fromMap?.totalLates !== undefined && fromMap?.totalLates !== null) {
+      totalLates = Math.max(0, Number(fromMap.totalLates) || 0);
     } else {
       totalLates = historyLates;
     }
-    if (historyLates > totalLates) {
-      totalLates = historyLates;
-    }
-    if (historyLates === 0 && (!fromMap || fromMap.totalLates === undefined)) {
-      totalLates = 0;
-    }
 
     let totalDisposition = 10;
-    if (fromMap?.totalDisposition !== undefined) {
-      totalDisposition = fromMap.totalDisposition;
+    if (fromMap?.totalDisposition !== undefined && fromMap?.totalDisposition !== null) {
+      totalDisposition = Number(fromMap.totalDisposition);
     } else {
       totalDisposition = calculatedDisp;
     }
@@ -2781,15 +2891,27 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         if (activeCourse?.id) {
           setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
         }
+        window.dispatchEvent(
+          new CustomEvent('docencia_disposition_storage_change', {
+            detail: { term: '2c', disposition: updatedMap, history: updatedHistory },
+          })
+        );
       }
-      saveAllDispositionStorage(dispositionMap, updatedHistory);
+      saveAllDispositionStorage(dispositionMap, updatedHistory, { silent: true });
       if (uid) {
         firestoreSync.syncCompactDispositionNow(uid, false);
       }
     } else {
       setDispositionMap(updatedMap);
-      if (typeof window !== 'undefined' && activeCourse?.id) {
-        setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
+      if (typeof window !== 'undefined') {
+        if (activeCourse?.id) {
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
+        }
+        window.dispatchEvent(
+          new CustomEvent('docencia_disposition_storage_change', {
+            detail: { term: '1c', disposition: updatedMap, history: updatedHistory },
+          })
+        );
       }
       saveAllDispositionStorage(updatedMap, updatedHistory);
       if (uid) {
@@ -2845,6 +2967,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       todayLatesToRemove.forEach((l) => markHistoryIdDeleted(l.id));
     }
 
+    // Check if student is already marked absent today to prevent duplicating absences
+    const alreadyAbsentToday = cleanHistory.some(
+      (h) =>
+        h.studentId === student.id &&
+        (targetTerm === '2c' ? h.term === '2c' : h.term === '1c' || !h.term) &&
+        (h.category === 'Ausencia' ||
+          h.action === 'Ausencia' ||
+          h.action?.toLowerCase().includes('ausencia') ||
+          h.action?.toLowerCase().includes('falta')) &&
+        h.category !== 'Sistema' &&
+        isSameCalendarDay(h.date, h.timestamp, now)
+    );
+
+    if (alreadyAbsentToday) {
+      setToastMessage(`${student.lastName}, ${student.firstName} ya figura ausente el día de hoy (${date}).`);
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
     const newAbsences = current.totalAbsences + 1;
     const newLates =
       todayLatesToRemove.length > 0
@@ -2862,7 +3003,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       },
     };
 
-    // Initial history entry (message notification starts as pending)
+    // Initial history entry (message notification only pending if autoNotify is enabled)
+    const shouldAutoNotify = !!notifSettings.autoNotify;
     const newHistoryEntry: StudentHistoryItem = {
       id,
       studentId: student.id,
@@ -2877,7 +3019,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       timestamp,
       messageSent: false,
       messageText: '',
-      notificationMethod: 'none',
+      notificationMethod: shouldAutoNotify ? (notifSettings.channel || 'classroom') : 'omitted',
+      omitNotification: !shouldAutoNotify,
+      notifiedAt: !shouldAutoNotify ? 'No enviar' : undefined,
     };
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
@@ -2908,7 +3052,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
     }
 
-    // Persist to server with exact ID, date, time, timestamp and expected summary
+    // Persist to server with exact ID, date, time, timestamp, term, and expected summary
     api
       .recordDisposition({
         id,
@@ -2917,12 +3061,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         courseId: activeCourse.id,
         action: 'Ausencia',
         category: 'Ausencia',
+        term: targetTerm,
         date,
         time,
         timestamp,
         messageSent: false,
         messageText: '',
-        notificationMethod: 'none',
+        notificationMethod: shouldAutoNotify ? (notifSettings.channel || 'classroom') : 'omitted',
+        omitNotification: !shouldAutoNotify,
+        notifiedAt: !shouldAutoNotify ? 'No enviar' : undefined,
         expectedSummary: {
           totalAbsences: newAbsences,
           totalLates: newLates,
@@ -3700,8 +3847,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const updatedHistory = historyList.filter((h) => h.id !== item.id);
     setHistoryList(updatedHistory);
 
-    // Calculate updated metrics for student directly from remaining history
-    const studentRemainingHistory = updatedHistory.filter((h) => h.studentId === item.studentId);
+    const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : '1c';
+    const is2cItem = itemTerm === '2c';
+
+    // Calculate updated metrics for student directly from remaining history within the same term
+    const studentRemainingHistory = updatedHistory.filter(
+      (h) => h.studentId === item.studentId && (is2cItem ? h.term === '2c' : (h.term === '1c' || !h.term))
+    );
     const newAbsences = studentRemainingHistory.filter(
       (h) =>
         h.category === 'Ausencia' ||
@@ -3737,17 +3889,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       }
     }
 
-    const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : '1c';
     const baseMap = itemTerm === '2c' ? dispositionMap2c : dispositionMap;
     const current = baseMap[item.studentId] || getStudentMetrics(item.studentId, itemTerm);
 
     const finalAbsences = isAbsence
       ? Math.max(0, (current.totalAbsences !== undefined ? current.totalAbsences : 1) - 1)
-      : newAbsences;
+      : (current.totalAbsences !== undefined ? current.totalAbsences : newAbsences);
 
     const finalLates = isLate
       ? Math.max(0, (current.totalLates !== undefined ? current.totalLates : 1) - 1)
-      : newLates;
+      : (current.totalLates !== undefined ? current.totalLates : newLates);
 
     const finalDisposition = (isAbsence || isLate)
       ? (current.totalDisposition ?? 10)
@@ -3939,46 +4090,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       return true;
     });
 
-    // Si no encontró por fecha de hoy pero el alumno tiene faltas registradas, quitar la falta más reciente
-    if (todayAbsencesToRemove.length === 0 && current.totalAbsences > 0) {
-      const studentAbsences = cleanHistory
-        .filter(
-          (h) =>
-            h.studentId === student.id &&
-            (h.category === 'Ausencia' ||
-              h.action === 'Ausencia' ||
-              h.action?.toLowerCase().includes('ausencia') ||
-              h.action?.toLowerCase().includes('falta'))
-        )
-        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-      if (studentAbsences.length > 0) {
-        const latestAbs = studentAbsences[0];
-        todayAbsencesToRemove.push(latestAbs);
-        cleanHistory = cleanHistory.filter((h) => h.id !== latestAbs.id);
-      }
-    }
-
-    const hadAbsenceToCancel = todayAbsencesToRemove.length > 0 || current.totalAbsences > 0;
+    const hadAbsenceToCancel = todayAbsencesToRemove.length > 0;
     if (todayAbsencesToRemove.length > 0) {
       todayAbsencesToRemove.forEach((a) => markHistoryIdDeleted(a.id));
     }
 
-    // Conteo exacto de ausencias restantes tras eliminar la falta
-    const remainingStudentAbsences = Math.max(
-      0,
-      current.totalAbsences > 0
-        ? current.totalAbsences - 1
-        : cleanHistory.filter(
-            (h) =>
-              h.studentId === student.id &&
-              (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-              (h.category === 'Ausencia' ||
-                h.action === 'Ausencia' ||
-                h.action?.toLowerCase().includes('ausencia') ||
-                h.action?.toLowerCase().includes('falta'))
-          ).length
-    );
+    // Ausencias restantes: sólo disminuye si hoy tenía una falta que fue cancelada por la llegada tarde
+    const remainingStudentAbsences = hadAbsenceToCancel
+      ? Math.max(0, (current.totalAbsences || 0) - todayAbsencesToRemove.length)
+      : current.totalAbsences || 0;
 
     const remainingStudentLates = (current.totalLates || 0) + 1;
 
@@ -3996,7 +4116,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       },
     };
 
-    // Entrada en el historial para la llegada tarde
+    // Entrada en el historial para la llegada tarde (sin avisos pendientes a menos que se configure)
     const newHistoryEntry: StudentHistoryItem = {
       id,
       studentId: student.id,
@@ -4011,7 +4131,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       timestamp,
       messageSent: false,
       messageText: '',
-      notificationMethod: 'none',
+      notificationMethod: 'omitted',
+      omitNotification: true,
+      notifiedAt: 'No enviar',
     };
 
     const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
@@ -4019,7 +4141,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
     if (hadAbsenceToCancel) {
-      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}. Se eliminó automáticamente la falta.`);
+      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}. Se eliminó automáticamente la falta de hoy.`);
     } else {
       setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}.`);
     }
@@ -4057,9 +4179,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         courseId: activeCourse.id,
         action: 'Llegada tarde a clase',
         category: 'Llegada tarde',
+        term: targetTerm,
         date,
         time,
         timestamp,
+        messageSent: false,
+        messageText: '',
+        notificationMethod: 'omitted',
+        omitNotification: true,
+        notifiedAt: 'No enviar',
         expectedSummary: {
           totalAbsences: remainingStudentAbsences,
           totalLates: remainingStudentLates,
@@ -4443,55 +4571,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         },
       };
 
-      // 2. Generate history entry reflecting the manual update and retroactive date
-      let newHistoryEntry: StudentHistoryItem | null = null;
-      let newHistoryEntries: StudentHistoryItem[] = [];
-
-      if (difference !== 0 || editingAbsenceSendNotif) {
-        const actionText = difference > 0
-          ? `Inasistencia asentada en fecha ${selectedDateDMY} (+${difference} ${difference === 1 ? 'falta' : 'faltas'} • Total: ${finalAbsences})`
-          : difference < 0
-          ? `Faltas ajustadas a ${finalAbsences} (descuento de ${Math.abs(difference)} en fecha ${selectedDateDMY})`
-          : `Inasistencia registrada en fecha ${selectedDateDMY} (Total: ${finalAbsences} faltas)`;
-
-        const fullActionDesc = reasonTrimmed
-          ? `${actionText} - ${reasonTrimmed}`
-          : actionText;
-
-        const willSendNotification = editingAbsenceSendNotif && editingAbsenceMessageText.trim().length > 0;
-        newHistoryEntry = {
-          id: `rec-abs-edit-${student.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          studentId: student.id,
-          studentName: studentFullName,
-          courseId: activeCourse.id,
-          date: selectedDateDMY,
-          time,
-          term,
-          action: fullActionDesc,
-          category: 'Ausencia',
-          pointsChange: 0,
-          timestamp: recordTimestamp,
-          messageSent: false,
-          messageText: willSendNotification ? editingAbsenceMessageText.trim() : '',
-          notificationMethod: willSendNotification ? editingAbsenceChannel : ('omitted' as const),
-          omitNotification: !willSendNotification,
-          notifiedAt: !willSendNotification ? 'No enviar' : undefined,
-        };
-        newHistoryEntries.push(newHistoryEntry);
-      }
-
-      // If user reduced absences, purge oldest non-notified absences for student if appropriate
-      let updatedHistory = deduplicateHistory([...newHistoryEntries, ...historyList]);
+      // 2. Adjust history items so that historical records don't inflate or conflict
+      let updatedHistory = [...historyList];
       if (difference < 0) {
-        const toRemoveCount = Math.abs(difference);
+        // Reduced absences: remove the excess historical absence records for this student and term
         let removed = 0;
+        const toRemove = Math.abs(difference);
         updatedHistory = updatedHistory.filter((h) => {
           if (
-            removed < toRemoveCount &&
+            removed < toRemove &&
             h.studentId === student.id &&
             (term === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-            (h.category === 'Ausencia' || h.action?.toLowerCase().includes('ausencia') || h.action?.toLowerCase().includes('falta')) &&
-            !newHistoryEntries.some(ne => ne.id === h.id)
+            (h.category === 'Ausencia' || h.action?.toLowerCase().includes('ausencia') || h.action?.toLowerCase().includes('falta'))
           ) {
             markHistoryIdDeleted(h.id);
             api.deleteDispositionHistory(h.id).catch(() => {});
@@ -4502,93 +4593,71 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         });
       }
 
-      // 3. Optional message notification sending (even if not recorded the same day)
-      if (editingAbsenceSendNotif && editingAbsenceMessageText.trim() && newHistoryEntry) {
-        const channel = editingAbsenceChannel;
-        const msgText = editingAbsenceMessageText.trim();
-        let notifSuccess = false;
+      // Add audit history item with category 'Sistema' so it NEVER counts as an extra absence or triggers messages!
+      const auditAction = difference !== 0
+        ? `Inasistencias actualizadas en fecha ${selectedDateDMY}: ${oldAbsences} → ${finalAbsences} faltas${reasonTrimmed ? ` (${reasonTrimmed})` : ''}`
+        : `Verificación de inasistencias en fecha ${selectedDateDMY}: ${finalAbsences} faltas${reasonTrimmed ? ` (${reasonTrimmed})` : ''}`;
 
-        if (channel === 'classroom') {
-          const classroomCourseId = activeCourse.classroomCourseId || activeCourse.id;
-          const res = await classroomService.createIndividualAnnouncement(
-            classroomCourseId,
-            student.id,
-            msgText
-          );
-          notifSuccess = res.success;
-        } else {
-          const emailSubject = `Notificación de Inasistencia - ${activeCourse.name} (${selectedDateDMY})`;
-          const res = await gmailService.sendEmail(
-            student.email || '',
-            emailSubject,
-            msgText
-          );
-          notifSuccess = res.success;
-        }
+      const auditEntry: StudentHistoryItem = {
+        id: `rec-abs-edit-${student.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        studentId: student.id,
+        studentName: studentFullName,
+        courseId: activeCourse.id,
+        date: selectedDateDMY,
+        time,
+        term,
+        action: auditAction,
+        category: 'Sistema',
+        pointsChange: 0,
+        timestamp: recordTimestamp,
+        messageSent: false,
+        messageText: '',
+        notificationMethod: 'omitted',
+        omitNotification: true,
+        notifiedAt: 'No enviar',
+      };
 
-        const notifiedAt = new Date().toLocaleTimeString();
-        newHistoryEntry.messageSent = true;
-        newHistoryEntry.messageText = msgText;
-        newHistoryEntry.notificationMethod = channel;
-        newHistoryEntry.notifiedAt = notifiedAt;
-
-        // Update in history list
-        updatedHistory = updatedHistory.map((item) =>
-          item.id === newHistoryEntry!.id
-            ? {
-                ...item,
-                messageSent: true,
-                messageText: msgText,
-                notificationMethod: channel,
-                notifiedAt,
-              }
-            : item
-        );
-      }
-
+      updatedHistory = deduplicateHistory([auditEntry, ...updatedHistory]);
       setHistoryList(updatedHistory);
       saveTermDisposition(term, updatedMap, updatedHistory);
 
+      // Trigger Sheets Sync immediately
       triggerSheetsSync(
         term === '1c' ? updatedMap : dispositionMap,
         updatedHistory,
         term === '2c' ? updatedMap : dispositionMap2c
       );
 
-      // Persist to API / backend
-      if (newHistoryEntry) {
-        api
-          .recordDisposition({
-            id: newHistoryEntry.id,
-            studentId: student.id,
-            studentName: studentFullName,
-            courseId: activeCourse.id,
-            action: newHistoryEntry.action,
-            category: 'Ausencia',
-            term,
-            date: selectedDateDMY,
-            time,
-            timestamp: recordTimestamp,
-            messageSent: newHistoryEntry.messageSent,
-            messageText: newHistoryEntry.messageText,
-            notificationMethod: newHistoryEntry.notificationMethod,
-            notifiedAt: newHistoryEntry.notifiedAt,
-            expectedSummary: {
-              totalAbsences: finalAbsences,
-              totalLates: current.totalLates ?? 0,
-              totalDisposition: current.totalDisposition ?? 10,
-            },
-          })
-          .catch(() => {});
-      }
+      // Persist to server API
+      api
+        .recordDisposition({
+          id: auditEntry.id,
+          studentId: student.id,
+          studentName: studentFullName,
+          courseId: activeCourse.id,
+          action: auditAction,
+          category: 'Sistema',
+          term,
+          date: selectedDateDMY,
+          time,
+          timestamp: recordTimestamp,
+          messageSent: false,
+          messageText: '',
+          notificationMethod: 'omitted',
+          omitNotification: true,
+          notifiedAt: 'No enviar',
+          expectedSummary: {
+            totalAbsences: finalAbsences,
+            totalLates: current.totalLates ?? 0,
+            totalDisposition: current.totalDisposition ?? 10,
+          },
+        })
+        .catch(() => {});
 
-      const notifMsgPart = editingAbsenceSendNotif
-        ? ` y aviso enviado por ${editingAbsenceChannel === 'classroom' ? 'Classroom' : 'Gmail'}`
-        : '';
       setToastMessage(
-        `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (fecha: ${selectedDateDMY} en ${term === '2c' ? '2°C' : '1°C'})${notifMsgPart}.`
+        `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'}).`
       );
-      setTimeout(() => setToastMessage(null), 4000);
+      setTimeout(() => setToastMessage(null), 3500);
 
       if (moveToNext) {
         const currentIndex = filteredStudents.findIndex((s) => s.id === student.id);
@@ -4597,19 +4666,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           const nextMetrics = getStudentMetrics(nextStudent.id, term);
           setEditingAbsenceStudent(nextStudent);
           setEditingAbsenceCount(String(nextMetrics.totalAbsences));
-
-          const defaultAbsenceTpl =
-            savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
-            notifSettings.templateClassroom ||
-            DEFAULT_ABSENCE_PRESETS[0].text;
-          const defaultMsg = formatTemplateForStudent(
-            defaultAbsenceTpl,
-            nextStudent,
-            activeCourse.name,
-            nextMetrics.totalDisposition ?? 10,
-            selectedDateDMY
-          );
-          setEditingAbsenceMessageText(defaultMsg);
           return;
         }
       }

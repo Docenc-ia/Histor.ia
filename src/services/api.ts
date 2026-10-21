@@ -861,11 +861,22 @@ export const api = {
     summary: { totalAbsences: number; totalDisposition: number };
     allDisposition: Record<string, { totalAbsences: number; totalDisposition: number }>;
   }> {
+    const is2c = data.term === '2c';
     const local = getAllDispositionStorage();
-    const allDisposition: Record<string, any> = { ...local.disposition };
     let history: any[] = [...local.history];
 
-    const current = (allDisposition[data.studentId] as any) || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+    let allDisposition1c: Record<string, any> = { ...local.disposition };
+    let allDisposition2c: Record<string, any> = {};
+
+    if (typeof window !== 'undefined') {
+      try {
+        const raw = (data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_2c`) : null) || getUserScopedItem('fds_disposition_data_2c');
+        if (raw) allDisposition2c = JSON.parse(raw);
+      } catch (_) {}
+    }
+
+    const currentMap = is2c ? allDisposition2c : allDisposition1c;
+    const current = (currentMap[data.studentId] as any) || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
     if (current.totalDisposition === undefined) current.totalDisposition = 10;
     if (current.totalLates === undefined) current.totalLates = 0;
     if (current.totalAbsences === undefined) current.totalAbsences = 0;
@@ -916,7 +927,20 @@ export const api = {
         current.totalDisposition = Math.max(0, current.totalDisposition - 1);
       }
     }
-    allDisposition[data.studentId] = current;
+
+    if (is2c) {
+      allDisposition2c[data.studentId] = current;
+      if (typeof window !== 'undefined') {
+        setUserScopedItem('fds_disposition_data_2c', JSON.stringify(allDisposition2c));
+        if (data.courseId) {
+          setUserScopedItem(`fds_disposition_data_${data.courseId}_2c`, JSON.stringify(allDisposition2c));
+        }
+      }
+    } else {
+      allDisposition1c[data.studentId] = current;
+    }
+
+    const allDisposition = is2c ? allDisposition2c : allDisposition1c;
 
     const newRecord = {
       id: recordId,
@@ -937,8 +961,19 @@ export const api = {
       history[existingIndex] = { ...history[existingIndex], ...newRecord };
     }
 
-    // Persist immediately across all local storage keys
-    saveAllDispositionStorage(allDisposition, history);
+    // Persist immediately across storage
+    if (is2c) {
+      saveAllDispositionStorage(allDisposition1c, history, { silent: true });
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('docencia_disposition_storage_change', {
+            detail: { term: '2c', disposition: allDisposition2c, history },
+          })
+        );
+      }
+    } else {
+      saveAllDispositionStorage(allDisposition1c, history);
+    }
 
     // Cascaded update of local student record
     try {

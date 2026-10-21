@@ -373,21 +373,23 @@ export const sheetsService = {
   },
 
   /**
-   * Helper to ensure specific sheets (tabs) exist in an existing Google Spreadsheet
+   * Helper to ensure specific sheets (tabs) exist in an existing Google Spreadsheet and have sufficient rows
    */
   async ensureSheetsExist(
     spreadsheetId: string,
     token: string,
-    sheetTitles: string[]
+    sheetTitles: string[],
+    minRows: number = 500
   ): Promise<void> {
     try {
-      const metaRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(sheetId,title))`,
-        { headers: { Authorization: `Bearer ${token}` } }
+      const metaRes = await fetchGoogleApiWithRetry(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(sheetId,title,gridProperties))`,
+        {},
+        token
       );
       if (!metaRes.ok) return;
       const meta = await metaRes.json();
-      const existingSheets: { sheetId: number; title: string }[] =
+      const existingSheets: { sheetId: number; title: string; gridProperties?: { rowCount?: number; columnCount?: number } }[] =
         meta.sheets?.map((s: any) => s.properties) || [];
       const existingTitles = existingSheets.map((s) => s.title);
 
@@ -422,8 +424,8 @@ export const sheetsService = {
               properties: {
                 title,
                 gridProperties: {
-                  rowCount: 500,
-                  columnCount: 15,
+                  rowCount: Math.max(1000, minRows),
+                  columnCount: 20,
                 },
               },
             },
@@ -431,15 +433,40 @@ export const sheetsService = {
         }
       }
 
+      // Ensure existing sheets have sufficient rows and columns so writing never exceeds grid limits
+      for (const sheet of existingSheets) {
+        if (sheetTitles.includes(sheet.title)) {
+          const currentRows = sheet.gridProperties?.rowCount || 0;
+          const currentCols = sheet.gridProperties?.columnCount || 0;
+          if (currentRows < minRows || currentCols < 15) {
+            requests.push({
+              updateSheetProperties: {
+                properties: {
+                  sheetId: sheet.sheetId,
+                  gridProperties: {
+                    rowCount: Math.max(currentRows, minRows),
+                    columnCount: Math.max(currentCols, 20),
+                  },
+                },
+                fields: 'gridProperties(rowCount,columnCount)',
+              },
+            });
+          }
+        }
+      }
+
       if (requests.length > 0) {
-        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
+        await fetchGoogleApiWithRetry(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ requests }),
           },
-          body: JSON.stringify({ requests }),
-        });
+          token
+        );
       }
     } catch (e) {
       console.warn('Notice verifying sheets structure:', e);
@@ -487,13 +514,41 @@ export const sheetsService = {
     ];
 
     const summaryRows1c = sortedStudents.map((student) => {
-      const absences = map1c[student.id]?.totalAbsences ?? 0;
-      const lates = map1c[student.id]?.totalLates ?? 0;
-      const score = map1c[student.id]?.totalDisposition ?? 10;
-
       const studentHistory1c = historyList
         .filter((h) => h.studentId === student.id && (h.term === '1c' || !h.term))
         .sort((a, b) => b.timestamp - a.timestamp);
+
+      const historyAbs1c = studentHistory1c.filter(
+        (h) =>
+          (h.category === 'Ausencia' ||
+            h.action === 'Ausencia' ||
+            h.action?.toLowerCase().includes('ausencia') ||
+            h.action?.toLowerCase().includes('falta')) &&
+          h.category !== 'Sistema' &&
+          !h.action?.toLowerCase().includes('actualizada') &&
+          !h.action?.toLowerCase().includes('verificación') &&
+          !h.action?.toLowerCase().includes('ajuste')
+      ).length;
+
+      const historyLates1c = studentHistory1c.filter(
+        (h) =>
+          (h.category === 'Llegada tarde' ||
+            h.action === 'Llegada tarde' ||
+            h.action?.toLowerCase().includes('llegada tarde') ||
+            h.action?.toLowerCase().includes('tarde') ||
+            h.action?.toLowerCase().includes('tardanza')) &&
+          h.category !== 'Sistema'
+      ).length;
+
+      const absences = map1c[student.id]?.totalAbsences !== undefined && map1c[student.id]?.totalAbsences !== null
+        ? Number(map1c[student.id].totalAbsences)
+        : historyAbs1c;
+
+      const lates = map1c[student.id]?.totalLates !== undefined && map1c[student.id]?.totalLates !== null
+        ? Number(map1c[student.id].totalLates)
+        : historyLates1c;
+
+      const score = map1c[student.id]?.totalDisposition ?? 10;
 
       const lastIncident = studentHistory1c.length > 0
         ? `${studentHistory1c[0].action} (${studentHistory1c[0].date} ${studentHistory1c[0].time})`
@@ -528,13 +583,41 @@ export const sheetsService = {
     ];
 
     const summaryRows2c = sortedStudents.map((student) => {
-      const absences = map2c[student.id]?.totalAbsences ?? 0;
-      const lates = map2c[student.id]?.totalLates ?? 0;
-      const score = map2c[student.id]?.totalDisposition ?? 10;
-
       const studentHistory2c = historyList
         .filter((h) => h.studentId === student.id && h.term === '2c')
         .sort((a, b) => b.timestamp - a.timestamp);
+
+      const historyAbs2c = studentHistory2c.filter(
+        (h) =>
+          (h.category === 'Ausencia' ||
+            h.action === 'Ausencia' ||
+            h.action?.toLowerCase().includes('ausencia') ||
+            h.action?.toLowerCase().includes('falta')) &&
+          h.category !== 'Sistema' &&
+          !h.action?.toLowerCase().includes('actualizada') &&
+          !h.action?.toLowerCase().includes('verificación') &&
+          !h.action?.toLowerCase().includes('ajuste')
+      ).length;
+
+      const historyLates2c = studentHistory2c.filter(
+        (h) =>
+          (h.category === 'Llegada tarde' ||
+            h.action === 'Llegada tarde' ||
+            h.action?.toLowerCase().includes('llegada tarde') ||
+            h.action?.toLowerCase().includes('tarde') ||
+            h.action?.toLowerCase().includes('tardanza')) &&
+          h.category !== 'Sistema'
+      ).length;
+
+      const absences = map2c[student.id]?.totalAbsences !== undefined && map2c[student.id]?.totalAbsences !== null
+        ? Number(map2c[student.id].totalAbsences)
+        : historyAbs2c;
+
+      const lates = map2c[student.id]?.totalLates !== undefined && map2c[student.id]?.totalLates !== null
+        ? Number(map2c[student.id].totalLates)
+        : historyLates2c;
+
+      const score = map2c[student.id]?.totalDisposition ?? 10;
 
       const lastIncident = studentHistory2c.length > 0
         ? `${studentHistory2c[0].action} (${studentHistory2c[0].date} ${studentHistory2c[0].time})`
@@ -694,66 +777,6 @@ export const sheetsService = {
     if (token) {
       try {
         if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
-          // Ensure all 4 tabs exist in the existing spreadsheet
-          await this.ensureSheetsExist(targetSpreadsheetId, token, [
-            '1° Cuatrimestre',
-            '2° Cuatrimestre',
-            'Resumen Anual',
-            'Historial de Incidencias',
-          ]);
-
-          // Clear old data safely from tabs
-          try {
-            await Promise.all([
-              fetchGoogleApiWithRetry(
-                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A1:Z500")}:clear`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: '{}',
-                },
-                token
-              ),
-              fetchGoogleApiWithRetry(
-                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A1:Z500")}:clear`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: '{}',
-                },
-                token
-              ),
-              fetchGoogleApiWithRetry(
-                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A1:Z500")}:clear`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: '{}',
-                },
-                token
-              ),
-              fetchGoogleApiWithRetry(
-                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A1:Z3000")}:clear`,
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                  },
-                  body: '{}',
-                },
-                token
-              ),
-            ]);
-          } catch (e) {
-            console.warn('Notice clearing sheet cells before batch update:', e);
-          }
-
           const historyPayload =
             historyRows.length > 0
               ? historyRows
@@ -773,8 +796,94 @@ export const sheetsService = {
                   ],
                 ];
 
+          const minRequiredRows = Math.max(500, historyPayload.length + 50);
+
+          // Ensure all 4 tabs exist in the existing spreadsheet and have enough rows
+          await this.ensureSheetsExist(
+            targetSpreadsheetId,
+            token,
+            [
+              '1° Cuatrimestre',
+              '2° Cuatrimestre',
+              'Resumen Anual',
+              'Historial de Incidencias',
+            ],
+            minRequiredRows
+          );
+
+          // Clear old data safely from tabs using open ranges
+          try {
+            await Promise.all([
+              fetchGoogleApiWithRetry(
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'1° Cuatrimestre'!A:G")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                },
+                token
+              ),
+              fetchGoogleApiWithRetry(
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'2° Cuatrimestre'!A:G")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                },
+                token
+              ),
+              fetchGoogleApiWithRetry(
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Resumen Anual'!A:I")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                },
+                token
+              ),
+              fetchGoogleApiWithRetry(
+                `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent("'Historial de Incidencias'!A:K")}:clear`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: '{}',
+                },
+                token
+              ),
+            ]);
+          } catch (e) {
+            console.warn('Notice clearing sheet cells before batch update:', e);
+          }
+
+          const updateData = [
+            {
+              range: "'1° Cuatrimestre'!A1",
+              values: [summaryHeaders1c, ...summaryRows1c],
+            },
+            {
+              range: "'2° Cuatrimestre'!A1",
+              values: [summaryHeaders2c, ...summaryRows2c],
+            },
+            {
+              range: "'Resumen Anual'!A1",
+              values: [annualHeaders, ...annualRows],
+            },
+            {
+              range: "'Historial de Incidencias'!A1",
+              values: [historyHeaders, ...historyPayload],
+            },
+          ];
+
           // Batch update all 4 sheets with current active rows (auto-retries on 401)
-          const updateRes = await fetchGoogleApiWithRetry(
+          let updateRes = await fetchGoogleApiWithRetry(
             `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values:batchUpdate`,
             {
               method: 'POST',
@@ -783,27 +892,28 @@ export const sheetsService = {
               },
               body: JSON.stringify({
                 valueInputOption: 'USER_ENTERED',
-                data: [
-                  {
-                    range: "'1° Cuatrimestre'!A1",
-                    values: [summaryHeaders1c, ...summaryRows1c],
-                  },
-                  {
-                    range: "'2° Cuatrimestre'!A1",
-                    values: [summaryHeaders2c, ...summaryRows2c],
-                  },
-                  {
-                    range: "'Resumen Anual'!A1",
-                    values: [annualHeaders, ...annualRows],
-                  },
-                  {
-                    range: "'Historial de Incidencias'!A1",
-                    values: [historyHeaders, ...historyPayload],
-                  },
-                ],
+                data: updateData,
               }),
-            }
+            },
+            token
           );
+
+          // If batch update failed, try individual updates so one tab never blocks the others
+          if (!updateRes.ok) {
+            for (const item of updateData) {
+              try {
+                await fetchGoogleApiWithRetry(
+                  `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(item.range)}?valueInputOption=USER_ENTERED`,
+                  {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ values: item.values }),
+                  },
+                  token
+                );
+              } catch (_) {}
+            }
+          }
 
           if (updateRes.ok) {
             const updatedAtStr = new Date().toLocaleTimeString();

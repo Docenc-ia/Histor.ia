@@ -16,6 +16,7 @@ import {
   StudentAttendanceTrafficLight,
   getTrafficLightBadgeStyle,
 } from '../../../utils/attendanceCalculations';
+import { isSameCalendarDay } from '../../../utils/dateUtils';
 import { useWorkspaceAuth } from '../../../context/WorkspaceAuthContext';
 
 interface StudentAttendanceRowProps {
@@ -81,6 +82,34 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
       : isDarkMode
       ? 'bg-red-950/60 text-red-300 border-red-800/60'
       : 'bg-red-50 text-red-700 border-red-200';
+
+  const isTodayAbsent = React.useMemo(() => {
+    const now = new Date();
+    return studentHistory.some(
+      (h) =>
+        (h.category === 'Ausencia' ||
+          h.action === 'Ausencia' ||
+          h.action?.toLowerCase().includes('ausencia') ||
+          h.action?.toLowerCase().includes('falta')) &&
+        h.category !== 'Sistema' &&
+        !h.action?.toLowerCase().includes('actualizada') &&
+        isSameCalendarDay(h.date, h.timestamp, now)
+    );
+  }, [studentHistory]);
+
+  const isTodayLate = React.useMemo(() => {
+    const now = new Date();
+    return studentHistory.some(
+      (h) =>
+        (h.category === 'Llegada tarde' ||
+          h.action === 'Llegada tarde' ||
+          h.action?.toLowerCase().includes('llegada tarde') ||
+          h.action?.toLowerCase().includes('tarde') ||
+          h.action?.toLowerCase().includes('tardanza')) &&
+        h.category !== 'Sistema' &&
+        isSameCalendarDay(h.date, h.timestamp, now)
+    );
+  }, [studentHistory]);
 
   return (
     <tr
@@ -256,32 +285,68 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
         <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
           <button
             type="button"
-            onClick={() => onAddAbsence(student)}
+            onClick={() => {
+              if (isTodayAbsent && onDeleteLatestAbsence) {
+                onDeleteLatestAbsence(student);
+              } else {
+                onAddAbsence(student);
+              }
+            }}
             className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
-              pulsingStudentId === `abs-${student.id}`
+              isTodayAbsent
+                ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                : pulsingStudentId === `abs-${student.id}`
                 ? 'bg-red-600 text-white border-red-600 scale-105'
                 : isDarkMode
                 ? 'border-slate-700 text-slate-300 hover:text-red-300 hover:border-red-800 hover:bg-red-950/40'
                 : 'border-neutral-200 text-neutral-700 hover:text-red-700 hover:border-red-200 hover:bg-red-50 shadow-2xs'
             }`}
-            title="Marcar falta (suma 1 ausencia sin descontar puntos de disposición)"
+            title={
+              isTodayAbsent
+                ? 'Ausente hoy. Clic para desmarcar / quitar falta de hoy.'
+                : 'Marcar falta (suma 1 ausencia sin descontar puntos de disposición)'
+            }
           >
-            <span>Falta</span>
+            <span>{isTodayAbsent ? 'Ausente hoy' : 'Falta'}</span>
           </button>
+
+          {(metrics.totalAbsences || 0) > 0 && onDeleteLatestAbsence && (
+            <button
+              type="button"
+              onClick={() => onDeleteLatestAbsence(student)}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-neutral-200 dark:border-slate-700 text-xs font-medium text-neutral-600 dark:text-slate-300 hover:text-red-600 hover:border-red-200 dark:hover:border-red-800/60 hover:bg-red-50 dark:hover:bg-red-950/40 transition-all cursor-pointer active:scale-90 shadow-2xs"
+              title="Borrar falta: elimina la última inasistencia registrada y actualiza el contador"
+            >
+              <RotateCcw className="w-3 h-3 text-red-500" />
+              <span className="text-[11px]">Borrar falta</span>
+            </button>
+          )}
 
           <button
             type="button"
-            onClick={() => onRecordLateArrival(student)}
+            onClick={() => {
+              if (isTodayLate && onDeleteLatestLate) {
+                onDeleteLatestLate(student);
+              } else {
+                onRecordLateArrival(student);
+              }
+            }}
             className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer flex items-center justify-center active:scale-90 ${
-              pulsingStudentId === `late-${student.id}`
+              isTodayLate
+                ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                : pulsingStudentId === `late-${student.id}`
                 ? 'bg-amber-600 text-white border-amber-600 scale-105'
                 : isDarkMode
                 ? 'border-slate-700 text-slate-300 hover:text-amber-300 hover:border-amber-800 hover:bg-amber-950/40'
                 : 'border-neutral-200 text-neutral-700 hover:text-amber-700 hover:border-amber-200 hover:bg-amber-50 shadow-2xs'
             }`}
-            title="Registrar llegada tarde. Si el alumno tenía una falta registrada hoy, se borra automáticamente."
+            title={
+              isTodayLate
+                ? 'Llegó tarde hoy. Clic para desmarcar / quitar tardanza de hoy.'
+                : 'Registrar llegada tarde. Si el alumno tenía una falta registrada hoy, se borra automáticamente.'
+            }
           >
-            <span>Tarde</span>
+            <span>{isTodayLate ? 'Tarde hoy' : 'Tarde'}</span>
           </button>
 
           {(metrics.totalLates || 0) > 0 && (

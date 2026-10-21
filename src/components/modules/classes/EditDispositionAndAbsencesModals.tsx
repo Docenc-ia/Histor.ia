@@ -438,8 +438,7 @@ export const EditStudentAbsencesModal: React.FC<EditStudentAbsencesModalProps> =
         <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-neutral-200 dark:border-slate-700 text-xs flex items-start gap-2.5">
           <span className="text-base leading-none">📋</span>
           <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
-            <strong>Carga de planilla / notas en papel:</strong> Podés definir directamente el total de faltas y la fecha.{' '}
-            <strong>No se envía ninguna notificación al estudiante</strong> a menos que actives expresamente la casilla opcional de abajo.
+            <strong>Carga de planilla / notas en papel:</strong> Podés definir directamente el total de faltas y la fecha. Se actualiza inmediatamente en la app y en tu Google Sheet sin enviar avisos ni mensajes a los alumnos.
           </p>
         </div>
 
@@ -684,87 +683,12 @@ export const EditStudentAbsencesModal: React.FC<EditStudentAbsencesModalProps> =
           </div>
         </div>
 
-        <div
-          className={`p-3.5 rounded-xl border transition-all space-y-3 ${
-            editingAbsenceSendNotif
-              ? isDarkMode
-                ? 'bg-blue-950/30 border-blue-800/80'
-                : 'bg-blue-50/70 border-blue-200'
-              : isDarkMode
-              ? 'bg-slate-800/40 border-slate-700'
-              : 'bg-neutral-50 border-neutral-200'
-          }`}
-        >
-          <label className="flex items-center gap-2.5 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={editingAbsenceSendNotif}
-              onChange={(e) => setEditingAbsenceSendNotif(e.target.checked)}
-              className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
-            />
-            <div>
-              <span className="text-xs font-bold text-neutral-900 dark:text-slate-100 block">
-                Enviar mensaje/aviso al alumno sobre esta falta (Opcional)
-              </span>
-              <span className="text-[11px] text-neutral-500 dark:text-slate-400 block">
-                Desactivado por defecto. Solo marcalo si deseás notificar al estudiante por Classroom o Gmail.
-              </span>
-            </div>
-          </label>
-
-          {editingAbsenceSendNotif && (
-            <div className="space-y-3 pt-2 border-t border-blue-200/60 dark:border-blue-900/40 animate-in fade-in duration-150">
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setEditingAbsenceChannel('classroom')}
-                  className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 cursor-pointer transition-all ${
-                    editingAbsenceChannel === 'classroom'
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 border-slate-700'
-                      : 'bg-white text-neutral-700 border-neutral-200'
-                  }`}
-                >
-                  <MessageSquare className="w-4 h-4" />
-                  <span>Tablón Classroom</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setEditingAbsenceChannel('gmail')}
-                  className={`p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 cursor-pointer transition-all ${
-                    editingAbsenceChannel === 'gmail'
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 border-slate-700'
-                      : 'bg-white text-neutral-700 border-neutral-200'
-                  }`}
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Correo Gmail</span>
-                </button>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">Mensaje a enviar:</label>
-                  <span className="text-[10px] text-neutral-400">Podés editar este texto antes de enviar</span>
-                </div>
-                <textarea
-                  rows={3}
-                  value={editingAbsenceMessageText}
-                  onChange={(e) => setEditingAbsenceMessageText(e.target.value)}
-                  placeholder="Escribe el mensaje..."
-                  className={`w-full p-2.5 text-xs rounded-xl border focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 ${
-                    isDarkMode
-                      ? 'bg-slate-850 border-slate-700 text-white placeholder-slate-500'
-                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
-                  }`}
-                />
-              </div>
-            </div>
-          )}
+        {/* Direct adjustment confirmation: no messaging prompts on edit */}
+        <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-neutral-200/80 dark:border-slate-700/80 text-xs flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-neutral-600 dark:text-slate-300">
+            <span className="text-emerald-500 font-bold">✓</span>
+            <span>Edición directa: impacta en la planilla y Google Sheets sin enviar avisos a los alumnos.</span>
+          </div>
         </div>
 
         {(() => {

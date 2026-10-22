@@ -121,6 +121,8 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
     const cId = st.courseId || '';
 
     const existingIdx = result.findIndex((existing) => {
+      const sameCourseOrUnscoped = !cId || !existing.courseId || cId === existing.courseId;
+      if (!sameCourseOrUnscoped) return false;
       if (existing.id && st.id && existing.id === st.id) return true;
       if (cId && existing.courseId && cId === existing.courseId) {
         if (cleanEmail && existing.email && existing.email.trim().toLowerCase() === cleanEmail) return true;
@@ -243,6 +245,20 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
   } catch (_) {}
 }
 
+function filterOutRemovedStudents(students: Student[]): Student[] {
+  if (!Array.isArray(students) || students.length === 0) return [];
+  const removedCache = new Map<string, Set<string>>();
+  return students.filter((s) => {
+    if (!s?.courseId) return true;
+    let set = removedCache.get(s.courseId);
+    if (!set) {
+      set = getRemovedStudentIds(s.courseId);
+      removedCache.set(s.courseId, set);
+    }
+    return !set.has(s.id);
+  });
+}
+
 export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -251,7 +267,8 @@ export function getLocalStudents(courseId?: string): Student[] {
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     let raw = localStorage.getItem(key);
     if (cachedStudents && cachedStudents.userId === userId && cachedStudents.rawRef === raw && raw) {
-      return courseId ? cachedStudents.list.filter((s) => s.courseId === courseId) : cachedStudents.list;
+      const visible = filterOutRemovedStudents(cachedStudents.list);
+      return courseId ? visible.filter((s) => s.courseId === courseId) : visible;
     }
     if (isOwner && !raw && key !== STORAGE_KEYS.STUDENTS) {
       raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
@@ -262,7 +279,7 @@ export function getLocalStudents(courseId?: string): Student[] {
     if (raw) {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const clean = deduplicateStudents(parsed);
+        const clean = filterOutRemovedStudents(deduplicateStudents(parsed));
         cachedStudents = { userId, rawRef: localStorage.getItem(key), list: clean };
         return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
       }
@@ -276,7 +293,7 @@ export function getLocalStudents(courseId?: string): Student[] {
             if (item) {
               const p = JSON.parse(item);
               if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
-                const clean = deduplicateStudents(p);
+                const clean = filterOutRemovedStudents(deduplicateStudents(p));
                 return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
               }
             }
@@ -490,7 +507,8 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
         const k = localStorage.key(i);
         if (!k) continue;
         if (
-          (k.startsWith('docencia_disposition_data_') || k.startsWith('fds_disposition_data')) &&
+          (k.startsWith('docencia_disposition_data_') || k === 'fds_disposition_data' || k.startsWith('fds_disposition_data__')) &&
+          !k.endsWith('_1c') &&
           !k.endsWith('_2c') &&
           !k.includes('_data_2c')
         ) {
@@ -567,12 +585,32 @@ export function getRemovedStudentIds(courseId: string): Set<string> {
   return new Set();
 }
 
-export function markStudentRemoved(courseId: string, studentId: string): void {
-  if (typeof window === 'undefined' || !courseId || !studentId) return;
+export function getRemovedStudentsList(courseId: string): Student[] {
+  if (typeof window === 'undefined' || !courseId) return [];
   try {
+    const raw = getUserScopedItem(`fds_removed_students_objs_${courseId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (_) {}
+  return [];
+}
+
+export function markStudentRemoved(courseId: string, studentOrId: Student | string): void {
+  if (typeof window === 'undefined' || !courseId || !studentOrId) return;
+  try {
+    const studentId = typeof studentOrId === 'string' ? studentOrId : studentOrId.id;
     const set = getRemovedStudentIds(courseId);
     set.add(studentId);
     setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+    cachedStudents = null;
+
+    if (typeof studentOrId === 'object' && studentOrId.id) {
+      const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentOrId.id);
+      list.push({ ...studentOrId, courseId });
+      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+    }
   } catch (_) {}
 }
 
@@ -582,7 +620,12 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
     const set = getRemovedStudentIds(courseId);
     set.delete(studentId);
     setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+    cachedStudents = null;
+
+    const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentId);
+    setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
   } catch (_) {}
 }
+
 
 

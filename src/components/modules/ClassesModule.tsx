@@ -85,6 +85,8 @@ import {
   getAllDispositionStorage,
   getDeletedHistoryIds,
   markHistoryIdDeleted,
+  getRemovedStudentIds,
+  getRemovedStudentsList,
 } from '../../services/api';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { classroomService } from '../../services/workspace/classroomService';
@@ -185,10 +187,35 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
 
+  const [removedStudentIds, setRemovedStudentIds] = useState<Set<string>>(() =>
+    getRemovedStudentIds(activeCourse?.id || '')
+  );
+  const [removedStudentsList, setRemovedStudentsList] = useState<Student[]>(() =>
+    getRemovedStudentsList(activeCourse?.id || '')
+  );
+  const [isRemovedStudentsModalOpen, setIsRemovedStudentsModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!activeCourse?.id) {
+      setRemovedStudentIds(new Set());
+      setRemovedStudentsList([]);
+      return;
+    }
+    const refreshRemoved = () => {
+      setRemovedStudentIds(getRemovedStudentIds(activeCourse.id));
+      setRemovedStudentsList(getRemovedStudentsList(activeCourse.id));
+    };
+    refreshRemoved();
+    window.addEventListener('docencia_student_status_updated', refreshRemoved);
+    return () => {
+      window.removeEventListener('docencia_student_status_updated', refreshRemoved);
+    };
+  }, [activeCourse?.id]);
+
   // Students sorted strictly alphabetically by last name (apellido), then first name
   const courseStudents = useMemo(() => {
     return students
-      .filter((s) => s.courseId === activeCourse?.id)
+      .filter((s) => s.courseId === activeCourse?.id && !removedStudentIds.has(s.id))
       .sort((a, b) => {
         const lastA = (a.lastName || '').trim();
         const lastB = (b.lastName || '').trim();
@@ -198,7 +225,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         const firstB = (b.firstName || '').trim();
         return firstA.localeCompare(firstB, 'es', { sensitivity: 'base' });
       });
-  }, [students, activeCourse?.id]);
+  }, [students, activeCourse?.id, removedStudentIds]);
 
   // Active view: 'roster' (Alumnos/as) vs 'libro_temas' (Libro de Temas) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
   const [activeTab, setActiveTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>(
@@ -300,12 +327,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // Disposition state map: studentId -> { totalAbsences: number, totalDisposition: number }
   const [dispositionMap, setDispositionMap] = useState<Record<string, StudentDispositionData>>(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && activeCourse?.id) {
       try {
-        const stored = getAllDispositionStorage();
-        if (stored.disposition && Object.keys(stored.disposition).length > 0) {
-          return stored.disposition as Record<string, StudentDispositionData>;
-        }
+        const raw1c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`);
+        if (raw1c) return JSON.parse(raw1c);
       } catch (_) {}
     }
     return {};
@@ -313,31 +338,55 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   // 2° Cuatrimestre disposition state map
   const [dispositionMap2c, setDispositionMap2c] = useState<Record<string, StudentDispositionData>>(() => {
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && activeCourse?.id) {
       try {
-        const stored = getUserScopedItem('fds_disposition_data_2c');
-        if (stored) return JSON.parse(stored);
+        const raw2c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`);
+        if (raw2c) return JSON.parse(raw2c);
       } catch (_) {}
     }
     return {};
   });
 
   // Reload course-scoped disposition data whenever activeCourse changes
+  // IMPORTANT: Never copy global disposition entries for students who are shared across multiple courses
   useEffect(() => {
     if (!activeCourse?.id) return;
     try {
       const course1cKey = `fds_disposition_data_${activeCourse.id}_1c`;
       const course2cKey = `fds_disposition_data_${activeCourse.id}_2c`;
 
+      // Identify students that exist in MORE THAN ONE course (e.g. Historia & Filosofía in S3 Soc 1)
+      const sharedStudentIds = new Set<string>();
+      const seenCourseByStudent = new Map<string, string>();
+      for (const s of students) {
+        if (!s?.id || !s?.courseId) continue;
+        const prevCourse = seenCourseByStudent.get(s.id);
+        if (prevCourse && prevCourse !== s.courseId) {
+          sharedStudentIds.add(s.id);
+        } else {
+          seenCourseByStudent.set(s.id, s.courseId);
+        }
+      }
+
       const raw1c = getUserScopedItem(course1cKey);
       if (raw1c) {
-        setDispositionMap(JSON.parse(raw1c));
+        const parsed1c = JSON.parse(raw1c);
+        const cleaned1c: Record<string, StudentDispositionData> = {};
+        for (const [sId, data] of Object.entries(parsed1c)) {
+          const entryCourseId = (data as any)?.courseId;
+          if (entryCourseId && entryCourseId !== activeCourse.id) continue;
+          if (!entryCourseId && sharedStudentIds.has(sId)) continue;
+          cleaned1c[sId] = data as StudentDispositionData;
+        }
+        setDispositionMap(cleaned1c);
       } else {
         const globalDisp = getAllDispositionStorage().disposition || {};
         const courseStudentIds = new Set(courseStudents.map((s) => s.id));
         const filtered: Record<string, StudentDispositionData> = {};
         for (const [sId, data] of Object.entries(globalDisp)) {
-          if (courseStudentIds.has(sId)) {
+          if (!courseStudentIds.has(sId)) continue;
+          const entryCourseId = (data as any)?.courseId;
+          if (entryCourseId === activeCourse.id || (!entryCourseId && !sharedStudentIds.has(sId))) {
             filtered[sId] = data as StudentDispositionData;
           }
         }
@@ -346,14 +395,24 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
       const raw2c = getUserScopedItem(course2cKey);
       if (raw2c) {
-        setDispositionMap2c(JSON.parse(raw2c));
+        const parsed2c = JSON.parse(raw2c);
+        const cleaned2c: Record<string, StudentDispositionData> = {};
+        for (const [sId, data] of Object.entries(parsed2c)) {
+          const entryCourseId = (data as any)?.courseId;
+          if (entryCourseId && entryCourseId !== activeCourse.id) continue;
+          if (!entryCourseId && sharedStudentIds.has(sId)) continue;
+          cleaned2c[sId] = data as StudentDispositionData;
+        }
+        setDispositionMap2c(cleaned2c);
       } else {
         const global2cRaw = getUserScopedItem('fds_disposition_data_2c');
         const global2c = global2cRaw ? JSON.parse(global2cRaw) : {};
         const courseStudentIds = new Set(courseStudents.map((s) => s.id));
         const filtered2c: Record<string, StudentDispositionData> = {};
         for (const [sId, data] of Object.entries(global2c)) {
-          if (courseStudentIds.has(sId)) {
+          if (!courseStudentIds.has(sId)) continue;
+          const entryCourseId = (data as any)?.courseId;
+          if (entryCourseId === activeCourse.id || (!entryCourseId && !sharedStudentIds.has(sId))) {
             filtered2c[sId] = data as StudentDispositionData;
           }
         }
@@ -362,7 +421,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     } catch (err) {
       console.warn('Error loading course-specific disposition data:', err);
     }
-  }, [activeCourse?.id, courseStudents]);
+  }, [activeCourse?.id, courseStudents, students]);
 
   // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
   // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
@@ -830,7 +889,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     if (typeof window !== 'undefined') {
       try {
         const saved = localStorage.getItem(LOCAL_NOTIF_SETTINGS_KEY);
-        if (saved) return { ...defaultSettings, ...JSON.parse(saved) };
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          return { ...defaultSettings, ...parsed, dontShowPopupOnAbsence: true };
+        }
       } catch (_) {}
     }
     return defaultSettings;
@@ -1338,48 +1400,35 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   useEffect(() => {
     const handleStorageChange = (e: any) => {
       if (e?.detail) {
-        const { disposition, history, term } = e.detail;
-        if (disposition && typeof disposition === 'object') {
+        const { disposition, history, term, courseId: eventCourseId } = e.detail;
+        // Only apply disposition map changes if they belong to the active course
+        if (
+          disposition &&
+          typeof disposition === 'object' &&
+          (!eventCourseId || !activeCourse?.id || eventCourseId === activeCourse.id)
+        ) {
+          const filterForCurrentCourse = (incomingMap: Record<string, any>) => {
+            if (!activeCourse?.id) return incomingMap;
+            const res: Record<string, any> = {};
+            for (const [k, val] of Object.entries(incomingMap)) {
+              const entryCourseId = (val as any)?.courseId;
+              if (!entryCourseId || entryCourseId === activeCourse.id) {
+                res[k] = val;
+              }
+            }
+            return res;
+          };
+
           if (term === '2c') {
-            setDispositionMap2c((prev) => {
-              const incomingKeys = Object.keys(disposition);
-              const prevKeys = Object.keys(prev);
-              let hasChanged = incomingKeys.length !== prevKeys.length;
-              if (!hasChanged) {
-                for (const k of incomingKeys) {
-                  if (
-                    !prev[k] ||
-                    prev[k].totalAbsences !== disposition[k].totalAbsences ||
-                    prev[k].totalLates !== disposition[k].totalLates ||
-                    prev[k].totalDisposition !== disposition[k].totalDisposition
-                  ) {
-                    hasChanged = true;
-                    break;
-                  }
-                }
-              }
-              return hasChanged ? { ...prev, ...disposition } : prev;
-            });
-          } else {
-            setDispositionMap((prev) => {
-              const incomingKeys = Object.keys(disposition);
-              const prevKeys = Object.keys(prev);
-              let hasChanged = incomingKeys.length !== prevKeys.length;
-              if (!hasChanged) {
-                for (const k of incomingKeys) {
-                  if (
-                    !prev[k] ||
-                    prev[k].totalAbsences !== disposition[k].totalAbsences ||
-                    prev[k].totalLates !== disposition[k].totalLates ||
-                    prev[k].totalDisposition !== disposition[k].totalDisposition
-                  ) {
-                    hasChanged = true;
-                    break;
-                  }
-                }
-              }
-              return hasChanged ? { ...prev, ...disposition } : prev;
-            });
+            const scopedDisp = filterForCurrentCourse(disposition);
+            if (Object.keys(scopedDisp).length > 0) {
+              setDispositionMap2c((prev) => ({ ...prev, ...scopedDisp }));
+            }
+          } else if (eventCourseId && eventCourseId === activeCourse?.id) {
+            const scopedDisp = filterForCurrentCourse(disposition);
+            if (Object.keys(scopedDisp).length > 0) {
+              setDispositionMap((prev) => ({ ...prev, ...scopedDisp }));
+            }
           }
         }
         if (Array.isArray(history)) {
@@ -1408,10 +1457,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       ) {
         try {
           const stored = getAllDispositionStorage();
-          handleStorageChange({ detail: stored });
-          const raw2c = getUserScopedItem('fds_disposition_data_2c');
-          if (raw2c) {
-            setDispositionMap2c(JSON.parse(raw2c));
+          if (Array.isArray(stored.history)) {
+            setHistoryList(deduplicateHistory(stored.history));
+          }
+          if (activeCourse?.id) {
+            const raw1c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`);
+            if (raw1c) setDispositionMap(JSON.parse(raw1c));
+            const raw2c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`);
+            if (raw2c) setDispositionMap2c(JSON.parse(raw2c));
           }
         } catch (_) {}
       }
@@ -1422,7 +1475,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
       window.removeEventListener('storage', handleCrossTabStorage);
     };
-  }, []);
+  }, [activeCourse?.id]);
 
   // Load from Compact v2 Cloud Engine / backend API, keeping localStorage synced (1°C, 2°C & History in a single round-trip)
   useEffect(() => {
@@ -1432,42 +1485,45 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         .getDisposition(activeCourse.id)
         .then((res) => {
           if (!isMounted) return;
+          // Only merge disposition entries that explicitly belong to activeCourse.id
           if (res.disposition && Object.keys(res.disposition).length > 0) {
             setDispositionMap((prev) => {
               const incoming = res.disposition;
-              const incomingKeys = Object.keys(incoming);
+              const next = { ...prev };
               let hasChanged = false;
-              for (const k of incomingKeys) {
+              for (const [k, val] of Object.entries(incoming)) {
+                if ((val as any)?.courseId !== activeCourse.id) continue;
                 if (
                   !prev[k] ||
-                  prev[k].totalAbsences !== incoming[k]?.totalAbsences ||
-                  prev[k].totalLates !== incoming[k]?.totalLates ||
-                  prev[k].totalDisposition !== incoming[k]?.totalDisposition
+                  prev[k].totalAbsences !== val?.totalAbsences ||
+                  prev[k].totalLates !== val?.totalLates ||
+                  prev[k].totalDisposition !== val?.totalDisposition
                 ) {
+                  next[k] = val;
                   hasChanged = true;
-                  break;
                 }
               }
-              return hasChanged ? { ...prev, ...incoming } : prev;
+              return hasChanged ? next : prev;
             });
           }
           if (res.disposition2c && Object.keys(res.disposition2c).length > 0) {
             setDispositionMap2c((prev) => {
               const incoming2c = res.disposition2c!;
-              const incomingKeys = Object.keys(incoming2c);
+              const next = { ...prev };
               let hasChanged = false;
-              for (const k of incomingKeys) {
+              for (const [k, val] of Object.entries(incoming2c)) {
+                if ((val as any)?.courseId !== activeCourse.id) continue;
                 if (
                   !prev[k] ||
-                  prev[k].totalAbsences !== incoming2c[k]?.totalAbsences ||
-                  prev[k].totalLates !== incoming2c[k]?.totalLates ||
-                  prev[k].totalDisposition !== incoming2c[k]?.totalDisposition
+                  prev[k].totalAbsences !== val?.totalAbsences ||
+                  prev[k].totalLates !== val?.totalLates ||
+                  prev[k].totalDisposition !== val?.totalDisposition
                 ) {
+                  next[k] = val;
                   hasChanged = true;
-                  break;
                 }
               }
-              return hasChanged ? { ...prev, ...incoming2c } : prev;
+              return hasChanged ? next : prev;
             });
           }
           if (Array.isArray(res.history)) {
@@ -2814,15 +2870,33 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     const is2c = targetTerm === '2c';
-    const fromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
+    const rawFromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
+
+    // Check if this student is shared with another course or has history in another course
+    const isSharedStudent = activeCourse?.id
+      ? students.some((s) => s.id === studentId && s.courseId && s.courseId !== activeCourse.id) ||
+        historyList.some((h) => h.studentId === studentId && h.courseId && h.courseId !== activeCourse.id)
+      : false;
+
+    // Only trust fromMap if it is explicitly stamped with activeCourse.id, or if the student is not shared across courses
+    const isMapScopedToThisCourse =
+      rawFromMap &&
+      (!activeCourse?.id ||
+        (rawFromMap as any).courseId === activeCourse.id ||
+        (!((rawFromMap as any).courseId) && !isSharedStudent));
+
+    const fromMap = isMapScopedToThisCourse ? rawFromMap : undefined;
+
     const studentHistory = historyList.filter(
       (h) =>
         h.studentId === studentId &&
-        (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
+        (!activeCourse?.id ||
+          h.courseId === activeCourse.id ||
+          (!h.courseId && !isSharedStudent)) &&
         (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
     );
 
-    const historyAbsences = studentHistory.filter(
+    let historyAbsences = studentHistory.filter(
       (h) =>
         (h.category === 'Ausencia' ||
           h.action === 'Ausencia' ||
@@ -2833,6 +2907,32 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         !h.action?.toLowerCase().includes('verificación') &&
         !h.action?.toLowerCase().includes('ajuste')
     ).length;
+
+    // Also respect manual absence edits recorded as 'Sistema' for this course ("Inasistencias actualizadas...: X → Y faltas")
+    const latestManualAbsEdit = [...studentHistory]
+      .filter(
+        (h) =>
+          h.category === 'Sistema' &&
+          (h.action?.includes('Inasistencias actualizadas') || h.action?.includes('Verificación de inasistencias'))
+      )
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
+    if (latestManualAbsEdit && fromMap?.totalAbsences === undefined) {
+      const matchArrow = latestManualAbsEdit.action.match(/→\s*(\d+)\s*falta/i);
+      const matchColon = latestManualAbsEdit.action.match(/:\s*(\d+)\s*falta/i);
+      const baseAbs = matchArrow ? parseInt(matchArrow[1], 10) : matchColon ? parseInt(matchColon[1], 10) : NaN;
+      if (!isNaN(baseAbs)) {
+        const absencesAfterEdit = studentHistory.filter(
+          (h) =>
+            (h.timestamp || 0) > (latestManualAbsEdit.timestamp || 0) &&
+            (h.category === 'Ausencia' ||
+              h.action === 'Ausencia' ||
+              h.action?.toLowerCase().includes('ausencia') ||
+              h.action?.toLowerCase().includes('falta')) &&
+            h.category !== 'Sistema'
+        ).length;
+        historyAbsences = baseAbs + absencesAfterEdit;
+      }
+    }
 
     const historyLates = studentHistory.filter(
       (h) =>
@@ -2930,16 +3030,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     updatedHistory: StudentHistoryItem[]
   ) => {
     const uid = getActiveUserId();
+    const courseStampedMap: Record<string, StudentDispositionData> = {};
+    for (const [k, val] of Object.entries(updatedMap)) {
+      courseStampedMap[k] = activeCourse?.id
+        ? ({ ...val, courseId: activeCourse.id } as StudentDispositionData)
+        : val;
+    }
+
     if (term === '2c') {
-      setDispositionMap2c(updatedMap);
+      setDispositionMap2c(courseStampedMap);
       if (typeof window !== 'undefined') {
-        setUserScopedItem('fds_disposition_data_2c', JSON.stringify(updatedMap));
         if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap));
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(courseStampedMap));
         }
         window.dispatchEvent(
           new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '2c', disposition: updatedMap, history: updatedHistory },
+            detail: { term: '2c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
           })
         );
       }
@@ -2948,18 +3054,18 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         firestoreSync.syncCompactDispositionNow(uid, false);
       }
     } else {
-      setDispositionMap(updatedMap);
+      setDispositionMap(courseStampedMap);
       if (typeof window !== 'undefined') {
         if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap));
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(courseStampedMap));
         }
         window.dispatchEvent(
           new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '1c', disposition: updatedMap, history: updatedHistory },
+            detail: { term: '1c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
           })
         );
       }
-      saveAllDispositionStorage(updatedMap, updatedHistory);
+      saveAllDispositionStorage(courseStampedMap, updatedHistory);
       if (uid) {
         firestoreSync.syncCompactDispositionNow(uid, false);
       }
@@ -2987,9 +3093,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const current = getStudentMetrics(student.id, targetTerm);
 
-    // Si el mismo día el alumno tenía una Llegada Tarde registrada, se cancela automáticamente al pasarlo a Ausente
+    // Si el mismo día el alumno tenía una Llegada Tarde registrada en ESTA materia, se cancela automáticamente al pasarlo a Ausente
     const isTodayLate = (h: StudentHistoryItem) => {
       if (h.studentId !== student.id) return false;
+      if (activeCourse?.id && h.courseId && h.courseId !== activeCourse.id) return false;
       const isLate =
         h.category === 'Llegada tarde' ||
         h.action === 'Llegada tarde' ||
@@ -3013,10 +3120,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       todayLatesToRemove.forEach((l) => markHistoryIdDeleted(l.id));
     }
 
-    // Check if student is already marked absent today to prevent duplicating absences
+    // Check if student is already marked absent today in THIS course to prevent duplicating absences
     const alreadyAbsentToday = cleanHistory.some(
       (h) =>
         h.studentId === student.id &&
+        (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
         (targetTerm === '2c' ? h.term === '2c' : h.term === '1c' || !h.term) &&
         (h.category === 'Ausencia' ||
           h.action === 'Ausencia' ||
@@ -3027,7 +3135,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     );
 
     if (alreadyAbsentToday) {
-      setToastMessage(`${student.lastName}, ${student.firstName} ya figura ausente el día de hoy (${date}).`);
+      setToastMessage(`${student.lastName}, ${student.firstName} ya figura ausente el día de hoy (${date}) en ${activeCourse.name}.`);
       setTimeout(() => setToastMessage(null), 3000);
       return;
     }
@@ -3124,33 +3232,19 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       })
       .catch(() => {});
 
-    // Check if teacher has selected a default preset or standard
-    const activePreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-    const channelToUse = activePreset.channel !== 'any' ? activePreset.channel : (notifSettings.channel || 'classroom');
-    const personalizedMessage = formatTemplateForStudent(
-      activePreset.text,
-      student,
-      activeCourse.name,
-      newDisposition,
-      date
-    );
-
+    // Check if teacher has configured automatic notification; otherwise never open any popup on absence
+    // (pending absence messages stay in the bottom inbox for the teacher to send whenever they want)
     if (notifSettings.autoNotify) {
-      // Auto-send directly if teacher configured automatic notification
-      sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
-    } else if (!notifSettings.dontShowPopupOnAbsence) {
-      // Open message sending popup immediately upon marking absence
-      setAbsenceNotifModal({
-        isOpen: true,
-        historyItem: newHistoryEntry,
+      const activePreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
+      const channelToUse = activePreset.channel !== 'any' ? activePreset.channel : (notifSettings.channel || 'classroom');
+      const personalizedMessage = formatTemplateForStudent(
+        activePreset.text,
         student,
-        channel: channelToUse,
-        messageText: personalizedMessage,
-        selectedPresetId: activePreset.id,
-        showSavePresetInput: false,
-        newPresetName: '',
-        isSending: false,
-      });
+        activeCourse.name,
+        newDisposition,
+        date
+      );
+      sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
     }
   };
 
@@ -3906,9 +4000,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : '1c';
     const is2cItem = itemTerm === '2c';
 
-    // Calculate updated metrics for student directly from remaining history within the same term
+    // Calculate updated metrics for student directly from remaining history within the same term & course
+    const targetCourseId = item.courseId || activeCourse?.id;
     const studentRemainingHistory = updatedHistory.filter(
-      (h) => h.studentId === item.studentId && (is2cItem ? h.term === '2c' : (h.term === '1c' || !h.term))
+      (h) =>
+        h.studentId === item.studentId &&
+        (!targetCourseId || !h.courseId || h.courseId === targetCourseId) &&
+        (is2cItem ? h.term === '2c' : (h.term === '1c' || !h.term))
     );
     const newAbsences = studentRemainingHistory.filter(
       (h) =>
@@ -3946,7 +4044,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     const baseMap = itemTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[item.studentId] || getStudentMetrics(item.studentId, itemTerm);
+    const current = getStudentMetrics(item.studentId, itemTerm);
 
     const finalAbsences = isAbsence
       ? Math.max(0, (current.totalAbsences !== undefined ? current.totalAbsences : 1) - 1)
@@ -4013,11 +4111,12 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   // 4b. Borrar última falta del estudiante (por ejemplo, si llegó más tarde o fue un error)
   const handleDeleteLatestAbsence = async (student: Student) => {
     const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    // Buscar la falta más reciente registrada para este alumno en este curso o en general
+    // Buscar la falta más reciente registrada para este alumno en este curso
     const studentAbsences = historyList
       .filter(
         (h) =>
           h.studentId === student.id &&
+          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
           (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
           (h.category === 'Ausencia' ||
             h.action === 'Ausencia' ||
@@ -4035,7 +4134,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     // Si no hay en el historial pero el contador tiene ausencias, descontamos manualmente
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
+    const current = getStudentMetrics(student.id, targetTerm);
     if (current && current.totalAbsences > 0) {
       const finalAbsences = Math.max(0, current.totalAbsences - 1);
       const updatedMap = {
@@ -4067,6 +4166,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       .filter(
         (h) =>
           h.studentId === student.id &&
+          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
           (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
           (h.category === 'Llegada tarde' ||
             h.action === 'Llegada tarde' ||
@@ -4084,7 +4184,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
 
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
+    const current = getStudentMetrics(student.id, targetTerm);
     if (current && (current.totalLates || 0) > 0) {
       const finalLates = Math.max(0, (current.totalLates || 0) - 1);
       const updatedMap = {
@@ -4125,9 +4225,10 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
     const current = getStudentMetrics(student.id, targetTerm);
 
-    // 2. Si el mismo día cambio a tarde automáticamente se borra la falta de hoy
+    // 2. Si el mismo día cambio a tarde en ESTA materia automáticamente se borra la falta de hoy
     const isTodayAbsence = (h: StudentHistoryItem) => {
       if (h.studentId !== student.id) return false;
+      if (activeCourse?.id && h.courseId && h.courseId !== activeCourse.id) return false;
       const isAbs =
         h.category === 'Ausencia' ||
         h.action === 'Ausencia' ||
@@ -4637,6 +4738,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           if (
             removed < toRemove &&
             h.studentId === student.id &&
+            (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
             (term === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
             (h.category === 'Ausencia' || h.action?.toLowerCase().includes('ausencia') || h.action?.toLowerCase().includes('falta'))
           ) {
@@ -5605,6 +5707,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       updatedHistory = updatedHistory.filter((h) => {
         const isTarget =
           h.studentId === student.id &&
+          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
           (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
           (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
         if (isTarget) {
@@ -7017,6 +7120,36 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                 </div>
               )}
 
+              {/* Removed / Hidden Students Notice (Pareja Pedagógica) */}
+              {removedStudentsList.length > 0 && (
+                <div
+                  className={`mb-3 px-3.5 py-2.5 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
+                    isDarkMode
+                      ? 'bg-slate-900/80 border-slate-800 text-slate-300'
+                      : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Users className="w-4 h-4 text-amber-500 shrink-0" />
+                    <span>
+                      <strong>Pareja pedagógica:</strong> {removedStudentsList.length} alumno{removedStudentsList.length > 1 ? 's' : ''} quitado{removedStudentsList.length > 1 ? 's' : ''} de la vista de esta materia.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsRemovedStudentsModalOpen(true)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-semibold border transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-800 hover:bg-slate-700 text-amber-300 border-slate-700'
+                        : 'bg-white hover:bg-amber-50 text-amber-700 border-amber-200 shadow-2xs'
+                    }`}
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Ver / Restaurar alumnos ({removedStudentsList.length})</span>
+                  </button>
+                </div>
+              )}
+
               <div
                 className={`rounded-xl border overflow-hidden shadow-xs transition-colors ${
                   isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
@@ -7565,7 +7698,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
                   const st = studentToRemove;
                   setStudentToRemove(null);
                   try {
-                    await api.removeStudentFromCourse(st.id, activeCourse.id);
+                    await api.removeStudentFromCourse(st, activeCourse.id);
+                    setRemovedStudentIds(getRemovedStudentIds(activeCourse.id));
+                    setRemovedStudentsList(getRemovedStudentsList(activeCourse.id));
                     setToastMessage(`El alumno ${st.lastName}, ${st.firstName} fue quitado de la lista en esta app.`);
                     setTimeout(() => setToastMessage(null), 3500);
                     if (onRefreshData) onRefreshData();
@@ -7577,6 +7712,91 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Quitar de la app</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: RESTAURAR ALUMNOS QUITADOS EN ESTA MATERIA             */}
+      {/* ------------------------------------------------------------- */}
+      {isRemovedStudentsModalOpen && activeCourse && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl border shadow-2xl p-6 flex flex-col gap-4 animate-in zoom-in-95 duration-150 ${
+              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div className="flex items-center justify-between border-b pb-3 border-neutral-200 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <Users className="w-5 h-5 text-amber-500" />
+                <div>
+                  <h3 className="text-sm font-bold">Alumnos quitados del visor</h3>
+                  <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                    {activeCourse.name} ({removedStudentsList.length})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRemovedStudentsModalOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-neutral-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+              {removedStudentsList.length === 0 ? (
+                <p className="text-xs text-center py-6 text-neutral-500 dark:text-slate-400">
+                  No hay alumnos ocultos en esta materia.
+                </p>
+              ) : (
+                removedStudentsList.map((st) => (
+                  <div
+                    key={st.id}
+                    className={`p-2.5 rounded-xl border flex items-center justify-between gap-3 ${
+                      isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-neutral-50 border-neutral-200'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold truncate">
+                        {st.lastName}, {st.firstName}
+                      </p>
+                      <p className="text-[11px] text-neutral-500 dark:text-slate-400 truncate">
+                        {st.email || 'Sin correo'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await api.restoreStudentInCourse(st, activeCourse.id);
+                        const nextList = getRemovedStudentsList(activeCourse.id);
+                        setRemovedStudentIds(getRemovedStudentIds(activeCourse.id));
+                        setRemovedStudentsList(nextList);
+                        setToastMessage(`${st.lastName}, ${st.firstName} fue reincorporado a ${activeCourse.name}.`);
+                        setTimeout(() => setToastMessage(null), 3500);
+                        if (onRefreshData) onRefreshData();
+                        if (nextList.length === 0) setIsRemovedStudentsModalOpen(false);
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer flex items-center gap-1 shrink-0"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Restaurar</span>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-neutral-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsRemovedStudentsModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-neutral-100 hover:bg-neutral-200 dark:bg-slate-800 dark:hover:bg-slate-700 cursor-pointer"
+              >
+                Cerrar
               </button>
             </div>
           </div>

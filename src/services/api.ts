@@ -37,6 +37,7 @@ import {
   getLocalDisposition2c,
   saveLocalDisposition2c,
   getRemovedStudentIds,
+  getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
 } from './storageHelpers';
@@ -64,6 +65,7 @@ export {
   getLocalDisposition2c,
   saveLocalDisposition2c,
   getRemovedStudentIds,
+  getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
 };
@@ -734,9 +736,12 @@ export const api = {
     };
   },
 
-  async removeStudentFromCourse(studentId: string, courseId: string): Promise<{ success: boolean; message: string }> {
-    markStudentRemoved(courseId, studentId);
+  async removeStudentFromCourse(studentOrId: Student | string, courseId: string): Promise<{ success: boolean; message: string }> {
+    const studentId = typeof studentOrId === 'string' ? studentOrId : studentOrId.id;
     const current = getLocalStudents(courseId);
+    const existingObj = typeof studentOrId === 'object' ? studentOrId : current.find((s) => s.id === studentId);
+    markStudentRemoved(courseId, existingObj || studentId);
+
     const updated = current.filter((s) => s.id !== studentId);
     saveLocalStudents(courseId, updated);
 
@@ -755,13 +760,18 @@ export const api = {
       }
     }
 
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
+    }
+
     return { success: true, message: 'Estudiante quitado de la lista en esta app' };
   },
 
   async restoreStudentInCourse(student: Student, courseId: string): Promise<{ success: boolean; message: string }> {
     unmarkStudentRemoved(courseId, student.id);
     const current = getLocalStudents(courseId);
-    const updated = deduplicateStudents([...current, student]);
+    const restoredStudent: Student = { ...student, courseId };
+    const updated = deduplicateStudents([...current, restoredStudent]);
     saveLocalStudents(courseId, updated);
 
     const courses = getLocalCourses();
@@ -777,6 +787,10 @@ export const api = {
       if (courseIndex >= 0) {
         firestoreSync.saveCourses(userId, courses).catch(() => {});
       }
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
     }
 
     return { success: true, message: 'Estudiante reincorporado a la lista' };
@@ -927,13 +941,19 @@ export const api = {
     const local = getAllDispositionStorage();
     let history: any[] = [...local.history];
 
-    let allDisposition1c: Record<string, any> = { ...local.disposition };
+    let allDisposition1c: Record<string, any> = {};
     let allDisposition2c: Record<string, any> = {};
 
     if (typeof window !== 'undefined') {
       try {
-        const raw = (data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_2c`) : null) || getUserScopedItem('fds_disposition_data_2c');
-        if (raw) allDisposition2c = JSON.parse(raw);
+        const raw1c = data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_1c`) : null;
+        if (raw1c) {
+          allDisposition1c = JSON.parse(raw1c);
+        } else {
+          allDisposition1c = { ...local.disposition };
+        }
+        const raw2c = (data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_2c`) : null) || getUserScopedItem('fds_disposition_data_2c');
+        if (raw2c) allDisposition2c = JSON.parse(raw2c);
       } catch (_) {}
     }
 
@@ -942,6 +962,7 @@ export const api = {
     if (current.totalDisposition === undefined) current.totalDisposition = 10;
     if (current.totalLates === undefined) current.totalLates = 0;
     if (current.totalAbsences === undefined) current.totalAbsences = 0;
+    if (data.courseId) current.courseId = data.courseId;
 
     const userId = getActiveUserId();
     const recordId = data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -962,6 +983,7 @@ export const api = {
         const now = new Date();
         const isTodayAbsence = (h: any) => {
           if (h.studentId !== data.studentId) return false;
+          if (data.courseId && h.courseId && h.courseId !== data.courseId) return false;
           const isAbs =
             h.category === 'Ausencia' ||
             h.action === 'Ausencia' ||
@@ -1000,6 +1022,9 @@ export const api = {
       }
     } else {
       allDisposition1c[data.studentId] = current;
+      if (typeof window !== 'undefined' && data.courseId) {
+        setUserScopedItem(`fds_disposition_data_${data.courseId}_1c`, JSON.stringify(allDisposition1c));
+      }
     }
 
     const allDisposition = is2c ? allDisposition2c : allDisposition1c;

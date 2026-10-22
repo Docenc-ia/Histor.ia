@@ -177,6 +177,38 @@ export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
   }
 };
 
+const encodeStoredToken = (rawToken: string): string => {
+  try {
+    return 'enc1:' + btoa(encodeURIComponent(rawToken));
+  } catch {
+    return rawToken;
+  }
+};
+
+const decodeStoredToken = (storedVal: string | null): string | null => {
+  if (!storedVal) return null;
+  if (storedVal.startsWith('enc1:')) {
+    try {
+      return decodeURIComponent(atob(storedVal.slice(5)));
+    } catch {
+      return null;
+    }
+  }
+  return storedVal;
+};
+
+let lastLinkedFirebaseToken: string | null = null;
+
+const syncFirebaseAuthWithAccessToken = (accessToken: string): void => {
+  if (!accessToken || !isValidGoogleAccessToken(accessToken)) return;
+  if (lastLinkedFirebaseToken === accessToken && auth.currentUser) return;
+  lastLinkedFirebaseToken = accessToken;
+  try {
+    const cred = GoogleAuthProvider.credential(null, accessToken);
+    signInWithCredential(auth, cred).catch(() => {});
+  } catch (_) {}
+};
+
 export const getCachedAccessToken = (): string | null => {
   // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
@@ -186,6 +218,11 @@ export const getCachedAccessToken = (): string | null => {
         ? Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0)
         : 0;
       if (storedExpiry && Date.now() > storedExpiry) {
+        cachedAccessToken = null;
+        try {
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+          localStorage.removeItem(TOKEN_STORAGE_KEY);
+        } catch (_) {}
         return null;
       }
     }
@@ -195,9 +232,10 @@ export const getCachedAccessToken = (): string | null => {
   // 2. Persistent storage fallback (survives page refresh F5 and tab switches)
   if (typeof window !== 'undefined') {
     try {
-      const stored =
+      const rawStored =
         sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
         localStorage.getItem(TOKEN_STORAGE_KEY);
+      const stored = decodeStoredToken(rawStored);
       const storedIssued = Number(
         sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
         localStorage.getItem(TOKEN_ISSUED_KEY) ||
@@ -214,6 +252,7 @@ export const getCachedAccessToken = (): string | null => {
         if (!storedExpiry || now < storedExpiry) {
           cachedAccessToken = stored;
           tokenIssuedAt = storedIssued || (now - 5 * 60 * 1000);
+          syncFirebaseAuthWithAccessToken(stored);
           return cachedAccessToken;
         } else {
           sessionStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -237,13 +276,16 @@ export const setCachedAccessToken = (
     tokenIssuedAt = now;
     const ttlMs = expiresInSeconds ? Math.max((expiresInSeconds - 60) * 1000, 10 * 60 * 1000) : TOKEN_LIFETIME_MS;
     const expiresAt = now + ttlMs;
+    const encoded = encodeStoredToken(token);
+
+    syncFirebaseAuthWithAccessToken(token);
 
     if (typeof window !== 'undefined') {
       try {
-        sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
         sessionStorage.setItem(TOKEN_ISSUED_KEY, String(now));
         sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
-        localStorage.setItem(TOKEN_STORAGE_KEY, token);
+        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
         localStorage.setItem(TOKEN_ISSUED_KEY, String(now));
         localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
         if (teacherEmail) {
@@ -255,6 +297,7 @@ export const setCachedAccessToken = (
   } else if (!token) {
     cachedAccessToken = null;
     tokenIssuedAt = null;
+    lastLinkedFirebaseToken = null;
     if (typeof window !== 'undefined') {
       try {
         sessionStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -277,6 +320,10 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  const initialToken = getCachedAccessToken();
+  if (initialToken && !auth.currentUser) {
+    syncFirebaseAuthWithAccessToken(initialToken);
+  }
   return onAuthStateChanged(auth, async (user: User | null) => {
     const activeToken = getCachedAccessToken();
     if (user && activeToken) {

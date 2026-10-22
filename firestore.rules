@@ -1,34 +1,88 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Health check test connection document
+
+    // ===============================================================
+    // Helper Functions & Workspace Isolation
+    // ===============================================================
+
+    function isValidWorkspaceId(userId) {
+      return userId is string &&
+             userId.size() >= 3 &&
+             userId.size() <= 128 &&
+             userId.matches('^(global_shared_workspace|teacher_[a-zA-Z0-9_]+|google-[0-9]+|[a-zA-Z0-9_-]{10,128})$');
+    }
+
+    function isPrimaryOwnerAuth() {
+      return request.auth != null &&
+             request.auth.token.email != null &&
+             (request.auth.token.email == 'jorge.cano@fds-esc.edu.ar' ||
+              request.auth.token.email == 'canomorenojj@gmail.com');
+    }
+
+    function canAccessUserWorkspace(userId) {
+      return isValidWorkspaceId(userId) && (
+        // When Firebase Auth credential is active, enforce strict workspace ownership or primary owner multi-account link
+        request.auth == null ||
+        request.auth.uid == userId ||
+        isPrimaryOwnerAuth() ||
+        userId == 'global_shared_workspace' ||
+        userId.matches('^teacher_.*')
+      );
+    }
+
+    function isValidPayloadSize() {
+      return request.resource == null || request.resource.data.keys().size() <= 100;
+    }
+
+    // Boot connectivity check document
     match /test/connection {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if false;
     }
 
-    // Teacher user profile and all nested subcollections (courses, students, attendance, disposition, snapshots)
+    // User profile and subcollections
     match /users/{userId} {
-      allow read, write: if true;
-      match /{subcollection=**} {
-        allow read, write: if true;
-      }
-    }
+      allow read: if canAccessUserWorkspace(userId);
+      allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+      allow delete: if canAccessUserWorkspace(userId);
 
-    // Support collectionGroup queries across user subcollections for global multi-account sync
-    match /{path=**}/courses/{courseId} {
-      allow read, write: if true;
-    }
-    match /{path=**}/students/{studentId} {
-      allow read, write: if true;
-    }
-    match /{path=**}/disposition/{dispositionId} {
-      allow read, write: if true;
-    }
-    match /{path=**}/snapshots/{snapshotId} {
-      allow read, write: if true;
-    }
-    match /{path=**}/attendance/{attendanceId} {
-      allow read, write: if true;
+      match /courses/{courseId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /students/{studentId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /disposition/{docId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /courseSnapshots/{courseId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /settings/{settingKey} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /gems/{gemId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
     }
   }
 }

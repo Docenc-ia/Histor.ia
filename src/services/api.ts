@@ -8,7 +8,6 @@ import {
   TeacherTask,
   StudentSubmission,
   TeacherProfile,
-  CustomGem,
 } from '../types';
 import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
 import { isSameCalendarDay } from '../utils/dateUtils';
@@ -40,6 +39,7 @@ import {
   getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
+  syncRemovedStudentsFromCloud,
 } from './storageHelpers';
 
 export {
@@ -68,23 +68,46 @@ export {
   getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
+  syncRemovedStudentsFromCloud,
 };
 
+// Detect if we are running on a static/serverless host (e.g. Vercel) where local Express disk persistence is unavailable
+let expressBackendAvailable: boolean =
+  typeof window !== 'undefined' ? !window.location.hostname.endsWith('.vercel.app') : true;
+
+function canUseExpressBackend(requireOwner = true): boolean {
+  if (!expressBackendAvailable) return false;
+  return requireOwner ? isPrimaryOwnerAccount() : true;
+}
+
+async function fetchExpressJson<T = any>(url: string, init?: RequestInit): Promise<T | null> {
+  if (!expressBackendAvailable) return null;
+  try {
+    const res = await fetch(url, init);
+    const contentType = res.headers.get('content-type') || '';
+    if (res.status === 404 || !contentType.includes('application/json')) {
+      expressBackendAvailable = false;
+      return null;
+    }
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    expressBackendAvailable = false;
+    return null;
+  }
+}
 
 export const api = {
   // Auth API
   async getAuthUser(email?: string): Promise<{ authenticated: boolean; user: TeacherProfile }> {
-    try {
-      const targetEmail = (email || '').trim().toLowerCase();
-      if (!targetEmail) {
-        return { authenticated: false, user: null as any };
-      }
-      const res = await fetch(`/api/auth/user?email=${encodeURIComponent(targetEmail)}`);
-      if (!res.ok) return { authenticated: false, user: null as any };
-      return res.json();
-    } catch {
+    const targetEmail = (email || '').trim().toLowerCase();
+    if (!targetEmail || !canUseExpressBackend(false)) {
       return { authenticated: false, user: null as any };
     }
+    const data = await fetchExpressJson<{ authenticated: boolean; user: TeacherProfile }>(
+      `/api/auth/user?email=${encodeURIComponent(targetEmail)}`
+    );
+    return data || { authenticated: false, user: null as any };
   },
 
   async syncAuthSession(userData: {
@@ -107,17 +130,13 @@ export const api = {
       })
       .catch(() => {});
 
-    try {
-      const res = await fetch('/api/auth/session', {
+    if (canUseExpressBackend(false)) {
+      const serverData = await fetchExpressJson<{ success: boolean; user: TeacherProfile }>('/api/auth/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(userData),
       });
-      if (res.ok) {
-        return res.json();
-      }
-    } catch (e) {
-      console.warn('Sync auth session warning:', e);
+      if (serverData?.user) return serverData;
     }
 
     // Graceful fallback profile to ensure user is never blocked
@@ -146,11 +165,13 @@ export const api = {
 
   async logoutAuth(email?: string): Promise<void> {
     firestoreSync.clearMemoryCaches();
-    await fetch('/api/auth/logout', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email }),
-    }).catch(() => {});
+    if (canUseExpressBackend(false)) {
+      await fetchExpressJson('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+    }
   },
 
   async logoutAuthSession(email?: string): Promise<void> {
@@ -239,15 +260,11 @@ export const api = {
     // 1. Immediately get deduplicated local courses
     const local = deduplicateCourses(getLocalCourses());
 
-    // 2. Fetch server courses (only for primary owner) and cloud Firestore courses in parallel
-    const serverPromise = isOwner
-      ? fetch('/api/courses')
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => (data && Array.isArray(data.courses) ? (data.courses as Course[]) : []))
-          .catch((e) => {
-            console.warn('Backend /api/courses unavailable:', e);
-            return [] as Course[];
-          })
+    // 2. Fetch server courses (only for primary owner when Express backend is active) and cloud Firestore courses in parallel
+    const serverPromise = canUseExpressBackend()
+      ? fetchExpressJson<{ courses: Course[] }>('/api/courses').then((data) =>
+          data && Array.isArray(data.courses) ? data.courses : []
+        )
       : Promise.resolve([] as Course[]);
 
     const cloudPromise = userId
@@ -271,25 +288,18 @@ export const api = {
   },
 
   async createCourse(courseData: Partial<Course>): Promise<Course> {
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const res = await fetch('/api/courses', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(courseData),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.course) {
-            const list = deduplicateCourses([...getLocalCourses(), data.course]);
-            saveLocalCourses(list);
-            const userId = getActiveUserId();
-            if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
-            return data.course;
-          }
-        }
-      } catch (e) {
-        console.warn('Backend /api/courses POST unavailable, saving locally:', e);
+    if (canUseExpressBackend()) {
+      const data = await fetchExpressJson<{ course: Course }>('/api/courses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(courseData),
+      });
+      if (data?.course) {
+        const list = deduplicateCourses([...getLocalCourses(), data.course]);
+        saveLocalCourses(list);
+        const userId = getActiveUserId();
+        if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
+        return data.course;
       }
     }
 
@@ -320,27 +330,22 @@ export const api = {
   },
 
   async bulkImportCourses(coursesList: Partial<Course>[]): Promise<{ success: boolean; message: string; courses: Course[] }> {
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const res = await fetch('/api/courses/bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ courses: coursesList }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const incoming = Array.isArray(data.courses) ? data.courses : [];
-          const local = getLocalCourses();
-          const fullList = deduplicateCourses([...local, ...incoming]);
-          if (fullList.length > 0) {
-            saveLocalCourses(fullList);
-            const uId = getActiveUserId();
-            if (uId) firestoreSync.saveCourses(uId, fullList).catch(() => {});
-          }
-          return { ...data, courses: fullList };
+    if (canUseExpressBackend()) {
+      const data = await fetchExpressJson<{ success: boolean; message: string; courses: Course[] }>('/api/courses/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ courses: coursesList }),
+      });
+      if (data) {
+        const incoming = Array.isArray(data.courses) ? data.courses : [];
+        const local = getLocalCourses();
+        const fullList = deduplicateCourses([...local, ...incoming]);
+        if (fullList.length > 0) {
+          saveLocalCourses(fullList);
+          const uId = getActiveUserId();
+          if (uId) firestoreSync.saveCourses(uId, fullList).catch(() => {});
         }
-      } catch (e) {
-        console.warn('Backend /api/courses/bulk unavailable, importing to local storage:', e);
+        return { ...data, courses: fullList };
       }
     }
 
@@ -553,18 +558,12 @@ export const api = {
 
     // 1. Immediately get deduplicated local students
     const local = deduplicateStudents(getLocalStudents(courseId));
-    const isOwner = isPrimaryOwnerAccount();
-
-    // 2. Fetch server students (only for primary owner) & cloud students in parallel
+    // 2. Fetch server students (only for primary owner when Express backend is active) & cloud students in parallel
     const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
-    const serverPromise = isOwner
-      ? fetch(url)
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => (data && Array.isArray(data.students) ? (data.students as Student[]) : []))
-          .catch((e) => {
-            console.warn('Backend /api/students unavailable:', e);
-            return [] as Student[];
-          })
+    const serverPromise = canUseExpressBackend()
+      ? fetchExpressJson<{ students: Student[] }>(url).then((data) =>
+          data && Array.isArray(data.students) ? data.students : []
+        )
       : Promise.resolve([] as Student[]);
 
     const userId = getActiveUserId();
@@ -575,7 +574,16 @@ export const api = {
         })
       : Promise.resolve([] as Student[]);
 
-    const [serverStudents, cloudStudents] = await Promise.all([serverPromise, cloudPromise]);
+    const removedSyncPromise =
+      userId && courseId
+        ? syncRemovedStudentsFromCloud(courseId).catch(() => null)
+        : Promise.resolve(null);
+
+    const [serverStudents, cloudStudents] = await Promise.all([
+      serverPromise,
+      cloudPromise,
+      removedSyncPromise,
+    ]);
 
     const mergedStudents = enrichStudents(deduplicateStudents([...local, ...cloudStudents, ...serverStudents]));
 
@@ -693,6 +701,7 @@ export const api = {
       };
     });
 
+    await syncRemovedStudentsFromCloud(courseId).catch(() => {});
     const removedSet = getRemovedStudentIds(courseId);
     const activeFormatted = formattedStudents.filter((st) => !removedSet.has(st.id));
 
@@ -888,26 +897,22 @@ export const api = {
       }
     }
 
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const params = new URLSearchParams();
-        if (courseId) params.append('courseId', courseId);
-        if (studentId) params.append('studentId', studentId);
-        const res = await fetch(`/api/disposition?${params.toString()}`);
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const serverData = await res.json();
-          if (serverData?.history || serverData?.disposition) {
-            const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
-            const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter(
-              (h) => !deleted.has(h.id)
-            );
-            const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
-            saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
-            return { disposition: mergedDisp, disposition2c: local2c, history: mergedHistory };
-          }
-        }
-      } catch (_) {}
+    if (canUseExpressBackend()) {
+      const params = new URLSearchParams();
+      if (courseId) params.append('courseId', courseId);
+      if (studentId) params.append('studentId', studentId);
+      const serverData = await fetchExpressJson<{ history?: any[]; disposition?: Record<string, any> }>(
+        `/api/disposition?${params.toString()}`
+      );
+      if (serverData?.history || serverData?.disposition) {
+        const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
+        const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter(
+          (h) => !deleted.has(h.id)
+        );
+        const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
+        saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
+        return { disposition: mergedDisp, disposition2c: local2c, history: mergedHistory };
+      }
     }
 
     return { disposition: local.disposition, disposition2c: local2c, history: local.history } as any;
@@ -1091,19 +1096,13 @@ export const api = {
       firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
     }
 
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const res = await fetch('/api/disposition/record', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
-        });
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const serverRes = await res.json();
-          return serverRes;
-        }
-      } catch (_) {}
+    if (canUseExpressBackend()) {
+      const serverRes = await fetchExpressJson('/api/disposition/record', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (serverRes) return serverRes;
     }
 
     return {
@@ -1813,466 +1812,9 @@ export const api = {
     return data.task;
   },
 
-  // AI Pedagogical Assistant
-  async askAiAssistant(params: {
-    prompt: string;
-    type: 'lesson_plan' | 'rubric' | 'feedback' | 'questions';
-    subject?: string;
-    grade?: string;
-    topic?: string;
-  }): Promise<{ result: string; source: string }> {
-    const res = await fetch('/api/ai/assistant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error en el asistente pedagógico');
-    return res.json();
-  },
-
   // Workspace Config
   async getWorkspaceConfig() {
     const res = await fetch('/api/workspace/config');
-    return res.json();
-  },
-
-  // MVP Module 1: RAG Lesson Planning -> Google Docs
-  async getRagPlans(courseId?: string): Promise<any[]> {
-    const url = courseId ? `/api/rag/plans?courseId=${encodeURIComponent(courseId)}` : '/api/rag/plans';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Error al cargar planificaciones RAG');
-    return res.json();
-  },
-
-  async deleteRagPlan(id: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch(`/api/rag/plans/${id}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) throw new Error('Error al eliminar planificación RAG');
-    return res.json();
-  },
-
-  async clearRagPlans(courseId?: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch('/api/rag/plans/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ courseId }),
-    });
-    if (!res.ok) throw new Error('Error al limpiar planificaciones');
-    return res.json();
-  },
-
-  async generateRagLessonPlan(params: {
-    courseId?: string;
-    subject: string;
-    gradeLevel: string;
-    studentAge: string;
-    institutionalTemplateText?: string;
-    curriculumNormsText?: string;
-    bibliographyText?: string;
-  }): Promise<{ success: boolean; jobId: string; message: string }> {
-    const res = await fetch('/api/rag/lesson-plan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al iniciar pipeline RAG');
-    return res.json();
-  },
-
-  // Document & Link Parser for RAG Sources (Word / PDF / Docs / Text)
-  async parseDocument(params: {
-    fileName?: string;
-    mimeType?: string;
-    base64Data?: string;
-    linkUrl?: string;
-    docType?: 'template' | 'normative' | 'bibliography';
-  }): Promise<{
-    success: boolean;
-    fileName?: string;
-    fileSize?: string;
-    type: 'pdf' | 'docx' | 'text' | 'link';
-    text: string;
-    url?: string;
-    docId?: string;
-    message?: string;
-  }> {
-    const res = await fetch('/api/documents/parse', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Error al procesar documento' }));
-      throw new Error(err.error || 'Error al procesar documento');
-    }
-    return res.json();
-  },
-
-  // MVP Module 2: Interactive Manuals (Drive) & YouTube Transcription
-  async getManuals(): Promise<any[]> {
-    const res = await fetch('/api/manuals');
-    if (!res.ok) throw new Error('Error al cargar manuales interactivos');
-    return res.json();
-  },
-
-  async deleteManual(id: string): Promise<{ success: boolean; message: string }> {
-    const res = await fetch(`/api/manuals/${id}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) throw new Error('Error al eliminar manual interactivo');
-    return res.json();
-  },
-
-  async clearManuals(): Promise<{ success: boolean; message: string }> {
-    const res = await fetch('/api/manuals/clear', {
-      method: 'POST',
-    });
-    if (!res.ok) throw new Error('Error al limpiar manuales');
-    return res.json();
-  },
-
-  async importNotebookLmManual(data: {
-    manualId?: string;
-    title?: string;
-    subject?: string;
-    targetLevel: string;
-    studentAge: string;
-    orientation?: string;
-    chapter: any;
-  }): Promise<{ success: boolean; manual: any }> {
-    const res = await fetch('/api/manuals/import-notebooklm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error('Error al importar material didáctico desde NotebookLM');
-    return res.json();
-  },
-
-  async generateManualChapter(params: {
-    manualId?: string;
-    title?: string;
-    subject: string;
-    targetLevel: string;
-    studentAge: string;
-    orientation?: string;
-    aiEngine?: 'notebooklm-rag' | 'gem-docente' | 'gem-pedagogico' | 'gem-disciplinar' | string;
-    customDirectives?: string;
-    incrementalTopic: string;
-    generalSourceInstructions?: string;
-    sources: Array<{
-      type: 'pdf' | 'youtube' | 'web' | 'plan' | 'notes';
-      title: string;
-      urlOrContent: string;
-      instructions?: string;
-      timeRange?: string;
-      pageRange?: string;
-    }>;
-    priorPlanId?: string;
-  }): Promise<{ success: boolean; jobId: string; message: string }> {
-    const res = await fetch('/api/manuals', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      const text = await res.text();
-      console.error('[API Error /api/manuals]: Received non-JSON response:', text.slice(0, 300));
-      throw new Error(`El servidor respondió con un formato inesperado (${res.status}). Por favor, intenta nuevamente.`);
-    }
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || data.message || 'Error al generar capítulo de manual');
-    }
-    return res.json();
-  },
-
-  // Custom Gems Management API
-  async getCustomGems(): Promise<CustomGem[]> {
-    const userId = getActiveUserId();
-    const localKey = getUserStorageKey('docencia_custom_gems');
-    let localGems: CustomGem[] = [];
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem(localKey);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) localGems = parsed;
-        }
-      } catch (_) {}
-    }
-
-    const cloudGems = userId ? await firestoreSync.loadCustomGems(userId).catch(() => [] as CustomGem[]) : [];
-    let serverGems: CustomGem[] = [];
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const res = await fetch('/api/custom-gems');
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.gems)) serverGems = data.gems;
-        }
-      } catch (_) {}
-    }
-
-    const map = new Map<string, CustomGem>();
-    for (const g of [...serverGems, ...cloudGems, ...localGems]) {
-      if (g && g.id && g.name) {
-        map.set(g.id, g);
-      }
-    }
-    const merged = Array.from(map.values());
-    if (merged.length > 0 && typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(localKey, JSON.stringify(merged));
-      } catch (_) {}
-    }
-    return merged;
-  },
-
-  async saveCustomGem(params: { name: string; description?: string; directives: string }): Promise<CustomGem> {
-    const userId = getActiveUserId();
-    const localKey = getUserStorageKey('docencia_custom_gems');
-    let savedGem: CustomGem | null = null;
-
-    if (isPrimaryOwnerAccount()) {
-      try {
-        const res = await fetch('/api/custom-gems', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(params),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data?.gem) savedGem = data.gem;
-        }
-      } catch (_) {}
-    }
-
-    if (!savedGem) {
-      savedGem = {
-        id: `gem-${Date.now()}`,
-        name: params.name,
-        description: params.description || '',
-        directives: params.directives,
-        createdAt: new Date().toISOString(),
-      };
-    }
-
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem(localKey);
-        const existing: CustomGem[] = raw ? JSON.parse(raw) : [];
-        const updated = [savedGem, ...existing.filter((g) => g.id !== savedGem!.id)];
-        localStorage.setItem(localKey, JSON.stringify(updated));
-      } catch (_) {}
-    }
-    if (userId) {
-      firestoreSync.saveCustomGem(userId, savedGem).catch(() => {});
-    }
-    return savedGem;
-  },
-
-  async deleteCustomGem(id: string): Promise<boolean> {
-    const userId = getActiveUserId();
-    const localKey = getUserStorageKey('docencia_custom_gems');
-    if (typeof window !== 'undefined') {
-      try {
-        const raw = localStorage.getItem(localKey);
-        if (raw) {
-          const existing: CustomGem[] = JSON.parse(raw);
-          localStorage.setItem(localKey, JSON.stringify(existing.filter((g) => g.id !== id)));
-        }
-      } catch (_) {}
-    }
-    if (userId) {
-      firestoreSync.deleteCustomGem(userId, id).catch(() => {});
-    }
-    if (isPrimaryOwnerAccount()) {
-      try {
-        await fetch(`/api/custom-gems/${id}`, { method: 'DELETE' });
-      } catch (_) {}
-    }
-    return true;
-  },
-
-  async generateGemDirectives(params: {
-    idea: string;
-    subject?: string;
-    orientation?: string;
-    studentAge?: string;
-  }): Promise<string> {
-    const res = await fetch('/api/custom-gems/generate-directives', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || 'Error al generar directivas con IA');
-    }
-    const data = await res.json();
-    return data.directives;
-  },
-
-  async extractYoutubeTranscription(url: string): Promise<{
-    success: boolean;
-    url: string;
-    videoTitle: string;
-    transcriptText: string;
-    duration: string;
-  }> {
-    const res = await fetch('/api/youtube/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    if (!res.ok) throw new Error('Error al transcribir video de YouTube');
-    return res.json();
-  },
-
-  // MVP Module 3: Activities & Google Forms -> Classroom
-  async getActivities(): Promise<any[]> {
-    const res = await fetch('/api/activities');
-    if (!res.ok) throw new Error('Error al obtener actividades interactivas');
-    return res.json();
-  },
-
-  async generateFormActivity(params: {
-    topic: string;
-    ageGroup: string;
-    activityType: string;
-    courseId: string;
-    questionCount?: number;
-  }): Promise<{ success: boolean; activity: any; message: string }> {
-    const res = await fetch('/api/activities/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al generar formulario');
-    return res.json();
-  },
-
-  async publishActivityToClassroom(activityId: string): Promise<{ success: boolean; message: string; activity: any }> {
-    const res = await fetch(`/api/activities/${encodeURIComponent(activityId)}/publish-classroom`, {
-      method: 'POST',
-    });
-    if (!res.ok) throw new Error('Error al publicar en Classroom');
-    return res.json();
-  },
-
-  // MVP Module 4: Intelligent Async Auto-Feedback & Sheets Gradebook
-  async startAutoFeedback(activityId: string): Promise<{ success: boolean; jobId: string; message: string }> {
-    const res = await fetch('/api/evaluations/auto-feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activityId }),
-    });
-    if (!res.ok) throw new Error('Error al iniciar corrección automática');
-    return res.json();
-  },
-
-  async getGradebookConsolidated(): Promise<any[]> {
-    const res = await fetch('/api/gradebook/consolidated');
-    if (!res.ok) throw new Error('Error al obtener libretas consolidadas');
-    return res.json();
-  },
-
-  async consolidateGradebookToSheets(params: {
-    courseId: string;
-    term: string;
-    weights?: { tp: number; exam: number; rec: number };
-  }): Promise<{ success: boolean; jobId: string; message: string }> {
-    const res = await fetch('/api/gradebook/consolidate-sheets', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al consolidar en Google Sheets');
-    return res.json();
-  },
-
-  // Async Jobs System
-  async getAsyncJobs(): Promise<any[]> {
-    const res = await fetch('/api/async-jobs');
-    if (!res.ok) throw new Error('Error al consultar tareas en segundo plano');
-    return res.json();
-  },
-
-  async getAsyncJob(id: string): Promise<any> {
-    const res = await fetch(`/api/async-jobs/${encodeURIComponent(id)}`);
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      return null;
-    }
-    if (!res.ok) return null;
-    return res.json();
-  },
-
-  // NotebookLM & Multimodal Toolset (Across 4 Modules)
-  async optimizeTokens(params: { text: string; targetRatio?: number }): Promise<{
-    success: boolean;
-    originalTokens: number;
-    optimizedTokens: number;
-    savedTokens: number;
-    percentageSaved: number;
-    compressedContent: string;
-    keyPoints: string[];
-  }> {
-    const res = await fetch('/api/notebooklm/optimize-tokens', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al optimizar tokens');
-    return res.json();
-  },
-
-  async generateAudioOverview(params: {
-    title: string;
-    content?: string;
-    courseName?: string;
-    subject?: string;
-  }): Promise<{
-    success: boolean;
-    title: string;
-    duration: string;
-    speakers: string[];
-    script: Array<{ speaker: string; role: string; avatar: string; text: string }>;
-    summaryText: string;
-  }> {
-    const res = await fetch('/api/notebooklm/audio-overview', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al generar resumen de audio');
-    return res.json();
-  },
-
-  async analyzeVideoPedagogical(params: {
-    videoUrl: string;
-    transcript?: string;
-    moduleType: string;
-  }): Promise<{
-    success: boolean;
-    videoUrl: string;
-    moduleType: string;
-    pedagogicalOutput: {
-      summary: string;
-      keyConcepts: string[];
-      suggestedQuestions: string[];
-      suggestedClassActivity: string;
-    };
-  }> {
-    const res = await fetch('/api/notebooklm/video-to-pedagogical', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    if (!res.ok) throw new Error('Error al analizar video para docencia');
     return res.json();
   },
 

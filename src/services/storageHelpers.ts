@@ -4,7 +4,7 @@
  */
 
 import { Course, Student } from '../types';
-import { getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
+import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
 export { isPrimaryOwnerAccount };
 import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
@@ -27,23 +27,34 @@ export function getUserStorageKey(baseKey: string): string {
   return userId ? `${baseKey}_${userId}` : baseKey;
 }
 
+const courseCanonicalCache = new WeakMap<object, string>();
+
 export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
   if (!c) return '';
+  const cached = courseCanonicalCache.get(c);
+  if (cached !== undefined) return cached;
+
+  let key = '';
   if (c.classroomCourseId && !c.classroomCourseId.startsWith('gc-') && !isNaN(Number(c.classroomCourseId))) {
-    return `classroom:${String(c.classroomCourseId).trim()}`;
+    key = `classroom:${String(c.classroomCourseId).trim()}`;
+  } else {
+    const name = (c.name || '').trim().toLowerCase();
+    const sub = (c.subject || '').trim().toLowerCase();
+    const sec = (c.section || c.grade || c.division || '').trim().toLowerCase();
+    const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+    if (paren) {
+      key = `name:${paren[1].trim()}:${paren[2].trim()}`;
+    } else {
+      key = `name:${sub || name}:${sec || 'main'}`;
+    }
   }
-  const name = (c.name || '').trim().toLowerCase();
-  const sub = (c.subject || '').trim().toLowerCase();
-  const sec = (c.section || c.grade || c.division || '').trim().toLowerCase();
-  const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
-  if (paren) {
-    return `name:${paren[1].trim()}:${paren[2].trim()}`;
-  }
-  return `name:${sub || name}:${sec || 'main'}`;
+  courseCanonicalCache.set(c, key);
+  return key;
 }
 
 export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolean {
   if (!c1 || !c2) return false;
+  if (c1 === c2) return true;
   if (c1.id && c2.id && String(c1.id).trim() === String(c2.id).trim()) return true;
 
   const id1 = c1.classroomCourseId ? String(c1.classroomCourseId).trim() : null;
@@ -61,13 +72,26 @@ export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolea
 }
 
 export function deduplicateCourses(coursesList: Course[]): Course[] {
-  if (!Array.isArray(coursesList)) return [];
+  if (!Array.isArray(coursesList) || coursesList.length === 0) return [];
   const result: Course[] = [];
+  const indexById = new Map<string, number>();
+  const indexByClassroomId = new Map<string, number>();
+  const indexByCanonical = new Map<string, number>();
 
   for (const c of coursesList) {
     if (!c || (!c.name && !c.subject)) continue;
 
-    const existingIdx = result.findIndex((existing) => areCoursesSame(existing, c));
+    const cId = c.id ? String(c.id).trim() : '';
+    const cClassroomId = c.classroomCourseId ? String(c.classroomCourseId).trim() : '';
+    const cCanonical = normalizeCourseCanonicalKey(c);
+
+    let existingIdx = -1;
+    if (cId && indexById.has(cId)) existingIdx = indexById.get(cId)!;
+    else if (cId && indexByClassroomId.has(cId)) existingIdx = indexByClassroomId.get(cId)!;
+    else if (cClassroomId && indexByClassroomId.has(cClassroomId)) existingIdx = indexByClassroomId.get(cClassroomId)!;
+    else if (cClassroomId && indexById.has(cClassroomId)) existingIdx = indexById.get(cClassroomId)!;
+    else if (cCanonical && indexByCanonical.has(cCanonical)) existingIdx = indexByCanonical.get(cCanonical)!;
+
     if (existingIdx >= 0) {
       const existing = result[existingIdx];
       const preferredId =
@@ -102,8 +126,14 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
       else delete merged.dispositionSheetUrl;
 
       result[existingIdx] = merged;
+      if (merged.id) indexById.set(String(merged.id).trim(), existingIdx);
+      if (merged.classroomCourseId) indexByClassroomId.set(String(merged.classroomCourseId).trim(), existingIdx);
     } else {
+      const newIdx = result.length;
       result.push(c);
+      if (cId) indexById.set(cId, newIdx);
+      if (cClassroomId) indexByClassroomId.set(cClassroomId, newIdx);
+      if (cCanonical) indexByCanonical.set(cCanonical, newIdx);
     }
   }
 
@@ -111,35 +141,60 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
 }
 
 export function deduplicateStudents(studentsList: Student[]): Student[] {
-  if (!Array.isArray(studentsList)) return [];
+  if (!Array.isArray(studentsList) || studentsList.length === 0) return [];
   const result: Student[] = [];
+  const indexByCourseAndId = new Map<string, number>();
+  const indexByUnscopedId = new Map<string, number>();
+  const indexByCourseAndEmail = new Map<string, number>();
+  const indexByCourseAndName = new Map<string, number>();
 
   for (const st of studentsList) {
     if (!st || (!st.firstName && !st.lastName)) continue;
+    const stId = st.id ? String(st.id).trim() : '';
     const cleanEmail = (st.email || '').trim().toLowerCase();
-    const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.toLowerCase();
-    const cId = st.courseId || '';
+    const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.trim().toLowerCase();
+    const cId = st.courseId ? String(st.courseId).trim() : '';
 
-    const existingIdx = result.findIndex((existing) => {
-      const sameCourseOrUnscoped = !cId || !existing.courseId || cId === existing.courseId;
-      if (!sameCourseOrUnscoped) return false;
-      if (existing.id && st.id && existing.id === st.id) return true;
-      if (cId && existing.courseId && cId === existing.courseId) {
-        if (cleanEmail && existing.email && existing.email.trim().toLowerCase() === cleanEmail) return true;
-        const exName = `${(existing.firstName || '').trim()} ${(existing.lastName || '').trim()}`.toLowerCase();
-        if (exName && cleanName && exName === cleanName) return true;
+    let existingIdx = -1;
+    if (stId && cId && indexByCourseAndId.has(`${cId}::${stId}`)) {
+      existingIdx = indexByCourseAndId.get(`${cId}::${stId}`)!;
+    } else if (stId && (!cId || indexByUnscopedId.has(stId))) {
+      const candidateIdx = indexByUnscopedId.get(stId);
+      if (candidateIdx !== undefined) {
+        const ex = result[candidateIdx];
+        if (!cId || !ex.courseId || ex.courseId === cId) {
+          existingIdx = candidateIdx;
+        }
       }
-      return false;
-    });
+    } else if (cId && cleanEmail && indexByCourseAndEmail.has(`${cId}::${cleanEmail}`)) {
+      existingIdx = indexByCourseAndEmail.get(`${cId}::${cleanEmail}`)!;
+    } else if (cId && cleanName && indexByCourseAndName.has(`${cId}::${cleanName}`)) {
+      existingIdx = indexByCourseAndName.get(`${cId}::${cleanName}`)!;
+    }
 
     if (existingIdx >= 0) {
-      result[existingIdx] = {
+      const merged: Student = {
         ...result[existingIdx],
         ...st,
         id: result[existingIdx].id || st.id,
       };
+      result[existingIdx] = merged;
+      const mCourse = merged.courseId ? String(merged.courseId).trim() : '';
+      if (merged.id) {
+        if (mCourse) indexByCourseAndId.set(`${mCourse}::${merged.id}`, existingIdx);
+        indexByUnscopedId.set(String(merged.id).trim(), existingIdx);
+      }
+      if (mCourse && cleanEmail) indexByCourseAndEmail.set(`${mCourse}::${cleanEmail}`, existingIdx);
+      if (mCourse && cleanName) indexByCourseAndName.set(`${mCourse}::${cleanName}`, existingIdx);
     } else {
+      const newIdx = result.length;
       result.push(st);
+      if (stId) {
+        if (cId) indexByCourseAndId.set(`${cId}::${stId}`, newIdx);
+        indexByUnscopedId.set(stId, newIdx);
+      }
+      if (cId && cleanEmail) indexByCourseAndEmail.set(`${cId}::${cleanEmail}`, newIdx);
+      if (cId && cleanName) indexByCourseAndName.set(`${cId}::${cleanName}`, newIdx);
     }
   }
 
@@ -603,13 +658,26 @@ export function markStudentRemoved(courseId: string, studentOrId: Student | stri
     const studentId = typeof studentOrId === 'string' ? studentOrId : studentOrId.id;
     const set = getRemovedStudentIds(courseId);
     set.add(studentId);
-    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+    const idsArray = Array.from(set);
+    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
     cachedStudents = null;
 
+    let list = getRemovedStudentsList(courseId);
     if (typeof studentOrId === 'object' && studentOrId.id) {
-      const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentOrId.id);
+      list = list.filter((s) => s.id !== studentOrId.id);
       list.push({ ...studentOrId, courseId });
       setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync
+        .saveUserSetting(userId, `removed_students_${courseId}`, {
+          ids: idsArray,
+          students: list,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
     }
   } catch (_) {}
 }
@@ -619,12 +687,77 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
   try {
     const set = getRemovedStudentIds(courseId);
     set.delete(studentId);
-    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(set)));
+    const idsArray = Array.from(set);
+    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
     cachedStudents = null;
 
     const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentId);
     setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync
+        .saveUserSetting(userId, `removed_students_${courseId}`, {
+          ids: idsArray,
+          students: list,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }
   } catch (_) {}
+}
+
+export async function syncRemovedStudentsFromCloud(
+  courseId: string
+): Promise<{ ids: Set<string>; list: Student[] }> {
+  if (typeof window === 'undefined' || !courseId) {
+    return { ids: new Set(), list: [] };
+  }
+  const localIds = getRemovedStudentIds(courseId);
+  const localList = getRemovedStudentsList(courseId);
+  const userId = getActiveUserId();
+  if (!userId) {
+    return { ids: localIds, list: localList };
+  }
+
+  try {
+    const cloudData = await firestoreSync.loadUserSetting<{
+      ids?: string[];
+      students?: Student[];
+      updatedAt?: string;
+    }>(userId, `removed_students_${courseId}`);
+
+    if (cloudData && (Array.isArray(cloudData.ids) || Array.isArray(cloudData.students))) {
+      const cloudIds = Array.isArray(cloudData.ids) ? cloudData.ids : [];
+      const cloudStudents = Array.isArray(cloudData.students) ? cloudData.students : [];
+
+      const nextIds = new Set<string>(cloudIds);
+      const nextList: Student[] = cloudStudents.map((s) => ({ ...s, courseId }));
+
+      const prevIdsStr = JSON.stringify(Array.from(localIds).sort());
+      const nextIdsStr = JSON.stringify(Array.from(nextIds).sort());
+
+      setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(nextIds)));
+      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(nextList));
+
+      if (prevIdsStr !== nextIdsStr || localList.length !== nextList.length) {
+        cachedStudents = null;
+        window.dispatchEvent(new Event('docencia_student_status_updated'));
+      }
+      return { ids: nextIds, list: nextList };
+    } else if (localIds.size > 0 || localList.length > 0) {
+      // Seed cloud from existing local removed students so other devices receive it
+      firestoreSync
+        .saveUserSetting(userId, `removed_students_${courseId}`, {
+          ids: Array.from(localIds),
+          students: localList,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
+    }
+  } catch (_) {}
+
+  return { ids: localIds, list: localList };
 }
 
 

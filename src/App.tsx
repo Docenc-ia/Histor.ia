@@ -156,17 +156,34 @@ function AppContent() {
     };
   }, []);
 
-  // Cascaded synchronization of students status across modules and dashboard view (coalesced via event bus)
+  // Cascaded synchronization of students status across modules and dashboard view (in-memory, zero network re-fetch)
   useEffect(() => {
     const handleStudentStatusSync = () => {
-      api
-        .getStudents()
-        .then((updatedStudents) => {
-          if (Array.isArray(updatedStudents) && updatedStudents.length > 0) {
-            setStudents(updatedStudents);
+      try {
+        const localStudents = api.getLocalStudents();
+        const localDisp = api.getAllDispositionStorage().disposition || {};
+        const enriched = localStudents.map((st) => {
+          const d = localDisp[st.id];
+          if (d && typeof d.totalAbsences === 'number') {
+            const rate = Math.max(0, Math.round(100 - d.totalAbsences * 5));
+            if (rate !== st.attendanceRate) {
+              return { ...st, attendanceRate: rate };
+            }
           }
-        })
-        .catch(() => {});
+          return st;
+        });
+
+        setStudents((prev) => {
+          if (prev.length !== enriched.length) return enriched;
+          const hasDiff = prev.some(
+            (p, idx) =>
+              p.id !== enriched[idx]?.id ||
+              p.attendanceRate !== enriched[idx]?.attendanceRate ||
+              p.averageGrade !== enriched[idx]?.averageGrade
+          );
+          return hasDiff ? enriched : prev;
+        });
+      } catch (_) {}
     };
 
     return subscribeAppEvents(

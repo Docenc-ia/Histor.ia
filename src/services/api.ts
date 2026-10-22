@@ -35,10 +35,12 @@ import {
   getAllDispositionStorage,
   getLocalDisposition2c,
   saveLocalDisposition2c,
+  getRemovedStudentsIndex,
   getRemovedStudentIds,
   getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
+  syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
 } from './storageHelpers';
 
@@ -64,10 +66,12 @@ export {
   getAllDispositionStorage,
   getLocalDisposition2c,
   saveLocalDisposition2c,
+  getRemovedStudentsIndex,
   getRemovedStudentIds,
   getRemovedStudentsList,
   markStudentRemoved,
   unmarkStudentRemoved,
+  syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
 };
 
@@ -574,10 +578,11 @@ export const api = {
         })
       : Promise.resolve([] as Student[]);
 
-    const removedSyncPromise =
-      userId && courseId
+    const removedSyncPromise = userId
+      ? courseId
         ? syncRemovedStudentsFromCloud(courseId).catch(() => null)
-        : Promise.resolve(null);
+        : syncAllRemovedStudentsIndexFromCloud().catch(() => null)
+      : Promise.resolve(null);
 
     const [serverStudents, cloudStudents] = await Promise.all([
       serverPromise,

@@ -631,11 +631,48 @@ export function saveLocalDisposition2c(disposition2c: Record<string, any>): void
   } catch (_) {}
 }
 
+export function getRemovedStudentsIndex(): Record<string, string[]> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = getUserScopedItem('fds_removed_students_index');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch (_) {}
+  return {};
+}
+
+export function saveRemovedStudentsIndex(
+  index: Record<string, string[]>,
+  syncToCloud = true
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    setUserScopedItem('fds_removed_students_index', JSON.stringify(index || {}));
+    if (syncToCloud) {
+      const userId = getActiveUserId();
+      if (userId) {
+        firestoreSync
+          .saveUserSetting(userId, 'removed_students_index', {
+            courses: index || {},
+            updatedAt: new Date().toISOString(),
+          })
+          .catch(() => {});
+      }
+    }
+  } catch (_) {}
+}
+
 export function getRemovedStudentIds(courseId: string): Set<string> {
   if (typeof window === 'undefined' || !courseId) return new Set();
   try {
     const raw = getUserScopedItem(`fds_removed_students_${courseId}`);
     if (raw) return new Set(JSON.parse(raw));
+    const idx = getRemovedStudentsIndex();
+    if (Array.isArray(idx[courseId])) {
+      return new Set(idx[courseId]);
+    }
   } catch (_) {}
   return new Set();
 }
@@ -669,6 +706,10 @@ export function markStudentRemoved(courseId: string, studentOrId: Student | stri
       setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
     }
 
+    const index = getRemovedStudentsIndex();
+    index[courseId] = idsArray;
+    saveRemovedStudentsIndex(index, true);
+
     const userId = getActiveUserId();
     if (userId) {
       firestoreSync
@@ -694,6 +735,10 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
     const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentId);
     setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
 
+    const index = getRemovedStudentsIndex();
+    index[courseId] = idsArray;
+    saveRemovedStudentsIndex(index, true);
+
     const userId = getActiveUserId();
     if (userId) {
       firestoreSync
@@ -705,6 +750,59 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
         .catch(() => {});
     }
   } catch (_) {}
+}
+
+export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<string, string[]>> {
+  if (typeof window === 'undefined') return {};
+  const localIndex = getRemovedStudentsIndex();
+  const userId = getActiveUserId();
+  if (!userId) return localIndex;
+
+  try {
+    const cloudDoc = await firestoreSync.loadUserSetting<{
+      courses?: Record<string, string[]>;
+      updatedAt?: string;
+    }>(userId, 'removed_students_index');
+
+    if (cloudDoc && cloudDoc.courses && typeof cloudDoc.courses === 'object') {
+      const mergedIndex: Record<string, string[]> = { ...localIndex, ...cloudDoc.courses };
+      let changed = false;
+      for (const [cid, ids] of Object.entries(mergedIndex)) {
+        if (!Array.isArray(ids)) continue;
+        const prevSet = getRemovedStudentIds(cid);
+        const prevStr = JSON.stringify(Array.from(prevSet).sort());
+        const nextStr = JSON.stringify([...ids].sort());
+        if (prevStr !== nextStr) {
+          setUserScopedItem(`fds_removed_students_${cid}`, JSON.stringify(ids));
+          changed = true;
+        }
+      }
+      saveRemovedStudentsIndex(mergedIndex, false);
+      if (changed) {
+        cachedStudents = null;
+        window.dispatchEvent(new Event('docencia_student_status_updated'));
+      }
+      return mergedIndex;
+    } else {
+      // Seed global index from any existing local course removed sets
+      const courses = getLocalCourses();
+      let hasAnyLocal = false;
+      const seededIndex: Record<string, string[]> = { ...localIndex };
+      for (const c of courses) {
+        if (!c?.id) continue;
+        const ids = Array.from(getRemovedStudentIds(c.id));
+        if (ids.length > 0) {
+          seededIndex[c.id] = ids;
+          hasAnyLocal = true;
+        }
+      }
+      if (hasAnyLocal) {
+        saveRemovedStudentsIndex(seededIndex, true);
+      }
+      return seededIndex;
+    }
+  } catch (_) {}
+  return localIndex;
 }
 
 export async function syncRemovedStudentsFromCloud(
@@ -740,6 +838,12 @@ export async function syncRemovedStudentsFromCloud(
       setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(nextIds)));
       setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(nextList));
 
+      const index = getRemovedStudentsIndex();
+      if (JSON.stringify(index[courseId] || []) !== JSON.stringify(cloudIds)) {
+        index[courseId] = cloudIds;
+        saveRemovedStudentsIndex(index, true);
+      }
+
       if (prevIdsStr !== nextIdsStr || localList.length !== nextList.length) {
         cachedStudents = null;
         window.dispatchEvent(new Event('docencia_student_status_updated'));
@@ -747,9 +851,14 @@ export async function syncRemovedStudentsFromCloud(
       return { ids: nextIds, list: nextList };
     } else if (localIds.size > 0 || localList.length > 0) {
       // Seed cloud from existing local removed students so other devices receive it
+      const idsArr = Array.from(localIds);
+      const index = getRemovedStudentsIndex();
+      index[courseId] = idsArr;
+      saveRemovedStudentsIndex(index, true);
+
       firestoreSync
         .saveUserSetting(userId, `removed_students_${courseId}`, {
-          ids: Array.from(localIds),
+          ids: idsArr,
           students: localList,
           updatedAt: new Date().toISOString(),
         })
@@ -759,6 +868,7 @@ export async function syncRemovedStudentsFromCloud(
 
   return { ids: localIds, list: localList };
 }
+
 
 
 

@@ -34,7 +34,7 @@ import {
 } from '../../utils/courseFormatting';
 import { classroomService } from '../../services/workspace/classroomService';
 import { calendarService } from '../../services/workspace/calendarService';
-import { api } from '../../services/api';
+import { api, getRemovedStudentIds, syncAllRemovedStudentsIndexFromCloud } from '../../services/api';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { ImportClassroomModal } from './ImportClassroomModal';
 
@@ -81,6 +81,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [syncingCourseId, setSyncingCourseId] = useState<string | null>(null);
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
+  const [removedSyncTick, setRemovedSyncTick] = useState<number>(0);
   const [liveCalendarSlots, setLiveCalendarSlots] = useState<
     { dayOfWeek: number; startTime: string; endTime: string; title: string }[]
   >([]);
@@ -90,6 +91,24 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
     const id = setInterval(() => setNowTick(new Date()), 60000);
     return () => clearInterval(id);
   }, []);
+
+  // Hydrate global removed students index from cloud so Pareja Pedagógica counts are accurate on any device
+  useEffect(() => {
+    let mounted = true;
+    const handleRemovedUpdate = () => {
+      if (mounted) setRemovedSyncTick((t) => t + 1);
+    };
+    syncAllRemovedStudentsIndexFromCloud()
+      .then(() => {
+        if (mounted) setRemovedSyncTick((t) => t + 1);
+      })
+      .catch(() => {});
+    window.addEventListener('docencia_student_status_updated', handleRemovedUpdate);
+    return () => {
+      mounted = false;
+      window.removeEventListener('docencia_student_status_updated', handleRemovedUpdate);
+    };
+  }, [user?.id, user?.email]);
 
   // Load weekly calendar slots in background when connected to enrich schedule sorting
   useEffect(() => {
@@ -284,6 +303,40 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   // Strictly deduplicate courses to prevent any repeating subjects in UI
   const uniqueCourses = React.useMemo(() => api.deduplicateCourses(courses), [courses]);
 
+  // Compute visible and hidden (Pareja Pedagógica) student counts per course
+  const courseStudentCountsMap = React.useMemo(() => {
+    const map: Record<string, { activeCount: number; hiddenCount: number }> = {};
+    const studentsByCourse = new Map<string, Student[]>();
+    for (const s of allStudents) {
+      if (!s?.courseId) continue;
+      const list = studentsByCourse.get(s.courseId) || [];
+      list.push(s);
+      studentsByCourse.set(s.courseId, list);
+    }
+
+    for (const c of uniqueCourses) {
+      const removedSet = getRemovedStudentIds(c.id);
+      const hiddenCount = removedSet.size;
+      const roster = studentsByCourse.get(c.id) || [];
+      if (roster.length > 0) {
+        const visibleRoster = roster.filter((s) => !removedSet.has(s.id));
+        map[c.id] = { activeCount: visibleRoster.length, hiddenCount };
+      } else {
+        const baseCount = Math.max(0, c.studentsCount || 0);
+        const adjusted = hiddenCount > 0 && baseCount > hiddenCount ? baseCount - hiddenCount : baseCount;
+        map[c.id] = { activeCount: adjusted, hiddenCount };
+      }
+    }
+    return map;
+  }, [uniqueCourses, allStudents, removedSyncTick]);
+
+  const totalVisibleStudentsCount = React.useMemo(() => {
+    return uniqueCourses.reduce(
+      (acc, curr) => acc + (courseStudentCountsMap[curr.id]?.activeCount ?? curr.studentsCount ?? 0),
+      0
+    );
+  }, [uniqueCourses, courseStudentCountsMap]);
+
   const cleanQuery = searchQuery.trim().toLowerCase();
 
   const filteredAndSortedCourses = React.useMemo(() => {
@@ -444,8 +497,8 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
             <p className={`text-[11px] font-semibold ${isDarkMode ? 'text-blue-200/80' : 'text-blue-100'}`}>
               Materias a cargo
             </p>
-            <p className="text-xl font-bold mt-0.5 text-white">
-              {courses.length}
+            <p className="text-xl font-bold mt-0.5 text-white tabular-nums">
+              { uniqueCourses.length }
             </p>
           </div>
           <div
@@ -472,8 +525,8 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                 </button>
               )}
             </div>
-            <p className="text-xl font-bold mt-0.5 text-white">
-              {courses.reduce((acc, curr) => acc + curr.studentsCount, 0)}
+            <p className="text-xl font-bold mt-0.5 text-white tabular-nums">
+              {totalVisibleStudentsCount}
             </p>
           </div>
           <div
@@ -928,9 +981,23 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                     >
                       {course.grade}
                     </span>
-                    <span className={`text-xs font-medium flex items-center gap-1 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    <span className={`text-xs font-medium flex items-center gap-1 tabular-nums ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
                       <Users className="w-3.5 h-3.5 text-neutral-400" />
-                      {course.studentsCount} {course.studentsCount === 1 ? 'estudiante' : 'estudiantes'}
+                      <span>
+                        {courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount}{' '}
+                        {(courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount) === 1
+                          ? 'estudiante'
+                          : 'estudiantes'}
+                      </span>
+                      {(courseStudentCountsMap[course.id]?.hiddenCount ?? 0) > 0 && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className={isDarkMode ? 'text-slate-500' : 'text-neutral-400'}>
+                            {courseStudentCountsMap[course.id].hiddenCount} oculto
+                            {courseStudentCountsMap[course.id].hiddenCount === 1 ? '' : 's'}
+                          </span>
+                        </>
+                      )}
                     </span>
                     {nextClassMap[course.id]?.badgeText && (
                       <span

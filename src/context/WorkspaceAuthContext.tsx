@@ -172,9 +172,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     };
 
+    const handleClearedEvent = () => {
+      setToken(null);
+    };
+
     if (typeof window !== 'undefined') {
       window.addEventListener('google_session_expired', handleExpiredEvent);
       window.addEventListener('google_session_renewed', handleRenewedEvent);
+      window.addEventListener('google_session_cleared', handleClearedEvent);
     }
 
     return () => {
@@ -182,6 +187,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       if (typeof window !== 'undefined') {
         window.removeEventListener('google_session_expired', handleExpiredEvent);
         window.removeEventListener('google_session_renewed', handleRenewedEvent);
+        window.removeEventListener('google_session_cleared', handleClearedEvent);
       }
     };
   }, [mode]);

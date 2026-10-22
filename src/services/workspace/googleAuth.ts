@@ -47,15 +47,19 @@ provider.setCustomParameters({
   prompt: 'select_account',
 });
 
-// Token storage keys for session persistence across tabs and page reloads
+// Token storage keys for session persistence in sessionStorage + memory (never persisted on disk in localStorage)
 const TOKEN_STORAGE_KEY = 'docencia_workspace_access_token';
 const TOKEN_EXPIRY_KEY = 'docencia_workspace_token_expires_at';
 const TOKEN_ISSUED_KEY = 'docencia_workspace_token_issued_at';
+const TOKEN_SYNC_CHANNEL_NAME = 'docencia_workspace_token_sync';
 const TOKEN_LIFETIME_MS = 59 * 60 * 1000; // 59 minutes threshold (tokens last 60m)
 
 let cachedAccessToken: string | null = null;
 let tokenIssuedAt: number | null = null;
+let tokenExpiresAt: number | null = null;
 let isSigningIn = false;
+let hasRequestedTokenFromPeers = false;
+let tokenSyncChannel: BroadcastChannel | null = null;
 
 // User gesture tracking to prevent popup-blocked errors when calling GIS requestAccessToken
 let lastUserGestureTime = 0;
@@ -150,6 +154,15 @@ export const DEFAULT_TEACHER: TeacherProfile = {
   scopes: WORKSPACE_SCOPES,
 };
 
+const purgeLegacyLocalStorageTokens = (): void => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    localStorage.removeItem(TOKEN_ISSUED_KEY);
+    localStorage.removeItem(TOKEN_EXPIRY_KEY);
+  } catch (_) {}
+};
+
 export const isGoogleSessionExpired = (): boolean => {
   if (typeof window === 'undefined') return false;
   const isSessionActive =
@@ -157,11 +170,9 @@ export const isGoogleSessionExpired = (): boolean => {
     localStorage.getItem('docencia_session_active') === 'true';
   if (!isSessionActive) return false;
 
-  const storedExpiry = Number(
-    sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
-      localStorage.getItem(TOKEN_EXPIRY_KEY) ||
-      0
-  );
+  const storedExpiry =
+    tokenExpiresAt ||
+    Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
   // Only report expired if a Google OAuth token was actually issued and its expiry timestamp has passed
   if (!storedExpiry) return false;
   return Date.now() > storedExpiry;
@@ -209,19 +220,90 @@ const syncFirebaseAuthWithAccessToken = (accessToken: string): void => {
   } catch (_) {}
 };
 
+const setupCrossTabTokenSync = (): void => {
+  if (typeof window === 'undefined' || tokenSyncChannel) return;
+  if (!('BroadcastChannel' in window)) return;
+
+  try {
+    tokenSyncChannel = new BroadcastChannel(TOKEN_SYNC_CHANNEL_NAME);
+    tokenSyncChannel.onmessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+
+      if (data.type === 'REQUEST_TOKEN') {
+        const currentToken = cachedAccessToken || decodeStoredToken(sessionStorage.getItem(TOKEN_STORAGE_KEY));
+        const currentExpiry = tokenExpiresAt || Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
+        const currentIssued = tokenIssuedAt || Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
+        if (currentToken && isValidGoogleAccessToken(currentToken) && (!currentExpiry || Date.now() < currentExpiry)) {
+          try {
+            tokenSyncChannel?.postMessage({
+              type: 'SHARE_TOKEN',
+              token: currentToken,
+              issuedAt: currentIssued,
+              expiresAt: currentExpiry || (Date.now() + TOKEN_LIFETIME_MS),
+              teacherEmail: getActiveTeacherEmail(),
+            });
+          } catch (_) {}
+        }
+      } else if (data.type === 'SHARE_TOKEN' && data.token && isValidGoogleAccessToken(data.token)) {
+        const now = Date.now();
+        const incomingExpiry = Number(data.expiresAt) || (now + TOKEN_LIFETIME_MS);
+        const incomingIssued = Number(data.issuedAt) || now;
+        if (now < incomingExpiry && cachedAccessToken !== data.token) {
+          cachedAccessToken = data.token;
+          tokenIssuedAt = incomingIssued;
+          tokenExpiresAt = incomingExpiry;
+          try {
+            sessionStorage.setItem(TOKEN_STORAGE_KEY, encodeStoredToken(data.token));
+            sessionStorage.setItem(TOKEN_ISSUED_KEY, String(incomingIssued));
+            sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(incomingExpiry));
+            if (data.teacherEmail) {
+              sessionStorage.setItem('docencia_teacher_email', String(data.teacherEmail).trim().toLowerCase());
+            }
+          } catch (_) {}
+          syncFirebaseAuthWithAccessToken(data.token);
+          window.dispatchEvent(
+            new CustomEvent('google_session_renewed', { detail: { token: data.token } })
+          );
+        }
+      } else if (data.type === 'CLEAR_TOKEN') {
+        cachedAccessToken = null;
+        tokenIssuedAt = null;
+        tokenExpiresAt = null;
+        lastLinkedFirebaseToken = null;
+        try {
+          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
+          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+          purgeLegacyLocalStorageTokens();
+        } catch (_) {}
+        window.dispatchEvent(new CustomEvent('google_session_cleared'));
+      }
+    };
+  } catch (_) {}
+};
+
+// Initialize BroadcastChannel listener on module load in browser
+if (typeof window !== 'undefined') {
+  setupCrossTabTokenSync();
+}
+
 export const getCachedAccessToken = (): string | null => {
   // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
     if (tokenIssuedAt && Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS) {
-      // Check stored absolute expiry before nullifying
-      const storedExpiry = typeof window !== 'undefined'
-        ? Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0)
-        : 0;
+      const storedExpiry =
+        tokenExpiresAt ||
+        (typeof window !== 'undefined' ? Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0) : 0);
       if (storedExpiry && Date.now() > storedExpiry) {
         cachedAccessToken = null;
+        tokenIssuedAt = null;
+        tokenExpiresAt = null;
         try {
           sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
+          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+          purgeLegacyLocalStorageTokens();
         } catch (_) {}
         return null;
       }
@@ -229,35 +311,50 @@ export const getCachedAccessToken = (): string | null => {
     return cachedAccessToken;
   }
 
-  // 2. Persistent storage fallback (survives page refresh F5 and tab switches)
+  // 2. SessionStorage fallback (survives F5 page reload; migrates & purges any legacy localStorage token once)
   if (typeof window !== 'undefined') {
+    setupCrossTabTokenSync();
     try {
-      const rawStored =
-        sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
-        localStorage.getItem(TOKEN_STORAGE_KEY);
+      let rawStored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
+      let storedIssued = Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || 0);
+      let storedExpiry = Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
+
+      // One-time seamless migration from legacy localStorage if present, followed by immediate purge
+      const legacyRaw = localStorage.getItem(TOKEN_STORAGE_KEY);
+      if (legacyRaw) {
+        if (!rawStored) {
+          rawStored = legacyRaw;
+          storedIssued = Number(localStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
+          storedExpiry = Number(localStorage.getItem(TOKEN_EXPIRY_KEY) || (Date.now() + TOKEN_LIFETIME_MS));
+          sessionStorage.setItem(TOKEN_STORAGE_KEY, rawStored);
+          sessionStorage.setItem(TOKEN_ISSUED_KEY, String(storedIssued));
+          sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(storedExpiry));
+        }
+        purgeLegacyLocalStorageTokens();
+      }
+
       const stored = decodeStoredToken(rawStored);
-      const storedIssued = Number(
-        sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
-        localStorage.getItem(TOKEN_ISSUED_KEY) ||
-        0
-      );
-      const storedExpiry = Number(
-        sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
-        localStorage.getItem(TOKEN_EXPIRY_KEY) ||
-        0
-      );
 
       if (stored && isValidGoogleAccessToken(stored)) {
         const now = Date.now();
         if (!storedExpiry || now < storedExpiry) {
           cachedAccessToken = stored;
           tokenIssuedAt = storedIssued || (now - 5 * 60 * 1000);
+          tokenExpiresAt = storedExpiry || (now + TOKEN_LIFETIME_MS);
           syncFirebaseAuthWithAccessToken(stored);
           return cachedAccessToken;
         } else {
           sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          localStorage.removeItem(TOKEN_STORAGE_KEY);
+          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
+          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
+          purgeLegacyLocalStorageTokens();
         }
+      } else if (!hasRequestedTokenFromPeers && tokenSyncChannel) {
+        // Ask other open tabs for the active session token (e.g. when opening a course in a new tab)
+        hasRequestedTokenFromPeers = true;
+        try {
+          tokenSyncChannel.postMessage({ type: 'REQUEST_TOKEN' });
+        } catch (_) {}
       }
     } catch (_) {}
   }
@@ -271,11 +368,13 @@ export const setCachedAccessToken = (
   expiresInSeconds?: number
 ): void => {
   const now = Date.now();
+  setupCrossTabTokenSync();
   if (token && isValidGoogleAccessToken(token)) {
     cachedAccessToken = token;
     tokenIssuedAt = now;
     const ttlMs = expiresInSeconds ? Math.max((expiresInSeconds - 60) * 1000, 10 * 60 * 1000) : TOKEN_LIFETIME_MS;
     const expiresAt = now + ttlMs;
+    tokenExpiresAt = expiresAt;
     const encoded = encodeStoredToken(token);
 
     syncFirebaseAuthWithAccessToken(token);
@@ -285,27 +384,36 @@ export const setCachedAccessToken = (
         sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
         sessionStorage.setItem(TOKEN_ISSUED_KEY, String(now));
         sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
-        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
-        localStorage.setItem(TOKEN_ISSUED_KEY, String(now));
-        localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
+        // Always purge legacy localStorage token entries for XSS/disk protection
+        purgeLegacyLocalStorageTokens();
+
         if (teacherEmail) {
-          sessionStorage.setItem('docencia_teacher_email', teacherEmail.trim().toLowerCase());
-          localStorage.setItem('docencia_teacher_email', teacherEmail.trim().toLowerCase());
+          const cleanEmail = teacherEmail.trim().toLowerCase();
+          sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+          localStorage.setItem('docencia_teacher_email', cleanEmail);
         }
+
+        tokenSyncChannel?.postMessage({
+          type: 'SHARE_TOKEN',
+          token,
+          issuedAt: now,
+          expiresAt,
+          teacherEmail: teacherEmail ? teacherEmail.trim().toLowerCase() : getActiveTeacherEmail(),
+        });
       } catch (_) {}
     }
   } else if (!token) {
     cachedAccessToken = null;
     tokenIssuedAt = null;
+    tokenExpiresAt = null;
     lastLinkedFirebaseToken = null;
     if (typeof window !== 'undefined') {
       try {
         sessionStorage.removeItem(TOKEN_STORAGE_KEY);
         sessionStorage.removeItem(TOKEN_ISSUED_KEY);
         sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-        localStorage.removeItem(TOKEN_STORAGE_KEY);
-        localStorage.removeItem(TOKEN_ISSUED_KEY);
-        localStorage.removeItem(TOKEN_EXPIRY_KEY);
+        purgeLegacyLocalStorageTokens();
+        tokenSyncChannel?.postMessage({ type: 'CLEAR_TOKEN' });
       } catch (_) {}
     }
   }

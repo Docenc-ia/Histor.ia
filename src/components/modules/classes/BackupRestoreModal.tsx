@@ -114,7 +114,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
 
       // Backup payload
       const backupData = {
-        app: 'Docenc.IA',
+        app: 'Docenc.ia',
         version: '2.1',
         exportDate: new Date().toISOString(),
         formattedDate: new Date().toLocaleString('es-AR'),
@@ -190,7 +190,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           !data.libroDeTemas &&
           !data.gradebook
         ) {
-          throw new Error('El archivo seleccionado no tiene la estructura de un respaldo de Docenc.IA.');
+          throw new Error('El archivo seleccionado no tiene la estructura de un respaldo de Docenc.ia.');
         }
 
         setParsedBackup(data);
@@ -514,7 +514,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
                     Hacé clic acá para seleccionar tu archivo de respaldo
                   </p>
                   <p className="text-[11px] text-neutral-400 mt-0.5">
-                    Archivos .json generados previamente por Docenc.IA
+                    Archivos .json generados previamente por Docenc.ia
                   </p>
                 </div>
               </div>

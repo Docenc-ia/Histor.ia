@@ -220,7 +220,7 @@ export const Header: React.FC<HeaderProps> = ({
       }
 
       const payload = {
-        app: 'Docenc.IA - Respaldo Integral del Ciclo Lectivo',
+        app: 'Docenc.ia - Respaldo Integral del Ciclo Lectivo',
         version: '3.1',
         exportedAt: new Date().toISOString(),
         formattedDate: new Date().toLocaleString('es-AR'),
@@ -302,7 +302,7 @@ export const Header: React.FC<HeaderProps> = ({
         const content = event.target?.result as string;
         const data = JSON.parse(content);
         if (!data || typeof data !== 'object' || (!data.courses && !data.settingsAndGradesSnapshot)) {
-          throw new Error('El archivo seleccionado no es un respaldo válido de Docenc.IA.');
+          throw new Error('El archivo seleccionado no es un respaldo válido de Docenc.ia.');
         }
 
         const uid = getActiveUserId();
@@ -550,7 +550,7 @@ export const Header: React.FC<HeaderProps> = ({
                 ? 'bg-indigo-950/60 hover:bg-indigo-900/70 border-indigo-700/60 text-indigo-200'
                 : 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
             }`}
-            title="Instalar Docenc.IA como aplicación nativa en tu dispositivo (Windows, Mac o móvil)"
+            title="Instalar Docenc.ia como aplicación nativa en tu dispositivo (Windows, Mac o móvil)"
           >
             <Smartphone className="w-3.5 h-3.5 text-indigo-500" />
             <span>Instalar App</span>
@@ -683,7 +683,7 @@ export const Header: React.FC<HeaderProps> = ({
               ? 'text-slate-300 hover:text-red-400 hover:bg-red-950/40 border-slate-700'
               : 'text-neutral-600 hover:text-red-600 hover:bg-red-50 border-neutral-200'
           }`}
-          title="Cerrar sesión y volver a la página de bienvenida Docenc.IA"
+          title="Cerrar sesión y volver a la página de bienvenida Docenc.ia"
         >
           <LogOut className="w-3.5 h-3.5" />
           <span>Salir</span>
@@ -853,7 +853,7 @@ export const Header: React.FC<HeaderProps> = ({
                   >
                     <span className="flex items-center gap-2">
                       <Smartphone className="w-3.5 h-3.5 text-indigo-500" />
-                      <span>Instalar Docenc.IA como App</span>
+                      <span>Instalar Docenc.ia como App</span>
                     </span>
                     <Download className="w-3.5 h-3.5 text-indigo-500" />
                   </button>

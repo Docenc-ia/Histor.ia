@@ -38,26 +38,21 @@ const ImportGradesModal = lazy(() =>
   import('./ImportGradesModal').then((m) => ({ default: m.ImportGradesModal }))
 );
 import {
-  GradeHistoryEntry,
   exportGradeHistoryToExcel,
   exportGradebookMatrixToExcel,
 } from '../../utils/excelExport';
-import { sheetsService } from '../../services/workspace/sheetsService';
-import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
-import {
-  firestoreSync,
-  getActiveUserId,
-  subscribeToCloudSyncStatus,
-  CloudSyncStatusInfo,
-  registerCloudFlushHandler,
-  notifyDebouncedSyncPending,
-} from '../../services/firestoreSync';
-import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { copyTableToClipboard, isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
-import { api, getUserStorageKey } from '../../services/api';
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../utils/attendanceCalculations';
+import {
+  CATEGORY_COLORS,
+  calculateFinalScoreForStudent,
+  computeTermScoresMap,
+  getScoreColorClass as computeScoreColorClass,
+  buildGradesCsvContent,
+} from '../../utils/gradeCalculations';
+import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
+import { GradebookCategoryModals } from './GradebookCategoryModals';
 
-export type GradebookTerm = '1c' | '2c' | 'annual';
+export type { GradebookTerm };
 
 export interface GradebookMatrixProps {
   courseId: string;
@@ -72,15 +67,6 @@ export interface GradebookMatrixProps {
 }
 
 export { DEFAULT_CATEGORIES };
-
-const CATEGORY_COLORS = [
-  { name: 'Azul', border: 'border-blue-500', headerBg: 'bg-blue-500/10 text-blue-700 dark:text-blue-300 dark:bg-blue-950/40', badge: 'bg-blue-500' },
-  { name: 'Esmeralda', border: 'border-emerald-500', headerBg: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 dark:bg-emerald-950/40', badge: 'bg-emerald-500' },
-  { name: 'Púrpura', border: 'border-purple-500', headerBg: 'bg-purple-500/10 text-purple-700 dark:text-purple-300 dark:bg-purple-950/40', badge: 'bg-purple-500' },
-  { name: 'Ámbar', border: 'border-amber-500', headerBg: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 dark:bg-amber-950/40', badge: 'bg-amber-500' },
-  { name: 'Índigo', border: 'border-indigo-500', headerBg: 'bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 dark:bg-indigo-950/40', badge: 'bg-indigo-500' },
-  { name: 'Rosa', border: 'border-rose-500', headerBg: 'bg-rose-500/10 text-rose-700 dark:text-rose-300 dark:bg-rose-950/40', badge: 'bg-rose-500' },
-];
 
 export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   courseId,
@@ -107,763 +93,45 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
-  const getCatKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_categories_${courseId}_${t}`);
-  const getGradesKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_data_${courseId}_${t}`);
-  const getCalcKey = (t: '1c' | '2c') => getUserStorageKey(`fds_grades_final_calc_${courseId}_${t}`);
-  const STORAGE_KEY_ANNUAL_OVERRIDES = getUserStorageKey(`fds_grades_annual_override_${courseId}`);
-
-  // 1° Cuatrimestre Categories
-  const [categories1c, setCategories1c] = useState<GradeCategory[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved =
-          localStorage.getItem(getCatKey('1c')) ||
-          localStorage.getItem(`fds_grades_categories_${courseId}`);
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return DEFAULT_CATEGORIES;
-  });
-
-  // 1° Cuatrimestre Grades Map
-  const [gradesMap1c, setGradesMap1c] = useState<StudentGradesMap>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved =
-          localStorage.getItem(getGradesKey('1c')) ||
-          localStorage.getItem(`fds_grades_data_${courseId}`);
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return {};
-  });
-
-  // 1° Cuatrimestre Final Calc Mode
-  const [overallCalc1c, setOverallCalc1c] = useState<'average_of_categories' | 'manual_final'>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved =
-          localStorage.getItem(getCalcKey('1c')) ||
-          localStorage.getItem(`fds_grades_final_calc_${courseId}`);
-        if (saved === 'manual_final' || saved === 'average_of_categories') return saved;
-      } catch (_) {}
-    }
-    return 'manual_final';
-  });
-
-  // 2° Cuatrimestre Categories
-  const [categories2c, setCategories2c] = useState<GradeCategory[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getCatKey('2c'));
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    // Default for 2c: clone 1c structure or defaults
-    return DEFAULT_CATEGORIES.map((cat) => ({
-      ...cat,
-      id: `c2-${cat.id}`,
-      subcategories: cat.subcategories.map((sub) => ({ ...sub, id: `c2-${sub.id}` })),
-    }));
-  });
-
-  // 2° Cuatrimestre Grades Map
-  const [gradesMap2c, setGradesMap2c] = useState<StudentGradesMap>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getGradesKey('2c'));
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return {};
-  });
-
-  // 2° Cuatrimestre Final Calc Mode
-  const [overallCalc2c, setOverallCalc2c] = useState<'average_of_categories' | 'manual_final'>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getCalcKey('2c'));
-        if (saved === 'manual_final' || saved === 'average_of_categories') return saved;
-      } catch (_) {}
-    }
-    return 'manual_final';
-  });
-
-  // Annual overrides
-  const [annualOverrides, setAnnualOverrides] = useState<Record<string, string>>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(STORAGE_KEY_ANNUAL_OVERRIDES);
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return {};
-  });
-
-  // Active term variables
   const is2c = currentTerm === '2c';
-  const categories = is2c ? categories2c : categories1c;
-  const gradesMap = is2c ? gradesMap2c : gradesMap1c;
-  const overallCalculation = is2c ? overallCalc2c : overallCalc1c;
 
-  const { token } = useWorkspaceAuth();
-  const [isSavingSheets, setIsSavingSheets] = useState(false);
-  const [sheetsSavedInfo, setSheetsSavedInfo] = useState<{
-    url?: string;
-    tabName: string;
-    isLiveGoogle: boolean;
-    pulledCount?: number;
-  } | null>(null);
-
-  const handleSyncCuatrimestreWithSheets = async () => {
-    if (currentTerm === 'annual') return;
-    setIsSavingSheets(true);
-    setSheetsSavedInfo(null);
-    const termToSync = currentTerm as '1c' | '2c';
-    const catsToSync = is2c ? categories2c : categories1c;
-    let gradesToSync = is2c ? { ...gradesMap2c } : { ...gradesMap1c };
-
-    try {
-      const realExistingId = await sheetsService.resolveGradesSpreadsheetId(
-        courseId,
-        courseName,
-        undefined,
-        driveFolderId,
-        token || undefined
-      );
-
-      let pulledCount = 0;
-
-      // 1. Doble entrada (Pull): Si ya existe el sheet de Calificaciones vinculado, traemos cambios hechos por el docente en Sheets
-      if (realExistingId) {
-        try {
-          const pullRes = await sheetsService.pullGradebookMatrixFromGoogle(
-            { id: courseId, name: courseName },
-            termToSync,
-            students,
-            catsToSync,
-            gradesToSync,
-            realExistingId,
-            token || undefined
-          );
-
-          if (pullRes.success && pullRes.changesCount > 0) {
-            pulledCount = pullRes.changesCount;
-            gradesToSync = pullRes.updatedGradesMap;
-            if (is2c) {
-              setGradesMap2c(gradesToSync);
-              localStorage.setItem(getGradesKey('2c'), JSON.stringify(gradesToSync));
-            } else {
-              setGradesMap1c(gradesToSync);
-              localStorage.setItem(getGradesKey('1c'), JSON.stringify(gradesToSync));
-            }
-          }
-        } catch (pullErr) {
-          console.warn('Error al consultar cambios de notas en Sheets:', pullErr);
-        }
-      }
-
-      // 2. Push: Subir las notas completas actualizadas al documento de Calificaciones en Google Sheets
-      const res = await sheetsService.syncGradebookMatrixToSheet(
-        { id: courseId, name: courseName },
-        termToSync,
-        students,
-        catsToSync,
-        gradesToSync,
-        realExistingId,
-        driveFolderId,
-        token || undefined
-      );
-
-      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && typeof window !== 'undefined') {
-        localStorage.setItem(
-          `fds_grades_sheet_${courseId}`,
-          JSON.stringify({
-            spreadsheetId: res.spreadsheetId,
-            url: res.url,
-            lastSyncedAt: res.updatedAt,
-          })
-        );
-      }
-
-      // Guardar snapshot del término en Firestore
-      const userId = getActiveUserId();
-      if (userId) {
-        firestoreSync
-          .saveTermSnapshot(userId, courseId, termToSync, {
-            courseId,
-            term: termToSync,
-            termLabel: termToSync === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-            categories: catsToSync,
-            gradesMap: gradesToSync,
-            updatedAt: new Date().toISOString(),
-          })
-          .catch(() => {});
-      }
-
-      setSheetsSavedInfo({
-        url: res.url,
-        tabName: res.tabName,
-        isLiveGoogle: res.isLiveGoogle,
-        pulledCount,
-      });
-    } catch (err) {
-      console.warn('Error sincronizando notas con sheets:', err);
-    } finally {
-      setIsSavingSheets(false);
-    }
-  };
-
-  const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
-    state: 'synced',
-    lastSyncedAt: null,
-    pendingCount: 0,
-  });
-
-  useEffect(() => {
-    return subscribeToCloudSyncStatus((st) => setCloudStatus(st));
-  }, []);
-
-  const cloudSyncTimerRef = useRef<Record<string, any>>({});
-  const pendingCloudPayloadsRef = useRef<Record<string, { userId: string; courseId: string; term: string; payload: any }>>({});
-  const getTermUpdatedAtKey = (term: '1c' | '2c') => getUserStorageKey(`fds_grades_updated_at_${courseId}_${term}`);
-
-  const persistTermSnapshotToCloud = (
-    term: '1c' | '2c',
-    cats: GradeCategory[],
-    gMap: StudentGradesMap,
-    extra?: Record<string, any>
-  ) => {
-    const userId = getActiveUserId();
-    if (!userId || !courseId) return;
-    const nowIso = new Date().toISOString();
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(getTermUpdatedAtKey(term), nowIso);
-      } catch (_) {}
-    }
-    const timerKey = `grades_${courseId}_${term}`;
-    if (cloudSyncTimerRef.current[timerKey]) {
-      clearTimeout(cloudSyncTimerRef.current[timerKey]);
-    }
-    const payload = {
-      courseId,
-      term,
-      termLabel: term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-      categories: cats,
-      gradesMap: gMap,
-      overallCalc: term === '2c' ? overallCalc2c : overallCalc1c,
-      ...(extra || {}),
-      updatedAt: nowIso,
-    };
-    pendingCloudPayloadsRef.current[timerKey] = { userId, courseId, term, payload };
-    notifyDebouncedSyncPending(timerKey, true);
-    cloudSyncTimerRef.current[timerKey] = setTimeout(() => {
-      delete pendingCloudPayloadsRef.current[timerKey];
-      delete cloudSyncTimerRef.current[timerKey];
-      notifyDebouncedSyncPending(timerKey, false);
-      firestoreSync
-        .saveTermSnapshot(userId, courseId, term, payload)
-        .catch(() => {});
-    }, 400);
-  };
-
-  // Flush any pending gradebook cloud writes on unmount, tab close, or network restore
-  useEffect(() => {
-    const flushAllGradebook = () => {
-      Object.entries(pendingCloudPayloadsRef.current).forEach(([key, item]) => {
-        if (cloudSyncTimerRef.current[key]) {
-          clearTimeout(cloudSyncTimerRef.current[key]);
-          delete cloudSyncTimerRef.current[key];
-        }
-        delete pendingCloudPayloadsRef.current[key];
-        notifyDebouncedSyncPending(key, false);
-        firestoreSync
-          .saveTermSnapshot(item.userId, item.courseId, item.term, item.payload)
-          .catch(() => {});
-      });
-    };
-
-    const unregFlush = registerCloudFlushHandler(`gradebook_${courseId}`, flushAllGradebook);
-    return () => {
-      unregFlush();
-      flushAllGradebook();
-    };
-  }, [courseId]);
-
-  const enqueueBackgroundSheetsSync = (
-    targetTerm: '1c' | '2c',
-    targetCats: GradeCategory[],
-    targetGrades: StudentGradesMap
-  ) => {
-    if (!token) return;
-    sheetsSyncQueue.enqueue(
-      courseId,
-      'grades',
-      async () => {
-        try {
-          const realId = await sheetsService.resolveGradesSpreadsheetId(
-            courseId,
-            courseName,
-            undefined,
-            driveFolderId,
-            token || undefined
-          );
-          if (!realId || !isRealGoogleSpreadsheetId(realId)) return;
-          const res = await sheetsService.syncGradebookMatrixToSheet(
-            { id: courseId, name: courseName },
-            targetTerm,
-            students,
-            targetCats,
-            targetGrades,
-            realId,
-            driveFolderId,
-            token
-          );
-          if (res.isLiveGoogle && res.updatedAt) {
-            setSheetsSavedInfo({
-              url: res.url,
-              tabName: targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre',
-              isLiveGoogle: true,
-            });
-          }
-        } catch (_) {}
-      },
-      3500
-    );
-  };
-
-  // Save changes to localStorage and Firestore for active term
-  const saveCategories = (newCategories: GradeCategory[]) => {
-    if (is2c) {
-      setCategories2c(newCategories);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('2c'), JSON.stringify(newCategories));
-      }
-      persistTermSnapshotToCloud('2c', newCategories, gradesMap2c);
-      enqueueBackgroundSheetsSync('2c', newCategories, gradesMap2c);
-    } else {
-      setCategories1c(newCategories);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('1c'), JSON.stringify(newCategories));
-        localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(newCategories));
-      }
-      persistTermSnapshotToCloud('1c', newCategories, gradesMap1c);
-      enqueueBackgroundSheetsSync('1c', newCategories, gradesMap1c);
-    }
-  };
-
-  const saveGrades = (newGrades: StudentGradesMap) => {
-    if (is2c) {
-      setGradesMap2c(newGrades);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getGradesKey('2c'), JSON.stringify(newGrades));
-      }
-      persistTermSnapshotToCloud('2c', categories2c, newGrades);
-      enqueueBackgroundSheetsSync('2c', categories2c, newGrades);
-    } else {
-      setGradesMap1c(newGrades);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getGradesKey('1c'), JSON.stringify(newGrades));
-        localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(newGrades));
-      }
-      persistTermSnapshotToCloud('1c', categories1c, newGrades);
-      enqueueBackgroundSheetsSync('1c', categories1c, newGrades);
-    }
-  };
-
-  const saveOverallCalc = (type: 'average_of_categories' | 'manual_final') => {
-    if (is2c) {
-      setOverallCalc2c(type);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCalcKey('2c'), type);
-      }
-      persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { overallCalc: type });
-    } else {
-      setOverallCalc1c(type);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCalcKey('1c'), type);
-        localStorage.setItem(`fds_grades_final_calc_${courseId}`, type);
-      }
-      persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { overallCalc: type });
-    }
-  };
-
-  const saveAnnualOverride = (studentId: string, val: string) => {
-    const updated = { ...annualOverrides };
-    if (!val || val.trim() === '') {
-      delete updated[studentId];
-    } else {
-      updated[studentId] = val.trim();
-    }
-    setAnnualOverrides(updated);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(updated));
-    }
-    persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { annualOverrides: updated });
-  };
-
-  const handleCopyCategoriesFrom1c = () => {
-    const cloned = categories1c.map((cat, catIdx) => ({
-      ...cat,
-      id: `c2-${Date.now()}-${catIdx}-${cat.id}`,
-      subcategories: cat.subcategories.map((sub, subIdx) => ({
-        ...sub,
-        id: `c2-${Date.now()}-${subIdx}-${sub.id}`,
-      })),
-    }));
-    saveCategories(cloned);
-  };
-
-  // Auto-load & recover saved gradebook snapshots from Firestore on mount or course switch
-  useEffect(() => {
-    let isMounted = true;
-    const userId = getActiveUserId();
-    if (!userId || !courseId) return;
-
-    firestoreSync
-      .loadTermSnapshots(userId, courseId)
-      .then((snapshots) => {
-        if (!isMounted || !snapshots) return;
-
-        const snap1c = snapshots['1c'];
-        if (snap1c) {
-          const local1cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('1c')) || '' : '';
-          const isCloud1cNewer = !local1cUpdated || !snap1c.updatedAt || snap1c.updatedAt >= local1cUpdated;
-
-          if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
-            setCategories1c((prev) => {
-              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('1c'));
-              if (!hasLocal || prev === DEFAULT_CATEGORIES || isCloud1cNewer) {
-                if (typeof window !== 'undefined') {
-                  localStorage.setItem(getCatKey('1c'), JSON.stringify(snap1c.categories));
-                }
-                return snap1c.categories;
-              }
-              return prev;
-            });
-          }
-          if (snap1c.gradesMap && typeof snap1c.gradesMap === 'object' && Object.keys(snap1c.gradesMap).length > 0) {
-            setGradesMap1c((prev) => {
-              const merged = isCloud1cNewer ? { ...prev, ...snap1c.gradesMap } : { ...snap1c.gradesMap, ...prev };
-              if (typeof window !== 'undefined') {
-                localStorage.setItem(getGradesKey('1c'), JSON.stringify(merged));
-              }
-              return merged;
-            });
-          }
-          if (snap1c.preliminaryValuation) {
-            setPreliminaryValuation1c((prev) => {
-              const val = isCloud1cNewer ? snap1c.preliminaryValuation : prev || snap1c.preliminaryValuation;
-              if (typeof window !== 'undefined' && val) {
-                localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(val));
-              }
-              return val;
-            });
-          }
-          if (snap1c.annualOverrides && typeof snap1c.annualOverrides === 'object') {
-            setAnnualOverrides((prev) => {
-              const merged = isCloud1cNewer
-                ? { ...prev, ...snap1c.annualOverrides }
-                : { ...snap1c.annualOverrides, ...prev };
-              if (typeof window !== 'undefined') {
-                localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
-              }
-              return merged;
-            });
-          }
-          if (snap1c.updatedAt && isCloud1cNewer && typeof window !== 'undefined') {
-            try {
-              localStorage.setItem(getTermUpdatedAtKey('1c'), snap1c.updatedAt);
-            } catch (_) {}
-          }
-        }
-
-        const snap2c = snapshots['2c'];
-        if (snap2c) {
-          const local2cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('2c')) || '' : '';
-          const isCloud2cNewer = !local2cUpdated || !snap2c.updatedAt || snap2c.updatedAt >= local2cUpdated;
-
-          if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
-            setCategories2c((prev) => {
-              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('2c'));
-              if (!hasLocal || isCloud2cNewer) {
-                if (typeof window !== 'undefined') {
-                  localStorage.setItem(getCatKey('2c'), JSON.stringify(snap2c.categories));
-                }
-                return snap2c.categories;
-              }
-              return prev;
-            });
-          }
-          if (snap2c.gradesMap && typeof snap2c.gradesMap === 'object' && Object.keys(snap2c.gradesMap).length > 0) {
-            setGradesMap2c((prev) => {
-              const merged = isCloud2cNewer ? { ...prev, ...snap2c.gradesMap } : { ...snap2c.gradesMap, ...prev };
-              if (typeof window !== 'undefined') {
-                localStorage.setItem(getGradesKey('2c'), JSON.stringify(merged));
-              }
-              return merged;
-            });
-          }
-          if (snap2c.preliminaryValuation) {
-            setPreliminaryValuation2c((prev) => {
-              const val = isCloud2cNewer ? snap2c.preliminaryValuation : prev || snap2c.preliminaryValuation;
-              if (typeof window !== 'undefined' && val) {
-                localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(val));
-              }
-              return val;
-            });
-          }
-          if (snap2c.updatedAt && isCloud2cNewer && typeof window !== 'undefined') {
-            try {
-              localStorage.setItem(getTermUpdatedAtKey('2c'), snap2c.updatedAt);
-            } catch (_) {}
-          }
-        }
-      })
-      .catch(() => {});
-
-    return () => {
-      isMounted = false;
-    };
-  }, [courseId]);
-
-  // Listen for external grades or category updates (e.g. disposition notes sent from ClassesModule)
-  useEffect(() => {
-    const handleGradesUpdated = (e: any) => {
-      try {
-        const savedCats1c =
-          localStorage.getItem(getCatKey('1c')) ||
-          localStorage.getItem(`fds_grades_categories_${courseId}`);
-        if (savedCats1c) setCategories1c(JSON.parse(savedCats1c));
-
-        const savedGrades1c =
-          localStorage.getItem(getGradesKey('1c')) ||
-          localStorage.getItem(`fds_grades_data_${courseId}`);
-        if (savedGrades1c) setGradesMap1c(JSON.parse(savedGrades1c));
-
-        const savedCats2c = localStorage.getItem(getCatKey('2c'));
-        if (savedCats2c) setCategories2c(JSON.parse(savedCats2c));
-
-        const savedGrades2c = localStorage.getItem(getGradesKey('2c'));
-        if (savedGrades2c) setGradesMap2c(JSON.parse(savedGrades2c));
-
-        if (e?.detail?.term && (e.detail.term === '1c' || e.detail.term === '2c')) {
-          setInternalTerm(e.detail.term);
-        }
-      } catch (_) {}
-    };
-
-    window.addEventListener('fds-grades-updated', handleGradesUpdated);
-
-    // Cross-tab real-time sync for grades
-    const handleCrossTabGradesStorage = (e: StorageEvent) => {
-      if (!e.key) return;
-      if (e.key.includes(`fds_grades_`) && e.key.includes(courseId)) {
-        handleGradesUpdated({});
-      }
-    };
-    window.addEventListener('storage', handleCrossTabGradesStorage);
-
-    return () => {
-      window.removeEventListener('fds-grades-updated', handleGradesUpdated);
-      window.removeEventListener('storage', handleCrossTabGradesStorage);
-    };
-  }, [courseId]);
-
-  // Preliminary Valuation State (Valoración Preliminar: TEA / TEP)
-  const getPreliminaryValuationKey = (t: '1c' | '2c') => getUserStorageKey(`fds_preliminary_valuation_${courseId}_${t}`);
-
-  const [preliminaryValuation1c, setPreliminaryValuation1c] = useState<PreliminaryValuationRecord | null>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getPreliminaryValuationKey('1c'));
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return null;
-  });
-
-  const [preliminaryValuation2c, setPreliminaryValuation2c] = useState<PreliminaryValuationRecord | null>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getPreliminaryValuationKey('2c'));
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return null;
+  const {
+    categories1c,
+    categories2c,
+    gradesMap1c,
+    gradesMap2c,
+    overallCalc1c,
+    overallCalc2c,
+    annualOverrides,
+    activePreliminaryValuation,
+    gradeHistory,
+    categories,
+    gradesMap,
+    overallCalculation,
+    isSavingSheets,
+    sheetsSavedInfo,
+    cloudStatus,
+    saveCategories,
+    saveGrades,
+    saveOverallCalc,
+    saveAnnualOverride,
+    handleCopyCategoriesFrom1c,
+    handleSavePreliminaryValuation,
+    handleApplyImportedGrades,
+    handleApplyMultiImport,
+    handleSyncCuatrimestreWithSheets,
+  } = useGradebookSync({
+    courseId,
+    courseName,
+    students,
+    currentTerm,
+    driveFolderId,
+    onExternalTermSwitch: (term) => setInternalTerm(term),
   });
 
   const [isPreliminaryModalOpen, setIsPreliminaryModalOpen] = useState(false);
-
-  const activePreliminaryValuation = is2c ? preliminaryValuation2c : preliminaryValuation1c;
-
-  const handleSavePreliminaryValuation = (record: PreliminaryValuationRecord) => {
-    if (is2c) {
-      setPreliminaryValuation2c(record);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(record));
-      }
-      persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { preliminaryValuation: record });
-    } else {
-      setPreliminaryValuation1c(record);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(record));
-      }
-      persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { preliminaryValuation: record });
-    }
-  };
-
-  // Import Grades Modal & Grade History state
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importSourceType, setImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
-  const [gradeHistory, setGradeHistory] = useState<GradeHistoryEntry[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(getUserStorageKey(`fds_grade_history_${courseId}`));
-        if (saved) return JSON.parse(saved);
-      } catch (_) {}
-    }
-    return [];
-  });
-
-  const handleApplyImportedGrades = (data: {
-    term: '1c' | '2c';
-    categoryId: string;
-    subcategoryId: string;
-    newSubcategoryName?: string;
-    updates: Record<string, string>;
-    historyEntry: GradeHistoryEntry;
-  }) => {
-    const isTarget2c = data.term === '2c';
-    let targetCats = isTarget2c ? [...categories2c] : [...categories1c];
-
-    // Si creó una columna nueva, agregarla a la categoría
-    if (data.newSubcategoryName) {
-      targetCats = targetCats.map((cat) => {
-        if (cat.id === data.categoryId) {
-          return {
-            ...cat,
-            subcategories: [
-              ...cat.subcategories,
-              {
-                id: data.subcategoryId,
-                name: data.newSubcategoryName!,
-                maxScore: 10,
-              },
-            ],
-          };
-        }
-        return cat;
-      });
-      saveCategories(targetCats);
-    }
-
-    // Actualizar notas
-    const currentTargetGrades = isTarget2c ? { ...gradesMap2c } : { ...gradesMap1c };
-    Object.entries(data.updates).forEach(([stId, score]) => {
-      if (!currentTargetGrades[stId]) {
-        currentTargetGrades[stId] = {};
-      }
-      currentTargetGrades[stId] = {
-        ...currentTargetGrades[stId],
-        [data.subcategoryId]: score,
-      };
-    });
-
-    saveGrades(currentTargetGrades);
-
-    // Guardar en historial de calificaciones
-    const updatedHistory = [data.historyEntry, ...gradeHistory];
-    setGradeHistory(updatedHistory);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(getUserStorageKey(`fds_grade_history_${courseId}`), JSON.stringify(updatedHistory));
-    }
-
-    // Persistir en Firestore
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync
-        .saveTermSnapshot(userId, courseId, data.term, {
-          courseId,
-          term: data.term,
-          termLabel: data.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-          categories: targetCats,
-          gradesMap: currentTargetGrades,
-          updatedAt: new Date().toISOString(),
-        })
-        .catch(() => {});
-    }
-
-    // Disparar evento para actualizar vistas
-    window.dispatchEvent(
-      new CustomEvent('fds-grades-updated', {
-        detail: { term: data.term, courseId },
-      })
-    );
-  };
-
-  const handleApplyMultiImport = (payload: any) => {
-    const isTarget2c = payload.term === '2c';
-    if (isTarget2c) {
-      setCategories2c(payload.updatedCategories);
-      setGradesMap2c(payload.updatedGradesMap);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('2c'), JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(getGradesKey('2c'), JSON.stringify(payload.updatedGradesMap));
-      }
-    } else {
-      setCategories1c(payload.updatedCategories);
-      setGradesMap1c(payload.updatedGradesMap);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('1c'), JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(getGradesKey('1c'), JSON.stringify(payload.updatedGradesMap));
-      }
-    }
-
-    if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
-      const updatedHistory = [...payload.historyEntries, ...gradeHistory];
-      setGradeHistory(updatedHistory);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(
-          getUserStorageKey(`fds_grade_history_${courseId}`),
-          JSON.stringify(updatedHistory)
-        );
-      }
-    }
-
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync
-        .saveTermSnapshot(userId, courseId, payload.term, {
-          courseId,
-          term: payload.term,
-          termLabel: payload.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-          categories: payload.updatedCategories,
-          gradesMap: payload.updatedGradesMap,
-          updatedAt: new Date().toISOString(),
-        })
-        .catch(() => {});
-    }
-
-    // Automatically enqueue background Google Sheets sync for the updated imported grades
-    enqueueBackgroundSheetsSync(payload.term, payload.updatedCategories, payload.updatedGradesMap);
-
-    window.dispatchEvent(
-      new CustomEvent('fds-grades-updated', {
-        detail: { term: payload.term, courseId },
-      })
-    );
-
-    window.dispatchEvent(
-      new CustomEvent('fds-multi-import-applied', {
-        detail: {
-          courseId,
-          ...payload,
-        },
-      })
-    );
-  };
 
   const handleExportFullExcel = () => {
     const termLabel = currentTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
@@ -1091,7 +359,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     saveCategories(updated);
   };
 
-  // Calculate term final score for any term
   const calculateFinalForTerm = (
     term: '1c' | '2c',
     studentId: string
@@ -1099,104 +366,31 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     const termCats = term === '1c' ? categories1c : categories2c;
     const termGrades = term === '1c' ? gradesMap1c : gradesMap2c;
     const termCalc = term === '1c' ? overallCalc1c : overallCalc2c;
-
-    const stGrades = termGrades[studentId] || {};
-    if (termCalc === 'manual_final') {
-      const val = stGrades['__final__'] || '';
-      const num = val !== '' && !isNaN(Number(val)) ? Number(val) : null;
-      return { scoreStr: val, num };
-    }
-
-    const numericScores: number[] = [];
-    termCats.forEach((cat) => {
-      if (cat.subcategories.length === 0) {
-        const val = stGrades[cat.id];
-        if (val !== undefined && val !== '' && !isNaN(Number(val))) {
-          numericScores.push(Number(val));
-        }
-      } else {
-        cat.subcategories.forEach((sub) => {
-          const val = stGrades[sub.id];
-          if (val !== undefined && val !== '' && !isNaN(Number(val))) {
-            numericScores.push(Number(val));
-          }
-        });
-      }
-    });
-
-    if (numericScores.length === 0) return { scoreStr: '', num: null };
-    const avg = numericScores.reduce((a, b) => a + b, 0) / numericScores.length;
-    return {
-      scoreStr: avg.toFixed(1).replace('.0', ''),
-      num: avg,
-    };
+    return calculateFinalScoreForStudent(termCats, termGrades, termCalc, studentId);
   };
 
-  // Calculate active term final score
   const getFinalScore = (studentId: string): string => {
     return calculateFinalForTerm(is2c ? '2c' : '1c', studentId).scoreStr;
   };
 
-  const score1cMap = useMemo(() => {
-    const map: Record<string, { scoreStr: string; num: number | null }> = {};
-    students.forEach((st) => {
-      map[st.id] = calculateFinalForTerm('1c', st.id);
-    });
-    return map;
-  }, [students, categories1c, gradesMap1c, overallCalc1c]);
+  const score1cMap = useMemo(
+    () => computeTermScoresMap(students, categories1c, gradesMap1c, overallCalc1c),
+    [students, categories1c, gradesMap1c, overallCalc1c]
+  );
 
-  const score2cMap = useMemo(() => {
-    const map: Record<string, { scoreStr: string; num: number | null }> = {};
-    students.forEach((st) => {
-      map[st.id] = calculateFinalForTerm('2c', st.id);
-    });
-    return map;
-  }, [students, categories2c, gradesMap2c, overallCalc2c]);
+  const score2cMap = useMemo(
+    () => computeTermScoresMap(students, categories2c, gradesMap2c, overallCalc2c),
+    [students, categories2c, gradesMap2c, overallCalc2c]
+  );
 
-  // Export CSV for Sheets
   const handleExportCSV = () => {
-    let csvContent = 'data:text/csv;charset=utf-8,';
-    
-    // Header Row 1: Alumno, then each category and subcategory
-    const headerParts = ['Apellido y Nombre'];
-    categories.forEach((cat) => {
-      if (cat.subcategories.length === 0) {
-        headerParts.push(`"${cat.name}"`);
-      } else {
-        cat.subcategories.forEach((sub) => {
-          headerParts.push(`"${cat.name} - ${sub.name}"`);
-        });
-      }
-    });
-    if (activePreliminaryValuation && activePreliminaryValuation.showInMatrix) {
-      headerParts.push('"Valoración Preliminar (TEA/TEP)"');
-    }
-    headerParts.push('"Calificación Final"');
-    csvContent += headerParts.join(',') + '\r\n';
-
-    // Student rows
-    students.forEach((st) => {
-      const row = [`"${st.lastName}, ${st.firstName}"`];
-      const stGrades = gradesMap[st.id] || {};
-      categories.forEach((cat) => {
-        if (cat.subcategories.length === 0) {
-          const val = stGrades[cat.id] || '';
-          row.push(`"${val}"`);
-        } else {
-          cat.subcategories.forEach((sub) => {
-            const val = stGrades[sub.id] || '';
-            row.push(`"${val}"`);
-          });
-        }
-      });
-      if (activePreliminaryValuation && activePreliminaryValuation.showInMatrix) {
-        const traj = activePreliminaryValuation.valuations[st.id]?.trajectory || '';
-        row.push(`"${traj}"`);
-      }
-      row.push(`"${getFinalScore(st.id)}"`);
-      csvContent += row.join(',') + '\r\n';
-    });
-
+    const csvContent = buildGradesCsvContent(
+      students,
+      categories,
+      gradesMap,
+      overallCalculation,
+      activePreliminaryValuation
+    );
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
@@ -1209,14 +403,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     document.body.removeChild(link);
   };
 
-  // Grade color helper
-  const getScoreColorClass = (valStr: string) => {
-    if (!valStr || isNaN(Number(valStr))) return isDarkMode ? 'text-slate-200' : 'text-neutral-800';
-    const num = Number(valStr);
-    if (num >= 7) return 'text-emerald-600 dark:text-emerald-400 font-bold';
-    if (num >= 6) return 'text-amber-600 dark:text-amber-400 font-semibold';
-    return 'text-red-600 dark:text-red-400 font-bold';
-  };
+  const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
 
   return (
     <div className="space-y-4">
@@ -2162,364 +1349,30 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         </div>
       </div>
 
-      {/* Modal de confirmación para eliminar Categoría Mayor (sin window.confirm para funcionar en iframe) */}
-      {categoryToDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-          <div
-            className={`w-full max-w-md p-6 rounded-2xl shadow-2xl border space-y-4 ${
-              isDarkMode
-                ? 'bg-slate-900 border-slate-800 text-white'
-                : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            <div className="flex items-center gap-3 text-red-500">
-              <div className="p-2.5 rounded-xl bg-red-500/10 shrink-0">
-                <Trash2 className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold">¿Eliminar categoría mayor?</h3>
-                <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                  Esta acción eliminará la categoría y sus columnas de evaluación.
-                </p>
-              </div>
-            </div>
-
-            <p className={`text-sm ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-              ¿Estás seguro de que deseas eliminar la categoría{' '}
-              <strong className="text-blue-500">"{categoryToDelete.name}"</strong>
-              {categoryToDelete.subcategories.length > 0 && (
-                <>
-                  {' '}y sus{' '}
-                  <strong className="text-red-500">{categoryToDelete.subcategories.length}</strong>{' '}
-                  columna(s) de evaluación asociadas
-                </>
-              )}
-              ?
-            </p>
-
-            <div className="flex items-center justify-end gap-2.5 pt-2">
-              <button
-                type="button"
-                onClick={() => setCategoryToDelete(null)}
-                className={`px-4 py-2 text-xs font-semibold rounded-xl border transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'border-slate-700 hover:bg-slate-800 text-slate-300'
-                    : 'border-neutral-300 hover:bg-neutral-100 text-neutral-700'
-                }`}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={confirmDeleteCategory}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Sí, eliminar categoría</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Editar Categoría Mayor (Nombre y color) */}
-      {categoryToEdit && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-          <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4 ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                  <Edit2 className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold">Editar Categoría Mayor</h3>
-                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Modifica el nombre o color distintivo de esta categoría.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCategoryToEdit(null)}
-                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-3.5 text-xs">
-              <div className="space-y-1">
-                <label className="font-semibold text-neutral-700 dark:text-slate-300">
-                  Nombre de la Categoría Mayor
-                </label>
-                <input
-                  type="text"
-                  value={editCatName}
-                  onChange={(e) => setEditCatName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSaveEditCategory()}
-                  placeholder="Ej: Evaluaciones, Trabajos Prácticos..."
-                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode
-                      ? 'bg-slate-800 border-slate-700 text-white'
-                      : 'bg-white border-neutral-300 text-neutral-900'
-                  }`}
-                  autoFocus
-                />
-              </div>
-
-              {/* Color selector */}
-              <div className="space-y-1.5">
-                <label className="font-semibold text-neutral-700 dark:text-slate-300">
-                  Color distintivo
-                </label>
-                <div className="flex items-center gap-2">
-                  {CATEGORY_COLORS.map((col) => (
-                    <button
-                      key={col.name}
-                      type="button"
-                      onClick={() => setEditCatColor(col.badge)}
-                      className={`w-7 h-7 rounded-full flex items-center justify-center transition-transform cursor-pointer ${col.badge} ${
-                        editCatColor === col.badge ? 'ring-3 ring-offset-2 ring-blue-500 scale-110' : 'opacity-70 hover:opacity-100'
-                      }`}
-                      title={col.name}
-                    >
-                      {editCatColor === col.badge && <Check className="w-4 h-4 text-white stroke-[3]" />}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div
-                className={`p-3 rounded-xl border text-[11px] ${
-                  isDarkMode ? 'bg-slate-800/50 border-slate-700 text-slate-300' : 'bg-blue-50/60 border-blue-100 text-blue-900'
-                }`}
-              >
-                <p>
-                  Las <strong>{categoryToEdit.subcategories.length} columna(s)</strong> y las notas ya cargadas para tus estudiantes se conservan intactas al cambiar de nombre.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-neutral-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => {
-                  const cat = categoryToEdit;
-                  setCategoryToEdit(null);
-                  setCategoryToDelete(cat);
-                }}
-                className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1 cursor-pointer"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Eliminar categoría</span>
-              </button>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setCategoryToEdit(null)}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
-                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                  }`}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  disabled={!editCatName.trim()}
-                  onClick={handleSaveEditCategory}
-                  className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer shadow-xs flex items-center gap-1"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Guardar Cambios</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Opciones de Categorías Mayores (Listado para gestionar, editar y agregar) */}
-      {isManageCategoriesOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-          <div
-            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-5 space-y-4 max-h-[90vh] flex flex-col ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            <div className="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-slate-800">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                  <Settings className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold">Opciones de Categorías Mayores</h3>
-                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Administra y edita los nombres de las categorías de evaluación.
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsManageCategoriesOpen(false)}
-                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* List of categories */}
-            <div className="flex-1 overflow-y-auto space-y-2 py-1">
-              {categories.map((cat) => (
-                <div
-                  key={cat.id}
-                  className={`p-3 rounded-xl border flex items-center justify-between gap-3 text-xs ${
-                    isDarkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-neutral-50 border-neutral-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className={`w-3 h-3 rounded-full shrink-0 ${cat.color}`} />
-                    <div className="min-w-0">
-                      <span className="font-bold block truncate text-sm">{cat.name}</span>
-                      <span className="text-[11px] text-neutral-500 dark:text-slate-400">
-                        {cat.subcategories.length} columna(s) de evaluación
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCategoryToEdit(cat);
-                        setEditCatName(cat.name);
-                        setEditCatColor(cat.color);
-                      }}
-                      className="px-2.5 py-1 bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900 rounded-lg font-semibold flex items-center gap-1 transition-colors cursor-pointer"
-                      title={`Editar nombre de "${cat.name}"`}
-                    >
-                      <Edit2 className="w-3 h-3" />
-                      <span>Editar</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsManageCategoriesOpen(false);
-                        setCategoryToDelete(cat);
-                      }}
-                      className="p-1.5 text-neutral-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                      title={`Eliminar categoría "${cat.name}"`}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Quick add category inside options modal */}
-            <div className="pt-3 border-t border-neutral-200 dark:border-slate-800 flex items-center gap-2">
-              <input
-                type="text"
-                value={newCatName}
-                onChange={(e) => setNewCatName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()}
-                placeholder="Nombre de nueva categoría mayor..."
-                className={`flex-1 px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                  isDarkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-neutral-300'
-                }`}
-              />
-              <button
-                type="button"
-                disabled={!newCatName.trim()}
-                onClick={handleAddCategory}
-                className="px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl shrink-0 flex items-center gap-1 cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Agregar</span>
-              </button>
-            </div>
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setIsManageCategoriesOpen(false)}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer"
-              >
-                Listo
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Modal: Editar Subcategoría / Columna de Evaluación */}
-      {subcatToEdit && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
-          <div
-            className={`w-full max-w-sm rounded-2xl border shadow-2xl p-5 space-y-4 ${
-              isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                  <Edit2 className="w-4 h-4" />
-                </div>
-                <h3 className="text-sm font-bold">Editar Columna de Evaluación</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSubcatToEdit(null)}
-                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
-                Nombre de la columna
-              </label>
-              <input
-                type="text"
-                value={editSubcatName}
-                onChange={(e) => setEditSubcatName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveEditSubcategory()}
-                className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                  isDarkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-neutral-300'
-                }`}
-                autoFocus
-              />
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setSubcatToEdit(null)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
-                  isDarkMode ? 'border-slate-700 text-slate-300' : 'border-neutral-200 text-neutral-700'
-                }`}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={!editSubcatName.trim()}
-                onClick={handleSaveEditSubcategory}
-                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer"
-              >
-                Guardar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <GradebookCategoryModals
+        isDarkMode={isDarkMode}
+        categories={categories}
+        categoryToDelete={categoryToDelete}
+        setCategoryToDelete={setCategoryToDelete}
+        confirmDeleteCategory={confirmDeleteCategory}
+        categoryToEdit={categoryToEdit}
+        setCategoryToEdit={setCategoryToEdit}
+        editCatName={editCatName}
+        setEditCatName={setEditCatName}
+        editCatColor={editCatColor}
+        setEditCatColor={setEditCatColor}
+        handleSaveEditCategory={handleSaveEditCategory}
+        isManageCategoriesOpen={isManageCategoriesOpen}
+        setIsManageCategoriesOpen={setIsManageCategoriesOpen}
+        newCatName={newCatName}
+        setNewCatName={setNewCatName}
+        handleAddCategory={handleAddCategory}
+        subcatToEdit={subcatToEdit}
+        setSubcatToEdit={setSubcatToEdit}
+        editSubcatName={editSubcatName}
+        setEditSubcatName={setEditSubcatName}
+        handleSaveEditSubcategory={handleSaveEditSubcategory}
+      />
       {/* Modal: Generar Valoración Preliminar (TEA / TEP) */}
       {isPreliminaryModalOpen && (
         <Suspense fallback={null}>

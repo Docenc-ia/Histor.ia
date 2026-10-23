@@ -9,7 +9,7 @@ interface OwlLogoIconProps {
 }
 
 /**
- * OwlLogoIcon: Renders the official animated video logo of Docenc.IA,
+ * OwlLogoIcon: Renders the official animated video logo of Docenc.ia,
  * or falls back to the original high-fidelity vector SVG owl logo.
  * The video reproduces once upon loading (no loop) and replays on click.
  */
@@ -38,7 +38,7 @@ export const OwlLogoIcon: React.FC<OwlLogoIconProps> = ({
         onClick={handleReplay}
         className={`relative rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center border border-cyan-500/40 shadow-md shadow-cyan-950/50 group cursor-pointer transition-all duration-300 hover:border-cyan-400 hover:shadow-cyan-500/30 ${className}`}
         style={{ width: size, height: size }}
-        title="Docenc.IA (Clic para reproducir animación)"
+        title="Docenc.ia (Clic para reproducir animación)"
       >
         <video
           ref={videoRef}
@@ -63,7 +63,7 @@ export const OwlLogoIcon: React.FC<OwlLogoIconProps> = ({
     <div
       className={`relative rounded-xl overflow-hidden bg-gradient-to-br from-slate-950 via-[#0a1128] to-blue-950 flex items-center justify-center border border-cyan-400/40 shadow-md shadow-blue-950/60 group cursor-pointer transition-all duration-300 hover:border-cyan-400 hover:shadow-cyan-500/30 ${className}`}
       style={{ width: size, height: size }}
-      title="Docenc.IA"
+      title="Docenc.ia"
     >
       <div className="absolute inset-0 bg-radial from-cyan-500/20 via-transparent to-transparent opacity-80" />
 

@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Docenc.IA - Gestor de Clase",
-  "short_name": "Docenc.IA",
+  "name": "Docenc.ia - Gestor de Clase",
+  "short_name": "Docenc.ia",
   "description": "Gestor de clase, registro de asistencia, seguimiento pedagógico, calificaciones y vinculación con Google Classroom.",
   "start_url": "/",
   "scope": "/",

@@ -321,7 +321,7 @@ function AppContent() {
     gradeLevel: 'Secundaria',
     studentCount: 28,
     color: 'bg-blue-600',
-    description: 'Curso en Docenc.IA',
+    description: 'Curso en Docenc.ia',
   };
 
   const currentActiveSidebarTab =
@@ -333,7 +333,7 @@ function AppContent() {
         isDarkMode ? 'bg-[#0B0F19] text-slate-100 dark' : 'bg-[#f8fafd] text-neutral-900'
       }`}
     >
-      {/* Header with Docenc.IA branding and quick navigation */}
+      {/* Header with Docenc.ia branding and quick navigation */}
       <Header
         onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
         searchQuery={searchQuery}
@@ -382,7 +382,7 @@ function AppContent() {
             <div className="flex flex-col items-center justify-center h-96 space-y-3">
               <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
               <p className="text-xs text-neutral-500 font-medium">
-                Conectando con Docenc.IA y cargando materias del profesor...
+                Conectando con Docenc.ia y cargando materias del profesor...
               </p>
             </div>
           ) : (

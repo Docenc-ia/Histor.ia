@@ -51,7 +51,7 @@ export const TeacherGuideModal: React.FC<TeacherGuideModalProps> = ({
   const handleExportBackup = () => {
     try {
       const backupData: Record<string, any> = {
-        app: 'Docenc.IA',
+        app: 'Docenc.ia',
         version: '2026.1',
         exportedAt: new Date().toISOString(),
         teacher: user?.email || 'Docente',
@@ -105,7 +105,7 @@ export const TeacherGuideModal: React.FC<TeacherGuideModalProps> = ({
             <div>
               <h2 className="text-base sm:text-lg font-bold">Guía para Docentes y Compartir</h2>
               <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                Todo lo necesario para aprovechar Docenc.IA y compartirlo con tus colegas
+                Todo lo necesario para aprovechar Docenc.ia y compartirlo con tus colegas
               </p>
             </div>
           </div>
@@ -444,7 +444,7 @@ export const TeacherGuideModal: React.FC<TeacherGuideModalProps> = ({
           }`}
         >
           <span className={`text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-            Docenc.IA • Diseñado para la labor docente diaria
+            Docenc.ia • Diseñado para la labor docente diaria
           </span>
 
           <button

@@ -639,7 +639,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                 <span>Conexión segura SSL</span>
               </span>
               <span>•</span>
-              <span>Docenc.IA 2026</span>
+              <span>Docenc.ia 2026</span>
             </div>
           </div>
         </div>

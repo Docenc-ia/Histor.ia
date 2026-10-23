@@ -2029,7 +2029,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     }
     try {
       const payload = {
-        app: 'Docenc.IA',
+        app: 'Docenc.ia',
         version: '2.0',
         exportDate: new Date().toISOString(),
         course: { id: courseId, name: courseName },

@@ -843,7 +843,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
           </div>
 
           <div className="space-y-2">
-            <h3 className="text-xl sm:text-2xl font-bold">¡Bienvenido/a a tu espacio docente en Docenc.IA!</h3>
+            <h3 className="text-xl sm:text-2xl font-bold">¡Bienvenido/a a tu espacio docente en Docenc.ia!</h3>
             <p className={`text-sm max-w-lg mx-auto leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
               Tu cuenta es 100% privada e independiente. Todo lo que registres se guarda automáticamente en el dispositivo y en la nube:
             </p>

@@ -201,21 +201,86 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
   return result;
 }
 
-// In-memory read caches invalidated immediately on writes or cross-tab storage changes
-let cachedCourses: { userId: string; rawRef: string | null; list: Course[] } | null = null;
-let cachedStudents: { userId: string; rawRef: string | null; list: Student[] } | null = null;
+// In-memory read caches + Write-Behind queue for 0ms reads and non-blocking writes
+let cachedCourses: { userId: string; list: Course[] } | null = null;
+let cachedStudents: { userId: string; list: Student[] } | null = null;
 let cachedDisposition: {
   userId: string;
-  rawDispRef: string | null;
-  rawHistRef: string | null;
   data: { disposition: Record<string, any>; history: any[] };
 } | null = null;
+let cachedDisposition2c: { userId: string; data: Record<string, any> } | null = null;
+let cachedDeletedHistoryIds: { userId: string; set: Set<string> } | null = null;
+let cachedRemovedIndex: { userId: string; data: Record<string, string[]> } | null = null;
+const cachedRemovedCourseIds = new Map<string, Set<string>>();
+const cachedRemovedCourseLists = new Map<string, Student[]>();
+
+// Write-Behind queue: batches expensive JSON.stringify + localStorage writes off the hot UI path
+const pendingWriteBehindTasks = new Map<string, () => void>();
+let writeBehindTimer: ReturnType<typeof setTimeout> | null = null;
+const WRITE_BEHIND_DELAY_MS = 120;
+
+export function flushStorageWriteBehind(): void {
+  if (writeBehindTimer !== null) {
+    clearTimeout(writeBehindTimer);
+    writeBehindTimer = null;
+  }
+  if (pendingWriteBehindTasks.size === 0) return;
+  const tasks = Array.from(pendingWriteBehindTasks.values());
+  pendingWriteBehindTasks.clear();
+  for (const task of tasks) {
+    try {
+      task();
+    } catch (err) {
+      console.warn('Error flushing write-behind storage task:', err);
+    }
+  }
+}
+
+function scheduleWriteBehind(taskKey: string, taskFn: () => void): void {
+  pendingWriteBehindTasks.set(taskKey, taskFn);
+  if (writeBehindTimer === null) {
+    writeBehindTimer = setTimeout(() => {
+      flushStorageWriteBehind();
+    }, WRITE_BEHIND_DELAY_MS);
+  }
+}
+
+export function invalidateStorageMemoryCache(): void {
+  flushStorageWriteBehind();
+  cachedCourses = null;
+  cachedStudents = null;
+  cachedDisposition = null;
+  cachedDisposition2c = null;
+  cachedDeletedHistoryIds = null;
+  cachedRemovedIndex = null;
+  cachedRemovedCourseIds.clear();
+  cachedRemovedCourseLists.clear();
+}
 
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', () => {
     cachedCourses = null;
     cachedStudents = null;
     cachedDisposition = null;
+    cachedDisposition2c = null;
+    cachedDeletedHistoryIds = null;
+    cachedRemovedIndex = null;
+    cachedRemovedCourseIds.clear();
+    cachedRemovedCourseLists.clear();
+  });
+
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      flushStorageWriteBehind();
+    }
+  });
+
+  window.addEventListener('pagehide', () => {
+    flushStorageWriteBehind();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    flushStorageWriteBehind();
   });
 }
 
@@ -223,13 +288,13 @@ export function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
     const userId = getActiveUserId();
+    if (cachedCourses && cachedCourses.userId === userId) {
+      return cachedCourses.list;
+    }
     const isOwner = isPrimaryOwnerAccount();
     const explicitlyCleared = localStorage.getItem('docencia_courses_explicitly_cleared') === 'true';
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
     const primaryRaw = localStorage.getItem(key);
-    if (cachedCourses && cachedCourses.userId === userId && cachedCourses.rawRef === primaryRaw && primaryRaw) {
-      return cachedCourses.list;
-    }
     const candidateKeys = isOwner ? [key, STORAGE_KEYS.COURSES, 'docencia_persisted_courses'] : [key];
 
     for (const k of candidateKeys) {
@@ -239,7 +304,7 @@ export function getLocalCourses(): Course[] {
           const parsed = JSON.parse(raw);
           if (Array.isArray(parsed) && parsed.length > 0) {
             const deduped = deduplicateCourses(parsed);
-            cachedCourses = { userId, rawRef: primaryRaw, list: deduped };
+            cachedCourses = { userId, list: deduped };
             return deduped;
           }
         } catch (_) {}
@@ -255,7 +320,9 @@ export function getLocalCourses(): Course[] {
             if (item) {
               const p = JSON.parse(item);
               if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
-                return deduplicateCourses(p);
+                const deduped = deduplicateCourses(p);
+                cachedCourses = { userId, list: deduped };
+                return deduped;
               }
             }
           } catch (_) {}
@@ -269,34 +336,38 @@ export function getLocalCourses(): Course[] {
 export function saveLocalCourses(coursesList: Course[], forceClear = false): void {
   if (typeof window === 'undefined') return;
   try {
+    const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const cleanList = deduplicateCourses(coursesList);
     if (cleanList.length === 0 && !forceClear) {
       return;
     }
+    cachedCourses = { userId, list: cleanList };
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    const dataStr = JSON.stringify(cleanList);
-    safeSetLocalStorageItem(key, dataStr);
-    if (isOwner) {
-      safeSetLocalStorageItem(STORAGE_KEYS.COURSES, dataStr);
-      safeSetLocalStorageItem('docencia_persisted_courses', dataStr);
-    }
-    cachedCourses = { userId: getActiveUserId(), rawRef: dataStr, list: cleanList };
-    if (cleanList.length > 0) {
-      localStorage.removeItem('docencia_courses_explicitly_cleared');
-    } else if (forceClear) {
+
+    scheduleWriteBehind(`courses_${userId}`, () => {
+      const dataStr = JSON.stringify(cleanList);
+      safeSetLocalStorageItem(key, dataStr);
       if (isOwner) {
-        safeSetLocalStorageItem('docencia_courses_explicitly_cleared', 'true');
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i);
-          if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
-            safeSetLocalStorageItem(k, '[]');
-          }
-        }
-      } else {
-        safeSetLocalStorageItem(key, '[]');
+        safeSetLocalStorageItem(STORAGE_KEYS.COURSES, dataStr);
+        safeSetLocalStorageItem('docencia_persisted_courses', dataStr);
       }
-    }
+      if (cleanList.length > 0) {
+        localStorage.removeItem('docencia_courses_explicitly_cleared');
+      } else if (forceClear) {
+        if (isOwner) {
+          safeSetLocalStorageItem('docencia_courses_explicitly_cleared', 'true');
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
+              safeSetLocalStorageItem(k, '[]');
+            }
+          }
+        } else {
+          safeSetLocalStorageItem(key, '[]');
+        }
+      }
+    });
   } catch (_) {}
 }
 
@@ -318,13 +389,13 @@ export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
     const userId = getActiveUserId();
-    const isOwner = isPrimaryOwnerAccount();
-    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
-    let raw = localStorage.getItem(key);
-    if (cachedStudents && cachedStudents.userId === userId && cachedStudents.rawRef === raw && raw) {
+    if (cachedStudents && cachedStudents.userId === userId) {
       const visible = filterOutRemovedStudents(cachedStudents.list);
       return courseId ? visible.filter((s) => s.courseId === courseId) : visible;
     }
+    const isOwner = isPrimaryOwnerAccount();
+    const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
+    let raw = localStorage.getItem(key);
     if (isOwner && !raw && key !== STORAGE_KEYS.STUDENTS) {
       raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
     }
@@ -334,8 +405,9 @@ export function getLocalStudents(courseId?: string): Student[] {
     if (raw) {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        const clean = filterOutRemovedStudents(deduplicateStudents(parsed));
-        cachedStudents = { userId, rawRef: localStorage.getItem(key), list: clean };
+        const deduped = deduplicateStudents(parsed);
+        cachedStudents = { userId, list: deduped };
+        const clean = filterOutRemovedStudents(deduped);
         return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
       }
     }
@@ -348,7 +420,9 @@ export function getLocalStudents(courseId?: string): Student[] {
             if (item) {
               const p = JSON.parse(item);
               if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
-                const clean = filterOutRemovedStudents(deduplicateStudents(p));
+                const deduped = deduplicateStudents(p);
+                cachedStudents = { userId, list: deduped };
+                const clean = filterOutRemovedStudents(deduped);
                 return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
               }
             }
@@ -363,6 +437,7 @@ export function getLocalStudents(courseId?: string): Student[] {
 export function saveLocalStudents(courseIdOrList: string | Student[], studentsList?: Student[]): void {
   if (typeof window === 'undefined') return;
   try {
+    const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     let updated: Student[];
@@ -374,13 +449,16 @@ export function saveLocalStudents(courseIdOrList: string | Student[], studentsLi
       const rest = all.filter((s) => s.courseId !== courseId);
       updated = deduplicateStudents([...rest, ...(studentsList || [])]);
     }
-    const dataStr = JSON.stringify(updated);
-    safeSetLocalStorageItem(key, dataStr);
-    if (isOwner) {
-      safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
-      safeSetLocalStorageItem('docencia_persisted_students', dataStr);
-    }
-    cachedStudents = { userId: getActiveUserId(), rawRef: dataStr, list: updated };
+    cachedStudents = { userId, list: updated };
+
+    scheduleWriteBehind(`students_${userId}`, () => {
+      const dataStr = JSON.stringify(updated);
+      safeSetLocalStorageItem(key, dataStr);
+      if (isOwner) {
+        safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
+        safeSetLocalStorageItem('docencia_persisted_students', dataStr);
+      }
+    });
   } catch (_) {}
 }
 
@@ -426,8 +504,14 @@ export const setStorageItemForUser = setUserScopedItem;
 export function getDeletedHistoryIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
+    const userId = getActiveUserId();
+    if (cachedDeletedHistoryIds && cachedDeletedHistoryIds.userId === userId) {
+      return new Set(cachedDeletedHistoryIds.set);
+    }
     const raw = getUserScopedItem(DELETED_HISTORY_IDS_KEY);
-    if (raw) return new Set(JSON.parse(raw));
+    const parsedSet = raw ? new Set<string>(JSON.parse(raw)) : new Set<string>();
+    cachedDeletedHistoryIds = { userId, set: parsedSet };
+    return new Set(parsedSet);
   } catch (_) {}
   return new Set();
 }
@@ -435,10 +519,22 @@ export function getDeletedHistoryIds(): Set<string> {
 export function markHistoryIdDeleted(id: string): void {
   if (typeof window === 'undefined' || !id) return;
   try {
+    const userId = getActiveUserId();
     const set = getDeletedHistoryIds();
     set.add(id);
-    setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
-    cachedDisposition = null;
+    cachedDeletedHistoryIds = { userId, set };
+    if (cachedDisposition && cachedDisposition.userId === userId) {
+      cachedDisposition = {
+        userId,
+        data: {
+          disposition: cachedDisposition.data.disposition,
+          history: cachedDisposition.data.history.filter((h) => h?.id !== id),
+        },
+      };
+    }
+    scheduleWriteBehind(`deleted_history_${userId}`, () => {
+      setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
+    });
   } catch (_) {}
 }
 
@@ -461,44 +557,48 @@ export function saveAllDispositionStorage(
 ): void {
   if (typeof window === 'undefined') return;
   try {
+    const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const deleted = getDeletedHistoryIds();
     const cleanHistory = (history || []).filter((h) => h?.id && !deleted.has(h.id));
-    const dispJson = JSON.stringify(disposition || {});
-    const histJson = JSON.stringify(cleanHistory);
+    const safeDisposition = disposition || {};
 
-    const userId = getActiveUserId();
-    const keysDisp: string[] = isOwner
-      ? [PRIMARY_DISPOSITION_KEY, 'docencia_disposition_data', STORAGE_KEYS.DISPOSITION]
-      : [];
-    const keysHist: string[] = isOwner
-      ? [PRIMARY_HISTORY_KEY, 'docencia_disposition_history', STORAGE_KEYS.DISPOSITION_HISTORY]
-      : [];
-    if (userId) {
-      keysDisp.push(`docencia_disposition_data_${userId}`);
-      keysHist.push(`docencia_disposition_history_${userId}`);
-    }
-
-    const uniqueDispKeys = Array.from(new Set(keysDisp));
-    const uniqueHistKeys = Array.from(new Set(keysHist));
-
-    for (const k of uniqueDispKeys) {
-      safeSetLocalStorageItem(k, dispJson);
-    }
-    for (const k of uniqueHistKeys) {
-      safeSetLocalStorageItem(k, histJson);
-    }
-
+    // 1. Update in-memory cache immediately (0ms synchronous memory update)
     cachedDisposition = {
       userId,
-      rawDispRef: dispJson,
-      rawHistRef: histJson,
-      data: { disposition: disposition || {}, history: cleanHistory },
+      data: { disposition: safeDisposition, history: cleanHistory },
     };
+
+    // 2. Schedule JSON serialization & localStorage persistence via write-behind
+    scheduleWriteBehind(`disposition_${userId}`, () => {
+      const dispJson = JSON.stringify(safeDisposition);
+      const histJson = JSON.stringify(cleanHistory);
+
+      const keysDisp: string[] = isOwner
+        ? [PRIMARY_DISPOSITION_KEY, 'docencia_disposition_data', STORAGE_KEYS.DISPOSITION]
+        : [];
+      const keysHist: string[] = isOwner
+        ? [PRIMARY_HISTORY_KEY, 'docencia_disposition_history', STORAGE_KEYS.DISPOSITION_HISTORY]
+        : [];
+      if (userId) {
+        keysDisp.push(`docencia_disposition_data_${userId}`);
+        keysHist.push(`docencia_disposition_history_${userId}`);
+      }
+
+      const uniqueDispKeys = Array.from(new Set(keysDisp));
+      const uniqueHistKeys = Array.from(new Set(keysHist));
+
+      for (const k of uniqueDispKeys) {
+        safeSetLocalStorageItem(k, dispJson);
+      }
+      for (const k of uniqueHistKeys) {
+        safeSetLocalStorageItem(k, histJson);
+      }
+    });
 
     if (!options?.silent) {
       emitAppEvent('docencia_disposition_storage_change', {
-        disposition,
+        disposition: safeDisposition,
         history: cleanHistory,
       });
     }
@@ -510,23 +610,11 @@ export function saveAllDispositionStorage(
 export function getAllDispositionStorage(): { disposition: Record<string, any>; history: any[] } {
   if (typeof window === 'undefined') return { disposition: {}, history: [] };
   const userId = getActiveUserId();
-  const isOwner = isPrimaryOwnerAccount();
-  const primaryDispRaw = localStorage.getItem(
-    isOwner ? PRIMARY_DISPOSITION_KEY : `docencia_disposition_data_${userId}`
-  );
-  const primaryHistRaw = localStorage.getItem(
-    isOwner ? PRIMARY_HISTORY_KEY : `docencia_disposition_history_${userId}`
-  );
-  if (
-    cachedDisposition &&
-    cachedDisposition.userId === userId &&
-    cachedDisposition.rawDispRef === primaryDispRaw &&
-    cachedDisposition.rawHistRef === primaryHistRaw &&
-    primaryDispRaw !== null
-  ) {
+  if (cachedDisposition && cachedDisposition.userId === userId) {
     return cachedDisposition.data;
   }
 
+  const isOwner = isPrimaryOwnerAccount();
   const deleted = getDeletedHistoryIds();
   let disposition: Record<string, any> = {};
   let history: any[] = [];
@@ -605,8 +693,6 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
   const result = { disposition, history };
   cachedDisposition = {
     userId,
-    rawDispRef: primaryDispRaw,
-    rawHistRef: primaryHistRaw,
     data: result,
   };
   return result;
@@ -615,11 +701,19 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
 export function getLocalDisposition2c(): Record<string, any> {
   if (typeof window === 'undefined') return {};
   try {
+    const userId = getActiveUserId();
+    if (cachedDisposition2c && cachedDisposition2c.userId === userId) {
+      return cachedDisposition2c.data;
+    }
     const raw = getUserScopedItem('fds_disposition_data_2c');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') return parsed;
+      if (parsed && typeof parsed === 'object') {
+        cachedDisposition2c = { userId, data: parsed };
+        return parsed;
+      }
     }
+    cachedDisposition2c = { userId, data: {} };
   } catch (_) {}
   return {};
 }
@@ -627,18 +721,31 @@ export function getLocalDisposition2c(): Record<string, any> {
 export function saveLocalDisposition2c(disposition2c: Record<string, any>): void {
   if (typeof window === 'undefined') return;
   try {
-    setUserScopedItem('fds_disposition_data_2c', JSON.stringify(disposition2c || {}));
+    const userId = getActiveUserId();
+    const safeDisp2c = disposition2c || {};
+    cachedDisposition2c = { userId, data: safeDisp2c };
+    scheduleWriteBehind(`disposition2c_${userId}`, () => {
+      setUserScopedItem('fds_disposition_data_2c', JSON.stringify(safeDisp2c));
+    });
   } catch (_) {}
 }
 
 export function getRemovedStudentsIndex(): Record<string, string[]> {
   if (typeof window === 'undefined') return {};
   try {
+    const userId = getActiveUserId();
+    if (cachedRemovedIndex && cachedRemovedIndex.userId === userId) {
+      return cachedRemovedIndex.data;
+    }
     const raw = getUserScopedItem('fds_removed_students_index');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') return parsed;
+      if (parsed && typeof parsed === 'object') {
+        cachedRemovedIndex = { userId, data: parsed };
+        return parsed;
+      }
     }
+    cachedRemovedIndex = { userId, data: {} };
   } catch (_) {}
   return {};
 }
@@ -649,17 +756,19 @@ export function saveRemovedStudentsIndex(
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    setUserScopedItem('fds_removed_students_index', JSON.stringify(index || {}));
-    if (syncToCloud) {
-      const userId = getActiveUserId();
-      if (userId) {
-        firestoreSync
-          .saveUserSetting(userId, 'removed_students_index', {
-            courses: index || {},
-            updatedAt: new Date().toISOString(),
-          })
-          .catch(() => {});
-      }
+    const userId = getActiveUserId();
+    const safeIndex = index || {};
+    cachedRemovedIndex = { userId, data: safeIndex };
+    scheduleWriteBehind(`removed_index_${userId}`, () => {
+      setUserScopedItem('fds_removed_students_index', JSON.stringify(safeIndex));
+    });
+    if (syncToCloud && userId) {
+      firestoreSync
+        .saveUserSetting(userId, 'removed_students_index', {
+          courses: safeIndex,
+          updatedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
     }
   } catch (_) {}
 }
@@ -667,12 +776,24 @@ export function saveRemovedStudentsIndex(
 export function getRemovedStudentIds(courseId: string): Set<string> {
   if (typeof window === 'undefined' || !courseId) return new Set();
   try {
+    const userId = getActiveUserId();
+    const cacheKey = `${userId}::${courseId}`;
+    const cached = cachedRemovedCourseIds.get(cacheKey);
+    if (cached) return new Set(cached);
+
     const raw = getUserScopedItem(`fds_removed_students_${courseId}`);
-    if (raw) return new Set(JSON.parse(raw));
+    if (raw) {
+      const set = new Set<string>(JSON.parse(raw));
+      cachedRemovedCourseIds.set(cacheKey, set);
+      return new Set(set);
+    }
     const idx = getRemovedStudentsIndex();
     if (Array.isArray(idx[courseId])) {
-      return new Set(idx[courseId]);
+      const set = new Set<string>(idx[courseId]);
+      cachedRemovedCourseIds.set(cacheKey, set);
+      return new Set(set);
     }
+    cachedRemovedCourseIds.set(cacheKey, new Set());
   } catch (_) {}
   return new Set();
 }
@@ -680,11 +801,20 @@ export function getRemovedStudentIds(courseId: string): Set<string> {
 export function getRemovedStudentsList(courseId: string): Student[] {
   if (typeof window === 'undefined' || !courseId) return [];
   try {
+    const userId = getActiveUserId();
+    const cacheKey = `${userId}::${courseId}`;
+    const cached = cachedRemovedCourseLists.get(cacheKey);
+    if (cached) return [...cached];
+
     const raw = getUserScopedItem(`fds_removed_students_objs_${courseId}`);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) {
+        cachedRemovedCourseLists.set(cacheKey, parsed);
+        return [...parsed];
+      }
     }
+    cachedRemovedCourseLists.set(cacheKey, []);
   } catch (_) {}
   return [];
 }
@@ -692,25 +822,30 @@ export function getRemovedStudentsList(courseId: string): Student[] {
 export function markStudentRemoved(courseId: string, studentOrId: Student | string): void {
   if (typeof window === 'undefined' || !courseId || !studentOrId) return;
   try {
+    const userId = getActiveUserId();
+    const cacheKey = `${userId}::${courseId}`;
     const studentId = typeof studentOrId === 'string' ? studentOrId : studentOrId.id;
     const set = getRemovedStudentIds(courseId);
     set.add(studentId);
     const idsArray = Array.from(set);
-    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
+    cachedRemovedCourseIds.set(cacheKey, set);
     cachedStudents = null;
 
     let list = getRemovedStudentsList(courseId);
     if (typeof studentOrId === 'object' && studentOrId.id) {
       list = list.filter((s) => s.id !== studentOrId.id);
       list.push({ ...studentOrId, courseId });
-      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+      cachedRemovedCourseLists.set(cacheKey, list);
     }
 
-    const index = getRemovedStudentsIndex();
-    index[courseId] = idsArray;
+    scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
+      setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
+      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+    });
+
+    const index = { ...getRemovedStudentsIndex(), [courseId]: idsArray };
     saveRemovedStudentsIndex(index, true);
 
-    const userId = getActiveUserId();
     if (userId) {
       firestoreSync
         .saveUserSetting(userId, `removed_students_${courseId}`, {
@@ -726,20 +861,25 @@ export function markStudentRemoved(courseId: string, studentOrId: Student | stri
 export function unmarkStudentRemoved(courseId: string, studentId: string): void {
   if (typeof window === 'undefined' || !courseId || !studentId) return;
   try {
+    const userId = getActiveUserId();
+    const cacheKey = `${userId}::${courseId}`;
     const set = getRemovedStudentIds(courseId);
     set.delete(studentId);
     const idsArray = Array.from(set);
-    setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
+    cachedRemovedCourseIds.set(cacheKey, set);
     cachedStudents = null;
 
     const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentId);
-    setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+    cachedRemovedCourseLists.set(cacheKey, list);
 
-    const index = getRemovedStudentsIndex();
-    index[courseId] = idsArray;
+    scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
+      setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
+      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+    });
+
+    const index = { ...getRemovedStudentsIndex(), [courseId]: idsArray };
     saveRemovedStudentsIndex(index, true);
 
-    const userId = getActiveUserId();
     if (userId) {
       firestoreSync
         .saveUserSetting(userId, `removed_students_${courseId}`, {
@@ -773,6 +913,7 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
         const prevStr = JSON.stringify(Array.from(prevSet).sort());
         const nextStr = JSON.stringify([...ids].sort());
         if (prevStr !== nextStr) {
+          cachedRemovedCourseIds.set(`${userId}::${cid}`, new Set(ids));
           setUserScopedItem(`fds_removed_students_${cid}`, JSON.stringify(ids));
           changed = true;
         }
@@ -784,7 +925,6 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
       }
       return mergedIndex;
     } else {
-      // Seed global index from any existing local course removed sets
       const courses = getLocalCourses();
       let hasAnyLocal = false;
       const seededIndex: Record<string, string[]> = { ...localIndex };
@@ -835,10 +975,16 @@ export async function syncRemovedStudentsFromCloud(
       const prevIdsStr = JSON.stringify(Array.from(localIds).sort());
       const nextIdsStr = JSON.stringify(Array.from(nextIds).sort());
 
-      setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(nextIds)));
-      setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(nextList));
+      const cacheKey = `${userId}::${courseId}`;
+      cachedRemovedCourseIds.set(cacheKey, nextIds);
+      cachedRemovedCourseLists.set(cacheKey, nextList);
 
-      const index = getRemovedStudentsIndex();
+      scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
+        setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(nextIds)));
+        setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(nextList));
+      });
+
+      const index = { ...getRemovedStudentsIndex() };
       if (JSON.stringify(index[courseId] || []) !== JSON.stringify(cloudIds)) {
         index[courseId] = cloudIds;
         saveRemovedStudentsIndex(index, true);
@@ -850,10 +996,8 @@ export async function syncRemovedStudentsFromCloud(
       }
       return { ids: nextIds, list: nextList };
     } else if (localIds.size > 0 || localList.length > 0) {
-      // Seed cloud from existing local removed students so other devices receive it
       const idsArr = Array.from(localIds);
-      const index = getRemovedStudentsIndex();
-      index[courseId] = idsArr;
+      const index = { ...getRemovedStudentsIndex(), [courseId]: idsArr };
       saveRemovedStudentsIndex(index, true);
 
       firestoreSync
@@ -868,6 +1012,7 @@ export async function syncRemovedStudentsFromCloud(
 
   return { ids: localIds, list: localList };
 }
+
 
 
 

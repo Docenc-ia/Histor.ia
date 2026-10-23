@@ -570,43 +570,99 @@ export async function syncLibroDeTemasToSheetHelper(
  * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
  * and converts the subsequent rows into objects keyed by column header.
  */
-export function convert2DArrayToTableObjectsHelper(rawValues: any[][]): {
+function getSpreadsheetColLetter(colIndex: number): string {
+  let temp = colIndex;
+  let letter = '';
+  while (temp >= 0) {
+    letter = String.fromCharCode((temp % 26) + 65) + letter;
+    temp = Math.floor(temp / 26) - 1;
+  }
+  return letter;
+}
+
+/**
+ * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
+ * or uses an explicit headerRowIndex chosen by the teacher in the visual mapper
+ * (-1 means the sheet has no header row and data starts at row 0).
+ */
+export function convert2DArrayToTableObjectsHelper(
+  rawValues: any[][],
+  explicitHeaderRowIndex?: number
+): {
   headers: string[];
   rows: Array<Record<string, any>>;
+  headerRowIndex: number;
 } {
   if (!rawValues || rawValues.length === 0) {
-    return { headers: [], rows: [] };
+    return { headers: [], rows: [], headerRowIndex: 0 };
+  }
+
+  // Find max column count across the first 30 rows
+  let maxCols = 0;
+  for (let i = 0; i < Math.min(30, rawValues.length); i++) {
+    const r = rawValues[i] || [];
+    if (r.length > maxCols) maxCols = r.length;
+  }
+  if (maxCols === 0) {
+    return { headers: [], rows: [], headerRowIndex: 0 };
   }
 
   let headerRowIndex = 0;
-  let bestScore = -1;
 
-  for (let i = 0; i < Math.min(10, rawValues.length); i++) {
-    const r = rawValues[i] || [];
-    const nonEmptyCells = r.filter((c) => String(c || '').trim() !== '');
-    if (nonEmptyCells.length < 2) continue;
+  if (typeof explicitHeaderRowIndex === 'number') {
+    headerRowIndex = explicitHeaderRowIndex;
+  } else {
+    let bestScore = -1;
+    for (let i = 0; i < Math.min(15, rawValues.length); i++) {
+      const r = rawValues[i] || [];
+      const nonEmptyCells = r.filter((c) => String(c || '').trim() !== '');
+      if (nonEmptyCells.length < 2) continue;
 
-    let score = nonEmptyCells.length;
-    const joined = nonEmptyCells.map((c) => String(c).toLowerCase()).join(' ');
-    if (/alumno|estudiante|apellido|nombre|email|correo/i.test(joined)) score += 20;
-    if (/nota|tp|eval|examen|parcial|falta|ausencia|disposicion|conducta|1c|2c/i.test(joined)) {
-      score += 15;
-    }
+      let score = nonEmptyCells.length;
+      const joined = nonEmptyCells.map((c) => String(c).toLowerCase()).join(' ');
+      if (/alumno|estudiante|apellido|nombre|email|correo|legajo/i.test(joined)) score += 25;
+      if (
+        /nota|tp|eval|examen|parcial|falta|ausencia|inasistencia|tardanza|disposicion|conducta|concepto|actitud|desempeno|1c|2c|cuatrimestre/i.test(
+          joined
+        )
+      ) {
+        score += 20;
+      }
 
-    if (score > bestScore) {
-      bestScore = score;
-      headerRowIndex = i;
+      if (score > bestScore) {
+        bestScore = score;
+        headerRowIndex = i;
+      }
     }
   }
 
-  const rawHeaders = rawValues[headerRowIndex] || [];
-  const headers: string[] = rawHeaders.map((h, idx) => {
-    const clean = String(h || '').trim();
-    return clean || `Columna ${idx + 1}`;
-  });
+  const rawHeaders = headerRowIndex >= 0 ? rawValues[headerRowIndex] || [] : [];
+  const prevRow = headerRowIndex > 0 ? rawValues[headerRowIndex - 1] || [] : [];
 
+  const seenHeaders = new Set<string>();
+  const headers: string[] = [];
+
+  for (let idx = 0; idx < maxCols; idx++) {
+    const colLetter = getSpreadsheetColLetter(idx);
+    let clean = headerRowIndex >= 0 ? String(rawHeaders[idx] ?? '').trim() : '';
+    const upperClean = headerRowIndex > 0 ? String(prevRow[idx] ?? '').trim() : '';
+
+    // If current header cell is empty, fall back to cell directly above (merged/multi-row header)
+    if (!clean && upperClean && upperClean.length < 40) {
+      clean = upperClean;
+    }
+
+    let baseHeader = clean || `Columna ${colLetter}`;
+    if (seenHeaders.has(baseHeader)) {
+      baseHeader = `${baseHeader} (Col ${colLetter})`;
+    }
+    seenHeaders.add(baseHeader);
+    headers.push(baseHeader);
+  }
+
+  const startDataRow = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
   const rows: Array<Record<string, any>> = [];
-  for (let r = headerRowIndex + 1; r < rawValues.length; r++) {
+  for (let r = startDataRow; r < rawValues.length; r++) {
     const rowArr = rawValues[r] || [];
     const nonEmpty = rowArr.some((cell) => String(cell ?? '').trim() !== '');
     if (!nonEmpty) continue;
@@ -618,7 +674,7 @@ export function convert2DArrayToTableObjectsHelper(rawValues: any[][]): {
     rows.push(obj);
   }
 
-  return { headers, rows };
+  return { headers, rows, headerRowIndex };
 }
 
 /**
@@ -636,6 +692,8 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   selectedSheet: string;
   headers: string[];
   rows: Array<Record<string, any>>;
+  raw2D: any[][];
+  headerRowIndex: number;
 }> {
   const trimmed = spreadsheetIdOrUrl.trim();
   const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
@@ -682,7 +740,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
       if (valRes.ok) {
         const valData = await valRes.json();
         const rawValues: any[][] = valData.values || [];
-        const { headers, rows } = convert2DArrayToTableObjectsHelper(rawValues);
+        const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
         return {
           spreadsheetId,
           title,
@@ -690,6 +748,8 @@ export async function fetchArbitrarySpreadsheetDataHelper(
           selectedSheet,
           headers,
           rows,
+          raw2D: rawValues,
+          headerRowIndex,
         };
       }
     }
@@ -712,7 +772,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   const firstSheet = wb.SheetNames[0];
   const ws = wb.Sheets[firstSheet];
   const rawValues: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  const { headers, rows } = convert2DArrayToTableObjectsHelper(rawValues);
+  const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
 
   return {
     spreadsheetId,
@@ -721,5 +781,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
     selectedSheet: targetSheetTitle || 'Hoja 1',
     headers,
     rows,
+    raw2D: rawValues,
+    headerRowIndex,
   };
 }

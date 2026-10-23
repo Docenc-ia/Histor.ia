@@ -38,8 +38,10 @@ import { driveService } from '../../services/workspace/driveService';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import {
   normalizeImportText,
+  autoDetectIdentityColumns,
   autoDetectColumnsConfiguration,
   computeMultiVerificationRows,
+  parseFlexibleCellNumber,
 } from '../../utils/gradeImportParser';
 
 export interface ParsedStudentRow {
@@ -57,7 +59,20 @@ export interface ParsedStudentRow {
   note?: string;
 }
 
-export type DetectedColumnKind = 'grade' | 'absences' | 'lates' | 'disposition' | 'ignore';
+export type DetectedColumnKind =
+  | 'grade'
+  | 'absences'
+  | 'lates'
+  | 'disposition'
+  | 'disposition_deduction'
+  | 'ignore';
+
+export type QuickPastePreset =
+  | 'auto'
+  | 'name_and_disp'
+  | 'last_first_disp'
+  | 'name_abs_disp'
+  | 'only_disp_ordered';
 
 export interface DetectedColumnConfig {
   colKey: string; // Raw column header in Excel/Sheets
@@ -146,6 +161,16 @@ export interface ImportGradesModalProps {
   historyEntries?: GradeHistoryEntry[];
 }
 
+function getColLetter(colIndex: number): string {
+  let temp = colIndex;
+  let letter = '';
+  while (temp >= 0) {
+    letter = String.fromCharCode((temp % 26) + 65) + letter;
+    temp = Math.floor(temp / 26) - 1;
+  }
+  return letter;
+}
+
 export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   isOpen,
   onClose,
@@ -186,8 +211,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   const [sheetNames, setSheetNames] = useState<string[]>([]);
   const [selectedSheetName, setSelectedSheetName] = useState<string>('');
   const [rawWorkbook, setRawWorkbook] = useState<XLSXType.WorkBook | null>(null);
+  const [raw2DGrid, setRaw2DGrid] = useState<any[][]>([]);
+  const [selectedHeaderRowIndex, setSelectedHeaderRowIndex] = useState<number>(0);
+  const [showVisualSheetMapper, setShowVisualSheetMapper] = useState<boolean>(true);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [selectedNameColumn, setSelectedNameColumn] = useState<string>('');
+  const [selectedSecondaryNameColumn, setSelectedSecondaryNameColumn] = useState<string>('');
   const [selectedEmailColumn, setSelectedEmailColumn] = useState<string>('');
   const [rawTableRows, setRawTableRows] = useState<Array<Record<string, any>>>([]);
 
@@ -202,8 +231,17 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   const [isLoadingDriveSheets, setIsLoadingDriveSheets] = useState<boolean>(false);
   const [driveSearchQuery, setDriveSearchQuery] = useState<string>('');
 
-  // Paste state
+  // Paste state (Alternativa 3: Pegado rápido de 2 columnas o tabla)
   const [pasteText, setPasteText] = useState<string>('');
+  const [quickPastePreset, setQuickPastePreset] = useState<QuickPastePreset>(() =>
+    importContext === 'attendance' ? 'name_and_disp' : 'auto'
+  );
+
+  useEffect(() => {
+    if (isOpen) {
+      setQuickPastePreset(importContext === 'attendance' ? 'name_and_disp' : 'auto');
+    }
+  }, [isOpen, importContext]);
 
   // Multi-column auto-detection states
   const [detectedColumns, setDetectedColumns] = useState<DetectedColumnConfig[]>([]);
@@ -247,7 +285,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     rawRows: Array<Record<string, any>>,
     nameCol: string,
     emailCol: string,
-    colConfigs: DetectedColumnConfig[]
+    colConfigs: DetectedColumnConfig[],
+    secondaryNameCol = selectedSecondaryNameColumn
   ) => {
     const { rowsResult, shouldAutoEnableNewStudents } = computeMultiVerificationRows(
       students,
@@ -256,7 +295,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       emailCol,
       colConfigs,
       activeGradesMap,
-      activeDispMap
+      activeDispMap,
+      secondaryNameCol
     );
 
     if (shouldAutoEnableNewStudents) {
@@ -273,28 +313,206 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     rows: Array<Record<string, any>>,
     cols: string[],
     sourceTitle: string,
-    autoAdvanceToVerify = true
+    autoAdvanceToVerify = true,
+    overridePreset?: {
+      nameCol?: string;
+      secondaryNameCol?: string;
+      emailCol?: string;
+      colConfigs?: DetectedColumnConfig[];
+    }
   ) => {
     setRawTableRows(rows);
     setAvailableColumns(cols);
     setFileName(sourceTitle);
 
+    const detectedIdentity = autoDetectIdentityColumns(cols);
     const nameCol =
-      cols.find((c) => /alumno|nombre|estudiante|apellido|nom|ape|persona/i.test(c)) || cols[0] || '';
+      overridePreset?.nameCol !== undefined ? overridePreset.nameCol : detectedIdentity.nameCol;
+    const secondaryNameCol =
+      overridePreset?.secondaryNameCol !== undefined
+        ? overridePreset.secondaryNameCol
+        : detectedIdentity.secondaryNameCol;
     const emailCol =
-      cols.find((c) => c !== nameCol && /email|correo|mail/i.test(c)) || '';
+      overridePreset?.emailCol !== undefined ? overridePreset.emailCol : detectedIdentity.emailCol;
 
     setSelectedNameColumn(nameCol);
+    setSelectedSecondaryNameColumn(secondaryNameCol);
     setSelectedEmailColumn(emailCol);
 
-    const detected = autoDetectColumnsConfiguration(cols, nameCol, emailCol, activeCategories);
+    const detected =
+      overridePreset?.colConfigs ||
+      autoDetectColumnsConfiguration(
+        cols,
+        nameCol,
+        emailCol,
+        activeCategories,
+        secondaryNameCol,
+        importContext
+      );
+
     setDetectedColumns(detected);
-    buildMultiVerificationRows(rows, nameCol, emailCol, detected);
+    buildMultiVerificationRows(rows, nameCol, emailCol, detected, secondaryNameCol);
 
     if (autoAdvanceToVerify) {
       setActiveStep('verify');
       setInspectionMode('table');
+      setShowVisualSheetMapper(true);
     }
+  };
+
+  /**
+   * Re-parse the currently loaded raw2DGrid using a specific row index chosen by the teacher
+   * in the interactive visual mapper (-1 = no header row, data starts at row 0).
+   */
+  const handleSelectCustomHeaderRowIndex = (newHeaderRowIdx: number) => {
+    if (!raw2DGrid || raw2DGrid.length === 0) return;
+    setSelectedHeaderRowIndex(newHeaderRowIdx);
+    const { headers, rows } = sheetsService.convert2DArrayToTableObjects(
+      raw2DGrid,
+      newHeaderRowIdx
+    );
+    if (headers.length === 0) return;
+    processLoadedTableData(rows, headers, fileName, false);
+  };
+
+  /**
+   * Assign a role directly to a column from the Visual Sheet Mapper header dropdown
+   */
+  const handleVisualColumnRoleChange = (
+    colKey: string,
+    role:
+      | 'student_name'
+      | 'student_second_name'
+      | 'student_email'
+      | 'disposition'
+      | 'disposition_deduction'
+      | 'absences'
+      | 'lates'
+      | 'grade'
+      | 'ignore'
+  ) => {
+    const defaultCat = activeCategories[0] || {
+      id: 'cat-default',
+      name: 'Evaluaciones',
+      weight: 100,
+      subcategories: [],
+    };
+
+    if (role === 'student_name') {
+      const nextNameCol = colKey;
+      const nextSecCol = selectedSecondaryNameColumn === colKey ? '' : selectedSecondaryNameColumn;
+      const nextEmailCol = selectedEmailColumn === colKey ? '' : selectedEmailColumn;
+      setSelectedNameColumn(nextNameCol);
+      setSelectedSecondaryNameColumn(nextSecCol);
+      setSelectedEmailColumn(nextEmailCol);
+      const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
+      // If previous selectedNameColumn was a real column, add it back as ignored so it remains visible
+      if (
+        selectedNameColumn &&
+        selectedNameColumn !== '__ORDER__' &&
+        selectedNameColumn !== colKey &&
+        !nextDetected.some((c) => c.colKey === selectedNameColumn)
+      ) {
+        nextDetected.unshift({
+          colKey: selectedNameColumn,
+          isIncluded: false,
+          kind: 'ignore',
+          targetCategoryMode: 'existing',
+          targetCategoryId: defaultCat.id,
+          newCategoryName: '',
+          targetSubcategoryMode: 'new',
+          targetSubcategoryId: '',
+          subcategoryName: selectedNameColumn,
+        });
+      }
+      setDetectedColumns(nextDetected);
+      buildMultiVerificationRows(rawTableRows, nextNameCol, nextEmailCol, nextDetected, nextSecCol);
+      return;
+    }
+
+    if (role === 'student_second_name') {
+      const nextSecCol = colKey;
+      const nextNameCol =
+        selectedNameColumn === colKey ? availableColumns[0] || '' : selectedNameColumn;
+      setSelectedNameColumn(nextNameCol);
+      setSelectedSecondaryNameColumn(nextSecCol);
+      const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
+      setDetectedColumns(nextDetected);
+      buildMultiVerificationRows(
+        rawTableRows,
+        nextNameCol,
+        selectedEmailColumn,
+        nextDetected,
+        nextSecCol
+      );
+      return;
+    }
+
+    if (role === 'student_email') {
+      const nextEmailCol = colKey;
+      const nextSecCol = selectedSecondaryNameColumn === colKey ? '' : selectedSecondaryNameColumn;
+      setSelectedEmailColumn(nextEmailCol);
+      setSelectedSecondaryNameColumn(nextSecCol);
+      const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
+      setDetectedColumns(nextDetected);
+      buildMultiVerificationRows(
+        rawTableRows,
+        selectedNameColumn,
+        nextEmailCol,
+        nextDetected,
+        nextSecCol
+      );
+      return;
+    }
+
+    // Otherwise it's a data column ('disposition' | 'disposition_deduction' | 'absences' | 'lates' | 'grade' | 'ignore')
+    let nextNameCol = selectedNameColumn;
+    let nextSecCol = selectedSecondaryNameColumn;
+    let nextEmailCol = selectedEmailColumn;
+    if (nextNameCol === colKey) {
+      nextNameCol = availableColumns.find((c) => c !== colKey) || '';
+      setSelectedNameColumn(nextNameCol);
+    }
+    if (nextSecCol === colKey) {
+      nextSecCol = '';
+      setSelectedSecondaryNameColumn('');
+    }
+    if (nextEmailCol === colKey) {
+      nextEmailCol = '';
+      setSelectedEmailColumn('');
+    }
+
+    const existsInDetected = detectedColumns.some((c) => c.colKey === colKey);
+    let nextDetected: DetectedColumnConfig[];
+    if (existsInDetected) {
+      nextDetected = detectedColumns.map((c) =>
+        c.colKey === colKey
+          ? {
+              ...c,
+              kind: role,
+              isIncluded: role !== 'ignore',
+            }
+          : c
+      );
+    } else {
+      nextDetected = [
+        ...detectedColumns,
+        {
+          colKey,
+          isIncluded: role !== 'ignore',
+          kind: role,
+          targetCategoryMode: 'existing',
+          targetCategoryId: defaultCat.id,
+          newCategoryName: '',
+          targetSubcategoryMode: 'new',
+          targetSubcategoryId: '',
+          subcategoryName: colKey,
+        },
+      ];
+    }
+
+    setDetectedColumns(nextDetected);
+    buildMultiVerificationRows(rawTableRows, nextNameCol, nextEmailCol, nextDetected, nextSecCol);
   };
 
   /**
@@ -333,7 +551,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
     const XLSX = await import('xlsx');
     const raw2D: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    const { headers, rows } = sheetsService.convert2DArrayToTableObjects(raw2D);
+    setRaw2DGrid(raw2D);
+    const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+    setSelectedHeaderRowIndex(headerRowIndex);
     if (rows.length === 0 || headers.length === 0) return;
 
     processLoadedTableData(
@@ -358,8 +578,10 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       setSheetNames(result.sheetNames);
       setSelectedSheetName(result.selectedSheet);
       setRawWorkbook(null);
+      setRaw2DGrid(result.raw2D || []);
+      setSelectedHeaderRowIndex(result.headerRowIndex ?? 0);
 
-      if (result.rows.length === 0) {
+      if (result.rows.length === 0 && (!result.raw2D || result.raw2D.length === 0)) {
         setRemoteSheetError(`La pestaña "${result.selectedSheet}" no contiene filas de datos.`);
         return;
       }
@@ -380,7 +602,45 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Handle pasted cells from Excel or Sheets
+   * Splits a pasted line into cells:
+   * 1. First tries Tab (\t) — standard when copying from Google Sheets or Excel.
+   * 2. Next tries semicolon (;) — standard Argentine CSV format.
+   * 3. If neither is present, checks if line ends with a number (e.g. "García, Juan 8,5" or "García Juan - 9")
+   *    so 2-column paste works even when tab characters were lost!
+   */
+  const splitPasteLineSmart = (line: string): string[] => {
+    if (line.includes('\t')) {
+      return line.split('\t').map((c) => c.trim());
+    }
+    if (line.includes(';')) {
+      return line.split(';').map((c) => c.trim());
+    }
+    // Check if the line has a name (possibly with comma "Apellido, Nombre") followed by a separator/space and a score
+    const trailingScoreMatch = line.match(
+      /^(.+?)(?:\s+[-|:]\s+|\s{2,}|\s+)(-?\d+(?:[.,]\d+)?(?:\s*(?:pts?|puntos?|mb|b|ex|r))?)$/i
+    );
+    if (trailingScoreMatch) {
+      return [trailingScoreMatch[1].trim(), trailingScoreMatch[2].trim()];
+    }
+    return [line.trim()];
+  };
+
+  /**
+   * Live preview stats for the paste box (Alternativa 3)
+   */
+  const pastePreviewStats = useMemo(() => {
+    if (!pasteText.trim()) return { rowCount: 0, colCount: 0 };
+    const lines = pasteText
+      .split('\n')
+      .map((l) => l.replace(/\r/g, ''))
+      .filter((l) => l.trim() !== '');
+    if (lines.length === 0) return { rowCount: 0, colCount: 0 };
+    const sampleCols = Math.max(...lines.slice(0, 10).map((l) => splitPasteLineSmart(l).length));
+    return { rowCount: lines.length, colCount: sampleCols };
+  }, [pasteText]);
+
+  /**
+   * Handle pasted cells from Excel or Sheets (with support for Alternativa 3 Quick Presets)
    */
   const handleParsePaste = () => {
     if (!pasteText.trim()) return;
@@ -390,20 +650,179 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       .filter((l) => l.trim() !== '');
     if (lines.length === 0) return;
 
-    const raw2D = lines.map((line) => line.split(/\t|,|;/).map((cell) => cell.trim()));
-    // If first row doesn't look like headers, synthesize headers
+    const raw2D = lines.map((line) => splitPasteLineSmart(line));
+    const defaultCat = activeCategories[0] || {
+      id: 'cat-default',
+      name: 'Evaluaciones',
+      weight: 100,
+      subcategories: [],
+    };
+
     const firstRowJoined = raw2D[0].join(' ').toLowerCase();
-    const hasHeader = /alumno|nombre|apellido|estudiante|nota|tp|eval|examen|falta|ausencia|disposicion/i.test(
-      firstRowJoined
-    );
+    const firstRowHasNumbers = raw2D[0].some((cell, idx) => {
+      if (idx === 0 && raw2D[0].length > 1) return false;
+      return /^-?\d+(?:[.,]\d+)?$/.test(cell.trim());
+    });
+    const hasHeader =
+      !firstRowHasNumbers &&
+      /alumno|nombre|apellido|estudiante|nota|tp|eval|examen|falta|ausencia|tardanza|disposicion|conducta|concepto/i.test(
+        firstRowJoined
+      );
+
+    // Preset 1: 1 Single Column of Disposition numbers in alphabetical roster order
+    if (quickPastePreset === 'only_disp_ordered') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const colHeader = 'Disposición';
+      const final2D = [[colHeader], ...dataRows2D.map((r) => [r[r.length - 1] ?? r[0] ?? ''])];
+      setRaw2DGrid(final2D);
+      setSelectedHeaderRowIndex(0);
+      const rows = dataRows2D.map((r) => ({
+        [colHeader]: r[r.length - 1] ?? r[0] ?? '',
+      }));
+      const colCfg: DetectedColumnConfig = {
+        colKey: colHeader,
+        isIncluded: true,
+        kind: 'disposition',
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: colHeader,
+      };
+      processLoadedTableData(rows, [colHeader], 'Pegado Rápido (Disposición por Orden de Lista)', true, {
+        nameCol: '__ORDER__',
+        secondaryNameCol: '',
+        emailCol: '',
+        colConfigs: [colCfg],
+      });
+      return;
+    }
+
+    // Preset 2: 2 Columns -> [Alumno] + [Disposición]
+    if (quickPastePreset === 'name_and_disp') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const headers = ['Apellido y Nombre', 'Disposición'];
+      const normalized2D = [
+        headers,
+        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '']),
+      ];
+      setRaw2DGrid(normalized2D);
+      setSelectedHeaderRowIndex(0);
+      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
+      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Disposición)', true, {
+        nameCol: 'Apellido y Nombre',
+        secondaryNameCol: '',
+        emailCol: '',
+        colConfigs: [
+          {
+            colKey: 'Disposición',
+            isIncluded: true,
+            kind: 'disposition',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Disposición',
+          },
+        ],
+      });
+      return;
+    }
+
+    // Preset 3: 3 Columns -> [Apellido] + [Nombre] + [Disposición]
+    if (quickPastePreset === 'last_first_disp') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const headers = ['Apellido', 'Nombre', 'Disposición'];
+      const normalized2D = [
+        headers,
+        ...dataRows2D.map((r) => [r[0] || '', r[1] || '', r[2] ?? '']),
+      ];
+      setRaw2DGrid(normalized2D);
+      setSelectedHeaderRowIndex(0);
+      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
+      processLoadedTableData(rows, headers, 'Pegado Rápido (Apellido + Nombre + Disposición)', true, {
+        nameCol: 'Apellido',
+        secondaryNameCol: 'Nombre',
+        emailCol: '',
+        colConfigs: [
+          {
+            colKey: 'Disposición',
+            isIncluded: true,
+            kind: 'disposition',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Disposición',
+          },
+        ],
+      });
+      return;
+    }
+
+    // Preset 4: 3 Columns -> [Alumno] + [Ausencias] + [Disposición]
+    if (quickPastePreset === 'name_abs_disp') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const headers = ['Apellido y Nombre', 'Ausencias', 'Disposición'];
+      const normalized2D = [
+        headers,
+        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '', r[2] ?? '']),
+      ];
+      setRaw2DGrid(normalized2D);
+      setSelectedHeaderRowIndex(0);
+      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
+      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Ausencias + Disposición)', true, {
+        nameCol: 'Apellido y Nombre',
+        secondaryNameCol: '',
+        emailCol: '',
+        colConfigs: [
+          {
+            colKey: 'Ausencias',
+            isIncluded: true,
+            kind: 'absences',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Ausencias',
+          },
+          {
+            colKey: 'Disposición',
+            isIncluded: true,
+            kind: 'disposition',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Disposición',
+          },
+        ],
+      });
+      return;
+    }
+
+    // Automatic mode
+    const defaultColLabel = importContext === 'attendance' ? 'Disposición' : 'Nota';
     const final2D = hasHeader
       ? raw2D
       : [
-          ['Apellido y Nombre', ...raw2D[0].slice(1).map((_, idx) => `Nota ${idx + 1}`)],
+          [
+            'Apellido y Nombre',
+            ...raw2D[0].slice(1).map((_, idx) =>
+              idx === 0 && importContext === 'attendance' ? 'Disposición' : `${defaultColLabel} ${idx + 1}`
+            ),
+          ],
           ...raw2D,
         ];
 
-    const { headers, rows } = sheetsService.convert2DArrayToTableObjects(final2D);
+    setRaw2DGrid(final2D);
+    setSelectedHeaderRowIndex(0);
+    const { headers, rows } = sheetsService.convert2DArrayToTableObjects(final2D, 0);
     if (rows.length === 0) return;
 
     processLoadedTableData(rows, headers, 'Datos Pegados desde Planilla', true);
@@ -416,7 +835,13 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   ) => {
     const nextCols = detectedColumns.map((c) => (c.colKey === colKey ? { ...c, ...patch } : c));
     setDetectedColumns(nextCols);
-    buildMultiVerificationRows(rawTableRows, selectedNameColumn, selectedEmailColumn, nextCols);
+    buildMultiVerificationRows(
+      rawTableRows,
+      selectedNameColumn,
+      selectedEmailColumn,
+      nextCols,
+      selectedSecondaryNameColumn
+    );
   };
 
   // Edit an individual cell in Step 2
@@ -432,12 +857,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
         const cleanStr = newVal.replace(',', '.').trim();
         let isValid = true;
+        let finalStr = cleanStr;
         if (cleanStr !== '') {
-          const num = parseFloat(cleanStr);
-          if (colCfg.kind === 'grade' || colCfg.kind === 'disposition') {
-            isValid = !isNaN(num) && num >= 0 && num <= 10;
-          } else {
-            isValid = !isNaN(num) && num >= 0;
+          const parsed = parseFlexibleCellNumber(cleanStr, colCfg.kind);
+          isValid = parsed.isValid;
+          if (isValid) {
+            finalStr = String(Number(parsed.numVal.toFixed(2)));
           }
         }
 
@@ -445,7 +870,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         if (cleanStr === '') status = 'empty';
         else if (!isValid) status = 'invalid';
         else if (!prevCell.currentVal) status = 'new';
-        else if (prevCell.currentVal === cleanStr) status = 'same';
+        else if (prevCell.currentVal === finalStr) status = 'same';
         else status = 'update';
 
         const nextValuesByCol = {
@@ -517,7 +942,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     const includedRowsCount = activeRows.filter((r) => r.isIncluded).length;
     const gradeColsCount = includedColumns.filter((c) => c.kind === 'grade').length;
     const attColsCount = includedColumns.filter(
-      (c) => c.kind === 'absences' || c.kind === 'lates' || c.kind === 'disposition'
+      (c) =>
+        c.kind === 'absences' ||
+        c.kind === 'lates' ||
+        c.kind === 'disposition' ||
+        c.kind === 'disposition_deduction'
     ).length;
     const newStudentsCount = verifiedRows.filter((r) => r.isNewStudent).length;
 
@@ -657,20 +1086,28 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         const cell = row.valuesByCol[colCfg.colKey];
         if (!cell || !cell.isValid || cell.editedVal === '') return;
 
+        const parsedCell = parseFlexibleCellNumber(cell.editedVal, colCfg.kind);
+        const numericVal = parsedCell.isValid ? parsedCell.numVal : Number(cell.editedVal);
+
         if (colCfg.kind === 'grade') {
           const targetInfo = colKeyToSubcategoryId[colCfg.colKey];
           if (targetInfo) {
-            workingGradesMap[row.studentId][targetInfo.subcategoryId] = cell.editedVal;
+            workingGradesMap[row.studentId][targetInfo.subcategoryId] = !isNaN(numericVal)
+              ? String(Number(numericVal.toFixed(2)))
+              : cell.editedVal;
           }
         } else if (colCfg.kind === 'absences') {
           if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].absences = Math.max(0, Math.round(Number(cell.editedVal)));
+          attendanceUpdates[row.studentId].absences = Math.max(0, Math.round(numericVal));
         } else if (colCfg.kind === 'lates') {
           if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].lates = Math.max(0, Math.round(Number(cell.editedVal)));
-        } else if (colCfg.kind === 'disposition') {
+          attendanceUpdates[row.studentId].lates = Math.max(0, Math.round(numericVal));
+        } else if (colCfg.kind === 'disposition' || colCfg.kind === 'disposition_deduction') {
           if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].disposition = Math.min(10, Math.max(1, Number(cell.editedVal)));
+          attendanceUpdates[row.studentId].disposition = Math.min(
+            10,
+            Math.max(1, Number(numericVal.toFixed(2)))
+          );
         }
       });
     });
@@ -789,6 +1226,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                 <h3 className="font-bold text-base leading-tight">
                   {sourceType === 'sheets'
                     ? 'Importar Documento desde Google Sheets'
+                    : sourceType === 'paste'
+                    ? 'Pegado Rápido desde Planilla (Ctrl+V)'
                     : 'Importar Documento desde Excel (.xlsx, .xls, .csv)'}
                 </h3>
                 <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
@@ -800,9 +1239,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
               </div>
               <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
                 {activeStep === 'upload' &&
-                  'Paso 1: Seleccioná tu documento de Excel o Google Sheets para que la app detecte las notas, categorías y asistencia'}
+                  'Paso 1: Subí tu planilla, conectá tu Google Sheet o pegá 2 columnas para mapear tus datos sin errores'}
                 {activeStep === 'verify' &&
-                  'Paso 2: Interfaz de comprobación previa — Revisá y confirmá que las categorías, columnas y datos estén bien antes de guardar'}
+                  'Paso 2: Mapeador Visual e Interfaz de Comprobación — Elegí qué es cada columna sobre tu planilla y verificá antes de guardar'}
                 {activeStep === 'history' && 'Historial de importaciones realizadas'}
               </p>
             </div>
@@ -905,7 +1344,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   }`}
                 >
                   <ClipboardPaste className="w-4 h-4" />
-                  <span>Pegar Celdas Copiadas (Ctrl+V)</span>
+                  <span>Pegado Rápido de Columnas (Ctrl+V)</span>
                 </button>
               </div>
 
@@ -1013,7 +1452,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       : 'Hacé clic aquí para seleccionar tu archivo Excel (.xlsx, .xls o .csv)'}
                   </p>
                   <p className={`text-xs mt-1.5 max-w-xl mx-auto ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Si ya tenés una planilla armada en Excel, subila directamente: la aplicación detectará las columnas de alumnos, las categorías, las notas y/o las faltas y abrirá una pantalla de comprobación previa antes de guardar.
+                    Subí cualquier planilla tuya: en el siguiente paso verás tu hoja en pantalla y podrás elegir con un clic en qué fila están los títulos y qué columna corresponde a Alumno, Disposición, Faltas o Notas.
                   </p>
                 </div>
               </div>
@@ -1035,7 +1474,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     </h4>
                   </div>
                   <p className={`text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                    Pegá el enlace de cualquier hoja de cálculo de Google Sheets que ya tengas hecha para detectar automáticamente sus categorías, evaluaciones, notas o asistencia:
+                    Pegá el enlace de cualquier Google Sheet que tengas armado. En el paso siguiente podrás **ver las filas reales de tu hoja** y señalar con un clic cuál es la columna de Disposición, Ausencias o Alumno:
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2">
                     <input
@@ -1058,9 +1497,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       {isLoadingRemoteSheet ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
                       ) : (
-                        <Sparkles className="w-4 h-4" />
+                        <Eye className="w-4 h-4" />
                       )}
-                      <span>{isLoadingRemoteSheet ? 'Analizando Hoja...' : 'Detectar y Comprobar Datos'}</span>
+                      <span>{isLoadingRemoteSheet ? 'Leyendo Hoja...' : 'Abrir en Mapeador Visual'}</span>
                     </button>
                   </div>
 
@@ -1152,7 +1591,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             </div>
                           </div>
                           <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold shrink-0">
-                            Importar
+                            Mapear Hoja
                           </span>
                         </button>
                       ))}
@@ -1162,18 +1601,153 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
               </div>
             )}
 
-            {/* MODO 3: PEGAR CELDAS COPIADAS */}
+            {/* MODO 3: PEGADO RÁPIDO DE 2 COLUMNAS / CELDAS COPIADAS (ALTERNATIVA 3) */}
             {sourceType === 'paste' && (
               <div className="space-y-4">
+                <div
+                  className={`p-4 rounded-2xl border space-y-3 ${
+                    isDarkMode ? 'bg-indigo-950/25 border-indigo-800/60' : 'bg-indigo-50/60 border-indigo-200'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <ClipboardPaste className="w-4 h-4 text-indigo-500" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-300">
+                        Elegí qué formato estás pegando desde tu Google Sheet o Excel:
+                      </span>
+                    </div>
+                    {pastePreviewStats.rowCount > 0 && (
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
+                        ✓ Detectadas {pastePreviewStats.rowCount} fila(s) · {pastePreviewStats.colCount} columna(s)
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setQuickPastePreset('name_and_disp')}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'name_and_disp'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">⭐ 2 Columnas: Alumno + Disposición</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'name_and_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Ej: García, Juan [Tab] 8,5 (con o sin títulos)
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQuickPastePreset('last_first_disp')}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'last_first_disp'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">👤+👤+⭐ 3 Cols: Apellido + Nombre + Disp.</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'last_first_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Une automáticamente Apellido (Col A) y Nombre (Col B)
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQuickPastePreset('name_abs_disp')}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'name_abs_disp'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">📅+⭐ 3 Cols: Alumno + Faltas + Disp.</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'name_abs_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Carga el total de inasistencias y la disposición juntos
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQuickPastePreset('only_disp_ordered')}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'only_disp_ordered'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">🔢 1 Sola Columna (En orden de lista)</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'only_disp_ordered' ? 'text-indigo-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Pegá solo la columna de números de Disposición en orden alfabético
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQuickPastePreset('auto')}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'auto'
+                          ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">✨ Tabla Libre / Varias Columnas</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'auto' ? 'text-indigo-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Pegá cualquier bloque de celdas y mapealo en el paso siguiente
+                      </div>
+                    </button>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-xs font-semibold mb-1.5 text-neutral-700 dark:text-slate-300">
-                    Copiá las celdas desde tu tabla de Excel o Google Sheets (incluyendo los encabezados de categorías/notas) y pegalas aquí (Ctrl+V):
+                    Seleccioná las celdas en tu Google Sheet o Excel, copialas (Ctrl+C) y pegalas aquí (Ctrl+V). Acepta decimales con coma (8,5), puntos o escala conceptual (MB, B, R):
                   </label>
                   <textarea
                     rows={8}
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
-                    placeholder={`Ejemplo con encabezados:\nApellido y Nombre\tTP 1\tTP 2\tEvaluación Escrita\nGarcía, Juan\t8\t9\t8.5\nPérez, María\t9\t10\t9`}
+                    placeholder={
+                      quickPastePreset === 'name_and_disp'
+                        ? `Ejemplo (con o sin fila de títulos):\nGarcía, Ana\t9,5\nLópez, Juan\t8\nMartínez, Sofía\t10`
+                        : quickPastePreset === 'last_first_disp'
+                        ? `Ejemplo con Apellido y Nombre separados:\nGarcía\tAna\t9,5\nLópez\tJuan\t8`
+                        : quickPastePreset === 'only_disp_ordered'
+                        ? `Pegá directamente la columna de notas en el orden alfabético del curso:\n9,5\n8\n10\n7,5`
+                        : `Ejemplo:\nApellido y Nombre\tAusencias\tDisposición\nGarcía, Ana\t1\t9,5\nLópez, Juan\t3\t8`
+                    }
                     className={`w-full p-3 font-mono text-xs rounded-xl border outline-hidden ${
                       isDarkMode
                         ? 'bg-slate-800 border-slate-750 text-slate-200'
@@ -1186,9 +1760,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     type="button"
                     onClick={handleParsePaste}
                     disabled={!pasteText.trim()}
-                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+                    className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
                   >
-                    <span>Detectar Categorías y Comprobar Datos</span>
+                    <span>Procesar y Verificar Datos</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </div>
@@ -1214,7 +1788,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <div>
                     <div className="text-xs font-bold">{fileName}</div>
                     <div className="text-[11px] text-neutral-500 dark:text-slate-400">
-                      Revisá abajo las categorías y columnas detectadas antes de agregarlas a la materia.
+                      Si tu planilla tiene otro formato o encabezados combinados, usá el Mapeador Visual de abajo para señalar qué es cada columna.
                     </div>
                   </div>
                 </div>
@@ -1248,7 +1822,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     </div>
                   )}
 
-                  {/* Selector de Columna de Nombre de Alumno */}
+                  {/* Selector de Columna Principal de Alumno */}
                   <div className="flex items-center gap-1.5 text-xs">
                     <span className="font-semibold">Columna Alumno:</span>
                     <select
@@ -1260,15 +1834,24 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           availableColumns,
                           nextNameCol,
                           selectedEmailColumn,
-                          activeCategories
+                          activeCategories,
+                          selectedSecondaryNameColumn,
+                          importContext
                         );
                         setDetectedColumns(nextDetected);
-                        buildMultiVerificationRows(rawTableRows, nextNameCol, selectedEmailColumn, nextDetected);
+                        buildMultiVerificationRows(
+                          rawTableRows,
+                          nextNameCol,
+                          selectedEmailColumn,
+                          nextDetected,
+                          selectedSecondaryNameColumn
+                        );
                       }}
                       className={`px-2.5 py-1 rounded-lg border font-bold outline-hidden ${
                         isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
                       }`}
                     >
+                      <option value="__ORDER__">🔢 Sin columna de nombre (Seguir orden de lista)</option>
                       {availableColumns.map((col) => (
                         <option key={col} value={col}>
                           {col}
@@ -1276,8 +1859,269 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       ))}
                     </select>
                   </div>
+
+                  {/* Selector Opcional de 2° Columna de Nombre (si Apellido y Nombre vienen separados) */}
+                  {selectedNameColumn !== '__ORDER__' && availableColumns.length >= 2 && (
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="font-semibold text-neutral-500 dark:text-slate-400">
+                        + 2° Columna Nombre:
+                      </span>
+                      <select
+                        value={selectedSecondaryNameColumn}
+                        onChange={(e) => {
+                          const nextSec = e.target.value;
+                          setSelectedSecondaryNameColumn(nextSec);
+                          const nextDetected = autoDetectColumnsConfiguration(
+                            availableColumns,
+                            selectedNameColumn,
+                            selectedEmailColumn,
+                            activeCategories,
+                            nextSec,
+                            importContext
+                          );
+                          setDetectedColumns(nextDetected);
+                          buildMultiVerificationRows(
+                            rawTableRows,
+                            selectedNameColumn,
+                            selectedEmailColumn,
+                            nextDetected,
+                            nextSec
+                          );
+                        }}
+                        className={`px-2 py-1 rounded-lg border font-semibold outline-hidden ${
+                          isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
+                        }`}
+                        title="Si tu planilla tiene el Apellido en una columna y el Nombre en otra, elegila aquí para unirlas"
+                      >
+                        <option value="">(En una sola columna)</option>
+                        {availableColumns
+                          .filter((c) => c !== selectedNameColumn)
+                          .map((col) => (
+                            <option key={col} value={col}>
+                              Unir con: {col}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {raw2DGrid.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowVisualSheetMapper((v) => !v)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        showVisualSheetMapper
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-indigo-300'
+                          : 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                      }`}
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>
+                        {showVisualSheetMapper
+                          ? 'Ocultar Mapeador Visual'
+                          : 'Abrir Mapeador Visual de tu Planilla'}
+                      </span>
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {/* ========================================================================= */}
+              {/* ALTERNATIVA 1: MAPEADOR VISUAL INTERACTIVO SOBRE TU PLANILLA REAL        */}
+              {/* ========================================================================= */}
+              {showVisualSheetMapper && raw2DGrid.length > 0 && (
+                <div
+                  className={`p-4 rounded-xl border space-y-3 ${
+                    isDarkMode
+                      ? 'bg-indigo-950/20 border-indigo-800/60'
+                      : 'bg-indigo-50/40 border-indigo-200'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-300 flex items-center gap-1.5">
+                        <FileSpreadsheet className="w-4 h-4" />
+                        <span>
+                          Mapeador Visual Interactivo — Elegí sobre tu planilla qué es cada fila y columna
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-neutral-600 dark:text-slate-400 mt-0.5">
+                        <strong>Paso A:</strong> Si tu planilla tiene encabezados arriba, hacé clic en la fila donde están los títulos (o elegí "Sin fila de títulos").{' '}
+                        <strong>Paso B:</strong> Usá el desplegable arriba de cada columna (Col A, Col B, Col C...) para indicar cuál es Alumno y cuál es Disposición.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Paso A: Selector rápido de fila de encabezados */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-bold text-neutral-700 dark:text-slate-300 mr-1">
+                      Fila de títulos:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleSelectCustomHeaderRowIndex(-1)}
+                      className={`px-2.5 py-1 rounded-lg border font-bold cursor-pointer transition-all ${
+                        selectedHeaderRowIndex === -1
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                          : isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
+                          : 'bg-white border-neutral-300 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      Sin títulos (Leer desde Fila 1)
+                    </button>
+                    {raw2DGrid.slice(0, 10).map((r, rIdx) => {
+                      const sampleText = (r || [])
+                        .map((c) => String(c ?? '').trim())
+                        .filter(Boolean)
+                        .slice(0, 2)
+                        .join(' · ');
+                      return (
+                        <button
+                          key={rIdx}
+                          type="button"
+                          onClick={() => handleSelectCustomHeaderRowIndex(rIdx)}
+                          className={`px-2.5 py-1 rounded-lg border font-bold cursor-pointer transition-all max-w-[190px] truncate ${
+                            selectedHeaderRowIndex === rIdx
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                              : isDarkMode
+                              ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
+                              : 'bg-white border-neutral-300 text-neutral-700 hover:bg-neutral-100'
+                          }`}
+                          title={sampleText ? `Fila ${rIdx + 1}: ${sampleText}` : `Usar Fila ${rIdx + 1} como títulos`}
+                        >
+                          Fila {rIdx + 1}
+                          {sampleText ? `: ${sampleText}` : ''}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Paso B: Tabla de vista previa real con desplegable por columna */}
+                  <div
+                    className={`border rounded-xl overflow-x-auto max-h-60 ${
+                      isDarkMode ? 'border-slate-750 bg-slate-900' : 'border-neutral-200 bg-white'
+                    }`}
+                  >
+                    <table className="w-full text-left text-[11px] border-collapse">
+                      <thead className="sticky top-0 z-10">
+                        <tr
+                          className={`border-b ${
+                            isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-100 border-neutral-200'
+                          }`}
+                        >
+                          <th className="py-2 px-2.5 w-20 text-center font-bold text-neutral-500 border-r border-neutral-200 dark:border-slate-700">
+                            Fila
+                          </th>
+                          {availableColumns.map((colKey, colIdx) => {
+                            const colLetter = getColLetter(colIdx);
+                            const isPrimaryName = selectedNameColumn === colKey;
+                            const isSecondaryName = selectedSecondaryNameColumn === colKey;
+                            const isEmail = selectedEmailColumn === colKey;
+                            const detCfg = detectedColumns.find((c) => c.colKey === colKey);
+                            const currentRole = isPrimaryName
+                              ? 'student_name'
+                              : isSecondaryName
+                              ? 'student_second_name'
+                              : isEmail
+                              ? 'student_email'
+                              : detCfg?.isIncluded && detCfg.kind !== 'ignore'
+                              ? detCfg.kind
+                              : 'ignore';
+
+                            return (
+                              <th
+                                key={colKey}
+                                className="p-2 min-w-[165px] border-r border-neutral-200 dark:border-slate-700 align-top"
+                              >
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center justify-between gap-1">
+                                    <span className="px-1.5 py-0.5 rounded bg-neutral-200 dark:bg-slate-700 text-[10px] font-mono font-bold">
+                                      Col {colLetter}
+                                    </span>
+                                    <span className="truncate font-bold text-neutral-700 dark:text-slate-200" title={colKey}>
+                                      {colKey}
+                                    </span>
+                                  </div>
+                                  <select
+                                    value={currentRole}
+                                    onChange={(e) =>
+                                      handleVisualColumnRoleChange(colKey, e.target.value as any)
+                                    }
+                                    className={`w-full px-2 py-1 rounded-lg border text-[11px] font-bold outline-hidden cursor-pointer ${
+                                      currentRole === 'student_name' || currentRole === 'student_second_name'
+                                        ? 'bg-emerald-600 text-white border-emerald-600'
+                                        : currentRole === 'disposition' || currentRole === 'disposition_deduction'
+                                        ? 'bg-purple-600 text-white border-purple-600'
+                                        : currentRole === 'absences' || currentRole === 'lates'
+                                        ? 'bg-amber-600 text-white border-amber-600'
+                                        : currentRole === 'grade'
+                                        ? 'bg-blue-600 text-white border-blue-600'
+                                        : isDarkMode
+                                        ? 'bg-slate-900 border-slate-700 text-slate-400'
+                                        : 'bg-white border-neutral-300 text-neutral-500'
+                                    }`}
+                                  >
+                                    <option value="ignore">🚫 Ignorar columna</option>
+                                    <option value="student_name">👤 Alumno (Apellido y Nombre)</option>
+                                    <option value="student_second_name">👤 2° Columna Alumno (Nombre)</option>
+                                    <option value="student_email">✉️ Correo / Email</option>
+                                    <option value="disposition">⭐ Nota de Disposición (1-10)</option>
+                                    <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
+                                    <option value="absences">📅 Total Ausencias / Faltas</option>
+                                    <option value="lates">⏰ Total Llegadas Tarde</option>
+                                    <option value="grade">📊 Nota / Calificación</option>
+                                  </select>
+                                </div>
+                              </th>
+                            );
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-neutral-100 dark:divide-slate-800 font-mono">
+                        {raw2DGrid.slice(0, 7).map((rowArr, rIdx) => {
+                          const isHeaderRow = rIdx === selectedHeaderRowIndex;
+                          return (
+                            <tr
+                              key={rIdx}
+                              onClick={() => handleSelectCustomHeaderRowIndex(rIdx)}
+                              title="Hacé clic si querés usar esta fila como fila de títulos"
+                              className={`cursor-pointer transition-colors ${
+                                isHeaderRow
+                                  ? isDarkMode
+                                    ? 'bg-indigo-950/60 text-indigo-200 font-bold'
+                                    : 'bg-indigo-50 text-indigo-900 font-bold'
+                                  : isDarkMode
+                                  ? 'hover:bg-slate-800/50 text-slate-300'
+                                  : 'hover:bg-neutral-50 text-neutral-700'
+                              }`}
+                            >
+                              <td className="py-1.5 px-2 text-center border-r border-neutral-100 dark:border-slate-800 whitespace-nowrap">
+                                <span>Fila {rIdx + 1}</span>
+                                {isHeaderRow && (
+                                  <span className="ml-1 px-1 py-0.2 rounded bg-indigo-600 text-white text-[9px] uppercase">
+                                    Títulos
+                                  </span>
+                                )}
+                              </td>
+                              {availableColumns.map((colKey, colIdx) => (
+                                <td
+                                  key={`${rIdx}-${colKey}`}
+                                  className="py-1.5 px-2.5 border-r border-neutral-100 dark:border-slate-800 truncate max-w-[180px]"
+                                >
+                                  {String(rowArr?.[colIdx] ?? '') || '-'}
+                                </td>
+                              ))}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
               {/* 1. SECCIÓN DE CATEGORÍAS Y COLUMNAS DETECTADAS */}
               <div
@@ -1320,7 +2164,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                               const checked = e.target.checked;
                               handleUpdateColumnConfig(colCfg.colKey, {
                                 isIncluded: checked,
-                                kind: checked && colCfg.kind === 'ignore' ? 'grade' : colCfg.kind,
+                                kind:
+                                  checked && colCfg.kind === 'ignore'
+                                    ? importContext === 'attendance'
+                                      ? 'disposition'
+                                      : 'grade'
+                                    : colCfg.kind,
                               });
                             }}
                             className="w-4 h-4 rounded text-blue-600 cursor-pointer"
@@ -1348,10 +2197,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                               : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
                           }`}
                         >
-                          <option value="grade">📊 Nota / Calificación</option>
+                          <option value="disposition">⭐ Nota de Disposición (1-10)</option>
+                          <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
                           <option value="absences">📅 Total Ausencias / Faltas</option>
                           <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
-                          <option value="disposition">⭐ Nota de Disposición (1-10)</option>
+                          <option value="grade">📊 Nota / Calificación</option>
                           <option value="ignore">🚫 Ignorar columna</option>
                         </select>
                       </div>
@@ -1612,6 +2462,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                       ? 'Asistencia'
                                       : col.kind === 'lates'
                                       ? 'Tardanzas'
+                                      : col.kind === 'disposition_deduction'
+                                      ? 'Disposición (10 - Desc.)'
                                       : 'Disposición'}
                                   </span>
                                   <span className="truncate max-w-[140px]">

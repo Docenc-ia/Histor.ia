@@ -78,16 +78,123 @@ export function findBestStudentMatchInRoster(
 }
 
 /**
+ * Auto-detects primary student Name column, optional secondary First Name column (when Apellido and Nombre are separated),
+ * and Email column.
+ */
+export function autoDetectIdentityColumns(cols: string[]): {
+  nameCol: string;
+  secondaryNameCol: string;
+  emailCol: string;
+} {
+  let nameCol = '';
+  let secondaryNameCol = '';
+
+  const exactLastCol = cols.find((c) => /^apellido(s)?$/i.test(normalizeImportText(c)));
+  const exactFirstCol = cols.find(
+    (c) => c !== exactLastCol && /^nombre(s)?$/i.test(normalizeImportText(c))
+  );
+
+  if (exactLastCol && exactFirstCol) {
+    nameCol = exactLastCol;
+    secondaryNameCol = exactFirstCol;
+  } else {
+    nameCol =
+      cols.find((c) => /alumno|nombre|estudiante|apellido|nom|ape|persona/i.test(c)) ||
+      cols[0] ||
+      '';
+  }
+
+  const emailCol =
+    cols.find(
+      (c) => c !== nameCol && c !== secondaryNameCol && /email|correo|mail/i.test(c)
+    ) || '';
+
+  return { nameCol, secondaryNameCol, emailCol };
+}
+
+/**
+ * Extracts a clean numeric value from cells like "8,5", "8.50 (MB)", "9 pts", "-1,5", "3 faltas",
+ * or standard Argentine conceptual scales (EX=10, MB=9, B=8, R=6).
+ */
+export function parseFlexibleCellNumber(
+  rawVal: any,
+  kind: DetectedColumnConfig['kind']
+): { numVal: number; isValid: boolean } {
+  const rawStr = String(rawVal ?? '').trim();
+  if (!rawStr || rawStr === '-') {
+    return { numVal: NaN, isValid: false };
+  }
+
+  const upper = rawStr.toUpperCase();
+  if (kind === 'disposition' || kind === 'grade') {
+    if (upper === 'EX' || upper === 'EXCELENTE' || upper === 'S' || upper === 'SOBRESALIENTE') {
+      return { numVal: 10, isValid: true };
+    }
+    if (upper === 'MB' || upper === 'MUY BUENO') {
+      return { numVal: 9, isValid: true };
+    }
+    if (upper === 'B' || upper === 'BUENO') {
+      return { numVal: 8, isValid: true };
+    }
+    if (upper === 'R' || upper === 'REGULAR') {
+      return { numVal: 6, isValid: true };
+    }
+    if (upper === 'M' || upper === 'MALO' || upper === 'I' || upper === 'INSUFICIENTE') {
+      return { numVal: 4, isValid: true };
+    }
+  }
+
+  // Extract first number (supporting comma or dot decimals and optional negative sign)
+  const normalizedDecimals = rawStr.replace(',', '.');
+  const numMatch = normalizedDecimals.match(/-?\d+(?:\.\d+)?/);
+  if (!numMatch) {
+    return { numVal: NaN, isValid: false };
+  }
+
+  const parsed = parseFloat(numMatch[0]);
+  if (isNaN(parsed)) {
+    return { numVal: NaN, isValid: false };
+  }
+
+  if (kind === 'disposition_deduction') {
+    // Converts a deduction (e.g. -1.5 or 1.5 points deducted) into final disposition on 1-10 scale
+    const deduction = Math.abs(parsed);
+    const resultingDisp = Math.max(1, Math.min(10, 10 - deduction));
+    return { numVal: resultingDisp, isValid: deduction >= 0 && deduction <= 10 };
+  }
+
+  if (kind === 'disposition') {
+    // If teacher wrote a negative number like -1 or -2 in a disposition column, treat as deduction from 10
+    if (parsed < 0 && parsed >= -9) {
+      return { numVal: Math.max(1, 10 + parsed), isValid: true };
+    }
+    return { numVal: parsed, isValid: parsed >= 0 && parsed <= 10 };
+  }
+
+  if (kind === 'grade') {
+    return { numVal: parsed, isValid: parsed >= 0 && parsed <= 10 };
+  }
+
+  if (kind === 'absences' || kind === 'lates') {
+    return { numVal: Math.abs(parsed), isValid: Math.abs(parsed) >= 0 };
+  }
+
+  return { numVal: parsed, isValid: true };
+}
+
+/**
  * Auto-detects what each column in the uploaded Excel or Google Sheet represents:
- * - Student Name / Email
- * - Attendance / Disposition (Ausencias, Tardanzas, Disposición)
+ * - Student Name / Secondary Name / Email
+ * - Attendance / Disposition (Ausencias, Tardanzas, Disposición, Descuento)
  * - Grade / Category columns (e.g. "Trabajos Prácticos - TP 1", "Parcial 1", "Exámenes", etc.)
  */
 export function autoDetectColumnsConfiguration(
   cols: string[],
   nameCol: string,
   emailCol: string,
-  cats: GradeCategory[]
+  cats: GradeCategory[],
+  secondaryNameCol = '',
+  importContext: 'grades' | 'attendance' = 'grades'
 ): DetectedColumnConfig[] {
   const configs: DetectedColumnConfig[] = [];
   const defaultCat = cats[0] || {
@@ -98,19 +205,19 @@ export function autoDetectColumnsConfiguration(
   };
 
   cols.forEach((col) => {
-    if (col === nameCol || col === emailCol) return;
+    if (col === nameCol || col === secondaryNameCol || col === emailCol) return;
 
     const clean = col.trim();
     const lower = normalizeImportText(clean);
 
     // Ignore obvious non-data or calculated summary columns by default (teacher can still enable them)
     const isSummaryOrMeta =
-      /^n$|^nro$|^numero$|^id$|^legajo$|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora/i.test(
+      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora/i.test(
         lower
       );
 
     // Check if it's an Attendance or Disposition column
-    if (/ausencia|falta|inasistencia/i.test(lower) && !/justificada/i.test(lower)) {
+    if (/ausencia|falta|inasistencia|ausentes/i.test(lower) && !/justificada/i.test(lower)) {
       configs.push({
         colKey: col,
         isIncluded: true,
@@ -125,7 +232,7 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    if (/tardanza|llegada tarde|tardes/i.test(lower)) {
+    if (/tardanza|llegada tarde|tardes|\btarde\b|demora/i.test(lower)) {
       configs.push({
         colKey: col,
         isIncluded: true,
@@ -140,7 +247,27 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    if (/disposicion|conducta/i.test(lower)) {
+    if (/descuento|puntos menos|resta|sancion|negativo/i.test(lower)) {
+      configs.push({
+        colKey: col,
+        isIncluded: true,
+        kind: 'disposition_deduction',
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: clean,
+      });
+      return;
+    }
+
+    if (
+      /disposicion|conducta|actitud|comportamiento|nota disp|concepto|participacion|desempeno/i.test(
+        lower
+      ) &&
+      (importContext === 'attendance' || /disposicion|conducta|actitud|comportamiento|nota disp/i.test(lower))
+    ) {
       configs.push({
         colKey: col,
         isIncluded: true,
@@ -155,7 +282,27 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    if (isSummaryOrMeta) {
+    // If we are in attendance/disposition import context and there is only 1 data column (e.g. 2-column sheet),
+    // automatically map it to Disposition so the teacher doesn't even have to select it manually!
+    const nonIdentityCols = cols.filter(
+      (c) => c !== nameCol && c !== secondaryNameCol && c !== emailCol
+    );
+    if (importContext === 'attendance' && nonIdentityCols.length === 1) {
+      configs.push({
+        colKey: col,
+        isIncluded: true,
+        kind: 'disposition',
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: clean,
+      });
+      return;
+    }
+
+    if (isSummaryOrMeta || importContext === 'attendance') {
       configs.push({
         colKey: col,
         isIncluded: false,
@@ -296,7 +443,8 @@ export function computeMultiVerificationRows(
   activeDispMap: Record<
     string,
     { totalAbsences: number; totalLates?: number; totalDisposition: number }
-  >
+  >,
+  secondaryNameCol = ''
 ): {
   rowsResult: MultiVerifiedStudentRow[];
   shouldAutoEnableNewStudents: boolean;
@@ -312,37 +460,63 @@ export function computeMultiVerificationRows(
     rawEmail: string;
   }> = [];
 
-  rawRows.forEach((row) => {
-    const rawNameVal = String(row[nameCol] ?? '').trim();
-    const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
-    if (!rawNameVal && !rawEmailVal) return;
-    if (/^promedio|^total|^media|^resumen/i.test(rawNameVal)) return;
+  // Mode: Order-by-roster matching when nameCol is '__ORDER__' (1-column paste mode)
+  if (nameCol === '__ORDER__') {
+    const sortedRoster = [...students].sort((a, b) =>
+      `${a.lastName}, ${a.firstName}`.localeCompare(`${b.lastName}, ${b.firstName}`, 'es', {
+        sensitivity: 'base',
+      })
+    );
+    rawRows.forEach((row, idx) => {
+      const targetStudent = sortedRoster[idx];
+      if (targetStudent) {
+        matchedByStudentId[targetStudent.id] = {
+          rawRow: row,
+          rawName: `Fila #${idx + 1} (Orden de lista)`,
+          rawEmail: targetStudent.email || '',
+          matchScore: 1.0,
+        };
+      }
+    });
+  } else {
+    rawRows.forEach((row) => {
+      const primaryName = nameCol ? String(row[nameCol] ?? '').trim() : '';
+      const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
+      const rawNameVal =
+        primaryName && secondaryName
+          ? `${primaryName}, ${secondaryName}`
+          : primaryName || secondaryName;
 
-    const { student, score } = findBestStudentMatchInRoster(students, rawNameVal, rawEmailVal);
-    if (student && score >= 0.5 && !matchedByStudentId[student.id]) {
-      matchedByStudentId[student.id] = {
-        rawRow: row,
-        rawName: rawNameVal,
-        rawEmail: rawEmailVal,
-        matchScore: score,
-      };
-    } else if (rawNameVal) {
-      unmatchedRawRows.push({
-        rawRow: row,
-        rawName: rawNameVal,
-        rawEmail: rawEmailVal,
-      });
-    }
-  });
+      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
+      if (!rawNameVal && !rawEmailVal) return;
+      if (/^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)) {
+        return;
+      }
+
+      const { student, score } = findBestStudentMatchInRoster(students, rawNameVal, rawEmailVal);
+      if (student && score >= 0.5 && !matchedByStudentId[student.id]) {
+        matchedByStudentId[student.id] = {
+          rawRow: row,
+          rawName: rawNameVal,
+          rawEmail: rawEmailVal,
+          matchScore: score,
+        };
+      } else if (rawNameVal) {
+        unmatchedRawRows.push({
+          rawRow: row,
+          rawName: rawNameVal,
+          rawEmail: rawEmailVal,
+        });
+      }
+    });
+  }
 
   const evaluateCell = (
     studentId: string,
     rawVal: any,
     colCfg: DetectedColumnConfig
   ): MultiVerifiedStudentRow['valuesByCol'][string] => {
-    const cleanStr = String(rawVal ?? '')
-      .replace(',', '.')
-      .trim();
+    const cleanStr = String(rawVal ?? '').trim();
 
     let currentVal = '';
     if (colCfg.kind === 'grade') {
@@ -355,7 +529,7 @@ export function computeMultiVerificationRows(
     } else if (colCfg.kind === 'lates') {
       const cur = activeDispMap[studentId]?.totalLates;
       currentVal = cur !== undefined ? String(cur) : '0';
-    } else if (colCfg.kind === 'disposition') {
+    } else if (colCfg.kind === 'disposition' || colCfg.kind === 'disposition_deduction') {
       const cur = activeDispMap[studentId]?.totalDisposition;
       currentVal = cur !== undefined ? String(cur) : '10';
     }
@@ -370,23 +544,17 @@ export function computeMultiVerificationRows(
       };
     }
 
-    const numVal = parseFloat(cleanStr);
-    let isValid = !isNaN(numVal);
-    if (colCfg.kind === 'grade' || colCfg.kind === 'disposition') {
-      isValid = !isNaN(numVal) && numVal >= 0 && numVal <= 10;
-    } else if (colCfg.kind === 'absences' || colCfg.kind === 'lates') {
-      const stripped = cleanStr.replace(/[fFtT]$/g, '').trim();
-      const nStripped = parseFloat(stripped);
-      if (!isNaN(nStripped) && nStripped >= 0) {
-        return {
-          currentVal,
-          importedVal: String(nStripped),
-          editedVal: String(nStripped),
-          isValid: true,
-          status: !currentVal ? 'new' : currentVal === String(nStripped) ? 'same' : 'update',
-        };
-      }
-      isValid = false;
+    const { numVal, isValid } = parseFlexibleCellNumber(rawVal, colCfg.kind);
+
+    if (isValid && (colCfg.kind === 'absences' || colCfg.kind === 'lates')) {
+      const rounded = String(Number(numVal.toFixed(2)));
+      return {
+        currentVal,
+        importedVal: rounded,
+        editedVal: rounded,
+        isValid: true,
+        status: !currentVal ? 'new' : currentVal === rounded ? 'same' : 'update',
+      };
     }
 
     const normalizedVal = isValid ? String(Number(numVal.toFixed(2))) : cleanStr;

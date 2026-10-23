@@ -2195,6 +2195,8 @@ export const sheetsService = {
     selectedSheet: string;
     headers: string[];
     rows: Array<Record<string, any>>;
+    raw2D: any[][];
+    headerRowIndex: number;
   }> {
     return fetchArbitrarySpreadsheetDataHelper(
       spreadsheetIdOrUrl,
@@ -2207,10 +2209,14 @@ export const sheetsService = {
    * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
    * and converts the subsequent rows into objects keyed by column header.
    */
-  convert2DArrayToTableObjects(rawValues: any[][]): {
+  convert2DArrayToTableObjects(
+    rawValues: any[][],
+    explicitHeaderRowIndex?: number
+  ): {
     headers: string[];
     rows: Array<Record<string, any>>;
+    headerRowIndex: number;
   } {
-    return convert2DArrayToTableObjectsHelper(rawValues);
+    return convert2DArrayToTableObjectsHelper(rawValues, explicitHeaderRowIndex);
   },
 };

@@ -156,8 +156,8 @@ import {
 } from '../../utils/attendanceCalculations';
 import { useCourseRosterAndSchedule } from '../../hooks/useCourseRosterAndSchedule';
 import { useGoogleSheetsAndDriveSync } from '../../hooks/useGoogleSheetsAndDriveSync';
+import { useCourseAttendanceAndDispositionActions } from '../../hooks/useCourseAttendanceAndDispositionActions';
 import { CourseRosterTabView } from './classes/CourseRosterTabView';
-import { buildStudentTrackingDocHtml as buildModularStudentTrackingDocHtml } from '../../utils/studentTrackingDocHtml';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -200,56 +200,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
   const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
 
-  const [removedStudentIds, setRemovedStudentIds] = useState<Set<string>>(() =>
-    getRemovedStudentIds(activeCourse?.id || '')
-  );
-  const [removedStudentsList, setRemovedStudentsList] = useState<Student[]>(() =>
-    getRemovedStudentsList(activeCourse?.id || '')
-  );
-  const [isRemovedStudentsModalOpen, setIsRemovedStudentsModalOpen] = useState(false);
-
-  useEffect(() => {
-    if (!activeCourse?.id) {
-      setRemovedStudentIds(new Set());
-      setRemovedStudentsList([]);
-      return;
-    }
-    const refreshRemoved = () => {
-      setRemovedStudentIds(getRemovedStudentIds(activeCourse.id));
-      setRemovedStudentsList(getRemovedStudentsList(activeCourse.id));
-    };
-    refreshRemoved();
-    let mounted = true;
-    syncRemovedStudentsFromCloud(activeCourse.id)
-      .then(({ ids, list }) => {
-        if (mounted) {
-          setRemovedStudentIds(ids);
-          setRemovedStudentsList(list);
-        }
-      })
-      .catch(() => {});
-    window.addEventListener('docencia_student_status_updated', refreshRemoved);
-    return () => {
-      mounted = false;
-      window.removeEventListener('docencia_student_status_updated', refreshRemoved);
-    };
-  }, [activeCourse?.id]);
-
-  // Students sorted strictly alphabetically by last name (apellido), then first name
-  const courseStudents = useMemo(() => {
-    return students
-      .filter((s) => s.courseId === activeCourse?.id && !removedStudentIds.has(s.id))
-      .sort((a, b) => {
-        const lastA = (a.lastName || '').trim();
-        const lastB = (b.lastName || '').trim();
-        const cmp = lastA.localeCompare(lastB, 'es', { sensitivity: 'base' });
-        if (cmp !== 0) return cmp;
-        const firstA = (a.firstName || '').trim();
-        const firstB = (b.firstName || '').trim();
-        return firstA.localeCompare(firstB, 'es', { sensitivity: 'base' });
-      });
-  }, [students, activeCourse?.id, removedStudentIds]);
-
   // Active view: 'roster' (Alumnos/as) vs 'libro_temas' (Libro de Temas) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
   const [activeTab, setActiveTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>(
     initialSubTab || 'roster'
@@ -263,9 +213,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
   const [searchQuery, setSearchQuery] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [isSyncingClassroomRoster, setIsSyncingClassroomRoster] = useState(false);
-  const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
-  const [studentToRemove, setStudentToRemove] = useState<Student | null>(null);
 
   // Semáforo de asistencia, semanas de clase y calendario escolar
   const [isAttendanceSettingsModalOpen, setIsAttendanceSettingsModalOpen] = useState(false);
@@ -310,44 +257,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     };
   }, [activeCourse?.id, activeCourse?.schedule]);
 
-  // Modal 1: Sincronizar / Seleccionar Horarios con Google Calendar (manual, sin auto-adivinar)
-  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
-  const [calendarModalCourse, setCalendarModalCourse] = useState<Course | null>(null);
-  const [calendarScheduleSelection, setCalendarScheduleSelection] = useState('');
-  const [syncToGoogleFromModal, setSyncToGoogleFromModal] = useState(true);
-  const [isSavingCalendarSelection, setIsSavingCalendarSelection] = useState(false);
-
-  // Fast Slot Picker from Calendar (defaults only to primary Classroom-linked calendar, with selector)
-  const [selectedCalendarForSlots, setSelectedCalendarForSlots] = useState<string>('primary');
-  const [availableCalendarsForSlots, setAvailableCalendarsForSlots] = useState<
-    { id: string; summary: string; primary?: boolean }[]
-  >([
-    { id: 'primary', summary: 'Calendario Principal (Cuenta Classroom)', primary: true },
-  ]);
-  const [calendarSlots, setCalendarSlots] = useState<{
-    id: string;
-    title: string;
-    dayOfWeek: number;
-    dayName: string;
-    startTime: string;
-    endTime: string;
-    displayText: string;
-  }[]>([]);
-  const [isLoadingSlots, setIsLoadingSlots] = useState(false);
-
-  // Modal 2: Editar Detalles Específicos del Curso (Aula, división, observaciones, horario específico)
-  const [isEditCourseModalOpen, setIsEditCourseModalOpen] = useState(false);
-  const [editCourseData, setEditCourseData] = useState<{
-    id: string;
-    name: string;
-    subject: string;
-    grade: string;
-    room: string;
-    division: string;
-    schedule: string;
-  } | null>(null);
-  const [isSavingCourseDetails, setIsSavingCourseDetails] = useState(false);
-
   // Disposition state map: studentId -> { totalAbsences: number, totalDisposition: number }
   const [dispositionMap, setDispositionMap] = useState<Record<string, StudentDispositionData>>(() => {
     if (typeof window !== 'undefined' && activeCourse?.id) {
@@ -368,6 +277,324 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       } catch (_) {}
     }
     return {};
+  });
+
+  // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
+  // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
+  // while allowing the teacher to freely move/switch between 1°C, 2°C and Resumen Anual.
+  const [hasManuallySelectedTerm, setHasManuallySelectedTerm] = useState(false);
+  const [attendanceTerm, setAttendanceTerm] = useState<'1c' | '2c' | 'annual'>(() =>
+    getCurrentCalendarTerm(attendanceSettings)
+  );
+
+  // Keep default term aligned with calendar settings unless the teacher manually moved it
+  useEffect(() => {
+    if (!hasManuallySelectedTerm) {
+      setAttendanceTerm(getCurrentCalendarTerm(attendanceSettings));
+    }
+  }, [
+    attendanceSettings.termStartDate1c,
+    attendanceSettings.termEndDate1c,
+    attendanceSettings.termStartDate2c,
+    attendanceSettings.termEndDate2c,
+    hasManuallySelectedTerm,
+  ]);
+
+  const activeConcreteTerm: '1c' | '2c' =
+    attendanceTerm === '1c' || attendanceTerm === '2c'
+      ? attendanceTerm
+      : getCurrentCalendarTerm(attendanceSettings);
+
+  const setAttendanceTermHandler = (term: '1c' | '2c' | 'annual') => {
+    setHasManuallySelectedTerm(true);
+    setAttendanceTerm(term);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('fds_attendance_active_term', term);
+      if (activeCourse?.id) {
+        localStorage.setItem(`fds_attendance_active_term_${activeCourse.id}`, term);
+        localStorage.setItem(`fds_grades_active_term_${activeCourse.id}`, term);
+      }
+    }
+  };
+
+  // History entries list: array of StudentHistoryItem
+  const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = getAllDispositionStorage();
+        if (Array.isArray(stored.history) && stored.history.length > 0) {
+          return deduplicateHistory(stored.history);
+        }
+      } catch (_) {}
+    }
+    return [];
+  });
+
+  const saveTermDisposition = (
+    term: '1c' | '2c',
+    updatedMap: Record<string, StudentDispositionData>,
+    updatedHistory: StudentHistoryItem[]
+  ) => {
+    const uid = getActiveUserId();
+    const courseStampedMap: Record<string, StudentDispositionData> = {};
+    for (const [k, val] of Object.entries(updatedMap)) {
+      courseStampedMap[k] = activeCourse?.id
+        ? ({ ...val, courseId: activeCourse.id } as StudentDispositionData)
+        : val;
+    }
+
+    if (term === '2c') {
+      setDispositionMap2c(courseStampedMap);
+      if (typeof window !== 'undefined') {
+        if (activeCourse?.id) {
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(courseStampedMap));
+        }
+        window.dispatchEvent(
+          new CustomEvent('docencia_disposition_storage_change', {
+            detail: { term: '2c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
+          })
+        );
+      }
+      saveAllDispositionStorage(dispositionMap, updatedHistory, { silent: true });
+      if (uid) {
+        firestoreSync.syncCompactDispositionNow(uid, false);
+      }
+    } else {
+      setDispositionMap(courseStampedMap);
+      if (typeof window !== 'undefined') {
+        if (activeCourse?.id) {
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(courseStampedMap));
+        }
+        window.dispatchEvent(
+          new CustomEvent('docencia_disposition_storage_change', {
+            detail: { term: '1c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
+          })
+        );
+      }
+      saveAllDispositionStorage(courseStampedMap, updatedHistory);
+      if (uid) {
+        firestoreSync.syncCompactDispositionNow(uid, false);
+      }
+    }
+  };
+
+  // Helper to get student disposition data (reconciled with historyList and dispositionMap per term)
+  const getStudentMetrics = (
+    studentId: string,
+    targetTerm: '1c' | '2c' | 'annual' | 'all' = attendanceTerm
+  ): StudentDispositionData => {
+    if (targetTerm === 'annual' || targetTerm === 'all') {
+      const m1 = getStudentMetrics(studentId, '1c');
+      const m2 = getStudentMetrics(studentId, '2c');
+      const totalAbsences = m1.totalAbsences + m2.totalAbsences;
+      const totalLates = (m1.totalLates || 0) + (m2.totalLates || 0);
+      const totalDisposition = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
+      return {
+        totalAbsences,
+        totalLates,
+        totalDisposition,
+      };
+    }
+
+    const is2c = targetTerm === '2c';
+    const rawFromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
+
+    // Check if this student is shared with another course or has history in another course
+    const isSharedStudent = activeCourse?.id
+      ? students.some((s) => s.id === studentId && s.courseId && s.courseId !== activeCourse.id) ||
+        historyList.some((h) => h.studentId === studentId && h.courseId && h.courseId !== activeCourse.id)
+      : false;
+
+    // Only trust fromMap if it is explicitly stamped with activeCourse.id, or if the student is not shared across courses
+    const isMapScopedToThisCourse =
+      rawFromMap &&
+      (!activeCourse?.id ||
+        (rawFromMap as any).courseId === activeCourse.id ||
+        (!((rawFromMap as any).courseId) && !isSharedStudent));
+
+    const fromMap = isMapScopedToThisCourse ? rawFromMap : undefined;
+
+    const studentHistory = historyList.filter(
+      (h) =>
+        h.studentId === studentId &&
+        (!activeCourse?.id ||
+          h.courseId === activeCourse.id ||
+          (!h.courseId && !isSharedStudent)) &&
+        (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
+    );
+
+    let historyAbsences = studentHistory.filter(
+      (h) =>
+        (h.category === 'Ausencia' ||
+          h.action === 'Ausencia' ||
+          h.action?.toLowerCase().includes('ausencia') ||
+          h.action?.toLowerCase().includes('falta')) &&
+        h.category !== 'Sistema' &&
+        !h.action?.toLowerCase().includes('actualizada') &&
+        !h.action?.toLowerCase().includes('verificación') &&
+        !h.action?.toLowerCase().includes('ajuste')
+    ).length;
+
+    // Also respect manual absence edits recorded as 'Sistema' for this course ("Inasistencias actualizadas...: X → Y faltas")
+    const latestManualAbsEdit = [...studentHistory]
+      .filter(
+        (h) =>
+          h.category === 'Sistema' &&
+          (h.action?.includes('Inasistencias actualizadas') || h.action?.includes('Verificación de inasistencias'))
+      )
+      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
+    if (latestManualAbsEdit && fromMap?.totalAbsences === undefined) {
+      const matchArrow = latestManualAbsEdit.action.match(/→\s*(\d+)\s*falta/i);
+      const matchColon = latestManualAbsEdit.action.match(/:\s*(\d+)\s*falta/i);
+      const baseAbs = matchArrow ? parseInt(matchArrow[1], 10) : matchColon ? parseInt(matchColon[1], 10) : NaN;
+      if (!isNaN(baseAbs)) {
+        const absencesAfterEdit = studentHistory.filter(
+          (h) =>
+            (h.timestamp || 0) > (latestManualAbsEdit.timestamp || 0) &&
+            (h.category === 'Ausencia' ||
+              h.action === 'Ausencia' ||
+              h.action?.toLowerCase().includes('ausencia') ||
+              h.action?.toLowerCase().includes('falta')) &&
+            h.category !== 'Sistema'
+        ).length;
+        historyAbsences = baseAbs + absencesAfterEdit;
+      }
+    }
+
+    const historyLates = studentHistory.filter(
+      (h) =>
+        (h.category === 'Llegada tarde' ||
+          h.action === 'Llegada tarde' ||
+          h.action?.toLowerCase().includes('llegada tarde') ||
+          h.action?.toLowerCase().includes('tarde') ||
+          h.action?.toLowerCase().includes('tardanza')) &&
+        h.category !== 'Sistema'
+    ).length;
+
+    let calculatedDisp = 10;
+    const sortedStudentEvents = [...studentHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    for (const ev of sortedStudentEvents) {
+      const isReset =
+        ev.category === 'Sistema' ||
+        ev.action?.toLowerCase().includes('restablecid') ||
+        ev.action?.toLowerCase().includes('reinicio');
+      if (isReset) {
+        calculatedDisp = 10;
+        continue;
+      }
+      if (ev.pointsChange !== undefined) {
+        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
+      } else if (ev.category === 'Disposición') {
+        calculatedDisp = Math.max(0, calculatedDisp - 1);
+      }
+    }
+
+    let totalAbsences = 0;
+    if (fromMap?.totalAbsences !== undefined && fromMap?.totalAbsences !== null) {
+      totalAbsences = Math.max(0, Number(fromMap.totalAbsences) || 0);
+    } else {
+      totalAbsences = historyAbsences;
+    }
+
+    let totalLates = 0;
+    if (fromMap?.totalLates !== undefined && fromMap?.totalLates !== null) {
+      totalLates = Math.max(0, Number(fromMap.totalLates) || 0);
+    } else {
+      totalLates = historyLates;
+    }
+
+    let totalDisposition = 10;
+    if (fromMap?.totalDisposition !== undefined && fromMap?.totalDisposition !== null) {
+      totalDisposition = Number(fromMap.totalDisposition);
+    } else {
+      totalDisposition = calculatedDisp;
+    }
+
+    return {
+      totalAbsences,
+      totalLates,
+      totalDisposition,
+    };
+  };
+
+  const {
+    removedStudentIds,
+    setRemovedStudentIds,
+    removedStudentsList,
+    setRemovedStudentsList,
+    isRemovedStudentsModalOpen,
+    setIsRemovedStudentsModalOpen,
+    courseStudents,
+    isSyncingClassroomRoster,
+    setIsSyncingClassroomRoster,
+    needsRosterPermission,
+    setNeedsRosterPermission,
+    studentToRemove,
+    setStudentToRemove,
+    isCalendarModalOpen,
+    setIsCalendarModalOpen,
+    calendarModalCourse,
+    setCalendarModalCourse,
+    calendarScheduleSelection,
+    setCalendarScheduleSelection,
+    syncToGoogleFromModal,
+    setSyncToGoogleFromModal,
+    isSavingCalendarSelection,
+    selectedCalendarForSlots,
+    setSelectedCalendarForSlots,
+    availableCalendarsForSlots,
+    calendarSlots,
+    isLoadingSlots,
+    isEditCourseModalOpen,
+    setIsEditCourseModalOpen,
+    editCourseData,
+    setEditCourseData,
+    isSavingCourseDetails,
+    isAddStudentModalOpen,
+    setIsAddStudentModalOpen,
+    addStudentFirstName,
+    setAddStudentFirstName,
+    addStudentLastName,
+    setAddStudentLastName,
+    addStudentEmail,
+    setAddStudentEmail,
+    addStudentPhone,
+    setAddStudentPhone,
+    addStudentNotes,
+    setAddStudentNotes,
+    isSavingManualStudent,
+    addStudentTab,
+    setAddStudentTab,
+    batchStudentsText,
+    setBatchStudentsText,
+    directMessageModal,
+    setDirectMessageModal,
+    handleSyncRoster,
+    handleOpenCalendarSyncModal,
+    handleSaveCalendarSelection,
+    handleOpenEditCourseDetailsModal,
+    handleSaveCourseDetails,
+    handleOpenAddStudentModal,
+    handleSaveSingleStudent,
+    handleSaveBatchStudents,
+    handleOpenDirectMessageModal,
+    handleSendDirectMessage,
+  } = useCourseRosterAndSchedule({
+    courses,
+    students,
+    activeCourse,
+    token,
+    attendanceSettings,
+    setAttendanceSettings,
+    activeConcreteTerm,
+    dispositionMap,
+    dispositionMap2c,
+    historyList,
+    setHistoryList,
+    deduplicateHistory,
+    saveTermDisposition,
+    onRefreshData,
+    setToastMessage,
   });
 
   // Reload course-scoped disposition data whenever activeCourse changes
@@ -446,55 +673,84 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   }, [activeCourse?.id, courseStudents, students]);
 
-  // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
-  // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
-  // while allowing the teacher to freely move/switch between 1°C, 2°C and Resumen Anual.
-  const [hasManuallySelectedTerm, setHasManuallySelectedTerm] = useState(false);
-  const [attendanceTerm, setAttendanceTerm] = useState<'1c' | '2c' | 'annual'>(() =>
-    getCurrentCalendarTerm(attendanceSettings)
-  );
+  // Calculations for summary pills & history
+  const courseHistory = useMemo(() => {
+    if (!activeCourse) return [];
+    const courseStudentIds = new Set(courseStudents.map((s) => s.id));
+    const relevant = historyList.filter(
+      (h) =>
+        h.courseId === activeCourse.id ||
+        (activeCourse.classroomCourseId && h.courseId === activeCourse.classroomCourseId) ||
+        (!h.courseId && courseStudentIds.has(h.studentId))
+    );
+    return deduplicateHistory(relevant).sort((a, b) => b.timestamp - a.timestamp);
+  }, [historyList, activeCourse, courseStudents]);
 
-  // Keep default term aligned with calendar settings unless the teacher manually moved it
-  useEffect(() => {
-    if (!hasManuallySelectedTerm) {
-      setAttendanceTerm(getCurrentCalendarTerm(attendanceSettings));
-    }
-  }, [
-    attendanceSettings.termStartDate1c,
-    attendanceSettings.termEndDate1c,
-    attendanceSettings.termStartDate2c,
-    attendanceSettings.termEndDate2c,
-    hasManuallySelectedTerm,
-  ]);
-
-  const activeConcreteTerm: '1c' | '2c' =
-    attendanceTerm === '1c' || attendanceTerm === '2c'
-      ? attendanceTerm
-      : getCurrentCalendarTerm(attendanceSettings);
-
-  const setAttendanceTermHandler = (term: '1c' | '2c' | 'annual') => {
-    setHasManuallySelectedTerm(true);
-    setAttendanceTerm(term);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('fds_attendance_active_term', term);
-      if (activeCourse?.id) {
-        localStorage.setItem(`fds_attendance_active_term_${activeCourse.id}`, term);
-        localStorage.setItem(`fds_grades_active_term_${activeCourse.id}`, term);
-      }
-    }
-  };
-
-  // History entries list: array of StudentHistoryItem
-  const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = getAllDispositionStorage();
-        if (Array.isArray(stored.history) && stored.history.length > 0) {
-          return deduplicateHistory(stored.history);
-        }
-      } catch (_) {}
-    }
-    return [];
+  const {
+    sheetConfig,
+    isSyncingSheet,
+    isOpeningSheet,
+    showSheetsConnectModal,
+    setShowSheetsConnectModal,
+    sheetsModalFeedback,
+    setSheetsModalFeedback,
+    customSheetInput,
+    setCustomSheetInput,
+    isLinkingCustomSheet,
+    customFolderInput,
+    setCustomFolderInput,
+    isLinkingCustomFolder,
+    isPullingFromSheet,
+    dobleEntradaDiffs,
+    isDobleEntradaModalOpen,
+    setIsDobleEntradaModalOpen,
+    isHeaderExportExcelModalOpen,
+    setIsHeaderExportExcelModalOpen,
+    isHeaderImportModalOpen,
+    setIsHeaderImportModalOpen,
+    headerImportSourceType,
+    setHeaderImportSourceType,
+    headerImportContext,
+    setHeaderImportContext,
+    isSettingUpDriveFolder,
+    driveFolderModalOpen,
+    setDriveFolderModalOpen,
+    courseDriveStructure,
+    setCourseDriveStructure,
+    triggerSheetsSync,
+    handleManualSheetsSync,
+    handleLinkCustomSpreadsheet,
+    handleSaveCustomDriveFolder,
+    handleOpenGoogleSheet,
+    handleConnectGoogleForSheets,
+    handlePullFromGoogleSheet,
+    handleExportAllCourseExcel,
+    getCategoriesForImport,
+    getGradesMapForImport,
+    handleApplyImportFromClassesModule,
+    handleApplyMultiImportFromClassesModule,
+    handleOpenInSheetsNew,
+    handleDownloadCourseCsv,
+    handleOpenCourseDriveFolder,
+  } = useGoogleSheetsAndDriveSync({
+    activeCourse,
+    students,
+    courseStudents,
+    dispositionMap,
+    setDispositionMap,
+    dispositionMap2c,
+    setDispositionMap2c,
+    historyList,
+    setHistoryList,
+    courseHistory,
+    activeConcreteTerm,
+    token,
+    requestAccessToken,
+    getStudentMetrics,
+    deduplicateHistory,
+    onRefreshData,
+    setActiveTab,
+    setToastMessage,
   });
 
   const teacherEmail = user?.email || 'profesor';
@@ -589,123 +845,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     };
   }, [teacherEmail]);
 
-  // Batch selection of students for notification at the end of class
-  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [selectedPendingHistoryIds, setSelectedPendingHistoryIds] = useState<string[]>([]);
-
-  // Pending absence items for current course (without sent notification)
-  const pendingAbsenceItems = useMemo(() => {
-    if (!activeCourse) return [];
-    return historyList.filter(
-      (h) =>
-        h.courseId === activeCourse.id &&
-        (h.category === 'Ausencia' || h.action === 'Ausencia') &&
-        h.category !== 'Sistema' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste') &&
-        !h.messageSent &&
-        !h.omitNotification &&
-        h.notificationMethod !== 'omitted' &&
-        h.notificationMethod !== 'none' &&
-        h.notifiedAt !== 'No enviar' &&
-        h.notifiedAt !== 'Omitido'
-    );
-  }, [historyList, activeCourse?.id]);
-
-  // Pending conduct items for current course (without sent notification)
-  const pendingConductItems = useMemo(() => {
-    if (!activeCourse) return [];
-    return historyList.filter(
-      (h) =>
-        h.courseId === activeCourse.id &&
-        h.category === 'Disposición' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste') &&
-        !h.messageSent &&
-        !h.omitNotification &&
-        h.notificationMethod !== 'omitted' &&
-        h.notificationMethod !== 'none' &&
-        h.notifiedAt !== 'No enviar' &&
-        h.notifiedAt !== 'Omitido'
-    );
-  }, [historyList, activeCourse?.id]);
-
-  // All pending notification items for current course (both absences and conduct records)
-  const pendingAllItems = useMemo(() => {
-    return [...pendingAbsenceItems, ...pendingConductItems];
-  }, [pendingAbsenceItems, pendingConductItems]);
-
-  // Modal to record conduct for a specific student (sumar o restar puntos)
-  const [conductRecordModal, setConductRecordModal] = useState<{
-    isOpen: boolean;
-    student: Student | null;
-    mode: 'subtract' | 'add';
-    points: number;
-    customReason: string;
-    saveToOptions: boolean;
-  }>({
-    isOpen: false,
-    student: null,
-    mode: 'subtract',
-    points: 1,
-    customReason: '',
-    saveToOptions: false,
-  });
-
-  // Modal para ver el historial individual de un alumno
-  const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<Student | null>(null);
-
-  // Modal para editar la nota de disposición de un estudiante (ingreso manual / notas en papel)
-  const [editingDispositionStudent, setEditingDispositionStudent] = useState<Student | null>(null);
-  const [editingDispositionScore, setEditingDispositionScore] = useState<string>('10');
-  const [editingDispositionTerm, setEditingDispositionTerm] = useState<'1c' | '2c'>('1c');
-  const [editingDispositionReason, setEditingDispositionReason] = useState<string>('');
-
-  // Modal para editar cantidad de faltas (pasaje de papel, fecha retroactiva y aviso al alumno)
-  const [editingAbsenceStudent, setEditingAbsenceStudent] = useState<Student | null>(null);
-  const [editingAbsenceCount, setEditingAbsenceCount] = useState<string>('0');
-  const [editingAbsenceTerm, setEditingAbsenceTerm] = useState<'1c' | '2c'>('1c');
-  const [editingAbsenceDate, setEditingAbsenceDate] = useState<string>(() => {
-    const today = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
-  });
-  const [editingAbsenceReason, setEditingAbsenceReason] = useState<string>('Pasado de planilla en papel');
-  const [editingAbsenceSendNotif, setEditingAbsenceSendNotif] = useState<boolean>(false);
-  const [editingAbsenceChannel, setEditingAbsenceChannel] = useState<'classroom' | 'gmail'>('classroom');
-  const [editingAbsenceMessageText, setEditingAbsenceMessageText] = useState<string>('');
-  const [isSavingAbsenceEdit, setIsSavingAbsenceEdit] = useState<boolean>(false);
-
-  // Modal para agregar alumno manualmente (con correo para avisos y mensajes)
-  const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
-  const [addStudentFirstName, setAddStudentFirstName] = useState('');
-  const [addStudentLastName, setAddStudentLastName] = useState('');
-  const [addStudentEmail, setAddStudentEmail] = useState('');
-  const [addStudentPhone, setAddStudentPhone] = useState('');
-  const [addStudentNotes, setAddStudentNotes] = useState('');
-  const [isSavingManualStudent, setIsSavingManualStudent] = useState(false);
-  const [addStudentTab, setAddStudentTab] = useState<'single' | 'batch'>('single');
-  const [batchStudentsText, setBatchStudentsText] = useState('');
-
-  // Modal para enviar mensaje directo a un estudiante (usando su correo o canales)
-  const [directMessageModal, setDirectMessageModal] = useState<{
-    isOpen: boolean;
-    student: Student | null;
-    subject: string;
-    messageText: string;
-    channel: 'gmail' | 'classroom' | 'whatsapp';
-    isSending: boolean;
-  }>({
-    isOpen: false,
-    student: null,
-    subject: '',
-    messageText: '',
-    channel: 'gmail',
-    isSending: false,
-  });
-
   const {
     isEditingStudentEmail,
     setIsEditingStudentEmail,
@@ -737,60 +876,13 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     activeCourseId: activeCourse?.id,
   });
 
-  // Modal para mandar nota de disposición a Calificaciones
-  const [isSendDispositionModalOpen, setIsSendDispositionModalOpen] = useState(false);
-
-  // Animation tracking for instant button feedback (like unchecking in the script)
-  const [pulsingStudentId, setPulsingStudentId] = useState<string | null>(null);
-
-  // Real-time Google Sheet configuration & Sync status
-  const [sheetConfig, setSheetConfig] = useState<{
-    spreadsheetId: string;
-    url: string;
-    isLiveGoogle: boolean;
-    lastSyncedAt?: string;
-  } | null>(null);
-  const [isSyncingSheet, setIsSyncingSheet] = useState(false);
-  const [isOpeningSheet, setIsOpeningSheet] = useState(false);
-  const [showSheetsConnectModal, setShowSheetsConnectModal] = useState(false);
-  const [sheetsModalFeedback, setSheetsModalFeedback] = useState<string | null>(null);
-  const [customSheetInput, setCustomSheetInput] = useState('');
-  const [isLinkingCustomSheet, setIsLinkingCustomSheet] = useState(false);
-  const [customFolderInput, setCustomFolderInput] = useState('');
-  const [isLinkingCustomFolder, setIsLinkingCustomFolder] = useState(false);
   const [historySubTab, setHistorySubTab] = useState<'incidents' | 'summary'>('incidents');
-
-  // Doble Entrada (Two-Way Sync): lectura de cambios desde Google Sheets a la App
-  const [isPullingFromSheet, setIsPullingFromSheet] = useState(false);
-  const [dobleEntradaDiffs, setDobleEntradaDiffs] = useState<any[] | null>(null);
-  const [isDobleEntradaModalOpen, setIsDobleEntradaModalOpen] = useState(false);
-
-  // Modal / Selector de Exportar Excel en la cabecera
-  const [isHeaderExportExcelModalOpen, setIsHeaderExportExcelModalOpen] = useState(false);
-
-  // Modal de Importar desde Excel / Sheets en Asistencia y Disposición
-  const [isHeaderImportModalOpen, setIsHeaderImportModalOpen] = useState(false);
-  const [headerImportSourceType, setHeaderImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
-  const [headerImportContext, setHeaderImportContext] = useState<'grades' | 'attendance'>('attendance');
 
   // Permanent history controls (always visible in roster tab & history tab)
   const [permHistorySearch, setPermHistorySearch] = useState('');
   const [permHistoryCategory, setPermHistoryCategory] = useState<'all' | 'Ausencia' | 'Llegada tarde' | 'Disposición' | 'Calificación' | 'Sistema'>('all');
   const [permHistoryDate, setPermHistoryDate] = useState<string>('all');
   const [isPermHistoryCollapsed, setIsPermHistoryCollapsed] = useState(false);
-
-  // Google Drive course folder structure state
-  const [isSettingUpDriveFolder, setIsSettingUpDriveFolder] = useState<boolean>(false);
-  const [driveFolderModalOpen, setDriveFolderModalOpen] = useState<boolean>(false);
-  const [courseDriveStructure, setCourseDriveStructure] = useState<{
-    mainFolder: { id: string; name: string; url: string };
-    reportsFolder?: { id: string; name: string; url: string };
-    attendanceFolder: { id: string; name: string; url: string };
-    gradesFolder: { id: string; name: string; url: string };
-    attendanceSheetUrl?: string;
-    gradesSheetUrl?: string;
-    libroDeTemasSheetUrl?: string;
-  } | null>(null);
 
   // Course and Student report modal state
   const [courseReportModalOpen, setCourseReportModalOpen] = useState<boolean>(false);
@@ -971,1451 +1063,15 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           }
         })
         .catch(() => {});
-
-      // Load saved Google Sheet configuration
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
-
-      api
-        .getCourseDispositionSheet(activeCourse.id)
-        .then((data) => {
-          if (!isMounted) return;
-          if (
-            data?.spreadsheetId &&
-            isRealGoogleSpreadsheetId(data.spreadsheetId) &&
-            (isS2NatCourse || data.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-          ) {
-            setSheetConfig({
-              spreadsheetId: data.spreadsheetId,
-              url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
-              isLiveGoogle: true,
-              lastSyncedAt: data.lastSyncedAt,
-            });
-          } else {
-            if (data?.spreadsheetId === POISONED_S2_NAT_SHEET_ID && !isS2NatCourse) {
-              api.unlinkCourseDispositionSheet(activeCourse.id).catch(() => {});
-            }
-            const fallbackId = `sheet-disp-${activeCourse.id}`;
-            setSheetConfig({
-              spreadsheetId: fallbackId,
-              url: '',
-              isLiveGoogle: false,
-              lastSyncedAt: undefined,
-            });
-          }
-        })
-        .catch(() => {});
     }
     return () => {
       isMounted = false;
     };
   }, [activeCourse?.id]);
 
-  // Real-time synchronization with Google Sheets (automatic background updates when marking)
-  const triggerSheetsSync = async (
-    customMap?: Record<string, StudentDispositionData>,
-    customHistory?: StudentHistoryItem[],
-    customMap2c?: Record<string, StudentDispositionData>
-  ) => {
-    if (!activeCourse) return;
-    const activeToken = token || getCachedAccessToken();
-    const isAuthenticToken = activeToken && isValidGoogleAccessToken(activeToken);
-
-    if (!isAuthenticToken) {
-      return;
-    }
-
-    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-    const isS2NatCourse =
-      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
-
-    setIsSyncingSheet(true);
-    try {
-      const map1cToUse = customMap || dispositionMap;
-      const map2cToUse = customMap2c || dispositionMap2c;
-
-      // Guarantee all students enrolled or tracked in this course are included
-      const studentMap = new Map<string, Student>();
-      for (const s of courseStudents) {
-        studentMap.set(s.id, s);
-      }
-      for (const s of students) {
-        if (s.courseId === activeCourse.id && !studentMap.has(s.id)) {
-          studentMap.set(s.id, s);
-        }
-      }
-      const allKnownIds = new Set([...Object.keys(map1cToUse || {}), ...Object.keys(map2cToUse || {})]);
-      for (const stId of allKnownIds) {
-        if (!studentMap.has(stId)) {
-          const histItem = (customHistory || historyList).find((h) => h.studentId === stId);
-          studentMap.set(stId, {
-            id: stId,
-            courseId: activeCourse.id,
-            firstName: histItem?.studentName?.split(' ')[0] || 'Estudiante',
-            lastName: histItem?.studentName?.split(' ').slice(1).join(' ') || stId,
-            email: '',
-            avatar: '',
-            attendanceRate: 100,
-            averageGrade: 10,
-            notes: '',
-          });
-        }
-      }
-      const currentStudents = Array.from(studentMap.values()).sort((a, b) => {
-        const lastA = (a.lastName || '').trim();
-        const lastB = (b.lastName || '').trim();
-        const cmp = lastA.localeCompare(lastB, 'es', { sensitivity: 'base' });
-        if (cmp !== 0) return cmp;
-        return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
-      });
-
-      const fullMap1c: Record<string, StudentDispositionData> = {};
-      const fullMap2c: Record<string, StudentDispositionData> = {};
-      for (const s of currentStudents) {
-        fullMap1c[s.id] = (map1cToUse && map1cToUse[s.id]) || getStudentMetrics(s.id, '1c');
-        fullMap2c[s.id] = (map2cToUse && map2cToUse[s.id]) || getStudentMetrics(s.id, '2c');
-      }
-
-      const courseStudentIds = new Set(currentStudents.map((s) => s.id));
-      const historyToUse = (customHistory || historyList).filter(
-        (h) => h.courseId === activeCourse.id || (!h.courseId && courseStudentIds.has(h.studentId))
-      );
-      const realExistingId =
-        (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
-        (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
-
-      // Ensure course Drive folder exists
-      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
-      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
-        try {
-          const folderStruct = await driveService.setupCourseFolderStructure(
-            activeCourse.name,
-            undefined,
-            activeToken
-          );
-          targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
-          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
-          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
-          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
-          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
-          activeCourse.driveFolderId = folderStruct.mainFolder.id;
-          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
-          api.updateCourse(activeCourse.id, {
-            attendanceFolderId: folderStruct.attendanceFolder.id,
-            attendanceFolderUrl: folderStruct.attendanceFolder.url,
-            gradesFolderId: folderStruct.gradesFolder.id,
-            gradesFolderUrl: folderStruct.gradesFolder.url,
-            driveFolderId: folderStruct.mainFolder.id,
-            driveFolderUrl: folderStruct.mainFolder.url,
-          }).catch(() => {});
-        } catch (_) {}
-      }
-
-      const res = await sheetsService.syncDispositionSheet(
-        activeCourse,
-        currentStudents,
-        fullMap1c,
-        historyToUse,
-        realExistingId,
-        targetFolderId,
-        activeToken,
-        fullMap2c
-      );
-
-      const isLive = res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId);
-
-      setSheetConfig({
-        spreadsheetId: res.spreadsheetId,
-        url: isLive ? res.url : (sheetConfig?.url || ''),
-        isLiveGoogle: isLive,
-        lastSyncedAt: res.updatedAt,
-      });
-
-      if (isLive) {
-        activeCourse.dispositionSheetId = res.spreadsheetId;
-        activeCourse.dispositionSheetUrl = res.url;
-        api
-          .saveCourseDispositionSheet(activeCourse.id, {
-            spreadsheetId: res.spreadsheetId,
-            url: res.url,
-            lastSyncedAt: res.updatedAt,
-          })
-          .catch(() => {});
-        api
-          .updateCourse(activeCourse.id, {
-            dispositionSheetId: res.spreadsheetId,
-            dispositionSheetUrl: res.url,
-          })
-          .catch(() => {});
-      } else if (res.errorCode === 'UNAUTHORIZED') {
-        setCachedAccessToken(null);
-      }
-    } catch (err) {
-      console.warn('Background sync to Google Sheets error:', err);
-    } finally {
-      setIsSyncingSheet(false);
-    }
-  };
-
-  // Explicit manual sync triggered by clicking "Sincronizar Sheets" / "Sincronizar Ahora"
-  const handleManualSheetsSync = async () => {
-    if (!activeCourse) return;
-    setIsSyncingSheet(true);
-    setToastMessage('Verificando conexión con Google Sheets...');
-    try {
-      let activeToken = token || getCachedAccessToken();
-      let isAuthentic = activeToken && isValidGoogleAccessToken(activeToken);
-
-      if (!isAuthentic) {
-        setToastMessage('Solicitando autorización de tu cuenta de Google...');
-        try {
-          const freshToken = await requestAccessToken();
-          if (freshToken && isValidGoogleAccessToken(freshToken)) {
-            activeToken = freshToken;
-            isAuthentic = true;
-          }
-        } catch (authErr: any) {
-          console.warn('Google Sheets OAuth authorization error:', authErr);
-          setToastMessage('Se requiere autorización de Google para editar la planilla.');
-          setShowSheetsConnectModal(true);
-          return;
-        }
-      }
-
-      if (!activeToken || !isAuthentic) {
-        setToastMessage('Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.');
-        setShowSheetsConnectModal(true);
-        return;
-      }
-
-      setToastMessage(`Sincronizando con Google Sheets para "${activeCourse.name}"...`);
-      // Guarantee all students enrolled or tracked in this course are included
-      const studentMap = new Map<string, Student>();
-      for (const s of courseStudents) {
-        studentMap.set(s.id, s);
-      }
-      for (const s of students) {
-        if (s.courseId === activeCourse.id && !studentMap.has(s.id)) {
-          studentMap.set(s.id, s);
-        }
-      }
-      const allKnownIds = new Set([...Object.keys(dispositionMap || {}), ...Object.keys(dispositionMap2c || {})]);
-      for (const stId of allKnownIds) {
-        if (!studentMap.has(stId)) {
-          const histItem = historyList.find((h) => h.studentId === stId);
-          studentMap.set(stId, {
-            id: stId,
-            courseId: activeCourse.id,
-            firstName: histItem?.studentName?.split(' ')[0] || 'Estudiante',
-            lastName: histItem?.studentName?.split(' ').slice(1).join(' ') || stId,
-            email: '',
-            avatar: '',
-            attendanceRate: 100,
-            averageGrade: 10,
-            notes: '',
-          });
-        }
-      }
-      const currentStudents = Array.from(studentMap.values()).sort((a, b) => {
-        const lastA = (a.lastName || '').trim();
-        const lastB = (b.lastName || '').trim();
-        const cmp = lastA.localeCompare(lastB, 'es', { sensitivity: 'base' });
-        if (cmp !== 0) return cmp;
-        return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
-      });
-
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
-
-      const realExistingId =
-        (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
-        (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
-
-      let map1cToSync = dispositionMap;
-      let map2cToSync = dispositionMap2c;
-      let pulledChangesCount = 0;
-
-      // 1. Doble Entrada (Pull): Si ya existe hoja en Sheets, primero verificamos y traemos
-      // cualquier cambio que el profesor haya hecho directamente en la hoja de cálculo.
-      if (realExistingId) {
-        try {
-          const pullRes = await sheetsService.pullDispositionSheetFromGoogle(
-            activeCourse,
-            currentStudents,
-            dispositionMap,
-            dispositionMap2c,
-            realExistingId,
-            activeToken
-          );
-          if (pullRes.success && pullRes.changesCount > 0) {
-            pulledChangesCount = pullRes.changesCount;
-            map1cToSync = pullRes.updatedMap1c;
-            map2cToSync = pullRes.updatedMap2c;
-            setDispositionMap(pullRes.updatedMap1c);
-            setDispositionMap2c(pullRes.updatedMap2c);
-
-            if (typeof window !== 'undefined' && activeCourse?.id) {
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(pullRes.updatedMap1c));
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(pullRes.updatedMap2c));
-            }
-
-            const now = new Date();
-            const dateStr = formatLocalDateDMY(now);
-            const timeStr = formatLocalTimeHMS(now);
-            const newHistoryItems: StudentHistoryItem[] = pullRes.changes.map((change, idx) => ({
-              id: `sheet-pull-${Date.now()}-${idx}`,
-              studentId: change.studentId,
-              studentName: change.studentName,
-              courseId: activeCourse.id,
-              term: change.term,
-              category: 'Sistema',
-              action: `Sincronización Sheets (${change.termLabel}): ${change.fieldLabel} modificado en Google Sheet de ${change.oldValue} a ${change.newValue}`,
-              date: dateStr,
-              time: timeStr,
-              timestamp: Date.now() + idx,
-              messageSent: false,
-              messageText: '',
-              notificationMethod: 'omitted',
-              omitNotification: true,
-              notifiedAt: 'No enviar',
-            }));
-
-            const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
-            setHistoryList(updatedHistory);
-            saveAllDispositionStorage(pullRes.updatedMap1c, updatedHistory);
-            window.dispatchEvent(new Event('docencia_student_status_updated'));
-
-            setDobleEntradaDiffs(pullRes.changes);
-            setIsDobleEntradaModalOpen(true);
-          }
-        } catch (pullErr) {
-          console.warn('Advertencia al leer modificaciones previas en Google Sheets:', pullErr);
-        }
-      }
-
-      // Ensure course dedicated Drive folder exists
-      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
-      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
-        try {
-          const folderStruct = await driveService.setupCourseFolderStructure(
-            activeCourse.name,
-            undefined,
-            activeToken
-          );
-          targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
-          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
-          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
-          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
-          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
-          activeCourse.driveFolderId = folderStruct.mainFolder.id;
-          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
-          api.updateCourse(activeCourse.id, {
-            attendanceFolderId: folderStruct.attendanceFolder.id,
-            attendanceFolderUrl: folderStruct.attendanceFolder.url,
-            gradesFolderId: folderStruct.gradesFolder.id,
-            gradesFolderUrl: folderStruct.gradesFolder.url,
-            driveFolderId: folderStruct.mainFolder.id,
-            driveFolderUrl: folderStruct.mainFolder.url,
-          }).catch(() => {});
-        } catch (_) {}
-      }
-
-      // 2. Doble Entrada (Push): Subir y sincronizar la planilla completa hacia Google Sheets
-      const res = await sheetsService.syncDispositionSheet(
-        activeCourse,
-        currentStudents,
-        map1cToSync,
-        historyList.filter((h) => h.courseId === activeCourse.id),
-        realExistingId,
-        targetFolderId,
-        activeToken,
-        map2cToSync
-      );
-
-      if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId)) {
-        activeCourse.dispositionSheetId = res.spreadsheetId;
-        activeCourse.dispositionSheetUrl = res.url;
-
-        setSheetConfig({
-          spreadsheetId: res.spreadsheetId,
-          url: res.url,
-          isLiveGoogle: true,
-          lastSyncedAt: res.updatedAt,
-        });
-
-        await api.saveCourseDispositionSheet(activeCourse.id, {
-          spreadsheetId: res.spreadsheetId,
-          url: res.url,
-          lastSyncedAt: res.updatedAt,
-        });
-
-        await api.updateCourse(activeCourse.id, {
-          dispositionSheetId: res.spreadsheetId,
-          dispositionSheetUrl: res.url,
-        }).catch(() => {});
-
-        if (pulledChangesCount > 0) {
-          setToastMessage(`✓ ¡Sincronizado con Sheets! Se incorporaron ${pulledChangesCount} cambio(s) desde Google Sheets y se actualizó la planilla.`);
-        } else {
-          setToastMessage(`✓ ¡Sincronizado con Sheets! Planilla de "${activeCourse.name}" actualizada con éxito (${res.summaryRowsCount} alumnos).`);
-        }
-        setSheetsModalFeedback(null);
-        setShowSheetsConnectModal(false);
-      } else if (res.errorCode === 'UNAUTHORIZED') {
-        setToastMessage('Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.');
-        setCachedAccessToken(null);
-        setShowSheetsConnectModal(true);
-      } else if (res.error) {
-        setToastMessage(`Error al sincronizar con Sheets: ${res.error}`);
-      } else {
-        setToastMessage('No se pudo verificar la actualización en Google Sheets.');
-      }
-    } catch (err: any) {
-      console.warn('Manual Google Sheets sync error:', err);
-      setToastMessage(`Error de sincronización: ${err?.message || 'Error de conexión'}`);
-    } finally {
-      setIsSyncingSheet(false);
-      setTimeout(() => setToastMessage(null), 5000);
-    }
-  };
-
-  // Link an existing Google Sheet by URL or ID pasted by the teacher
-  const handleLinkCustomSpreadsheet = async () => {
-    if (!activeCourse || !customSheetInput.trim()) return;
-    const extractedId = extractSpreadsheetIdFromInput(customSheetInput);
-    if (!extractedId) {
-      setSheetsModalFeedback('Por favor ingresa un link válido de Google Sheets (ej: https://docs.google.com/spreadsheets/d/...) o un ID válido.');
-      return;
-    }
-
-    setIsLinkingCustomSheet(true);
-    try {
-      const url = `https://docs.google.com/spreadsheets/d/${extractedId}/edit`;
-      const updatedAt = new Date().toLocaleTimeString();
-
-      setSheetConfig({
-        spreadsheetId: extractedId,
-        url,
-        isLiveGoogle: true,
-        lastSyncedAt: updatedAt,
-      });
-
-      await api.saveCourseDispositionSheet(activeCourse.id, {
-        spreadsheetId: extractedId,
-        url,
-        lastSyncedAt: updatedAt,
-      });
-
-      setToastMessage('✓ Hoja de Google Sheets vinculada correctamente al curso');
-      setSheetsModalFeedback('✓ Hoja vinculada con éxito. Sincronizando datos...');
-
-      let activeToken = token || getCachedAccessToken();
-      const isAuthentic = activeToken && isValidGoogleAccessToken(activeToken);
-
-      if (isAuthentic && activeToken) {
-        const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-        const res = await sheetsService.syncDispositionSheet(
-          activeCourse,
-          currentStudents,
-          dispositionMap,
-          historyList.filter((h) => h.courseId === activeCourse.id),
-          extractedId,
-          activeCourse.attendanceFolderId,
-          activeToken
-        );
-        if (res.isLiveGoogle) {
-          setToastMessage(`✓ Planilla vinculada y sincronizada (${res.summaryRowsCount} alumnos)`);
-        }
-      }
-
-      setCustomSheetInput('');
-      setShowSheetsConnectModal(false);
-    } catch (err: any) {
-      setSheetsModalFeedback('Error al vincular la hoja: ' + (err?.message || 'Error desconocido'));
-    } finally {
-      setIsLinkingCustomSheet(false);
-      setTimeout(() => setToastMessage(null), 5000);
-    }
-  };
-
-  // Handler to configure or change the Google Drive folder where spreadsheets are stored
-  const handleSaveCustomDriveFolder = async () => {
-    if (!activeCourse || !customFolderInput.trim()) return;
-    setIsLinkingCustomFolder(true);
-    setSheetsModalFeedback(null);
-    try {
-      const input = customFolderInput.trim();
-      let targetFolderId = '';
-      let targetFolderName = input;
-      let targetFolderUrl = '';
-
-      // Check if user pasted a Google Drive folder URL (e.g. https://drive.google.com/drive/folders/1aBc...)
-      if (input.includes('/folders/')) {
-        const match = input.match(/\/folders\/([a-zA-Z0-9_-]+)/);
-        if (match && match[1]) {
-          targetFolderId = match[1];
-        }
-      } else if (/^[a-zA-Z0-9_-]{20,}$/.test(input)) {
-        targetFolderId = input;
-      }
-
-      const activeToken = token || getCachedAccessToken();
-
-      if (targetFolderId) {
-        if (activeToken) {
-          try {
-            const res = await fetch(
-              `https://www.googleapis.com/drive/v3/files/${targetFolderId}?fields=id,name,webViewLink,trashed`,
-              {
-                headers: { Authorization: `Bearer ${activeToken}` },
-              }
-            );
-            if (res.ok) {
-              const data = await res.json();
-              targetFolderName = data.name || 'Carpeta Personalizada';
-              targetFolderUrl = data.webViewLink || `https://drive.google.com/drive/folders/${targetFolderId}`;
-            }
-          } catch (_) {}
-        }
-        if (!targetFolderUrl) {
-          targetFolderUrl = `https://drive.google.com/drive/folders/${targetFolderId}`;
-        }
-      } else {
-        // Find or create folder with this name in Google Drive
-        const created = await driveService.findOrCreateFolder(targetFolderName);
-        targetFolderId = created.id;
-        targetFolderUrl = created.url;
-      }
-
-      // If there is an existing spreadsheet, move it into this folder
-      if (sheetConfig?.spreadsheetId && isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId)) {
-        await driveService.moveFileToFolder(sheetConfig.spreadsheetId, targetFolderId);
-      }
-
-      // Update course metadata in database & local state
-      const updatedData: Partial<Course> = {
-        driveFolderId: targetFolderId,
-        driveFolderUrl: targetFolderUrl,
-        attendanceFolderId: targetFolderId,
-        attendanceFolderUrl: targetFolderUrl,
-      };
-
-      await api.updateCourse(activeCourse.id, updatedData);
-      Object.assign(activeCourse, updatedData);
-
-      setSheetsModalFeedback(`✓ Carpeta de Drive configurada: "${targetFolderName}". Las planillas se guardarán en esta ubicación.`);
-      setToastMessage(`✓ Carpeta de Drive actualizada: "${targetFolderName}"`);
-      setCustomFolderInput('');
-    } catch (err: any) {
-      setSheetsModalFeedback('Error al configurar la carpeta de Drive: ' + (err?.message || 'Error'));
-    } finally {
-      setIsLinkingCustomFolder(false);
-      setTimeout(() => setToastMessage(null), 5000);
-    }
-  };
-
-  // Safely open or initialize live Google Sheet without 404 dead links
-  const handleOpenGoogleSheet = async () => {
-    if (!activeCourse) return;
-
-    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-    const isS2NatCourse =
-      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
-
-    // 1. If we already have a confirmed live Google Sheet URL or real ID that belongs to this course
-    if (
-      sheetConfig?.spreadsheetId &&
-      isRealGoogleSpreadsheetId(sheetConfig.spreadsheetId) &&
-      (isS2NatCourse || sheetConfig.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-    ) {
-      const openUrl = sheetConfig.url || `https://docs.google.com/spreadsheets/d/${sheetConfig.spreadsheetId}/edit`;
-      window.open(openUrl, '_blank');
-      return;
-    }
-
-    // 2. Otherwise trigger manual sync to create/link and open
-    await handleManualSheetsSync();
-  };
-
-  const handleConnectGoogleForSheets = async () => {
-    await handleManualSheetsSync();
-    if (sheetConfig?.url) {
-      window.open(sheetConfig.url, '_blank');
-    }
-  };
-
-  // Doble Entrada (Two-Way Sync): Traer cambios realizados directamente en Google Sheets a la App
-  const handlePullFromGoogleSheet = async (showFeedback = true) => {
-    if (!activeCourse) return;
-    const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-    const isS2NatCourse =
-      (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-      (activeCourse.grade || '').toLowerCase().includes('s2 nat');
-
-    const sheetId =
-      (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
-      (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
-
-    if (!sheetId) {
-      setToastMessage('Aviso: Primero vincula una hoja de Google Sheets a la materia para usar Doble Entrada.');
-      setTimeout(() => setToastMessage(null), 4000);
-      setShowSheetsConnectModal(true);
-      return;
-    }
-
-    const activeToken = token || getCachedAccessToken();
-    if (!activeToken || !isValidGoogleAccessToken(activeToken)) {
-      setToastMessage('Para leer datos de Google Sheets en tiempo real, autoriza tu cuenta de Google.');
-      setShowSheetsConnectModal(true);
-      return;
-    }
-
-    setIsPullingFromSheet(true);
-    try {
-      const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-      const res = await sheetsService.pullDispositionSheetFromGoogle(
-        activeCourse,
-        currentStudents,
-        dispositionMap,
-        dispositionMap2c,
-        sheetId,
-        activeToken
-      );
-
-      if (!res.success) {
-        setToastMessage(res.message);
-        setTimeout(() => setToastMessage(null), 4500);
-        return;
-      }
-
-      if (res.changesCount > 0) {
-        // Actualizar estados locales de 1c y 2c
-        setDispositionMap(res.updatedMap1c);
-        setDispositionMap2c(res.updatedMap2c);
-        if (typeof window !== 'undefined' && activeCourse?.id) {
-          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(res.updatedMap1c));
-          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(res.updatedMap2c));
-        }
-
-        // Registrar los cambios en el historial para auditoría
-        const now = new Date();
-        const dateStr = formatLocalDateDMY(now);
-        const timeStr = formatLocalTimeHMS(now);
-        const newHistoryItems: StudentHistoryItem[] = res.changes.map((change, idx) => ({
-          id: `sheet-pull-${Date.now()}-${idx}`,
-          studentId: change.studentId,
-          studentName: change.studentName,
-          courseId: activeCourse.id,
-          term: change.term,
-          category: change.field === 'totalAbsences' ? 'Ausencia' : change.field === 'totalLates' ? 'Llegada tarde' : 'Disposición',
-          action: `Doble Entrada Sheets (${change.termLabel}): ${change.fieldLabel} modificado en Google Sheet de ${change.oldValue} a ${change.newValue}`,
-          date: dateStr,
-          time: timeStr,
-          timestamp: Date.now() + idx,
-        }));
-
-        const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
-        setHistoryList(updatedHistory);
-        saveAllDispositionStorage(res.updatedMap1c, updatedHistory);
-
-        // Notificar a toda la aplicación
-        window.dispatchEvent(new Event('docencia_student_status_updated'));
-
-        setDobleEntradaDiffs(res.changes);
-        setIsDobleEntradaModalOpen(true);
-        setToastMessage(`✓ ¡Doble Entrada! Se sincronizaron ${res.changesCount} cambio(s) desde Google Sheets.`);
-        setTimeout(() => setToastMessage(null), 5000);
-      } else {
-        if (showFeedback) {
-          setToastMessage('✓ Google Sheet y App sincronizados: No hay diferencias pendientes.');
-          setTimeout(() => setToastMessage(null), 3500);
-        }
-      }
-    } catch (err: any) {
-      console.error('Error in handlePullFromGoogleSheet:', err);
-      setToastMessage('No se pudo leer la hoja de cálculo. Verifica permisos o conexión.');
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsPullingFromSheet(false);
-    }
-  };
-
-  // Exportar archivos Excel para la materia
-  const handleExportAllCourseExcel = (type: 'all' | 'disposition' | 'grades' | 'history') => {
-    if (!activeCourse) return;
-    if (type === 'disposition') {
-      exportCourseDispositionToExcel(activeCourse.name, courseStudents, dispositionMap, dispositionMap2c);
-    } else if (type === 'history') {
-      exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
-    } else if (type === 'grades') {
-      const termToExport = activeConcreteTerm;
-      const termLabel = termToExport === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
-      const catsRaw =
-        localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${termToExport}`)) ||
-        localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${termToExport}`) ||
-        (termToExport === '1c' ? localStorage.getItem(`fds_grades_categories_${activeCourse.id}`) : null);
-      const parsedCats = catsRaw ? JSON.parse(catsRaw) : DEFAULT_CATEGORIES;
-      const gradesData =
-        localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${termToExport}`)) ||
-        localStorage.getItem(`fds_grades_data_${activeCourse.id}_${termToExport}`) ||
-        (termToExport === '1c' ? localStorage.getItem(`fds_grades_data_${activeCourse.id}`) : null);
-      const parsedGrades = gradesData ? JSON.parse(gradesData) : {};
-      exportGradebookMatrixToExcel(activeCourse.name, termLabel, courseStudents, parsedCats, parsedGrades);
-    } else {
-      // Export package: both disposition and history
-      exportCourseDispositionToExcel(activeCourse.name, courseStudents, dispositionMap, dispositionMap2c);
-      setTimeout(() => {
-        exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
-      }, 500);
-    }
-    setIsHeaderExportExcelModalOpen(false);
-    setToastMessage(`✓ Archivo Excel descargado para "${activeCourse.name}"`);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Helper para categorías de calificaciones del curso
-  const getCategoriesForImport = (term: '1c' | '2c'): GradeCategory[] => {
-    if (!activeCourse) return DEFAULT_CATEGORIES;
-    try {
-      const key = `fds_grades_categories_${activeCourse.id}_${term}`;
-      const saved = localStorage.getItem(key) || (term === '1c' ? localStorage.getItem(`fds_grades_categories_${activeCourse.id}`) : null);
-      if (saved) return JSON.parse(saved);
-    } catch (_) {}
-    return DEFAULT_CATEGORIES;
-  };
-
-  // Helper para mapa de notas del curso
-  const getGradesMapForImport = (term: '1c' | '2c'): StudentGradesMap => {
-    if (!activeCourse) return {};
-    try {
-      const key = `fds_grades_data_${activeCourse.id}_${term}`;
-      const saved = localStorage.getItem(key) || (term === '1c' ? localStorage.getItem(`fds_grades_data_${activeCourse.id}`) : null);
-      if (saved) return JSON.parse(saved);
-    } catch (_) {}
-    return {};
-  };
-
-  // Aplicar notas importadas desde el modal de la cabecera
-  const handleApplyImportFromClassesModule = (data: {
-    term: '1c' | '2c';
-    categoryId: string;
-    subcategoryId: string;
-    newSubcategoryName?: string;
-    updates: Record<string, string>;
-    historyEntry: GradeHistoryEntry;
-  }) => {
-    if (!activeCourse) return;
-    const isTarget2c = data.term === '2c';
-    let targetCats = getCategoriesForImport(data.term);
-
-    if (data.newSubcategoryName) {
-      targetCats = targetCats.map((cat) => {
-        if (cat.id === data.categoryId) {
-          return {
-            ...cat,
-            subcategories: [
-              ...cat.subcategories,
-              {
-                id: data.subcategoryId,
-                name: data.newSubcategoryName!,
-                maxScore: 10,
-              },
-            ],
-          };
-        }
-        return cat;
-      });
-      localStorage.setItem(`fds_grades_categories_${activeCourse.id}_${data.term}`, JSON.stringify(targetCats));
-      if (!isTarget2c) {
-        localStorage.setItem(`fds_grades_categories_${activeCourse.id}`, JSON.stringify(targetCats));
-      }
-    }
-
-    const currentTargetGrades = getGradesMapForImport(data.term);
-    Object.entries(data.updates).forEach(([stId, score]) => {
-      if (!currentTargetGrades[stId]) {
-        currentTargetGrades[stId] = {};
-      }
-      currentTargetGrades[stId] = {
-        ...currentTargetGrades[stId],
-        [data.subcategoryId]: score,
-      };
-    });
-
-    localStorage.setItem(`fds_grades_data_${activeCourse.id}_${data.term}`, JSON.stringify(currentTargetGrades));
-    if (!isTarget2c) {
-      localStorage.setItem(`fds_grades_data_${activeCourse.id}`, JSON.stringify(currentTargetGrades));
-    }
-
-    // Guardar en historial
-    try {
-      const hKey = `fds_grade_history_${activeCourse.id}`;
-      const savedHist = localStorage.getItem(hKey);
-      const parsedHist = savedHist ? JSON.parse(savedHist) : [];
-      localStorage.setItem(hKey, JSON.stringify([data.historyEntry, ...parsedHist]));
-    } catch (_) {}
-
-    // Persistir en Firestore
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync
-        .saveTermSnapshot(userId, activeCourse.id, data.term, {
-          courseId: activeCourse.id,
-          term: data.term,
-          termLabel: data.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-          categories: targetCats,
-          gradesMap: currentTargetGrades,
-          updatedAt: new Date().toISOString(),
-        })
-        .catch(() => {});
-    }
-
-    // Notificar al sistema
-    window.dispatchEvent(
-      new CustomEvent('fds-grades-updated', {
-        detail: { term: data.term, courseId: activeCourse.id },
-      })
-    );
-
-    setActiveTab('grades');
-    setIsHeaderImportModalOpen(false);
-    setToastMessage(`✓ ¡Se importaron y registraron ${Object.keys(data.updates).length} nota(s) con éxito!`);
-    setTimeout(() => setToastMessage(null), 4500);
-  };
-
-  const handleApplyMultiImportFromClassesModule = async (payload: {
-    term: '1c' | '2c';
-    updatedCategories: GradeCategory[];
-    updatedGradesMap: StudentGradesMap;
-    historyEntries: any[];
-    attendanceUpdates: Record<
-      string,
-      {
-        absences?: number;
-        lates?: number;
-        disposition?: number;
-      }
-    >;
-    newStudentsToCreate: Array<{
-      id: string;
-      firstName: string;
-      lastName: string;
-      email: string;
-    }>;
-    sourceLabel: string;
-    fromGradebookEvent?: boolean;
-  }) => {
-    if (!activeCourse) return;
-    try {
-      // 1. Si no vino ya guardado desde GradebookMatrix, persistir categorías y notas
-      if (!payload.fromGradebookEvent) {
-        const catKey = getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${payload.term}`);
-        const gradesKey = getUserStorageKey(`fds_grades_data_${activeCourse.id}_${payload.term}`);
-        localStorage.setItem(catKey, JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(gradesKey, JSON.stringify(payload.updatedGradesMap));
-
-        if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
-          const hKey = getUserStorageKey(`fds_grade_history_${activeCourse.id}`);
-          const savedHist = localStorage.getItem(hKey);
-          const prevHist = savedHist ? JSON.parse(savedHist) : [];
-          const updatedHist = [...payload.historyEntries, ...prevHist];
-          localStorage.setItem(hKey, JSON.stringify(updatedHist));
-        }
-
-        const userId = getActiveUserId();
-        if (userId) {
-          firestoreSync
-            .saveTermSnapshot(userId, activeCourse.id, payload.term, {
-              courseId: activeCourse.id,
-              term: payload.term,
-              termLabel: payload.term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-              categories: payload.updatedCategories,
-              gradesMap: payload.updatedGradesMap,
-              updatedAt: new Date().toISOString(),
-            })
-            .catch(() => {});
-        }
-
-        window.dispatchEvent(
-          new CustomEvent('fds-grades-updated', {
-            detail: { term: payload.term, courseId: activeCourse.id },
-          })
-        );
-      }
-
-      // 2. Crear alumnos nuevos detectados en el archivo si corresponde (tanto desde Asistencia como desde Calificaciones)
-      if (Array.isArray(payload.newStudentsToCreate) && payload.newStudentsToCreate.length > 0) {
-        for (const st of payload.newStudentsToCreate) {
-          const newStudentObj: Student = {
-            id: st.id,
-            firstName: st.firstName,
-            lastName: st.lastName,
-            email:
-              st.email ||
-              `${st.firstName.toLowerCase()}.${st.lastName.toLowerCase()}@alumno.edu.ar`.replace(
-                /\s+/g,
-                ''
-              ),
-            courseId: activeCourse.id,
-            attendanceRate: 100,
-            averageGrade: 0,
-            notes: (st as any).notes || 'Importado desde archivo',
-            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(st.firstName + ' ' + st.lastName)}&background=1a73e8&color=ffffff&bold=true`,
-          };
-          await api.createStudent(newStudentObj).catch(() => {});
-        }
-        onRefreshData();
-      }
-
-      // 3. Aplicar actualizaciones de asistencia y disposición si el documento tenía columnas de faltas/tardanzas/disposición
-      const attEntries = Object.entries(payload.attendanceUpdates || {});
-      if (attEntries.length > 0) {
-        const userId = getActiveUserId();
-        const is2c = payload.term === '2c';
-        let updatedMapForEvent: Record<string, StudentDispositionData>;
-
-        if (is2c) {
-          const updatedMap2c: Record<string, StudentDispositionData> = { ...dispositionMap2c };
-          attEntries.forEach(([stId, upd]) => {
-            const current = updatedMap2c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-            updatedMap2c[stId] = {
-              ...current,
-              totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
-              totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
-              totalDisposition:
-                upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
-            };
-          });
-
-          setDispositionMap2c(updatedMap2c);
-          updatedMapForEvent = updatedMap2c;
-          if (typeof window !== 'undefined') {
-            setUserScopedItem('fds_disposition_data_2c', JSON.stringify(updatedMap2c));
-            if (activeCourse?.id) {
-              setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap2c));
-            }
-          }
-          saveAllDispositionStorage(dispositionMap, historyList);
-          if (userId) {
-            firestoreSync.syncCompactDispositionNow(userId, false);
-          }
-          triggerSheetsSync(dispositionMap, historyList, updatedMap2c);
-        } else {
-          const updatedMap1c: Record<string, StudentDispositionData> = { ...dispositionMap };
-          attEntries.forEach(([stId, upd]) => {
-            const current = updatedMap1c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-            updatedMap1c[stId] = {
-              ...current,
-              totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
-              totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
-              totalDisposition:
-                upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
-            };
-          });
-
-          setDispositionMap(updatedMap1c);
-          updatedMapForEvent = updatedMap1c;
-          if (typeof window !== 'undefined' && activeCourse?.id) {
-            setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap1c));
-          }
-          saveAllDispositionStorage(updatedMap1c, historyList);
-          if (userId) {
-            firestoreSync.syncCompactDispositionNow(userId, false);
-          }
-          triggerSheetsSync(updatedMap1c, historyList, dispositionMap2c);
-        }
-
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(
-            new CustomEvent('docencia_disposition_storage_change', {
-              detail: {
-                disposition: updatedMapForEvent,
-                history: historyList,
-              },
-            })
-          );
-        }
-      }
-
-      const summaryParts: string[] = [];
-      if (payload.historyEntries?.length > 0) {
-        summaryParts.push(`${payload.historyEntries.length} columna(s) de notas`);
-      }
-      if (attEntries.length > 0) {
-        summaryParts.push(`asistencia/disposición de ${attEntries.length} alumno(s)`);
-      }
-      if (payload.newStudentsToCreate?.length > 0) {
-        summaryParts.push(`${payload.newStudentsToCreate.length} alumno(s) nuevo(s)`);
-      }
-
-      setIsHeaderImportModalOpen(false);
-      setToastMessage(
-        `✓ ¡Importación completada (${summaryParts.join(', ') || 'datos actualizados'}) en ${
-          payload.term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'
-        }!`
-      );
-      setTimeout(() => setToastMessage(null), 4500);
-    } catch (err) {
-      console.error('Error aplicando importación múltiple:', err);
-    }
-  };
-
-  useEffect(() => {
-    const onMultiImportEvent = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (!detail || !activeCourse || detail.courseId !== activeCourse.id) return;
-      handleApplyMultiImportFromClassesModule({
-        ...detail,
-        fromGradebookEvent: true,
-      });
-    };
-    window.addEventListener('fds-multi-import-applied', onMultiImportEvent);
-    return () => window.removeEventListener('fds-multi-import-applied', onMultiImportEvent);
-  }, [activeCourse?.id, courseStudents]);
-
-  const handleOpenInSheetsNew = async () => {
-    if (!activeCourse) return;
-    const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-    const headers = ['Estudiante', 'Email', 'Disposición', 'Faltas', 'Tardanzas', 'Estado'];
-    const rows = currentStudents.map((st) => {
-      const disp = dispositionMap[st.id];
-      const fullName = `${st.lastName || ''} ${st.firstName || ''}`.trim() || st.email;
-      const score = disp?.totalDisposition ?? 10;
-      return [
-        fullName,
-        st.email,
-        score,
-        disp?.totalAbsences ?? 0,
-        disp?.totalLates ?? 0,
-        score >= 7 ? 'Regular' : 'En observación',
-      ];
-    });
-    await copyTableToClipboard(headers, rows);
-    window.open('https://sheets.new', '_blank');
-    setSheetsModalFeedback('¡Datos copiados al portapapeles! Se abrió Google Sheets en una nueva pestaña. Presiona Ctrl+V para pegar.');
-  };
-
-  const handleDownloadCourseCsv = () => {
-    if (!activeCourse) return;
-    const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-    const currentHistory = historyList.filter((h) => h.courseId === activeCourse.id);
-    sheetsService.exportDispositionCsv(activeCourse.name, currentStudents, dispositionMap, currentHistory);
-    setSheetsModalFeedback('Archivo CSV descargado con éxito.');
-  };
-
-  // Clean any legacy mock students on startup
-  useEffect(() => {
-    api.cleanMockStudents().catch(() => {});
-  }, []);
-
-  const handleSyncRoster = async () => {
-    if (!activeCourse) return;
-    const activeToken = token || getCachedAccessToken();
-    if (!activeToken) {
-      setToastMessage('Por favor conectá tu cuenta de Google para sincronizar los estudiantes de Classroom.');
-      setTimeout(() => setToastMessage(null), 4000);
-      return;
-    }
-
-    try {
-      setIsSyncingClassroomRoster(true);
-      const res = await classroomService.resolveAndFetchCourseStudents(activeCourse, activeToken);
-
-      if (res.rosterPermissionRequired) {
-        setNeedsRosterPermission(true);
-        setToastMessage('Se requiere permiso para leer la nómina de estudiantes de Google Classroom.');
-        setTimeout(() => setToastMessage(null), 5000);
-        return;
-      }
-
-      if (res.success && Array.isArray(res.students)) {
-        setNeedsRosterPermission(false);
-        await api.syncCourseStudentsRoster(activeCourse.id, res.students);
-
-        if (res.realClassroomId && res.realClassroomId !== activeCourse.classroomCourseId) {
-          await api.updateCourse(activeCourse.id, {
-            classroomCourseId: res.realClassroomId,
-            classroomSynced: true,
-            studentsCount: res.students.length,
-          });
-        }
-
-        onRefreshData();
-        setToastMessage(`¡Listo! Se sincronizaron ${res.students.length} estudiantes reales desde Google Classroom.`);
-        setTimeout(() => setToastMessage(null), 4500);
-      } else {
-        setToastMessage(res.message || 'No se encontraron estudiantes inscriptos en este curso de Google Classroom.');
-        setTimeout(() => setToastMessage(null), 4500);
-      }
-    } catch (err: any) {
-      console.warn('Error al sincronizar alumnos:', err);
-      setToastMessage(err?.message || 'Error al conectar con Google Classroom.');
-      setTimeout(() => setToastMessage(null), 4500);
-    } finally {
-      setIsSyncingClassroomRoster(false);
-    }
-  };
-
-  // Abre el modal de Sincronización con Calendar y carga los eventos del calendario vinculado a Classroom (primary por defecto)
-  const handleOpenCalendarSyncModal = async (course: Course, overrideCalId?: string) => {
-    setCalendarModalCourse(course);
-    const defaultCalId = course.preferredCalendarId || 'primary';
-    if (!overrideCalId) {
-      setSelectedCalendarForSlots(defaultCalId);
-      setCalendarScheduleSelection(
-        course.schedule &&
-          course.schedule !== 'Lunes y Miércoles' &&
-          !course.schedule.toLowerCase().includes('coordinar')
-          ? course.schedule
-          : ''
-      );
-      setIsCalendarModalOpen(true);
-    }
-
-    const calIdToFetch = overrideCalId || defaultCalId;
-
-    // Cargar automáticamente los bloques de eventos del calendario seleccionado
-    try {
-      setIsLoadingSlots(true);
-      const [calListRes, res] = await Promise.all([
-        calendarService.listCalendars(),
-        calendarService.getWeeklyCalendarSlots(calIdToFetch, courses),
-      ]);
-      if (calListRes.success && calListRes.calendars.length > 0) {
-        setAvailableCalendarsForSlots(calListRes.calendars);
-      }
-      if (res.success) {
-        setCalendarSlots(res.slots);
-      } else {
-        setToastMessage(res.message);
-        setTimeout(() => setToastMessage(null), 4000);
-      }
-    } catch (err) {
-      console.warn('Error loading calendar slots:', err);
-    } finally {
-      setIsLoadingSlots(false);
-    }
-  };
-
-  // Guardar la selección elegida del Calendar para el curso
-  const handleSaveCalendarSelection = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!calendarModalCourse) return;
-    const cleanSchedule = calendarScheduleSelection.trim();
-    if (!cleanSchedule) return;
-
-    try {
-      setIsSavingCalendarSelection(true);
-      const extractedWeekdays = extractWeekdaysFromSchedule(cleanSchedule);
-
-      // 1. Guardar en la base de datos y Firestore (horario + calendario preferido)
-      await api.updateCourse(calendarModalCourse.id, {
-        schedule: cleanSchedule,
-        preferredCalendarId: selectedCalendarForSlots || 'primary',
-      });
-
-      // 1b. Impactar directamente en la configuración de asistencia y libro de temas de este curso
-      if (extractedWeekdays.length > 0) {
-        const nextSettings: AttendanceSettings = {
-          ...attendanceSettings,
-          courseWeekdays: extractedWeekdays,
-          classesPerWeek: extractedWeekdays.length,
-        };
-        saveCourseAttendanceSettings(calendarModalCourse.id, nextSettings);
-        setAttendanceSettings(nextSettings);
-
-        try {
-          const libroKey = `fds_libro_temas_${calendarModalCourse.id}`;
-          const currentLibroRaw = localStorage.getItem(libroKey);
-          if (currentLibroRaw) {
-            const parsed = JSON.parse(currentLibroRaw);
-            const updatedLibro = {
-              ...parsed,
-              metadata: {
-                ...(parsed.metadata || {}),
-                horario: cleanSchedule,
-                configuredWeekdays: extractedWeekdays,
-              },
-              updatedAt: new Date().toISOString(),
-            };
-            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
-            const uid = getActiveUserId();
-            if (uid) {
-              firestoreSync.saveUserSetting(uid, `libro_temas_${calendarModalCourse.id}`, updatedLibro).catch(() => {});
-            }
-          }
-        } catch (_) {}
-      }
-
-      // 2. Sincronizar bloques de cursada en el calendario interno de la app
-      await fetch('/api/calendar/sync-course-schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetCourseId: calendarModalCourse.id }),
-      }).catch((e) => console.warn('Sync internal schedule error:', e));
-
-      // 3. Sincronización bidireccional a Google Calendar si está marcada la casilla
-      let googleMsg = '';
-      if (syncToGoogleFromModal) {
-        const activeToken = token || getCachedAccessToken();
-        if (activeToken) {
-          try {
-            const gRes = await calendarService.syncCourseScheduleToGoogle(
-              calendarModalCourse,
-              cleanSchedule,
-              selectedCalendarForSlots || 'primary'
-            );
-            if (gRes.success) {
-              googleMsg = ' y actualizado en tu Google Calendar con repetición semanal';
-            }
-          } catch (gErr) {
-            console.warn('Error syncing to Google Calendar:', gErr);
-          }
-        }
-      }
-
-      setToastMessage(`¡Horario confirmado para ${calendarModalCourse.name}${googleMsg}!`);
-      setTimeout(() => setToastMessage(null), 5000);
-      setIsCalendarModalOpen(false);
-      setCalendarModalCourse(null);
-      onRefreshData();
-    } catch (err) {
-      console.error('Error guardando horario:', err);
-      setToastMessage('No se pudo guardar el horario seleccionado.');
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsSavingCalendarSelection(false);
-    }
-  };
-
-  // Abre el modal para editar datos específicos del curso (Aula, división, materia, etc.)
-  const handleOpenEditCourseDetailsModal = (course: Course) => {
-    setEditCourseData({
-      id: course.id,
-      name: course.name,
-      subject: course.subject || '',
-      grade: course.grade || '',
-      room: course.room || '',
-      division: course.division || '',
-      schedule: course.schedule || '',
-    });
-    setIsEditCourseModalOpen(true);
-  };
-
-  // Guardar datos específicos del curso
-  const handleSaveCourseDetails = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editCourseData) return;
-
-    try {
-      setIsSavingCourseDetails(true);
-      const cleanSchedule = editCourseData.schedule.trim();
-      const extractedWeekdays = extractWeekdaysFromSchedule(cleanSchedule);
-
-      await api.updateCourse(editCourseData.id, {
-        name: editCourseData.name.trim(),
-        subject: editCourseData.subject.trim(),
-        grade: editCourseData.grade.trim(),
-        room: editCourseData.room.trim(),
-        division: editCourseData.division.trim(),
-        schedule: cleanSchedule,
-      });
-
-      if (extractedWeekdays.length > 0) {
-        const nextSettings: AttendanceSettings = {
-          ...attendanceSettings,
-          courseWeekdays: extractedWeekdays,
-          classesPerWeek: extractedWeekdays.length,
-        };
-        saveCourseAttendanceSettings(editCourseData.id, nextSettings);
-        setAttendanceSettings(nextSettings);
-
-        try {
-          const libroKey = `fds_libro_temas_${editCourseData.id}`;
-          const currentLibroRaw = localStorage.getItem(libroKey);
-          if (currentLibroRaw) {
-            const parsed = JSON.parse(currentLibroRaw);
-            const updatedLibro = {
-              ...parsed,
-              metadata: {
-                ...(parsed.metadata || {}),
-                asignatura: `${editCourseData.name.trim()} (${editCourseData.division.trim() || editCourseData.grade.trim() || 'Curso'})`,
-                horario: cleanSchedule,
-                configuredWeekdays: extractedWeekdays,
-              },
-              updatedAt: new Date().toISOString(),
-            };
-            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
-            const uid = getActiveUserId();
-            if (uid) {
-              firestoreSync.saveUserSetting(uid, `libro_temas_${editCourseData.id}`, updatedLibro).catch(() => {});
-            }
-          }
-        } catch (_) {}
-      }
-
-      setToastMessage(`¡Información actualizada para ${editCourseData.name}!`);
-      setTimeout(() => setToastMessage(null), 4500);
-      setIsEditCourseModalOpen(false);
-      setEditCourseData(null);
-      onRefreshData();
-    } catch (err) {
-      console.error('Error guardando detalles del curso:', err);
-      setToastMessage('Error al actualizar los datos del curso.');
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsSavingCourseDetails(false);
-    }
-  };
-
   const filteredStudents = courseStudents.filter((s) =>
     `${s.firstName} ${s.lastName} ${s.email}`.toLowerCase().includes(searchQuery.toLowerCase())
   );
-
-  // Helper to get student disposition data (reconciled with historyList and dispositionMap per term)
-  const getStudentMetrics = (
-    studentId: string,
-    targetTerm: '1c' | '2c' | 'annual' | 'all' = attendanceTerm
-  ): StudentDispositionData => {
-    if (targetTerm === 'annual' || targetTerm === 'all') {
-      const m1 = getStudentMetrics(studentId, '1c');
-      const m2 = getStudentMetrics(studentId, '2c');
-      const totalAbsences = m1.totalAbsences + m2.totalAbsences;
-      const totalLates = (m1.totalLates || 0) + (m2.totalLates || 0);
-      const totalDisposition = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
-      return {
-        totalAbsences,
-        totalLates,
-        totalDisposition,
-      };
-    }
-
-    const is2c = targetTerm === '2c';
-    const rawFromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
-
-    // Check if this student is shared with another course or has history in another course
-    const isSharedStudent = activeCourse?.id
-      ? students.some((s) => s.id === studentId && s.courseId && s.courseId !== activeCourse.id) ||
-        historyList.some((h) => h.studentId === studentId && h.courseId && h.courseId !== activeCourse.id)
-      : false;
-
-    // Only trust fromMap if it is explicitly stamped with activeCourse.id, or if the student is not shared across courses
-    const isMapScopedToThisCourse =
-      rawFromMap &&
-      (!activeCourse?.id ||
-        (rawFromMap as any).courseId === activeCourse.id ||
-        (!((rawFromMap as any).courseId) && !isSharedStudent));
-
-    const fromMap = isMapScopedToThisCourse ? rawFromMap : undefined;
-
-    const studentHistory = historyList.filter(
-      (h) =>
-        h.studentId === studentId &&
-        (!activeCourse?.id ||
-          h.courseId === activeCourse.id ||
-          (!h.courseId && !isSharedStudent)) &&
-        (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
-    );
-
-    let historyAbsences = studentHistory.filter(
-      (h) =>
-        (h.category === 'Ausencia' ||
-          h.action === 'Ausencia' ||
-          h.action?.toLowerCase().includes('ausencia') ||
-          h.action?.toLowerCase().includes('falta')) &&
-        h.category !== 'Sistema' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste')
-    ).length;
-
-    // Also respect manual absence edits recorded as 'Sistema' for this course ("Inasistencias actualizadas...: X → Y faltas")
-    const latestManualAbsEdit = [...studentHistory]
-      .filter(
-        (h) =>
-          h.category === 'Sistema' &&
-          (h.action?.includes('Inasistencias actualizadas') || h.action?.includes('Verificación de inasistencias'))
-      )
-      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
-    if (latestManualAbsEdit && fromMap?.totalAbsences === undefined) {
-      const matchArrow = latestManualAbsEdit.action.match(/→\s*(\d+)\s*falta/i);
-      const matchColon = latestManualAbsEdit.action.match(/:\s*(\d+)\s*falta/i);
-      const baseAbs = matchArrow ? parseInt(matchArrow[1], 10) : matchColon ? parseInt(matchColon[1], 10) : NaN;
-      if (!isNaN(baseAbs)) {
-        const absencesAfterEdit = studentHistory.filter(
-          (h) =>
-            (h.timestamp || 0) > (latestManualAbsEdit.timestamp || 0) &&
-            (h.category === 'Ausencia' ||
-              h.action === 'Ausencia' ||
-              h.action?.toLowerCase().includes('ausencia') ||
-              h.action?.toLowerCase().includes('falta')) &&
-            h.category !== 'Sistema'
-        ).length;
-        historyAbsences = baseAbs + absencesAfterEdit;
-      }
-    }
-
-    const historyLates = studentHistory.filter(
-      (h) =>
-        (h.category === 'Llegada tarde' ||
-          h.action === 'Llegada tarde' ||
-          h.action?.toLowerCase().includes('llegada tarde') ||
-          h.action?.toLowerCase().includes('tarde') ||
-          h.action?.toLowerCase().includes('tardanza')) &&
-        h.category !== 'Sistema'
-    ).length;
-
-    let calculatedDisp = 10;
-    const sortedStudentEvents = [...studentHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    for (const ev of sortedStudentEvents) {
-      const isReset =
-        ev.category === 'Sistema' ||
-        ev.action?.toLowerCase().includes('restablecid') ||
-        ev.action?.toLowerCase().includes('reinicio');
-      if (isReset) {
-        calculatedDisp = 10;
-        continue;
-      }
-      if (ev.pointsChange !== undefined) {
-        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
-      } else if (ev.category === 'Disposición') {
-        calculatedDisp = Math.max(0, calculatedDisp - 1);
-      }
-    }
-
-    let totalAbsences = 0;
-    if (fromMap?.totalAbsences !== undefined && fromMap?.totalAbsences !== null) {
-      totalAbsences = Math.max(0, Number(fromMap.totalAbsences) || 0);
-    } else {
-      totalAbsences = historyAbsences;
-    }
-
-    let totalLates = 0;
-    if (fromMap?.totalLates !== undefined && fromMap?.totalLates !== null) {
-      totalLates = Math.max(0, Number(fromMap.totalLates) || 0);
-    } else {
-      totalLates = historyLates;
-    }
-
-    let totalDisposition = 10;
-    if (fromMap?.totalDisposition !== undefined && fromMap?.totalDisposition !== null) {
-      totalDisposition = Number(fromMap.totalDisposition);
-    } else {
-      totalDisposition = calculatedDisp;
-    }
-
-    return {
-      totalAbsences,
-      totalLates,
-      totalDisposition,
-    };
-  };
 
   // Course attendance summary and traffic light calculations
   const currentAttendanceSummary = useMemo(() => {
@@ -2451,2985 +1107,147 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  const saveTermDisposition = (
-    term: '1c' | '2c',
-    updatedMap: Record<string, StudentDispositionData>,
-    updatedHistory: StudentHistoryItem[]
-  ) => {
-    const uid = getActiveUserId();
-    const courseStampedMap: Record<string, StudentDispositionData> = {};
-    for (const [k, val] of Object.entries(updatedMap)) {
-      courseStampedMap[k] = activeCourse?.id
-        ? ({ ...val, courseId: activeCourse.id } as StudentDispositionData)
-        : val;
-    }
-
-    if (term === '2c') {
-      setDispositionMap2c(courseStampedMap);
-      if (typeof window !== 'undefined') {
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(courseStampedMap));
-        }
-        window.dispatchEvent(
-          new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '2c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
-          })
-        );
-      }
-      saveAllDispositionStorage(dispositionMap, updatedHistory, { silent: true });
-      if (uid) {
-        firestoreSync.syncCompactDispositionNow(uid, false);
-      }
-    } else {
-      setDispositionMap(courseStampedMap);
-      if (typeof window !== 'undefined') {
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(courseStampedMap));
-        }
-        window.dispatchEvent(
-          new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '1c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
-          })
-        );
-      }
-      saveAllDispositionStorage(courseStampedMap, updatedHistory);
-      if (uid) {
-        firestoreSync.syncCompactDispositionNow(uid, false);
-      }
-    }
-  };
-
-  // -------------------------------------------------------------
-  // LÓGICA DE REGISTRO IDÉNTICA AL SCRIPT DE GOOGLE SHEETS
-  // -------------------------------------------------------------
-
-  // 1. LÓGICA PARA AUSENCIAS (Columna B / número 2 del script + si tenía llegada tarde hoy, la reemplaza atómicamente)
-  const handleAddAbsence = async (student: Student) => {
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-    const id = `rec-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-
-    // Visual feedback
-    setPulsingStudentId(`abs-${student.id}`);
-    setTimeout(() => setPulsingStudentId(null), 600);
-
-    const current = getStudentMetrics(student.id, targetTerm);
-
-    // Si el mismo día el alumno tenía una Llegada Tarde registrada en ESTA materia, se cancela automáticamente al pasarlo a Ausente
-    const isTodayLate = (h: StudentHistoryItem) => {
-      if (h.studentId !== student.id) return false;
-      if (activeCourse?.id && h.courseId && h.courseId !== activeCourse.id) return false;
-      const isLate =
-        h.category === 'Llegada tarde' ||
-        h.action === 'Llegada tarde' ||
-        h.action?.toLowerCase().includes('llegada tarde') ||
-        h.action?.toLowerCase().includes('tarde') ||
-        h.action?.toLowerCase().includes('tardanza');
-      if (!isLate) return false;
-      return isSameCalendarDay(h.date, h.timestamp, now) || !h.date;
-    };
-
-    const todayLatesToRemove: StudentHistoryItem[] = [];
-    const cleanHistory = historyList.filter((h) => {
-      if (isTodayLate(h)) {
-        todayLatesToRemove.push(h);
-        return false;
-      }
-      return true;
-    });
-
-    if (todayLatesToRemove.length > 0) {
-      todayLatesToRemove.forEach((l) => markHistoryIdDeleted(l.id));
-    }
-
-    // Check if student is already marked absent today in THIS course to prevent duplicating absences
-    const alreadyAbsentToday = cleanHistory.some(
-      (h) =>
-        h.studentId === student.id &&
-        (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
-        (targetTerm === '2c' ? h.term === '2c' : h.term === '1c' || !h.term) &&
-        (h.category === 'Ausencia' ||
-          h.action === 'Ausencia' ||
-          h.action?.toLowerCase().includes('ausencia') ||
-          h.action?.toLowerCase().includes('falta')) &&
-        h.category !== 'Sistema' &&
-        isSameCalendarDay(h.date, h.timestamp, now)
-    );
-
-    if (alreadyAbsentToday) {
-      setToastMessage(`${student.lastName}, ${student.firstName} ya figura ausente el día de hoy (${date}) en ${activeCourse.name}.`);
-      setTimeout(() => setToastMessage(null), 3000);
-      return;
-    }
-
-    const newAbsences = current.totalAbsences + 1;
-    const newLates =
-      todayLatesToRemove.length > 0
-        ? Math.max(0, (current.totalLates || 0) - todayLatesToRemove.length)
-        : current.totalLates || 0;
-    const newDisposition = current.totalDisposition;
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [student.id]: {
-        ...current,
-        totalAbsences: newAbsences,
-        totalLates: newLates,
-        totalDisposition: newDisposition,
-      },
-    };
-
-    // Initial history entry for absence (ready for sending message)
-    const newHistoryEntry: StudentHistoryItem = {
-      id,
-      studentId: student.id,
-      studentName: studentFullName,
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: 'Ausencia',
-      category: 'Ausencia',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: notifSettings.channel || 'classroom',
-      omitNotification: false,
-    };
-
-    const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
-    setHistoryList(updatedHistory);
-    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
-
-    setToastMessage(`Ausencia registrada para ${student.firstName} ${student.lastName} (+1 Falta en ${targetTerm === '2c' ? '2°C' : '1°C'})`);
-    setTimeout(() => setToastMessage(null), 3500);
-
-    // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    if (onRefreshData) {
-      onRefreshData();
-    }
-
-    if (todayLatesToRemove.length > 0) {
-      for (const item of todayLatesToRemove) {
-        api.deleteDispositionHistory(item.id).catch(() => {});
-      }
-      const userId = getActiveUserId();
-      if (userId) {
-        firestoreSync.deleteTodayLatesForStudent(userId, student.id, now).catch(() => {});
-      }
-    }
-
-    // Persist to server with exact ID, date, time, timestamp, term, and expected summary
-    api
-      .recordDisposition({
-        id,
-        studentId: student.id,
-        studentName: studentFullName,
-        courseId: activeCourse.id,
-        action: 'Ausencia',
-        category: 'Ausencia',
-        term: targetTerm,
-        date,
-        time,
-        timestamp,
-        messageSent: false,
-        messageText: '',
-        notificationMethod: notifSettings.channel || 'classroom',
-        omitNotification: false,
-        expectedSummary: {
-          totalAbsences: newAbsences,
-          totalLates: newLates,
-          totalDisposition: newDisposition,
-        },
-      })
-      .then(() => {
-        if (onRefreshData) onRefreshData();
-      })
-      .catch(() => {});
-
-    // Check if teacher has configured automatic notification; otherwise never open any popup on absence
-    // (pending absence messages stay in the bottom inbox for the teacher to send whenever they want)
-    if (notifSettings.autoNotify) {
-      const activePreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-      const channelToUse = activePreset.channel !== 'any' ? activePreset.channel : (notifSettings.channel || 'classroom');
-      const personalizedMessage = formatTemplateForStudent(
-        activePreset.text,
-        student,
-        activeCourse.name,
-        newDisposition,
-        date
-      );
-      sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
-    }
-  };
-
-  // Helper to send notification (Classroom announcement or Gmail) and update sheet / history
-  const sendNotificationForItem = async (
-    historyItem: StudentHistoryItem,
-    student: Student,
-    channel: 'classroom' | 'gmail',
-    messageText: string
-  ) => {
-    let success = false;
-    let notifMessage = '';
-
-    if (channel === 'classroom') {
-      const classroomCourseId = activeCourse.classroomCourseId || activeCourse.id;
-      // Google Classroom targeted announcement (assigneeMode: INDIVIDUAL_STUDENTS)
-      const res = await classroomService.createIndividualAnnouncement(
-        classroomCourseId,
-        student.id,
-        messageText
-      );
-      success = res.success;
-      notifMessage = res.message || (res.success ? 'Aviso publicado en el tablón del estudiante' : 'Error en Classroom');
-    } else {
-      // Gmail message send
-      const subject = historyItem.category === 'Disposición'
-        ? `Aviso de Conducta / Disposición - ${activeCourse.name}`
-        : `Notificación de Inasistencia - ${activeCourse.name}`;
-      const res = await gmailService.sendEmail(
-        student.email || '',
-        subject,
-        messageText
-      );
-      success = res.success;
-      notifMessage = res.message || (res.success ? 'Correo enviado' : 'Error en Gmail');
-    }
-
-    const now = new Date();
-    const notifiedAt = now.toLocaleTimeString();
-
-    // Update in local history
-    const updatedHistory = historyList.map((item) => {
-      if (item.id === historyItem.id) {
-        return {
-          ...item,
-          messageSent: true,
-          messageText,
-          notificationMethod: channel,
-          notifiedAt,
-        };
-      }
-      return item;
-    });
-
-    setHistoryList(updatedHistory);
-
-    // Update in Google Sheets
-    triggerSheetsSync(dispositionMap, updatedHistory);
-
-    // Persist notification state to server
-    api
-      .updateDispositionHistoryNotification(historyItem.id, {
-        messageSent: true,
-        messageText,
-        notificationMethod: channel,
-        notifiedAt,
-      })
-      .catch(() => {});
-
-    setToastMessage(
-      success
-        ? `Notificación enviada a ${student.firstName} (${channel === 'classroom' ? 'Tablón Classroom' : 'Correo Gmail'})`
-        : `Aviso registrado en la planilla: ${notifMessage}`
-    );
-    setTimeout(() => setToastMessage(null), 4000);
-  };
-
-  // Helper to obtain the personalized message for an item in batch mode
-  const getBatchMessageForItem = (
-    item: { historyItem: StudentHistoryItem; student: Student },
-    modalState: typeof batchAbsenceModal
-  ): string => {
-    // 1. If teacher manually customized this specific item in preview
-    if (modalState.customPerItemMessages && modalState.customPerItemMessages[item.historyItem.id]) {
-      return modalState.customPerItemMessages[item.historyItem.id];
-    }
-
-    const curDisp = dispositionMap[item.student.id]?.totalDisposition ?? 10;
-    const isConduct = item.historyItem.category === 'Disposición';
-
-    // 2. If smart templates is enabled (default)
-    if (modalState.useSmartTemplates) {
-      if (isConduct) {
-        const specificTpl = getTemplateForReason(item.historyItem.action);
-        return formatTemplateForStudent(
-          specificTpl,
-          item.student,
-          activeCourse?.name || '',
-          curDisp,
-          item.historyItem.date || '',
-          item.historyItem.action
-        );
-      } else {
-        const defaultAbsenceTpl =
-          savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
-          notifSettings.templateClassroom ||
-          DEFAULT_ABSENCE_PRESETS[0].text;
-        return formatTemplateForStudent(
-          defaultAbsenceTpl,
-          item.student,
-          activeCourse?.name || '',
-          curDisp,
-          item.historyItem.date || ''
-        );
-      }
-    }
-
-    // 3. Unified template mode
-    return formatTemplateForStudent(
-      modalState.rawTemplateText,
-      item.student,
-      activeCourse?.name || '',
-      curDisp,
-      item.historyItem.date || '',
-      item.historyItem.action
-    );
-  };
-
-  // Batch actions for deferred notifications (Absences and Conduct)
-  const handleOpenBatchFromPending = (filterType: 'all' | 'absences' | 'conduct' = 'all') => {
-    if (!activeCourse) return;
-    let targetItems: StudentHistoryItem[] = [];
-    if (filterType === 'absences') {
-      targetItems = pendingAbsenceItems;
-    } else if (filterType === 'conduct') {
-      targetItems = pendingConductItems;
-    } else {
-      targetItems = pendingAllItems;
-    }
-
-    const items = targetItems
-      .map((h) => {
-        const student =
-          students.find((s) => s.id === h.studentId) ||
-          courseStudents.find((s) => s.id === h.studentId) ||
-          ({
-            id: h.studentId,
-            firstName: h.studentName?.split(' ')[0] || h.studentName,
-            lastName: h.studentName?.split(' ').slice(1).join(' ') || '',
-            email: '',
-            courseId: activeCourse.id,
-          } as Student);
-        return { historyItem: h, student };
-      })
-      .filter(Boolean) as { historyItem: StudentHistoryItem; student: Student }[];
-
-    if (items.length === 0) {
-      setToastMessage('No hay avisos pendientes de notificación para este curso.');
-      setTimeout(() => setToastMessage(null), 3000);
-      return;
-    }
-
-    const defaultPreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-
-    setBatchAbsenceModal({
-      isOpen: true,
-      selectedItems: items,
-      channel: notifSettings.channel,
-      selectedPresetId: defaultPreset.id,
-      rawTemplateText: defaultPreset.text,
-      previewStudentIndex: 0,
-      previewStudentId: items[0]?.historyItem.id,
-      showSavePresetInput: false,
-      newPresetName: '',
-      isSending: false,
-      currentSendingStudentName: '',
-      progress: 0,
-      total: items.length,
-      sendProgress: null,
-      useSmartTemplates: true,
-      customPerItemMessages: {},
-    });
-  };
-
-  const handleOpenBatchFromSelectedStudents = () => {
-    if (!activeCourse || selectedStudentIds.length === 0) return;
-
-    const items: { historyItem: StudentHistoryItem; student: Student }[] = [];
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-
-    let updatedMap = { ...dispositionMap };
-    let newHistoryEntries: StudentHistoryItem[] = [];
-
-    selectedStudentIds.forEach((studentId) => {
-      const student = students.find((s) => s.id === studentId);
-      if (!student) return;
-
-      const existingPending = historyList.find(
-        (h) => h.courseId === activeCourse.id && h.studentId === student.id && h.category === 'Ausencia' && !h.messageSent
-      );
-
-      if (existingPending) {
-        items.push({ historyItem: existingPending, student });
-      } else {
-        const current = updatedMap[student.id] || { totalAbsences: 0, totalDisposition: 10 };
-        const newDisposition = current.totalDisposition;
-        updatedMap[student.id] = {
-          ...current,
-          totalAbsences: current.totalAbsences + 1,
-          totalDisposition: newDisposition,
-        };
-
-        const id = `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-        const newHistory: StudentHistoryItem = {
-          id,
-          studentId: student.id,
-          studentName: `${student.lastName}, ${student.firstName}`,
-          courseId: activeCourse.id,
-          date,
-          time,
-          action: 'Ausencia',
-          category: 'Ausencia',
-          pointsChange: 0,
-          timestamp: Date.now(),
-          messageSent: false,
-          messageText: '',
-          notificationMethod: 'none',
-        };
-        newHistoryEntries.push(newHistory);
-        items.push({ historyItem: newHistory, student });
-
-        api.recordDisposition(newHistory).catch(() => {});
-      }
-    });
-
-    if (newHistoryEntries.length > 0) {
-      const mergedHistory = deduplicateHistory([...newHistoryEntries, ...historyList]);
-      setHistoryList(mergedHistory);
-      setDispositionMap(updatedMap);
-      triggerSheetsSync(updatedMap, mergedHistory);
-    }
-
-    const defaultPreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-
-    setBatchAbsenceModal({
-      isOpen: true,
-      selectedItems: items,
-      channel: notifSettings.channel,
-      selectedPresetId: defaultPreset.id,
-      rawTemplateText: defaultPreset.text,
-      previewStudentIndex: 0,
-      previewStudentId: items[0]?.historyItem.id,
-      showSavePresetInput: false,
-      newPresetName: '',
-      isSending: false,
-      currentSendingStudentName: '',
-      progress: 0,
-      total: items.length,
-      sendProgress: null,
-      useSmartTemplates: true,
-      customPerItemMessages: {},
-    });
-  };
-
-  const handleOpenBatchFromSelectedHistory = () => {
-    if (!activeCourse || selectedPendingHistoryIds.length === 0) return;
-    const items = selectedPendingHistoryIds
-      .map((id) => {
-        const h = historyList.find((item) => item.id === id);
-        if (!h) return null;
-        const student =
-          students.find((s) => s.id === h.studentId) ||
-          courseStudents.find((s) => s.id === h.studentId) ||
-          ({
-            id: h.studentId,
-            firstName: h.studentName?.split(' ')[0] || h.studentName,
-            lastName: h.studentName?.split(' ').slice(1).join(' ') || '',
-            email: '',
-            courseId: activeCourse.id,
-          } as Student);
-        return { historyItem: h, student };
-      })
-      .filter(Boolean) as { historyItem: StudentHistoryItem; student: Student }[];
-
-    if (items.length === 0) return;
-
-    const defaultPreset = savedPresets.find((p) => p.isDefault) || savedPresets[0] || DEFAULT_ABSENCE_PRESETS[0];
-
-    setBatchAbsenceModal({
-      isOpen: true,
-      selectedItems: items,
-      channel: notifSettings.channel,
-      selectedPresetId: defaultPreset.id,
-      rawTemplateText: defaultPreset.text,
-      previewStudentIndex: 0,
-      previewStudentId: items[0]?.historyItem.id,
-      showSavePresetInput: false,
-      newPresetName: '',
-      isSending: false,
-      currentSendingStudentName: '',
-      progress: 0,
-      total: items.length,
-      sendProgress: null,
-      useSmartTemplates: true,
-      customPerItemMessages: {},
-    });
-  };
-
-  const handleSendBatchNotifications = async () => {
-    if (batchAbsenceModal.selectedItems.length === 0) return;
-    setBatchAbsenceModal((prev) => ({ ...prev, isSending: true }));
-
-    const channel = batchAbsenceModal.channel;
-    const total = batchAbsenceModal.selectedItems.length;
-    let sentCount = 0;
-
-    let updatedHistoryItems: StudentHistoryItem[] = [...historyList];
-
-    for (let i = 0; i < total; i++) {
-      const item = batchAbsenceModal.selectedItems[i];
-      const student = item.student;
-      const historyItem = item.historyItem;
-
-      setBatchAbsenceModal((prev) => ({
-        ...prev,
-        isSending: true,
-        currentSendingStudentName: `${student.firstName} ${student.lastName}`,
-        progress: i + 1,
-        total,
-        sendProgress: {
-          current: i + 1,
-          total,
-          currentStudentName: `${student.firstName} ${student.lastName}`,
-        },
-      }));
-
-      const personalizedMessage = getBatchMessageForItem(item, batchAbsenceModal);
-      const isConduct = historyItem.category === 'Disposición';
-      const emailSubject = isConduct
-        ? `Notificación de Conducta / Disposición - ${activeCourse.name}`
-        : `Notificación de Inasistencia - ${activeCourse.name}`;
-
-      let success = false;
-      let notifMessage = '';
-
-      if (channel === 'classroom') {
-        const classroomCourseId = activeCourse.classroomCourseId || activeCourse.id;
-        const res = await classroomService.createIndividualAnnouncement(
-          classroomCourseId,
-          student.id,
-          personalizedMessage
-        );
-        success = res.success;
-        notifMessage = res.message || '';
-      } else {
-        const res = await gmailService.sendEmail(
-          student.email || '',
-          emailSubject,
-          personalizedMessage
-        );
-        success = res.success;
-        notifMessage = res.message || '';
-      }
-
-      const now = new Date();
-      const notifiedAt = now.toLocaleTimeString();
-
-      const idx = updatedHistoryItems.findIndex((h) => h.id === historyItem.id);
-      if (idx !== -1) {
-        updatedHistoryItems[idx] = {
-          ...updatedHistoryItems[idx],
-          messageSent: true,
-          messageText: personalizedMessage,
-          notificationMethod: channel,
-          notifiedAt,
-        };
-      }
-
-      api
-        .updateDispositionHistoryNotification(historyItem.id, {
-          messageSent: true,
-          messageText: personalizedMessage,
-          notificationMethod: channel,
-          notifiedAt,
-        })
-        .catch(() => {});
-
-      sentCount++;
-    }
-
-    setHistoryList(updatedHistoryItems);
-    triggerSheetsSync(dispositionMap, updatedHistoryItems);
-
-    setBatchAbsenceModal({
-      isOpen: false,
-      selectedItems: [],
-      channel: 'classroom',
-      selectedPresetId: 'preset-standard',
-      rawTemplateText: '',
-      previewStudentIndex: 0,
-      previewStudentId: '',
-      showSavePresetInput: false,
-      newPresetName: '',
-      isSending: false,
-      currentSendingStudentName: '',
-      progress: 0,
-      total: 0,
-      sendProgress: null,
-      useSmartTemplates: true,
-      customPerItemMessages: {},
-    });
-
-    setSelectedStudentIds([]);
-    setSelectedPendingHistoryIds([]);
-
-    setToastMessage(`¡Listo! Se enviaron ${sentCount} avisos por ${channel === 'classroom' ? 'Classroom' : 'Gmail'} y se registraron en Google Sheets.`);
-    setTimeout(() => setToastMessage(null), 5000);
-  };
-
-  const toggleSelectStudent = (studentId: string) => {
-    setSelectedStudentIds((prev) =>
-      prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId]
-    );
-  };
-
-  const toggleSelectAllStudents = () => {
-    if (selectedStudentIds.length === filteredStudents.length && filteredStudents.length > 0) {
-      setSelectedStudentIds([]);
-    } else {
-      setSelectedStudentIds(filteredStudents.map((s) => s.id));
-    }
-  };
-
-  const toggleSelectPendingHistory = (historyId: string) => {
-    setSelectedPendingHistoryIds((prev) =>
-      prev.includes(historyId) ? prev.filter((id) => id !== historyId) : [...prev, historyId]
-    );
-  };
-
-  const toggleSelectAllPendingHistory = () => {
-    const pendingIds = courseHistory
-      .filter(
-        (item) =>
-          (item.category === 'Ausencia' || item.category === 'Disposición') &&
-          !item.messageSent &&
-          !item.omitNotification &&
-          item.notificationMethod !== 'omitted'
-      )
-      .map((item) => item.id);
-    if (selectedPendingHistoryIds.length === pendingIds.length && pendingIds.length > 0) {
-      setSelectedPendingHistoryIds([]);
-    } else {
-      setSelectedPendingHistoryIds(pendingIds);
-    }
-  };
-
-  // Marcar aviso como "No mandar" (sale de los pendientes pero queda en el historial docente)
-  const handleMarkOmitNotification = (item: StudentHistoryItem) => {
-    const updatedHistory = historyList.map((h) => {
-      if (h.id === item.id) {
-        return {
-          ...h,
-          omitNotification: true,
-          notificationMethod: 'omitted' as const,
-          messageSent: false,
-          notifiedAt: 'Omitido',
-        };
-      }
-      return h;
-    });
-
-    setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
-    setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
-
-    // Sincronizar inmediatamente a Google Sheets para que figure 'No enviar' y no 'Pendiente'
-    triggerSheetsSync(dispositionMap, updatedHistory, dispositionMap2c);
-
-    api
-      .recordDisposition({
-        id: item.id,
-        studentId: item.studentId,
-        studentName: item.studentName,
-        courseId: activeCourse.id,
-        action: item.action,
-        category: item.category,
-        date: item.date,
-        time: item.time,
-        timestamp: item.timestamp,
-        messageSent: false,
-        notificationMethod: 'omitted',
-        omitNotification: true,
-        notifiedAt: 'No enviar',
-      })
-      .catch(() => {});
-
-    setToastMessage(`Aviso marcado como "No mandar" para ${item.studentName}. Permanece registrado en tu historial docente.`);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Marcar selección como "No mandar" en lote
-  const handleBatchMarkOmitNotification = () => {
-    if (selectedPendingHistoryIds.length === 0) return;
-    const idsSet = new Set(selectedPendingHistoryIds);
-    const updatedHistory = historyList.map((h) => {
-      if (idsSet.has(h.id)) {
-        return {
-          ...h,
-          omitNotification: true,
-          notificationMethod: 'omitted' as const,
-          messageSent: false,
-          notifiedAt: 'Omitido',
-        };
-      }
-      return h;
-    });
-
-    setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
-    const count = selectedPendingHistoryIds.length;
-    setSelectedPendingHistoryIds([]);
-
-    setToastMessage(`${count} aviso${count > 1 ? 's' : ''} marcado${count > 1 ? 's' : ''} como "No mandar". Permanecen intactos en tu historial docente.`);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // Descartar todos los pendientes a la vez (salen de pendientes pero quedan en historial)
-  const handleMarkAllPendingAsOmitted = () => {
-    if (pendingAllItems.length === 0) return;
-    const pendingIdsSet = new Set(pendingAllItems.map((p) => p.id));
-    const updatedHistory = historyList.map((h) => {
-      if (pendingIdsSet.has(h.id)) {
-        return {
-          ...h,
-          omitNotification: true,
-          notificationMethod: 'omitted' as const,
-          messageSent: false,
-          notifiedAt: 'Omitido',
-        };
-      }
-      return h;
-    });
-
-    setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
-    setSelectedPendingHistoryIds([]);
-    const count = pendingAllItems.length;
-
-    setToastMessage(`${count} aviso${count > 1 ? 's' : ''} marcado${count > 1 ? 's' : ''} como "No mandar". Todos quedan registrados en tu historial docente.`);
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // 2. LÓGICA PARA DISPOSICIÓN (Resta o suma puntos del total y registra en historial)
-  const handleRecordDispositionAction = async (
-    student: Student,
-    actionName: string,
-    detailText?: string,
-    explicitPointsDelta?: number
-  ) => {
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-    const id = `rec-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
-
-    const isActionPositive =
-      actionName.startsWith('+') ||
-      actionName.startsWith('[+]') ||
-      actionName.includes('(+') ||
-      /^(felicitaci|participaci|excelente|destacad|compromiso|mérito|merito|buen comportamiento|tarea completa|superaci|colaboraci|ayud)/i.test(actionName);
-
-    const delta = explicitPointsDelta !== undefined
-      ? explicitPointsDelta
-      : (isActionPositive ? 1 : -1);
-
-    const cleanAction = actionName.replace(/^(\+|\[\+\])\s*/, '');
-
-    let finalAction = cleanAction;
-    if (detailText && detailText.trim()) {
-      finalAction = detailText.trim();
-    } else if (actionName === 'Otros' && detailText) {
-      finalAction = detailText.trim() || (delta > 0 ? 'Reconocimiento destacado' : 'Conducta no especificada');
-    }
-
-    // Visual feedback
-    setPulsingStudentId(`disp-${student.id}`);
-    setTimeout(() => setPulsingStudentId(null), 600);
-
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    const current = getStudentMetrics(student.id, targetTerm);
-    const currentDisp = current.totalDisposition !== undefined ? current.totalDisposition : 10;
-    const newDisposition = Math.min(10, Math.max(0, currentDisp + delta));
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [student.id]: {
-        ...current,
-        totalDisposition: newDisposition,
-      },
-    };
-
-    const newHistoryEntry: StudentHistoryItem = {
-      id,
-      studentId: student.id,
-      studentName: studentFullName,
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: finalAction,
-      category: 'Disposición',
-      pointsChange: delta,
-      previousDisposition: currentDisp,
-      resultingDisposition: newDisposition,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-
-    const updatedHistory = deduplicateHistory([newHistoryEntry, ...historyList]);
-    setHistoryList(updatedHistory);
-    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
-
-    const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
-    const typeStr = delta > 0 ? 'Reconocimiento registrado' : 'Conducta registrada';
-    setToastMessage(`${typeStr} para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}: ${finalAction} (${deltaStr} pto | ${currentDisp} → ${newDisposition} pts)`);
-    setTimeout(() => setToastMessage(null), 3500);
-
-    // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    if (onRefreshData) {
-      onRefreshData();
-    }
-
-    // Persist to server with exact ID, date, time, timestamp and expectedSummary
-    api
-      .recordDisposition({
-        id,
-        studentId: student.id,
-        studentName: studentFullName,
-        courseId: activeCourse.id,
-        action: finalAction,
-        category: 'Disposición',
-        detail: detailText,
-        date,
-        time,
-        timestamp,
-        expectedSummary: {
-          totalAbsences: current.totalAbsences,
-          totalLates: current.totalLates || 0,
-          totalDisposition: newDisposition,
-        },
-      })
-      .then(() => {
-        if (onRefreshData) onRefreshData();
-      })
-      .catch(() => {});
-
-    // Flujo de notificación al alumno cuando se suma o resta disposición
-    const specificReasonTemplate = getTemplateForReason(finalAction, delta > 0 ? 'positive' : 'negative');
-    const activeConductPreset =
-      savedPresets.find((p) => p.category === 'Disposición' && p.isDefault) ||
-      savedPresets.find((p) => p.category === 'Disposición') ||
-      DEFAULT_CONDUCT_PRESETS[0];
-
-    const channelToUse = activeConductPreset.channel !== 'any' ? activeConductPreset.channel : notifSettings.channel;
-    const personalizedMessage = formatTemplateForStudent(
-      specificReasonTemplate,
-      student,
-      activeCourse.name,
-      newDisposition,
-      date,
-      finalAction,
-      delta
-    );
-
-    if (notifSettings.autoNotify) {
-      // Auto-send directly only if teacher configured automatic notification
-      sendNotificationForItem(newHistoryEntry, student, channelToUse, personalizedMessage);
-    }
-  };
-
-  // 3. Confirmación desde modal de registrar conducta (suma o resta de puntos)
-  const handleConfirmConductRecord = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!conductRecordModal.student) return;
-
-    const reason = conductRecordModal.customReason.trim();
-    if (!reason) return;
-
-    const isAdd = conductRecordModal.mode === 'add';
-    const pts = Math.abs(conductRecordModal.points || 1);
-    const delta = isAdd ? pts : -pts;
-
-    if (conductRecordModal.saveToOptions) {
-      const optionToSave = isAdd ? `+ ${reason}` : reason;
-      handleAddConductOption(optionToSave);
-    }
-
-    handleRecordDispositionAction(conductRecordModal.student, reason, undefined, delta);
-    setConductRecordModal({ isOpen: false, student: null, mode: 'subtract', points: 1, customReason: '', saveToOptions: false });
-  };
-
-  // 4. Eliminar entrada errónea del historial (revierte el punto sacado, o quita la ausencia o tardanza)
-  const handleDeleteHistoryEntry = async (item: StudentHistoryItem) => {
-    // 1. Mark permanently deleted in tombstone immediately
-    markHistoryIdDeleted(item.id);
-
-    const isAbsence =
-      item.category === 'Ausencia' ||
-      item.action === 'Ausencia' ||
-      item.action?.toLowerCase().includes('ausencia') ||
-      item.action?.toLowerCase().includes('falta');
-
-    const isLate =
-      item.category === 'Llegada tarde' ||
-      item.action === 'Llegada tarde' ||
-      item.action?.toLowerCase().includes('llegada tarde') ||
-      item.action?.toLowerCase().includes('tardanza') ||
-      item.action?.toLowerCase().includes('tarde');
-
-    let pointsToReturn = 0;
-    if (item.pointsChange !== undefined) {
-      pointsToReturn = -item.pointsChange;
-    } else if (
-      item.previousDisposition !== undefined &&
-      item.resultingDisposition !== undefined
-    ) {
-      pointsToReturn = item.previousDisposition - item.resultingDisposition;
-    } else if (
-      item.category === 'Disposición' ||
-      (!isAbsence && !isLate && item.category !== 'Sistema' && item.category !== 'Calificación')
-    ) {
-      pointsToReturn = 1;
-    }
-
-    // Filter out of history immediately
-    const updatedHistory = historyList.filter((h) => h.id !== item.id);
-    setHistoryList(updatedHistory);
-
-    const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : '1c';
-    const is2cItem = itemTerm === '2c';
-
-    // Calculate updated metrics for student directly from remaining history within the same term & course
-    const targetCourseId = item.courseId || activeCourse?.id;
-    const studentRemainingHistory = updatedHistory.filter(
-      (h) =>
-        h.studentId === item.studentId &&
-        (!targetCourseId || !h.courseId || h.courseId === targetCourseId) &&
-        (is2cItem ? h.term === '2c' : (h.term === '1c' || !h.term))
-    );
-    const newAbsences = studentRemainingHistory.filter(
-      (h) =>
-        h.category === 'Ausencia' ||
-        h.action === 'Ausencia' ||
-        h.action?.toLowerCase().includes('ausencia') ||
-        h.action?.toLowerCase().includes('falta')
-    ).length;
-
-    const newLates = studentRemainingHistory.filter(
-      (h) =>
-        h.category === 'Llegada tarde' ||
-        h.action === 'Llegada tarde' ||
-        h.action?.toLowerCase().includes('llegada tarde') ||
-        h.action?.toLowerCase().includes('tarde') ||
-        h.action?.toLowerCase().includes('tardanza')
-    ).length;
-
-    let calculatedDisp = 10;
-    const sortedStudentEvents = [...studentRemainingHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    for (const ev of sortedStudentEvents) {
-      const isReset =
-        ev.category === 'Sistema' ||
-        ev.action?.toLowerCase().includes('restablecid') ||
-        ev.action?.toLowerCase().includes('reinicio');
-      if (isReset) {
-        calculatedDisp = 10;
-        continue;
-      }
-      if (ev.pointsChange !== undefined) {
-        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
-      } else if (ev.category === 'Disposición') {
-        calculatedDisp = Math.max(0, calculatedDisp - 1);
-      }
-    }
-
-    const baseMap = itemTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = getStudentMetrics(item.studentId, itemTerm);
-
-    const finalAbsences = isAbsence
-      ? Math.max(0, (current.totalAbsences !== undefined ? current.totalAbsences : 1) - 1)
-      : (current.totalAbsences !== undefined ? current.totalAbsences : newAbsences);
-
-    const finalLates = isLate
-      ? Math.max(0, (current.totalLates !== undefined ? current.totalLates : 1) - 1)
-      : (current.totalLates !== undefined ? current.totalLates : newLates);
-
-    const finalDisposition = (isAbsence || isLate)
-      ? (current.totalDisposition ?? 10)
-      : (studentRemainingHistory.length > 0 ? calculatedDisp : Math.min(10, Math.max(0, (current.totalDisposition ?? 10) + pointsToReturn)));
-
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [item.studentId]: {
-        ...current,
-        totalAbsences: finalAbsences,
-        totalLates: finalLates,
-        totalDisposition: finalDisposition,
-      },
-    };
-
-    saveTermDisposition(itemTerm, updatedMap, updatedHistory);
-
-    const actionsTaken: string[] = [];
-    if (isAbsence) actionsTaken.push('se restó la ausencia');
-    if (isLate) actionsTaken.push('se quitó la tardanza');
-    if (pointsToReturn > 0) actionsTaken.push(`se devolvió el punto (+${pointsToReturn} pto: ahora ${finalDisposition}/10)`);
-    if (pointsToReturn < 0) actionsTaken.push(`se ajustó la nota (${pointsToReturn} pto: ahora ${finalDisposition}/10)`);
-
-    const actionSummary = actionsTaken.length > 0 ? actionsTaken.join(' y ') : 'Registro eliminado';
-    setToastMessage(`Historial actualizado para ${item.studentName || 'el alumno'}: ${actionSummary} (${itemTerm === '2c' ? '2°C' : '1°C'}).`);
-    setTimeout(() => setToastMessage(null), 3500);
-
-    // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(
-      itemTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      itemTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    if (onRefreshData) {
-      onRefreshData();
-    }
-
-    // Call server to delete and update backend + Firestore
-    api
-      .deleteDispositionHistory(item.id, {
-        studentId: item.studentId,
-        isAbsence,
-        isLate,
-        pointsToReturn,
-        newAbsences: finalAbsences,
-        newLates: finalLates,
-        newDisposition: finalDisposition,
-      })
-      .then(() => {
-        if (onRefreshData) onRefreshData();
-      })
-      .catch(() => {});
-  };
-
-  // 4b. Borrar última falta del estudiante (por ejemplo, si llegó más tarde o fue un error)
-  const handleDeleteLatestAbsence = async (student: Student) => {
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    // Buscar la falta más reciente registrada para este alumno en este curso
-    const studentAbsences = historyList
-      .filter(
-        (h) =>
-          h.studentId === student.id &&
-          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
-          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-          (h.category === 'Ausencia' ||
-            h.action === 'Ausencia' ||
-            h.action?.toLowerCase().includes('ausencia') ||
-            h.action?.toLowerCase().includes('falta'))
-      )
-      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-    const latestAbsence = studentAbsences[0];
-
-    if (latestAbsence) {
-      await handleDeleteHistoryEntry(latestAbsence);
-      return;
-    }
-
-    // Si no hay en el historial pero el contador tiene ausencias, descontamos manualmente
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = getStudentMetrics(student.id, targetTerm);
-    if (current && current.totalAbsences > 0) {
-      const finalAbsences = Math.max(0, current.totalAbsences - 1);
-      const updatedMap = {
-        ...baseMap,
-        [student.id]: {
-          ...current,
-          totalAbsences: finalAbsences,
-        },
-      };
-      saveTermDisposition(targetTerm, updatedMap, historyList);
-      triggerSheetsSync(
-        targetTerm === '1c' ? updatedMap : dispositionMap,
-        historyList,
-        targetTerm === '2c' ? updatedMap : dispositionMap2c
-      );
-      setToastMessage(`Falta eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`);
-      setTimeout(() => setToastMessage(null), 3000);
-      if (onRefreshData) onRefreshData();
-    } else {
-      setToastMessage(`${student.firstName} ${student.lastName} no registra faltas en ${targetTerm === '2c' ? '2°C' : '1°C'} para borrar.`);
-      setTimeout(() => setToastMessage(null), 3000);
-    }
-  };
-
-  // 4b2. Borrar última llegada tarde del estudiante
-  const handleDeleteLatestLate = async (student: Student) => {
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    const studentLates = historyList
-      .filter(
-        (h) =>
-          h.studentId === student.id &&
-          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
-          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-          (h.category === 'Llegada tarde' ||
-            h.action === 'Llegada tarde' ||
-            h.action?.toLowerCase().includes('llegada tarde') ||
-            h.action?.toLowerCase().includes('tarde') ||
-            h.action?.toLowerCase().includes('tardanza'))
-      )
-      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-
-    const latestLate = studentLates[0];
-
-    if (latestLate) {
-      await handleDeleteHistoryEntry(latestLate);
-      return;
-    }
-
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = getStudentMetrics(student.id, targetTerm);
-    if (current && (current.totalLates || 0) > 0) {
-      const finalLates = Math.max(0, (current.totalLates || 0) - 1);
-      const updatedMap = {
-        ...baseMap,
-        [student.id]: {
-          ...current,
-          totalLates: finalLates,
-        },
-      };
-      saveTermDisposition(targetTerm, updatedMap, historyList);
-      triggerSheetsSync(
-        targetTerm === '1c' ? updatedMap : dispositionMap,
-        historyList,
-        targetTerm === '2c' ? updatedMap : dispositionMap2c
-      );
-      setToastMessage(`Llegada tarde eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`);
-      setTimeout(() => setToastMessage(null), 3000);
-      if (onRefreshData) onRefreshData();
-    } else {
-      setToastMessage(`${student.firstName} ${student.lastName} no registra tardanzas en ${targetTerm === '2c' ? '2°C' : '1°C'} para borrar.`);
-      setTimeout(() => setToastMessage(null), 3000);
-    }
-  };
-
-  // 4c. LÓGICA PARA LLEGADA TARDE (Registra en historial sin descontar puntos, y si tenía falta hoy, la cancela/borra)
-  const handleRecordLateArrival = async (student: Student) => {
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-    const now = new Date();
-    const date = formatLocalDateDMY(now);
-    const time = formatLocalTimeHMS(now);
-    const timestamp = Date.now();
-    const id = `rec-late-${timestamp}-${Math.random().toString(36).substring(2, 6)}`;
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-
-    // Visual feedback
-    setPulsingStudentId(`late-${student.id}`);
-    setTimeout(() => setPulsingStudentId(null), 600);
-
-    const current = getStudentMetrics(student.id, targetTerm);
-
-    // 2. Si el mismo día cambio a tarde en ESTA materia automáticamente se borra la falta de hoy
-    const isTodayAbsence = (h: StudentHistoryItem) => {
-      if (h.studentId !== student.id) return false;
-      if (activeCourse?.id && h.courseId && h.courseId !== activeCourse.id) return false;
-      const isAbs =
-        h.category === 'Ausencia' ||
-        h.action === 'Ausencia' ||
-        h.action?.toLowerCase().includes('ausencia') ||
-        h.action?.toLowerCase().includes('falta');
-      if (!isAbs) return false;
-      return isSameCalendarDay(h.date, h.timestamp, now) || !h.date;
-    };
-
-    let todayAbsencesToRemove: StudentHistoryItem[] = [];
-    let cleanHistory = historyList.filter((h) => {
-      if (isTodayAbsence(h)) {
-        todayAbsencesToRemove.push(h);
-        return false;
-      }
-      return true;
-    });
-
-    const hadAbsenceToCancel = todayAbsencesToRemove.length > 0;
-    if (todayAbsencesToRemove.length > 0) {
-      todayAbsencesToRemove.forEach((a) => markHistoryIdDeleted(a.id));
-    }
-
-    // Ausencias restantes: sólo disminuye si hoy tenía una falta que fue cancelada por la llegada tarde
-    const remainingStudentAbsences = hadAbsenceToCancel
-      ? Math.max(0, (current.totalAbsences || 0) - todayAbsencesToRemove.length)
-      : current.totalAbsences || 0;
-
-    const remainingStudentLates = (current.totalLates || 0) + 1;
-
-    // Una asistencia no cambia el puntaje de disposición
-    const newDisposition = current.totalDisposition ?? 10;
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [student.id]: {
-        ...current,
-        totalAbsences: remainingStudentAbsences,
-        totalLates: remainingStudentLates,
-        totalDisposition: newDisposition,
-      },
-    };
-
-    // Entrada en el historial para la llegada tarde (sin avisos pendientes a menos que se configure)
-    const newHistoryEntry: StudentHistoryItem = {
-      id,
-      studentId: student.id,
-      studentName: studentFullName,
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: 'Llegada tarde a clase',
-      category: 'Llegada tarde',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'omitted',
-      omitNotification: true,
-      notifiedAt: 'No enviar',
-    };
-
-    const updatedHistory = deduplicateHistory([newHistoryEntry, ...cleanHistory]);
-    setHistoryList(updatedHistory);
-    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
-
-    if (hadAbsenceToCancel) {
-      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}. Se eliminó automáticamente la falta de hoy.`);
-    } else {
-      setToastMessage(`Llegada tarde registrada para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}.`);
-    }
-    setTimeout(() => setToastMessage(null), 4000);
-
-    // Sync immediately in real time to Google Sheets
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    if (onRefreshData) {
-      onRefreshData();
-    }
-
-    // Eliminar del backend, Firestore (Vercel) y localStorage
-    if (todayAbsencesToRemove.length > 0) {
-      for (const item of todayAbsencesToRemove) {
-        api.deleteDispositionHistory(item.id).catch(() => {});
-      }
-    }
-
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync.deleteTodayAbsencesForStudent(userId, student.id, now).catch(() => {});
-    }
-
-    // Persist to server / Firestore / localStorage with expectedSummary
-    api
-      .recordDisposition({
-        id,
-        studentId: student.id,
-        studentName: studentFullName,
-        courseId: activeCourse.id,
-        action: 'Llegada tarde a clase',
-        category: 'Llegada tarde',
-        term: targetTerm,
-        date,
-        time,
-        timestamp,
-        messageSent: false,
-        messageText: '',
-        notificationMethod: 'omitted',
-        omitNotification: true,
-        notifiedAt: 'No enviar',
-        expectedSummary: {
-          totalAbsences: remainingStudentAbsences,
-          totalLates: remainingStudentLates,
-          totalDisposition: newDisposition,
-        },
-      })
-      .then(() => {
-        if (onRefreshData) onRefreshData();
-      })
-      .catch(() => {});
-  };
-
-  // Helper to open notification modal from history tables (both for absences and disposition)
-  const handleOpenNotifyModal = (item: StudentHistoryItem, student: Student | null) => {
-    const isDisposition = item.category === 'Disposición';
-    let text = '';
-    let selectedPresetId = '';
-    const curDisp = dispositionMap[item.studentId]?.totalDisposition ?? 10;
-    const studentObj = student || { firstName: item.studentName, lastName: '', id: item.studentId };
-
-    if (isDisposition) {
-      const specificReasonTemplate = getTemplateForReason(item.action);
-      selectedPresetId = `reason-${item.action}`;
-      text = formatTemplateForStudent(
-        specificReasonTemplate,
-        studentObj,
-        activeCourse.name,
-        curDisp,
-        item.date,
-        item.action
-      );
-    } else {
-      const activePreset =
-        savedPresets.find((p) => (p.category === 'Ausencia' || !p.category) && p.isDefault) ||
-        savedPresets.find((p) => p.category === 'Ausencia' || !p.category) ||
-        DEFAULT_ABSENCE_PRESETS[0];
-      selectedPresetId = activePreset.id;
-      text = formatTemplateForStudent(
-        activePreset.text,
-        studentObj,
-        activeCourse.name,
-        curDisp,
-        item.date
-      );
-    }
-
-    setAbsenceNotifModal({
-      isOpen: true,
-      historyItem: item,
-      student: student || null,
-      channel: notifSettings.channel,
-      messageText: text,
-      selectedPresetId,
-      showSavePresetInput: false,
-      newPresetName: '',
-      isSending: false,
-    });
-  };
-
-  // 5. Copiar al portapapeles en formato Google Sheets (TSV: Alumno \t Fecha \t Hora \t Acción)
-  const handleCopyForGoogleSheets = () => {
-    const courseHistory = historyList.filter((h) => h.courseId === activeCourse?.id);
-    if (courseHistory.length === 0) {
-      setToastMessage('Aún no hay registros en el historial de este curso para copiar.');
-      setTimeout(() => setToastMessage(null), 3500);
-      return;
-    }
-
-    // Sort matching the script: Alumno asc, Fecha desc, Hora desc
-    const sorted = [...courseHistory].sort((a, b) => {
-      const nameComp = a.studentName.localeCompare(b.studentName);
-      if (nameComp !== 0) return nameComp;
-      return b.timestamp - a.timestamp;
-    });
-
-    const lines = [
-      ['Alumno', 'Fecha', 'Hora', 'Acción'].join('\t'),
-      ...sorted.map((item) => [item.studentName, item.date, item.time, item.action].join('\t')),
-    ];
-
-    navigator.clipboard.writeText(lines.join('\n')).then(() => {
-      setToastMessage('¡Copiado al portapapeles! Ahora ve a tu Google Sheet y presiona Ctrl + V.');
-      setTimeout(() => setToastMessage(null), 4500);
-    });
-  };
-
-  // 6. Exportar CSV compatible con Excel y Google Sheets
-  const handleExportHistoryCsv = () => {
-    const courseHistory = historyList.filter((h) => h.courseId === activeCourse?.id);
-    const sorted = [...courseHistory].sort((a, b) => b.timestamp - a.timestamp);
-
-    const headers = ['Alumno', 'Fecha', 'Hora', 'Acción', 'Categoría'];
-    const rows = sorted.map((h) => [
-      `"${h.studentName}"`,
-      `"${h.date}"`,
-      `"${h.time}"`,
-      `"${h.action.replace(/"/g, '""')}"`,
-      `"${h.category}"`,
-    ]);
-
-    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Historial_Asistencia_Disposicion_${activeCourse.name.replace(/\s+/g, '_')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  // 6b. Exportar Historial a Excel (.xlsx) nativo
-  const handleExportHistoryExcel = () => {
-    if (!activeCourse) return;
-    const courseHistory = historyList.filter((h) => h.courseId === activeCourse.id);
-    exportCourseClassHistoryToExcel(activeCourse.name, courseHistory);
-  };
-
-  // 7a. Abrir modal para editar manualmente la nota de disposición (por ej. si usó papel o no trajo computadora)
-  const handleOpenEditDisposition = (student: Student, termOverride?: '1c' | '2c') => {
-    const termToUse: '1c' | '2c' = termOverride || activeConcreteTerm;
-    const currentMetrics = getStudentMetrics(student.id, termToUse);
-    setEditingDispositionStudent(student);
-    setEditingDispositionTerm(termToUse);
-    setEditingDispositionScore(String(currentMetrics.totalDisposition));
-    setEditingDispositionReason('');
-  };
-
-  const handleChangeEditingTerm = (newTerm: '1c' | '2c') => {
-    setEditingDispositionTerm(newTerm);
-    if (editingDispositionStudent) {
-      const metrics = getStudentMetrics(editingDispositionStudent.id, newTerm);
-      setEditingDispositionScore(String(metrics.totalDisposition));
-    }
-  };
-
-  const handleNavigateEditStudent = (direction: -1 | 1) => {
-    if (!editingDispositionStudent) return;
-    const currentIndex = filteredStudents.findIndex((s) => s.id === editingDispositionStudent.id);
-    if (currentIndex === -1) return;
-    const targetIndex = currentIndex + direction;
-    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
-      const targetStudent = filteredStudents[targetIndex];
-      const metrics = getStudentMetrics(targetStudent.id, editingDispositionTerm);
-      setEditingDispositionStudent(targetStudent);
-      setEditingDispositionScore(String(metrics.totalDisposition));
-      setEditingDispositionReason('');
-    }
-  };
-
-  const handleSaveStudentDisposition = async (moveToNext: boolean = false) => {
-    if (!activeCourse || !editingDispositionStudent) return;
-
-    const student = editingDispositionStudent;
-    const term = editingDispositionTerm;
-    const parsed = parseFloat(editingDispositionScore);
-    if (isNaN(parsed) || parsed < 0 || parsed > 10) {
-      setToastMessage('Ingresá una nota numérica válida entre 0 y 10.');
-      setTimeout(() => setToastMessage(null), 3000);
-      return;
-    }
-    const clampedScore = Math.min(10, Math.max(0, Math.round(parsed * 10) / 10));
-
-    const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-    const oldScore = current.totalDisposition ?? 10;
-
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [student.id]: {
-        ...current,
-        totalDisposition: clampedScore,
-      },
-    };
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-
-    const termLabel = term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
-    const reasonTrimmed = editingDispositionReason.trim();
-    const actionText = reasonTrimmed
-      ? `Nota de disposición ajustada a ${clampedScore}/10 (${termLabel}) - Motivo: ${reasonTrimmed}`
-      : `Nota de disposición ajustada a ${clampedScore}/10 (${termLabel})`;
-
-    const editEntry: StudentHistoryItem = {
-      id: `rec-disp-edit-${student.id}-${timestamp}`,
-      studentId: student.id,
-      studentName: studentFullName,
-      courseId: activeCourse.id,
-      date,
-      time,
-      term,
-      action: actionText,
-      category: 'Disposición',
-      pointsChange: Number((clampedScore - oldScore).toFixed(1)),
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-
-    const updatedHistory = deduplicateHistory([editEntry, ...historyList]);
-    setHistoryList(updatedHistory);
-    saveTermDisposition(term, updatedMap, updatedHistory);
-
-    triggerSheetsSync(
-      term === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      term === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    api
-      .recordDisposition({
-        id: editEntry.id,
-        studentId: student.id,
-        studentName: studentFullName,
-        courseId: activeCourse.id,
-        action: actionText,
-        category: 'Disposición',
-        term,
-        date,
-        time,
-        timestamp,
-        expectedSummary: {
-          totalAbsences: current.totalAbsences ?? 0,
-          totalLates: current.totalLates ?? 0,
-          totalDisposition: clampedScore,
-        },
-      })
-      .catch(() => {});
-
-    setToastMessage(
-      `Nota de disposición guardada: ${clampedScore}/10 para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'})`
-    );
-    setTimeout(() => setToastMessage(null), 3500);
-
-    if (moveToNext) {
-      const currentIndex = filteredStudents.findIndex((s) => s.id === student.id);
-      if (currentIndex !== -1 && currentIndex < filteredStudents.length - 1) {
-        const nextStudent = filteredStudents[currentIndex + 1];
-        const nextMetrics = getStudentMetrics(nextStudent.id, term);
-        setEditingDispositionStudent(nextStudent);
-        setEditingDispositionScore(String(nextMetrics.totalDisposition));
-        setEditingDispositionReason('');
-        return;
-      }
-    }
-
-    setEditingDispositionStudent(null);
-  };
-
-  // 7b. Abrir modal para editar la cantidad de faltas (pasaje de papel, fecha retroactiva y aviso)
-  const handleOpenEditAbsences = (student: Student, termOverride?: '1c' | '2c') => {
-    const termToUse: '1c' | '2c' = termOverride || activeConcreteTerm;
-    const currentMetrics = getStudentMetrics(student.id, termToUse);
-    const today = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
-    const formattedDateDMY = `${pad(today.getDate())}/${pad(today.getMonth() + 1)}/${today.getFullYear()}`;
-
-    setEditingAbsenceStudent(student);
-    setEditingAbsenceTerm(termToUse);
-    setEditingAbsenceCount(String(currentMetrics.totalAbsences));
-    setEditingAbsenceDate(todayStr);
-    setEditingAbsenceReason('Pasado de planilla en papel');
-    setEditingAbsenceSendNotif(false);
-    setEditingAbsenceChannel(notifSettings.channel || 'classroom');
-
-    const curDisp = currentMetrics.totalDisposition ?? 10;
-    const defaultAbsenceTpl =
-      savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
-      notifSettings.templateClassroom ||
-      DEFAULT_ABSENCE_PRESETS[0].text;
-
-    const defaultMsg = formatTemplateForStudent(
-      defaultAbsenceTpl,
-      student,
-      activeCourse.name,
-      curDisp,
-      formattedDateDMY
-    );
-    setEditingAbsenceMessageText(defaultMsg);
-  };
-
-  const handleChangeEditingAbsenceTerm = (newTerm: '1c' | '2c') => {
-    setEditingAbsenceTerm(newTerm);
-    if (editingAbsenceStudent) {
-      const metrics = getStudentMetrics(editingAbsenceStudent.id, newTerm);
-      setEditingAbsenceCount(String(metrics.totalAbsences));
-    }
-  };
-
-  const handleNavigateEditAbsenceStudent = (direction: -1 | 1) => {
-    if (!editingAbsenceStudent) return;
-    const currentIndex = filteredStudents.findIndex((s) => s.id === editingAbsenceStudent.id);
-    if (currentIndex === -1) return;
-    const targetIndex = currentIndex + direction;
-    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
-      const targetStudent = filteredStudents[targetIndex];
-      const metrics = getStudentMetrics(targetStudent.id, editingAbsenceTerm);
-      setEditingAbsenceStudent(targetStudent);
-      setEditingAbsenceCount(String(metrics.totalAbsences));
-
-      let dmy = '';
-      if (editingAbsenceDate) {
-        const parts = editingAbsenceDate.split('-');
-        if (parts.length === 3) {
-          dmy = `${parts[2]}/${parts[1]}/${parts[0]}`;
-        }
-      }
-      const defaultAbsenceTpl =
-        savedPresets.find((p) => p.category === 'Ausencia' && p.isDefault)?.text ||
-        notifSettings.templateClassroom ||
-        DEFAULT_ABSENCE_PRESETS[0].text;
-      const defaultMsg = formatTemplateForStudent(
-        defaultAbsenceTpl,
-        targetStudent,
-        activeCourse.name,
-        metrics.totalDisposition ?? 10,
-        dmy || formatLocalDateDMY()
-      );
-      setEditingAbsenceMessageText(defaultMsg);
-    }
-  };
-
-  const handleSaveStudentAbsences = async (moveToNext: boolean = false) => {
-    if (!activeCourse || !editingAbsenceStudent) return;
-
-    const student = editingAbsenceStudent;
-    const term = editingAbsenceTerm;
-    const parsed = parseInt(editingAbsenceCount, 10);
-    if (isNaN(parsed) || parsed < 0) {
-      setToastMessage('Ingresá una cantidad de faltas válida (número entero mayor o igual a 0).');
-      setTimeout(() => setToastMessage(null), 3000);
-      return;
-    }
-    const finalAbsences = Math.max(0, Math.floor(parsed));
-
-    const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || getStudentMetrics(student.id, term);
-    const oldAbsences = current.totalAbsences ?? 0;
-    const difference = finalAbsences - oldAbsences;
-
-    // Parse user selected date (YYYY-MM-DD -> DD/MM/YYYY)
-    let selectedDateDMY = formatLocalDateDMY();
-    let recordTimestamp = Date.now();
-    if (editingAbsenceDate) {
-      const parts = editingAbsenceDate.split('-');
-      if (parts.length === 3) {
-        const y = parseInt(parts[0], 10);
-        const m = parseInt(parts[1], 10);
-        const d = parseInt(parts[2], 10);
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        selectedDateDMY = `${pad(d)}/${pad(m)}/${y}`;
-        const targetDateObj = new Date(y, m - 1, d, 12, 0, 0);
-        if (!isNaN(targetDateObj.getTime())) {
-          recordTimestamp = targetDateObj.getTime();
-        }
-      }
-    }
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-    const termLabel = term === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
-    const reasonTrimmed = editingAbsenceReason.trim();
-
-    setIsSavingAbsenceEdit(true);
-
-    try {
-      // 1. Update disposition map directly with edited count
-      const updatedMap: Record<string, StudentDispositionData> = {
-        ...baseMap,
-        [student.id]: {
-          ...current,
-          totalAbsences: finalAbsences,
-        },
-      };
-
-      // 2. Adjust history items so that historical records don't inflate or conflict
-      let updatedHistory = [...historyList];
-      if (difference < 0) {
-        // Reduced absences: remove the excess historical absence records for this student and term
-        let removed = 0;
-        const toRemove = Math.abs(difference);
-        updatedHistory = updatedHistory.filter((h) => {
-          if (
-            removed < toRemove &&
-            h.studentId === student.id &&
-            (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
-            (term === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-            (h.category === 'Ausencia' || h.action?.toLowerCase().includes('ausencia') || h.action?.toLowerCase().includes('falta'))
-          ) {
-            markHistoryIdDeleted(h.id);
-            api.deleteDispositionHistory(h.id).catch(() => {});
-            removed++;
-            return false;
-          }
-          return true;
-        });
-      }
-
-      // Add audit history item with category 'Sistema' so it NEVER counts as an extra absence or triggers messages!
-      const auditAction = difference !== 0
-        ? `Inasistencias actualizadas en fecha ${selectedDateDMY}: ${oldAbsences} → ${finalAbsences} faltas${reasonTrimmed ? ` (${reasonTrimmed})` : ''}`
-        : `Verificación de inasistencias en fecha ${selectedDateDMY}: ${finalAbsences} faltas${reasonTrimmed ? ` (${reasonTrimmed})` : ''}`;
-
-      const auditEntry: StudentHistoryItem = {
-        id: `rec-abs-edit-${student.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        studentId: student.id,
-        studentName: studentFullName,
-        courseId: activeCourse.id,
-        date: selectedDateDMY,
-        time,
-        term,
-        action: auditAction,
-        category: 'Sistema',
-        pointsChange: 0,
-        timestamp: recordTimestamp,
-        messageSent: false,
-        messageText: '',
-        notificationMethod: 'omitted',
-        omitNotification: true,
-        notifiedAt: 'No enviar',
-      };
-
-      updatedHistory = deduplicateHistory([auditEntry, ...updatedHistory]);
-      setHistoryList(updatedHistory);
-      saveTermDisposition(term, updatedMap, updatedHistory);
-
-      // Trigger Sheets Sync immediately
-      triggerSheetsSync(
-        term === '1c' ? updatedMap : dispositionMap,
-        updatedHistory,
-        term === '2c' ? updatedMap : dispositionMap2c
-      );
-
-      // Persist to server API
-      api
-        .recordDisposition({
-          id: auditEntry.id,
-          studentId: student.id,
-          studentName: studentFullName,
-          courseId: activeCourse.id,
-          action: auditAction,
-          category: 'Sistema',
-          term,
-          date: selectedDateDMY,
-          time,
-          timestamp: recordTimestamp,
-          messageSent: false,
-          messageText: '',
-          notificationMethod: 'omitted',
-          omitNotification: true,
-          notifiedAt: 'No enviar',
-          expectedSummary: {
-            totalAbsences: finalAbsences,
-            totalLates: current.totalLates ?? 0,
-            totalDisposition: current.totalDisposition ?? 10,
-          },
-        })
-        .catch(() => {});
-
-      setToastMessage(
-        `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'}).`
-      );
-      setTimeout(() => setToastMessage(null), 3500);
-
-      if (moveToNext) {
-        const currentIndex = filteredStudents.findIndex((s) => s.id === student.id);
-        if (currentIndex !== -1 && currentIndex < filteredStudents.length - 1) {
-          const nextStudent = filteredStudents[currentIndex + 1];
-          const nextMetrics = getStudentMetrics(nextStudent.id, term);
-          setEditingAbsenceStudent(nextStudent);
-          setEditingAbsenceCount(String(nextMetrics.totalAbsences));
-          return;
-        }
-      }
-
-      setEditingAbsenceStudent(null);
-    } catch (err: any) {
-      setToastMessage(`Error al guardar: ${err?.message || 'intente nuevamente'}`);
-      setTimeout(() => setToastMessage(null), 3500);
-    } finally {
-      setIsSavingAbsenceEdit(false);
-    }
-  };
-
-  // -------------------------------------------------------------
-  // CARGA MANUAL DE ALUMNOS (CON CORREO) Y MENSAJES DIRECTOS
-  // -------------------------------------------------------------
-  const handleOpenAddStudentModal = () => {
-    setAddStudentFirstName('');
-    setAddStudentLastName('');
-    setAddStudentEmail('');
-    setAddStudentPhone('');
-    setAddStudentNotes('');
-    setAddStudentTab('single');
-    setBatchStudentsText('');
-    setIsAddStudentModalOpen(true);
-  };
-
-  const handleSaveSingleStudent = async (addAnother: boolean = false) => {
-    if (!activeCourse) return;
-    const firstName = addStudentFirstName.trim();
-    const lastName = addStudentLastName.trim();
-    const email = addStudentEmail.trim();
-
-    if (!firstName || !lastName) {
-      setToastMessage('Por favor, ingresá el nombre y apellido del estudiante.');
-      setTimeout(() => setToastMessage(null), 3500);
-      return;
-    }
-
-    setIsSavingManualStudent(true);
-    try {
-      await api.createStudent({
-        courseId: activeCourse.id,
-        firstName,
-        lastName,
-        email: email || undefined,
-      });
-
-      // Notify listeners and reload data
-      window.dispatchEvent(new Event('docencia_student_status_updated'));
-      if (onRefreshData) onRefreshData();
-
-      setToastMessage(`Alumno/a "${lastName}, ${firstName}" agregado con éxito.`);
-      setTimeout(() => setToastMessage(null), 4000);
-
-      if (addAnother) {
-        setAddStudentFirstName('');
-        setAddStudentLastName('');
-        setAddStudentEmail('');
-        setAddStudentPhone('');
-        setAddStudentNotes('');
-      } else {
-        setIsAddStudentModalOpen(false);
-      }
-    } catch (err: any) {
-      setToastMessage(`Error al guardar estudiante: ${err?.message || 'intente nuevamente'}`);
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsSavingManualStudent(false);
-    }
-  };
-
-  const handleSaveBatchStudents = async () => {
-    if (!activeCourse || !batchStudentsText.trim()) return;
-    setIsSavingManualStudent(true);
-    try {
-      const lines = batchStudentsText.split('\n').map((l) => l.trim()).filter(Boolean);
-      const parsed: Array<{ firstName: string; lastName: string; email?: string }> = [];
-
-      for (const line of lines) {
-        if (line.includes(',')) {
-          const parts = line.split(',').map((p) => p.trim());
-          if (parts.length >= 2) {
-            const lastName = parts[0];
-            const firstName = parts[1];
-            const email = parts[2] || '';
-            parsed.push({ firstName, lastName, email: email || undefined });
-            continue;
-          }
-        }
-
-        const emailMatch = line.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-        const email = emailMatch ? emailMatch[1] : '';
-        const namePart = line.replace(email, '').trim().replace(/[,;\t]/g, ' ').replace(/\s+/g, ' ');
-        const words = namePart.split(' ').filter(Boolean);
-        if (words.length >= 2) {
-          parsed.push({
-            lastName: words[0],
-            firstName: words.slice(1).join(' '),
-            email: email || undefined,
-          });
-        } else if (words.length === 1) {
-          parsed.push({
-            lastName: words[0],
-            firstName: 'Alumno',
-            email: email || undefined,
-          });
-        }
-      }
-
-      if (parsed.length === 0) {
-        setToastMessage('No se detectaron alumnos. Formato sugerido: Apellido, Nombre, correo@ejemplo.com');
-        setTimeout(() => setToastMessage(null), 4000);
-        setIsSavingManualStudent(false);
-        return;
-      }
-
-      for (const item of parsed) {
-        await api.createStudent({
-          courseId: activeCourse.id,
-          firstName: item.firstName,
-          lastName: item.lastName,
-          email: item.email,
-        });
-      }
-
-      window.dispatchEvent(new Event('docencia_student_status_updated'));
-      if (onRefreshData) onRefreshData();
-
-      setToastMessage(`¡Éxito! Se agregaron ${parsed.length} alumnos a ${activeCourse.name}.`);
-      setTimeout(() => setToastMessage(null), 4500);
-      setIsAddStudentModalOpen(false);
-      setBatchStudentsText('');
-    } catch (err: any) {
-      setToastMessage(`Error al guardar lote: ${err?.message || 'intente nuevamente'}`);
-      setTimeout(() => setToastMessage(null), 4000);
-    } finally {
-      setIsSavingManualStudent(false);
-    }
-  };
-
-  const handleOpenDirectMessageModal = (student: Student) => {
-    const defaultSubject = `Comunicado de ${activeCourse.name}`;
-    const defaultMsg = `Estimado/a ${student.firstName},\n\nNos comunicamos desde la materia ${activeCourse.name}.\n\nSaludos cordiales.`;
-    setDirectMessageModal({
-      isOpen: true,
-      student,
-      subject: defaultSubject,
-      messageText: defaultMsg,
-      channel: student.email ? 'gmail' : 'classroom',
-      isSending: false,
-    });
-  };
-
-  const handleSendDirectMessage = async () => {
-    if (!directMessageModal.student || !directMessageModal.messageText.trim()) return;
-    const { student, subject, messageText, channel } = directMessageModal;
-
-    setDirectMessageModal((prev) => ({ ...prev, isSending: true }));
-    try {
-      if (channel === 'gmail') {
-        if (!student.email) {
-          throw new Error('El estudiante no tiene correo electrónico cargado.');
-        }
-        const res = await gmailService.sendEmail(student.email, subject, messageText);
-        if (!res.success) {
-          // Fallback to mailto link
-          window.open(
-            `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageText)}`
-          );
-        }
-      } else if (channel === 'classroom') {
-        const cid = activeCourse.classroomCourseId || activeCourse.id;
-        await classroomService.createIndividualAnnouncement(cid, student.id, messageText);
-      } else if (channel === 'whatsapp') {
-        const phone = (student as any).phone ? (student as any).phone.replace(/[^0-9]/g, '') : '';
-        const waUrl = phone
-          ? `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`
-          : `https://wa.me/?text=${encodeURIComponent(messageText)}`;
-        window.open(waUrl, '_blank');
-      }
-
-      // Log in permanent history
-      const now = new Date();
-      const pad = (n: number) => n.toString().padStart(2, '0');
-      const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-      const newHistoryItem: StudentHistoryItem = {
-        id: `msg-${student.id}-${Date.now()}`,
-        studentId: student.id,
-        studentName: `${student.lastName}, ${student.firstName}`,
-        courseId: activeCourse.id,
-        date: formatLocalDateDMY(),
-        time: timeStr,
-        term: activeConcreteTerm,
-        action: `Mensaje directo enviado: "${subject}"`,
-        category: 'Disposición',
-        pointsChange: 0,
-        timestamp: Date.now(),
-        messageSent: true,
-        messageText,
-        notificationMethod: channel,
-        notifiedAt: timeStr,
-      };
-
-      const updated = deduplicateHistory([newHistoryItem, ...historyList]);
-      setHistoryList(updated);
-      saveTermDisposition(
-        activeConcreteTerm,
-        activeConcreteTerm === '2c' ? dispositionMap2c : dispositionMap,
-        updated
-      );
-      api.recordDisposition({
-        id: newHistoryItem.id,
-        studentId: student.id,
-        studentName: newHistoryItem.studentName,
-        courseId: activeCourse.id,
-        action: newHistoryItem.action,
-        category: 'Disposición',
-        term: newHistoryItem.term,
-        date: newHistoryItem.date,
-        time: newHistoryItem.time,
-        timestamp: newHistoryItem.timestamp,
-        messageSent: true,
-        messageText,
-        notificationMethod: channel,
-        notifiedAt: newHistoryItem.notifiedAt,
-      }).catch(() => {});
-
-      setToastMessage(`Mensaje enviado a ${student.firstName} ${student.lastName} correctamente.`);
-      setTimeout(() => setToastMessage(null), 4000);
-      setDirectMessageModal((prev) => ({ ...prev, isOpen: false, isSending: false }));
-    } catch (err: any) {
-      setToastMessage(`Error al enviar mensaje: ${err?.message || 'intente de nuevo'}`);
-      setTimeout(() => setToastMessage(null), 4000);
-      setDirectMessageModal((prev) => ({ ...prev, isSending: false }));
-    }
-  };
-
-  const handleSaveEditedStudentEmail = async () => {
-    if (!selectedStudentForProfile || !editedStudentEmail.trim()) return;
-    try {
-      const emailTrimmed = editedStudentEmail.trim();
-      await api.updateStudent(selectedStudentForProfile.id, activeCourse.id, {
-        email: emailTrimmed,
-      });
-      setSelectedStudentForProfile({
-        ...selectedStudentForProfile,
-        email: emailTrimmed,
-      });
-      setIsEditingStudentEmail(false);
-      window.dispatchEvent(new Event('docencia_student_status_updated'));
-      if (onRefreshData) onRefreshData();
-      setToastMessage(`Correo actualizado para ${selectedStudentForProfile.firstName}: ${emailTrimmed}`);
-      setTimeout(() => setToastMessage(null), 3500);
-    } catch (err: any) {
-      setToastMessage(`Error al actualizar correo: ${err?.message || 'intente de nuevo'}`);
-      setTimeout(() => setToastMessage(null), 3500);
-    }
-  };
-
-  // -------------------------------------------------------------
-  // OBSERVACIONES Y FICHA DEL ESTUDIANTE (NOTAS / INFORMES)
-  // -------------------------------------------------------------
-  const handleOpenStudentProfile = (student: Student) => {
-    setSelectedStudentForProfile(student);
-    setNewObservationText('');
-    setNewObservationUrl('');
-  };
-
-  const handleNavigateProfileStudent = (direction: -1 | 1) => {
-    if (!selectedStudentForProfile) return;
-    const currentIndex = filteredStudents.findIndex((s) => s.id === selectedStudentForProfile.id);
-    if (currentIndex === -1) return;
-    const targetIndex = currentIndex + direction;
-    if (targetIndex >= 0 && targetIndex < filteredStudents.length) {
-      setSelectedStudentForProfile(filteredStudents[targetIndex]);
-      setNewObservationText('');
-      setNewObservationUrl('');
-    }
-  };
-
-  const handleSaveObservation = (student: Student) => {
-    if (!newObservationText.trim() && !newObservationUrl.trim()) {
-      setToastMessage('Escribí una observación o pegá un enlace al informe.');
-      setTimeout(() => setToastMessage(null), 3000);
-      return;
-    }
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-
-    let formattedUrl = newObservationUrl.trim();
-    if (formattedUrl && !formattedUrl.startsWith('http://') && !formattedUrl.startsWith('https://')) {
-      formattedUrl = `https://${formattedUrl}`;
-    }
-
-    const newObs: StudentObservation = {
-      id: `obs-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      studentId: student.id,
-      courseId: activeCourse?.id || '',
-      text: newObservationText.trim(),
-      reportUrl: formattedUrl || undefined,
-      date,
-      timestamp: Date.now(),
-    };
-
-    const currentList = studentObservations[student.id] || [];
-    const updatedList = [newObs, ...currentList];
-    const updatedMap = {
-      ...studentObservations,
-      [student.id]: updatedList,
-    };
-
-    setStudentObservations(updatedMap);
-    if (typeof window !== 'undefined') {
-      try {
-        setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
-        }
-        const uid = getActiveUserId();
-        if (uid) {
-          firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {
-            enqueueOfflineAction('observation_save', { obs: newObs, map: updatedMap });
-          });
-        } else {
-          enqueueOfflineAction('observation_save', { obs: newObs, map: updatedMap });
-        }
-      } catch (_) {}
-    }
-
-    setNewObservationText('');
-    setNewObservationUrl('');
-    setToastMessage(`Observación guardada para ${student.lastName}, ${student.firstName}`);
-    setTimeout(() => setToastMessage(null), 3000);
-  };
-
-  const handleDeleteObservation = (studentId: string, obsId: string) => {
-    const currentList = studentObservations[studentId] || [];
-    const updatedList = currentList.filter((o) => o.id !== obsId);
-    const updatedMap = {
-      ...studentObservations,
-      [studentId]: updatedList,
-    };
-
-    setStudentObservations(updatedMap);
-    if (typeof window !== 'undefined') {
-      try {
-        setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
-        }
-        const uid = getActiveUserId();
-        if (uid) {
-          firestoreSync.saveStudentObservationsMap(uid, updatedMap).catch(() => {
-            enqueueOfflineAction('observation_delete', { map: updatedMap });
-          });
-        } else {
-          enqueueOfflineAction('observation_delete', { map: updatedMap });
-        }
-      } catch (_) {}
-    }
-
-    setToastMessage('Observación eliminada.');
-    setTimeout(() => setToastMessage(null), 2500);
-  };
-
-  // Generar el HTML formateado para Google Docs (.gdoc) de la Ficha de Seguimiento del Alumno
-  const buildStudentTrackingDocHtml = (
-    student: Student,
-    tl: any,
-    disp: number,
-    m1: StudentDispositionData,
-    m2: StudentDispositionData
-  ) => {
-    const observations = studentObservations[student.id] || [];
-    const termLabel =
-      attendanceTerm === 'annual'
-        ? 'Ciclo Lectivo Anual'
-        : attendanceTerm === '1c'
-        ? '1° Cuatrimestre'
-        : '2° Cuatrimestre';
-
-    const currentDateStr = new Date().toLocaleDateString('es-AR', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    });
-
-    const statusBadgeColor =
-      tl.status === 'alert'
-        ? '#dc2626'
-        : tl.status === 'warning'
-        ? '#d97706'
-        : '#059669';
-
-    const statusBg =
-      tl.status === 'alert'
-        ? '#fef2f2'
-        : tl.status === 'warning'
-        ? '#fffbeb'
-        : '#ecfdf5';
-
-    // Cargar notas de exámenes y TPs de la pestaña Calificaciones (1°C y 2°C)
-    const loadTermExamsForDoc = (term: '1c' | '2c') => {
-      if (!activeCourse) return [];
-      try {
-        const catRaw =
-          localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${term}`)) ||
-          localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
-          (term === '1c'
-            ? localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}`)) ||
-              localStorage.getItem(`fds_grades_categories_${activeCourse.id}`)
-            : null) ||
-          localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null);
-        const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
-
-        const gradesRaw =
-          localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${term}`)) ||
-          localStorage.getItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
-          (term === '1c'
-            ? localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}`)) ||
-              localStorage.getItem(`fds_grades_data_${activeCourse.id}`)
-            : null) ||
-          localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
-          (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null);
-        const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
-        const stGrades = gMap[student.id] || {};
-
-        const items: { id: string; name: string; weight: number; score: number | null }[] = [];
-        for (const cat of cats) {
-          if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
-          if (!cat.subcategories || cat.subcategories.length === 0) {
-            const rawVal = stGrades[cat.id];
-            const parsedNum =
-              rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
-                ? Number(String(rawVal).replace(',', '.'))
-                : NaN;
-            items.push({
-              id: cat.id,
-              name: cat.name,
-              weight: (cat as any).weight ?? 0,
-              score: !isNaN(parsedNum) ? parsedNum : null,
-            });
-          } else {
-            for (const sub of cat.subcategories) {
-              if (/disposici[oó]n|conducta/i.test(sub.name)) continue;
-              const rawVal = stGrades[sub.id];
-              const parsedNum =
-                rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
-                  ? Number(String(rawVal).replace(',', '.'))
-                  : NaN;
-              items.push({
-                id: sub.id,
-                name: sub.name,
-                weight: (sub as any).weight ?? (cat as any).weight ?? 0,
-                score: !isNaN(parsedNum) ? parsedNum : null,
-              });
-            }
-          }
-        }
-        return items;
-      } catch {
-        return [];
-      }
-    };
-
-    const exams1c = loadTermExamsForDoc('1c');
-    const exams2c = loadTermExamsForDoc('2c');
-
-    // Calcular promedios de 1°C, 2°C y Final si hay notas cargadas
-    const computeWeightedAvg = (items: { weight: number; score: number | null }[]) => {
-      const valid = items.filter((i) => i.score !== null);
-      if (valid.length === 0) return null;
-      const totalWeight = valid.reduce((acc, cur) => acc + (cur.weight || 1), 0);
-      if (totalWeight <= 0) return null;
-      const sum = valid.reduce((acc, cur) => acc + (cur.score || 0) * (cur.weight || 1), 0);
-      return Number((sum / totalWeight).toFixed(2));
-    };
-
-    const avg1c = computeWeightedAvg(exams1c);
-    const avg2c = computeWeightedAvg(exams2c);
-    const finalAvg =
-      avg1c !== null && avg2c !== null
-        ? Number(((avg1c + avg2c) / 2).toFixed(2))
-        : avg1c !== null
-        ? avg1c
-        : avg2c;
-
-    return buildModularStudentTrackingDocHtml(student, tl, disp, m1, m2, {
-      activeCourse,
-      attendanceTerm,
+  const {
+    selectedStudentIds,
+    setSelectedStudentIds,
+    selectedPendingHistoryIds,
+    setSelectedPendingHistoryIds,
+    pendingAbsenceItems,
+    pendingConductItems,
+    pendingAllItems,
+    conductRecordModal,
+    setConductRecordModal,
+    selectedStudentForHistory,
+    setSelectedStudentForHistory,
+    editingDispositionStudent,
+    setEditingDispositionStudent,
+    editingDispositionScore,
+    setEditingDispositionScore,
+    editingDispositionTerm,
+    setEditingDispositionTerm,
+    editingDispositionReason,
+    setEditingDispositionReason,
+    editingAbsenceStudent,
+    setEditingAbsenceStudent,
+    editingAbsenceCount,
+    setEditingAbsenceCount,
+    editingAbsenceTerm,
+    setEditingAbsenceTerm,
+    editingAbsenceDate,
+    setEditingAbsenceDate,
+    editingAbsenceReason,
+    setEditingAbsenceReason,
+    editingAbsenceSendNotif,
+    setEditingAbsenceSendNotif,
+    editingAbsenceChannel,
+    setEditingAbsenceChannel,
+    editingAbsenceMessageText,
+    setEditingAbsenceMessageText,
+    isSavingAbsenceEdit,
+    isSendDispositionModalOpen,
+    setIsSendDispositionModalOpen,
+    pulsingStudentId,
+    handleAddAbsence,
+    sendNotificationForItem,
+    getBatchMessageForItem,
+    handleOpenBatchFromPending,
+    handleOpenBatchFromSelectedStudents,
+    handleOpenBatchFromSelectedHistory,
+    handleSendBatchNotifications,
+    toggleSelectStudent,
+    toggleSelectAllStudents,
+    toggleSelectPendingHistory,
+    toggleSelectAllPendingHistory,
+    handleMarkOmitNotification,
+    handleBatchMarkOmitNotification,
+    handleMarkAllPendingAsOmitted,
+    handleRecordDispositionAction,
+    handleConfirmConductRecord,
+    handleDeleteHistoryEntry,
+    handleDeleteLatestAbsence,
+    handleDeleteLatestLate,
+    handleRecordLateArrival,
+    handleOpenNotifyModal,
+    handleCopyForGoogleSheets,
+    handleExportHistoryCsv,
+    handleExportHistoryExcel,
+    handleOpenEditDisposition,
+    handleChangeEditingTerm,
+    handleNavigateEditStudent,
+    handleSaveStudentDisposition,
+    handleOpenEditAbsences,
+    handleChangeEditingAbsenceTerm,
+    handleNavigateEditAbsenceStudent,
+    handleSaveStudentAbsences,
+    handleSaveEditedStudentEmail,
+    handleOpenStudentProfile,
+    handleNavigateProfileStudent,
+    handleSaveObservation,
+    handleDeleteObservation,
+    buildStudentTrackingDocHtml,
+    handleOpenExportProfileDocConfirm,
+    handleConfirmExportProfileToGoogleDoc,
+    handlePrintStudentProfile,
+    handleResetSingleStudentDisposition,
+    handleResetCourseDisposition,
+    handleSendDispositionToGrades,
+  } = useCourseAttendanceAndDispositionActions({
+    activeCourse,
+    students,
+    courseStudents,
+    filteredStudents,
+    dispositionMap,
+    setDispositionMap,
+    dispositionMap2c,
+    setDispositionMap2c,
+    historyList,
+    setHistoryList,
+    courseHistory,
+    attendanceTerm,
+    activeConcreteTerm,
+    notifSettings,
+    savedPresets,
+    batchAbsenceModal,
+    setBatchAbsenceModal,
+    setAbsenceNotifModal,
+    formatTemplateForStudent,
+    getTemplateForReason,
+    handleAddConductOption,
+    getStudentMetrics,
+    saveTermDisposition,
+    deduplicateHistory,
+    triggerSheetsSync,
+    sheetConfig,
+    courseDriveStructure,
+    setCourseDriveStructure,
+    token,
+    onRefreshData,
+    setActiveTab,
+    setToastMessage,
+    setCourseReportModalStudentId,
+    setCourseReportModalTab,
+    setCourseReportModalOpen,
+    studentObservationsProps: {
+      selectedStudentForProfile,
+      setSelectedStudentForProfile,
+      editedStudentEmail,
+      setIsEditingStudentEmail,
+      newObservationText,
+      setNewObservationText,
+      newObservationUrl,
+      setNewObservationUrl,
       studentObservations,
-      historyList,
-    });
-  };
+      setStudentObservations,
+      profileDocTitle,
+      setProfileDocTitle,
+      profileDocLinkToObs,
+      setShowProfileDocConfirm,
+      setIsExportingProfileDoc,
+      setExportedProfileDoc,
+      setProfileDocError,
+    },
+  });
 
-
-
-  const handleOpenExportProfileDocConfirm = (student: Student) => {
-    const defaultTitle = `📄 Ficha de Seguimiento - ${student.lastName}, ${student.firstName} (${activeCourse?.name || 'Materia'})`;
-    setProfileDocTitle(defaultTitle);
-    setProfileDocError(null);
-    setShowProfileDocConfirm(true);
-  };
-
-  const handleConfirmExportProfileToGoogleDoc = async (
-    student: Student,
-    tl: any,
-    disp: number,
-    m1: StudentDispositionData,
-    m2: StudentDispositionData
-  ) => {
-    if (!student || !activeCourse) return;
-    setIsExportingProfileDoc(true);
-    setProfileDocError(null);
-
-    try {
-      const htmlContent = buildStudentTrackingDocHtml(student, tl, disp, m1, m2);
-      const finalDocTitle =
-        profileDocTitle.trim() ||
-        `📄 Ficha de Seguimiento - ${student.lastName}, ${student.firstName} (${activeCourse.name})`;
-
-      // Obtener o asegurar la carpeta del curso en Google Drive
-      let parentFolderId = courseDriveStructure?.mainFolder?.id;
-      if (!parentFolderId) {
-        try {
-          const folderStruct = await driveService.ensureCourseFolderStructure(
-            activeCourse.name,
-            activeCourse.id
-          );
-          parentFolderId = folderStruct.mainFolder.id;
-          setCourseDriveStructure(folderStruct);
-        } catch {
-          // Si no se pudo crear carpeta, se guarda en Mi Unidad de Drive
-        }
-      }
-
-      // Crear el documento nativo editable de Google Docs (.gdoc) mediante la API de Google Drive
-      const uploadedDoc = await driveService.uploadReportFile(
-        finalDocTitle,
-        htmlContent,
-        parentFolderId,
-        true
-      );
-
-      const docLink = uploadedDoc.webViewLink || uploadedDoc.url;
-
-      setExportedProfileDoc({
-        id: uploadedDoc.id,
-        name: uploadedDoc.name,
-        webViewLink: docLink,
-        studentId: student.id,
-      });
-      setShowProfileDocConfirm(false);
-
-      // Si el docente eligió vincular automáticamente el .gdoc a las Observaciones de la Ficha:
-      if (profileDocLinkToObs) {
-        const now = new Date();
-        const pad = (n: number) => n.toString().padStart(2, '0');
-        const dateStr = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-        const newObs: StudentObservation = {
-          id: `obs-gdoc-${Date.now()}`,
-          studentId: student.id,
-          courseId: activeCourse.id,
-          date: dateStr,
-          text: `Ficha de Seguimiento exportada a Google Docs (.gdoc editable): "${uploadedDoc.name}"`,
-          reportUrl: docLink,
-          timestamp: Date.now(),
-        };
-        const currentList = studentObservations[student.id] || [];
-        const updatedMap = {
-          ...studentObservations,
-          [student.id]: [newObs, ...currentList],
-        };
-        setStudentObservations(updatedMap);
-        try {
-          setUserScopedItem('fds_student_observations', JSON.stringify(updatedMap));
-          if (activeCourse.id) {
-            setUserScopedItem(`fds_student_observations_${activeCourse.id}`, JSON.stringify(updatedMap));
-          }
-          const uid = getActiveUserId();
-          if (uid) {
-            firestoreSync.saveStudentObservation(uid, newObs, updatedMap).catch(() => {});
-          }
-        } catch (_) {}
-      }
-
-      setToastMessage(`Ficha de seguimiento creada en Google Drive (.gdoc editable).`);
-      setTimeout(() => setToastMessage(null), 4000);
-    } catch (err: any) {
-      setProfileDocError(
-        err?.message || 'No se pudo exportar la ficha a Google Drive. Verificá tu conexión con Google Workspace.'
-      );
-    } finally {
-      setIsExportingProfileDoc(false);
-    }
-  };
-
-  // Imprimir o descargar en PDF la ficha pedagógica individual del alumno
-  const handlePrintStudentProfile = (
-    student: Student,
-    _tl: any,
-    _disp: number,
-    _m1: StudentDispositionData,
-    _m2: StudentDispositionData
-  ) => {
-    if (!student) return;
-    // Open the full interactive customizable report modal for this student
-    setCourseReportModalStudentId(student.id);
-    setCourseReportModalTab('individual');
-    setCourseReportModalOpen(true);
-  };
-
-  // 7b. Reiniciar / Borrar disposición por alumno individual
-  const handleResetSingleStudentDisposition = async (student: Student, clearHistory: boolean = false) => {
-    if (!activeCourse || !student) return;
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-    const updatedMap: Record<string, StudentDispositionData> = {
-      ...baseMap,
-      [student.id]: {
-        ...current,
-        totalDisposition: 10,
-      },
-    };
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-    const studentFullName = `${student.lastName}, ${student.firstName}`;
-
-    let updatedHistory = [...historyList];
-    if (clearHistory) {
-      const removedIds: string[] = [];
-      updatedHistory = updatedHistory.filter((h) => {
-        const isTarget =
-          h.studentId === student.id &&
-          (!activeCourse?.id || !h.courseId || h.courseId === activeCourse.id) &&
-          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-          (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
-        if (isTarget) {
-          removedIds.push(h.id);
-          return false;
-        }
-        return true;
-      });
-      removedIds.forEach((id) => markHistoryIdDeleted(id));
-    }
-
-    const resetEntry: StudentHistoryItem = {
-      id: `rec-reset-${student.id}-${timestamp}`,
-      studentId: student.id,
-      studentName: studentFullName,
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: clearHistory
-        ? `Disposición borrada y restablecida a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
-        : `Puntaje de disposición restablecido a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
-      category: 'Sistema',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-
-    updatedHistory = deduplicateHistory([resetEntry, ...updatedHistory]);
-    setHistoryList(updatedHistory);
-    saveTermDisposition(targetTerm, updatedMap, updatedHistory);
-
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
-    api
-      .resetDisposition({
-        studentId: student.id,
-        courseId: activeCourse.id,
-        resetWhat: 'disposition',
-        clearHistory,
-      })
-      .catch(() => {});
-
-    setToastMessage(
-      clearHistory
-        ? `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}). Anotaciones de conducta limpiadas.`
-        : `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
-    );
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  // 7b. Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
-  const handleResetCourseDisposition = (clearHistory: boolean = false) => {
-    if (!activeCourse) return;
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const updated: Record<string, StudentDispositionData> = { ...baseMap };
-    courseStudents.forEach((st) => {
-      const current = updated[st.id] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-      updated[st.id] = {
-        ...current,
-        totalDisposition: 10,
-      };
-    });
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-
-    let updatedHistory = [...historyList];
-    if (clearHistory) {
-      const removedIds: string[] = [];
-      updatedHistory = updatedHistory.filter((h) => {
-        const isTarget =
-          h.courseId === activeCourse.id &&
-          (targetTerm === '2c' ? h.term === '2c' : (h.term === '1c' || !h.term)) &&
-          (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
-        if (isTarget) {
-          removedIds.push(h.id);
-          return false;
-        }
-        return true;
-      });
-      removedIds.forEach((id) => markHistoryIdDeleted(id));
-    }
-
-    const resetEntry: StudentHistoryItem = {
-      id: `rec-reset-${timestamp}`,
-      studentId: 'all',
-      studentName: 'Toda la clase',
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: clearHistory
-        ? `Reinicio general de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
-        : `Reinicio general de puntaje de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
-      category: 'Sistema',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-    const updatedHistoryDedup = deduplicateHistory([resetEntry, ...updatedHistory]);
-    setHistoryList(updatedHistoryDedup);
-    saveTermDisposition(targetTerm, updated, updatedHistoryDedup);
-
-    setToastMessage(
-      clearHistory
-        ? `Disposición restablecida a 10 para todos los estudiantes en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
-        : `Puntaje de disposición reiniciado a 10 en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
-    );
-    setTimeout(() => setToastMessage(null), 3500);
-
-    triggerSheetsSync(
-      targetTerm === '1c' ? updated : dispositionMap,
-      updatedHistoryDedup,
-      targetTerm === '2c' ? updated : dispositionMap2c
-    );
-    api.resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition', clearHistory }).catch(() => {});
-  };
-
-  // Mandar la nota de disposición calculada (1 a 10) de todos los alumnos a Calificaciones
-  // Se envía automáticamente al cuatrimestre seleccionado en la planilla (1° Cuatrimestre o 2° Cuatrimestre)
-  const handleSendDispositionToGrades = (
-    targetTermOverride?: '1c' | '2c',
-    shouldNavigateToGrades = false
-  ) => {
-    if (!activeCourse) return;
-    const term: '1c' | '2c' = targetTermOverride || activeConcreteTerm;
-    const courseId = activeCourse.id;
-
-    const catKey = getUserStorageKey(`fds_grades_categories_${courseId}_${term}`);
-    const gradesKey = getUserStorageKey(`fds_grades_data_${courseId}_${term}`);
-
-    // 1. Obtener o inicializar las categorías del cuatrimestre destino
-    let categories: GradeCategory[] = [];
-    try {
-      const saved =
-        localStorage.getItem(catKey) ||
-        (term === '1c' ? localStorage.getItem(`fds_grades_categories_${courseId}`) : null);
-      if (saved) {
-        categories = JSON.parse(saved);
-      }
-    } catch (_) {}
-
-    if (!Array.isArray(categories) || categories.length === 0) {
-      categories =
-        term === '2c'
-          ? DEFAULT_CATEGORIES.map((cat) => ({
-              ...cat,
-              id: `c2-${cat.id}`,
-              subcategories: cat.subcategories.map((sub) => ({ ...sub, id: `c2-${sub.id}` })),
-            }))
-          : DEFAULT_CATEGORIES.map((cat) => ({
-              ...cat,
-              subcategories: cat.subcategories.map((sub) => ({ ...sub })),
-            }));
-    }
-
-    // 2. Buscar si ya existe una subcategoría de Disposición o Conducta
-    let targetSubId: string | null = null;
-
-    for (const cat of categories) {
-      const foundSub = cat.subcategories?.find((s) => {
-        const lower = s.name.toLowerCase();
-        return (
-          lower.includes('disposición') ||
-          lower.includes('disposicion') ||
-          lower.includes('conducta')
-        );
-      });
-      if (foundSub) {
-        targetSubId = foundSub.id;
-        break;
-      }
-    }
-
-    // 3. Si no existe, crear la columna "Nota de Disposición"
-    if (!targetSubId) {
-      let parentCat = categories.find((c) => {
-        const lower = c.name.toLowerCase();
-        return (
-          lower.includes('desempeño') ||
-          lower.includes('desempeno') ||
-          lower.includes('participación') ||
-          lower.includes('participacion') ||
-          lower.includes('tareas')
-        );
-      });
-
-      if (!parentCat && categories.length > 0) {
-        parentCat = categories[categories.length - 1];
-      }
-
-      const newSubId = `sub-disp-${term}-${Date.now()}`;
-      const newSub: GradeSubcategory = {
-        id: newSubId,
-        name: 'Nota de Disposición',
-        maxScore: 10,
-        date: new Date().toLocaleDateString('es-AR'),
-      };
-
-      if (parentCat) {
-        if (!parentCat.subcategories) parentCat.subcategories = [];
-        parentCat.subcategories.push(newSub);
-      } else {
-        const newCat: GradeCategory = {
-          id: `cat-disp-${term}-${Date.now()}`,
-          name: 'Desempeño y Conducta',
-          color: 'bg-purple-500',
-          subcategories: [newSub],
-        };
-        categories.push(newCat);
-      }
-      targetSubId = newSubId;
-
-      // Guardar categorías actualizadas
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(catKey, JSON.stringify(categories));
-        if (term === '1c') {
-          localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(categories));
-        }
-      }
-    }
-
-    // 4. Obtener o inicializar las calificaciones del cuatrimestre
-    let gradesMap: StudentGradesMap = {};
-    try {
-      const savedGrades =
-        localStorage.getItem(gradesKey) ||
-        (term === '1c' ? localStorage.getItem(`fds_grades_data_${courseId}`) : null);
-      if (savedGrades) {
-        gradesMap = JSON.parse(savedGrades);
-      }
-    } catch (_) {}
-
-    // 5. Asignar la nota de disposición de cada alumno calculada para este cuatrimestre
-    let transferredCount = 0;
-    courseStudents.forEach((st) => {
-      const metrics = getStudentMetrics(st.id, term);
-      const score = String(metrics.totalDisposition);
-      if (!gradesMap[st.id]) {
-        gradesMap[st.id] = {};
-      }
-      gradesMap[st.id][targetSubId!] = score;
-      transferredCount++;
-    });
-
-    // Guardar calificaciones actualizadas en localStorage
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(gradesKey, JSON.stringify(gradesMap));
-      if (term === '1c') {
-        localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(gradesMap));
-      }
-      localStorage.setItem(`fds_grades_active_term_${courseId}`, term);
-      window.dispatchEvent(
-        new CustomEvent('fds-grades-updated', {
-          detail: { term, courseId },
-        })
-      );
-    }
-
-    const termLabel = term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-    const gradesEntry: StudentHistoryItem = {
-      id: `rec-grades-${timestamp}`,
-      studentId: 'all',
-      studentName: 'Toda la clase',
-      courseId: activeCourse.id,
-      term,
-      date,
-      time,
-      action: `Notas de disposición enviadas a Calificaciones (${termLabel})`,
-      category: 'Calificación',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-    const updatedHistory = deduplicateHistory([gradesEntry, ...historyList]);
-    setHistoryList(updatedHistory);
-
-    // 1. Registrar inmediatamente el evento en el Historial de Google Sheets
-    triggerSheetsSync(
-      term === '1c' ? dispositionMap : undefined,
-      updatedHistory,
-      term === '2c' ? dispositionMap2c : undefined
-    );
-
-    // 2. Guardar y sincronizar la matriz completa de Calificaciones del cuatrimestre en Google Sheets
-    sheetsService
-      .syncGradebookMatrixToSheet(
-        activeCourse,
-        term,
-        courseStudents,
-        categories,
-        gradesMap,
-        sheetConfig?.spreadsheetId || activeCourse.gradesSheetId,
-        activeCourse.gradesFolderId,
-        token || getCachedAccessToken() || undefined
-      )
-      .catch((err) => {
-        console.warn('Could not auto-sync gradebook matrix to Google Sheets:', err);
-      });
-
-    // 3. Guardar snapshot del cierre de cuatrimestre en Firestore para respaldo permanente
-    const currentUserId = getActiveUserId();
-    if (currentUserId) {
-      firestoreSync
-        .saveTermSnapshot(currentUserId, courseId, term, {
-          courseId,
-          term,
-          termLabel,
-          categories,
-          gradesMap,
-          dispositionMap: term === '2c' ? dispositionMap2c : dispositionMap,
-          transferredCount,
-          date,
-          time,
-        })
-        .catch(() => {});
-    }
-
-    // 4. Persistir registro en backend / Firestore / localStorage
-    api
-      .recordDisposition({
-        id: gradesEntry.id,
-        studentId: 'all',
-        studentName: 'Toda la clase',
-        courseId: activeCourse.id,
-        term,
-        action: gradesEntry.action,
-        category: 'Calificación',
-        date,
-        time,
-        timestamp,
-      })
-      .catch(() => {});
-
-    setToastMessage(
-      `✓ ¡Notas de disposición vinculadas en Calificaciones (${termLabel}) y sincronizadas con Google Sheets!`
-    );
-    setTimeout(() => setToastMessage(null), 5000);
-
-    setIsSendDispositionModalOpen(false);
-
-    if (shouldNavigateToGrades) {
-      setActiveTab('grades');
-    }
-  };
-
-  // Google Drive Folder Structure Handler:
-  // Creates or finds inside the Course Folder:
-  // [Nombre de la Materia]
-  //   ├── 📄 Asistencia y Disposición - [Materia]
-  //   ├── 📄 Libro de Temas - [Materia] (reproduciendo la tabla de temas)
-  //   ├── 📄 Calificaciones - [Materia]
-  //   └── 📁 Informes (subcarpeta)
-  const handleOpenCourseDriveFolder = async () => {
-    if (!activeCourse || isSettingUpDriveFolder) return;
-    setIsSettingUpDriveFolder(true);
-    try {
-      // 1. Ensure course folder and "Informes" subfolder exist in Google Drive
-      const structure = await driveService.setupCourseFolderStructure(
-        activeCourse.name,
-        activeCourse.driveFolderId
-      );
-
-      // 2. Generate/update the 3 function documents inside the main course folder
-      let dispSheetUrl: string | undefined = activeCourse.dispositionSheetUrl;
-      let dispSheetId: string | undefined = activeCourse.dispositionSheetId;
-      let libroSheetUrl: string | undefined = activeCourse.libroDeTemasSheetUrl;
-      let libroSheetId: string | undefined = activeCourse.libroDeTemasSheetId;
-      let gradesSheetUrl: string | undefined = activeCourse.gradesSheetUrl;
-      let gradesSheetId: string | undefined = activeCourse.gradesSheetId;
-
-      // 2a. Documento 1: Asistencia y Disposición
-      try {
-        const dispRes = await sheetsService.syncDispositionSheet(
-          activeCourse,
-          courseStudents,
-          dispositionMap,
-          historyList,
-          activeCourse.dispositionSheetId,
-          structure.mainFolder.id
-        );
-        if (dispRes.url) dispSheetUrl = dispRes.url;
-        if (dispRes.spreadsheetId && isRealGoogleSpreadsheetId(dispRes.spreadsheetId)) {
-          dispSheetId = dispRes.spreadsheetId;
-        }
-      } catch (err) {
-        console.warn('Could not auto-sync disposition sheet to Drive folder:', err);
-      }
-
-      // 2b. Documento 2: Libro de Temas (reproduciendo la tabla de temas del curso)
-      try {
-        const libroRes = await sheetsService.syncLibroDeTemasToSheet(
-          {
-            id: activeCourse.id,
-            name: activeCourse.name,
-            subject: activeCourse.subject,
-            schedule: activeCourse.schedule,
-          },
-          undefined,
-          structure.mainFolder.id,
-          activeCourse.libroDeTemasSheetId
-        );
-        if (libroRes.url) libroSheetUrl = libroRes.url;
-        if (libroRes.spreadsheetId && isRealGoogleSpreadsheetId(libroRes.spreadsheetId)) {
-          libroSheetId = libroRes.spreadsheetId;
-        }
-      } catch (err) {
-        console.warn('Could not auto-sync Libro de Temas sheet to Drive folder:', err);
-      }
-
-      // 2c. Documento 3: Calificaciones (sincroniza la matriz real de 1°C y 2°C del curso)
-      try {
-        const loadStoredTermGrades = (term: '1c' | '2c') => {
-          const catRaw =
-            localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${term}`)) ||
-            localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
-            (term === '1c'
-              ? localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}`)) ||
-                localStorage.getItem(`fds_grades_categories_${activeCourse.id}`)
-              : null);
-          const gradesRaw =
-            localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${term}`)) ||
-            localStorage.getItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
-            (term === '1c'
-              ? localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}`)) ||
-                localStorage.getItem(`fds_grades_data_${activeCourse.id}`)
-              : null);
-          const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
-          const gMap: Record<string, Record<string, string>> = gradesRaw ? JSON.parse(gradesRaw) : {};
-          return { cats, gMap, hasSavedData: Boolean(catRaw || gradesRaw) };
-        };
-
-        const term1Data = loadStoredTermGrades('1c');
-        const gradesRes1c = await sheetsService.syncGradebookMatrixToSheet(
-          activeCourse,
-          '1c',
-          courseStudents,
-          term1Data.cats,
-          term1Data.gMap,
-          activeCourse.gradesSheetId,
-          structure.mainFolder.id
-        );
-        if (gradesRes1c.url) gradesSheetUrl = gradesRes1c.url;
-        if (gradesRes1c.spreadsheetId && isRealGoogleSpreadsheetId(gradesRes1c.spreadsheetId)) {
-          gradesSheetId = gradesRes1c.spreadsheetId;
-          activeCourse.gradesSheetId = gradesRes1c.spreadsheetId;
-          activeCourse.gradesSheetUrl = gradesRes1c.url;
-        }
-
-        const term2Data = loadStoredTermGrades('2c');
-        if (term2Data.hasSavedData && gradesSheetId) {
-          await sheetsService.syncGradebookMatrixToSheet(
-            activeCourse,
-            '2c',
-            courseStudents,
-            term2Data.cats,
-            term2Data.gMap,
-            gradesSheetId,
-            structure.mainFolder.id
-          );
-        }
-      } catch (err) {
-        console.warn('Could not auto-sync gradebook sheet to Drive folder:', err);
-      }
-
-      // 3. Update course with drive folder metadata
-      const updatedCourseData: Partial<Course> = {
-        driveFolderId: structure.mainFolder.id,
-        driveFolderUrl: structure.mainFolder.url,
-        reportsFolderId: structure.reportsFolder.id,
-        reportsFolderUrl: structure.reportsFolder.url,
-        dispositionSheetId: dispSheetId,
-        dispositionSheetUrl: dispSheetUrl,
-        libroDeTemasSheetId: libroSheetId,
-        libroDeTemasSheetUrl: libroSheetUrl,
-        gradesSheetId: gradesSheetId,
-        gradesSheetUrl: gradesSheetUrl,
-      };
-
-      api.updateCourse(activeCourse.id, updatedCourseData).catch(() => {});
-      Object.assign(activeCourse, updatedCourseData);
-
-      setCourseDriveStructure({
-        ...structure,
-        attendanceSheetUrl: dispSheetUrl,
-        libroDeTemasSheetUrl: libroSheetUrl,
-        gradesSheetUrl: gradesSheetUrl,
-      });
-
-      // 4. Show modal with direct links to the 3 documents and the Informes subfolder
-      setDriveFolderModalOpen(true);
-      setToastMessage(
-        `Carpeta de Drive "${activeCourse.name}" preparada con los 3 documentos (Asistencia y Disposición, Libro de Temas, Calificaciones) y la subcarpeta Informes.`
-      );
-      setTimeout(() => setToastMessage(null), 4500);
-    } catch (err: any) {
-      console.error('Error creating Google Drive folders:', err);
-      setToastMessage('Aviso: Se intentó abrir Drive. Si no estás conectado, inicia sesión con Google.');
-    } finally {
-      setIsSettingUpDriveFolder(false);
-    }
-  };
-
-  // Calculations for summary pills & history
-  const courseHistory = useMemo(() => {
-    if (!activeCourse) return [];
-    const courseStudentIds = new Set(courseStudents.map((s) => s.id));
-    const relevant = historyList.filter(
-      (h) =>
-        h.courseId === activeCourse.id ||
-        (activeCourse.classroomCourseId && h.courseId === activeCourse.classroomCourseId) ||
-        (!h.courseId && courseStudentIds.has(h.studentId))
-    );
-    return deduplicateHistory(relevant).sort((a, b) => b.timestamp - a.timestamp);
-  }, [historyList, activeCourse, courseStudents]);
 
   const distinctCourseDates = useMemo(() => {
     const dates = new Set<string>();

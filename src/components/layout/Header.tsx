@@ -19,12 +19,10 @@ import {
   Database,
   FileSpreadsheet,
   ShieldCheck,
-  Share2,
   Smartphone,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
-import { TeacherGuideModal } from '../common/TeacherGuideModal';
 import {
   subscribeToCloudSyncStatus,
   CloudSyncStatusInfo,
@@ -59,7 +57,6 @@ export const Header: React.FC<HeaderProps> = ({
   const [showAppsMenu, setShowAppsMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
-  const [isGuideOpen, setIsGuideOpen] = useState(false);
   const [isFullBackupOpen, setIsFullBackupOpen] = useState(false);
   const [backupFeedback, setBackupFeedback] = useState<string | null>(null);
   const [isRestoringFullBackup, setIsRestoringFullBackup] = useState(false);
@@ -573,21 +570,6 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Database className="w-4 h-4" />
           <span className="hidden xl:inline text-[11px]">Respaldo</span>
-        </button>
-
-        {/* Share & Teacher Guide Quick Button */}
-        <button
-          type="button"
-          onClick={() => setIsGuideOpen(true)}
-          className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
-            isDarkMode
-              ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-blue-300'
-              : 'bg-blue-50/80 hover:bg-blue-100 border-blue-200 text-blue-700'
-          }`}
-          title="Guía rápida para docentes y enlace para compartir con colegas"
-        >
-          <Share2 className="w-4 h-4" />
-          <span className="hidden xl:inline text-[11px]">Guía / Compartir</span>
         </button>
 
         {/* Dark / Light Mode Toggle Button */}
@@ -1196,14 +1178,6 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         </div>
       )}
-
-      {/* Teacher Guide & Share Modal */}
-      <TeacherGuideModal
-        isOpen={isGuideOpen}
-        onClose={() => setIsGuideOpen(false)}
-        onOpenCalendarSettings={() => onNavigate('calendar_schedule')}
-        onOpenClassroomSync={() => onNavigate('classroom_sync')}
-      />
     </header>
   );
 };

@@ -139,15 +139,28 @@ function parseMinutes(hhmm?: string): number | null {
   return h * 60 + m;
 }
 
-function getEffectiveScheduleStringForCourse(course: Course): string {
-  const rawSched = (course.schedule || '').trim();
-  const hasRealCourseSched =
-    rawSched.length > 0 &&
-    rawSched !== 'Lunes y Miércoles' &&
-    !rawSched.toLowerCase().includes('coordinar') &&
-    !rawSched.toLowerCase().includes('sin horario');
+export function isValidCourseSchedule(sched?: string | null): boolean {
+  if (!sched || typeof sched !== 'string') return false;
+  const raw = sched.trim();
+  if (!raw) return false;
+  const lower = raw.toLowerCase();
+  if (
+    raw === 'Lunes y Miércoles' ||
+    lower === 'sin horario especificado' ||
+    lower === 'horario escolar' ||
+    lower.includes('coordinar') ||
+    lower.includes('sin horario') ||
+    lower.includes('pendiente')
+  ) {
+    return false;
+  }
+  return true;
+}
 
-  if (hasRealCourseSched) return rawSched;
+export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | null): string {
+  if (!course) return '';
+  const rawSched = (course.schedule || '').trim();
+  if (isValidCourseSchedule(rawSched)) return rawSched;
 
   if (typeof window !== 'undefined' && course.id) {
     try {
@@ -155,14 +168,16 @@ function getEffectiveScheduleStringForCourse(course: Course): string {
         sessionStorage.getItem('docencia_teacher_email') ||
         localStorage.getItem('docencia_teacher_email') ||
         '';
-      const candidateKeys = [
+      const sanitizedUid = uid ? uid.replace(/[^a-zA-Z0-9]/g, '_') : '';
+      const candidateKeys = new Set<string>([
         `fds_libro_temas_${course.id}`,
-        ...(uid ? [`fds_libro_temas_${course.id}_teacher_${uid.replace(/[^a-zA-Z0-9]/g, '_')}`] : []),
-      ];
+        ...(uid ? [`fds_libro_temas_${course.id}_${uid}`] : []),
+        ...(sanitizedUid ? [`fds_libro_temas_${course.id}_teacher_${sanitizedUid}`] : []),
+      ]);
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (k && k.startsWith(`fds_libro_temas_${course.id}`)) {
-          candidateKeys.push(k);
+          candidateKeys.add(k);
         }
       }
       for (const k of candidateKeys) {
@@ -170,21 +185,55 @@ function getEffectiveScheduleStringForCourse(course: Course): string {
         if (!raw) continue;
         const parsed = JSON.parse(raw);
         const h = parsed?.metadata?.horario;
-        if (
-          h &&
-          typeof h === 'string' &&
-          h.trim().length > 0 &&
-          h !== 'Sin horario especificado' &&
-          h !== 'Lunes y Miércoles' &&
-          !h.toLowerCase().includes('coordinar')
-        ) {
-          return h.trim();
+        if (isValidCourseSchedule(h)) {
+          return String(h).trim();
+        }
+      }
+
+      // Fallback: reconstruct schedule from saved attendance settings (dailySlots or courseWeekdays)
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(`fds_course_attendance_settings_${course.id}`)) {
+          const raw = localStorage.getItem(k);
+          if (!raw) continue;
+          const settings = JSON.parse(raw);
+          if (settings?.dailySlots && typeof settings.dailySlots === 'object') {
+            const parts: string[] = [];
+            const dayKeys = Object.keys(settings.dailySlots)
+              .map(Number)
+              .filter((n) => !isNaN(n))
+              .sort((a, b) => a - b);
+            for (const dNum of dayKeys) {
+              const slotsArr = settings.dailySlots[dNum] || settings.dailySlots[String(dNum)];
+              if (!Array.isArray(slotsArr) || slotsArr.length === 0) continue;
+              const validSlots = slotsArr.filter((s: any) => s && s.startTime);
+              if (validSlots.length > 0) {
+                const sorted = [...validSlots].sort((a: any, b: any) =>
+                  String(a.startTime).localeCompare(String(b.startTime))
+                );
+                const firstStart = String(sorted[0].startTime).padStart(5, '0');
+                const lastEnd = String(
+                  sorted[sorted.length - 1].endTime || sorted[0].startTime
+                ).padStart(5, '0');
+                const dayName = DAY_NAMES_ES[dNum] || `Día ${dNum}`;
+                parts.push(
+                  lastEnd && lastEnd !== firstStart
+                    ? `${dayName} ${firstStart} - ${lastEnd}`
+                    : `${dayName} ${firstStart}`
+                );
+              }
+            }
+            if (parts.length > 0) {
+              return parts.join(', ');
+            }
+          }
+          break;
         }
       }
     } catch (_) {}
   }
 
-  return hasRealCourseSched ? rawSched : '';
+  return '';
 }
 
 /**

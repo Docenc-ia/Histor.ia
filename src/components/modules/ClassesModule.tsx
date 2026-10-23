@@ -44,9 +44,27 @@ import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import { AttendanceHeader } from './classes/AttendanceHeader';
 import { CourseHeaderCard } from './classes/CourseHeaderCard';
-import { AttendanceSettingsModal } from './classes/AttendanceSettingsModal';
-import { BackupRestoreModal } from './classes/BackupRestoreModal';
-import { QuickRollCallModal } from './classes/QuickRollCallModal';
+const AttendanceSettingsModal = lazy(() =>
+  import('./classes/AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
+);
+const BackupRestoreModal = lazy(() =>
+  import('./classes/BackupRestoreModal').then((m) => ({ default: m.BackupRestoreModal }))
+);
+const QuickRollCallModal = lazy(() =>
+  import('./classes/QuickRollCallModal').then((m) => ({ default: m.QuickRollCallModal }))
+);
+const StudentProfileObservationsModal = lazy(() =>
+  import('./classes/StudentProfileObservationsModal').then((m) => ({ default: m.StudentProfileObservationsModal }))
+);
+const BatchAbsenceNotificationModal = lazy(() =>
+  import('./classes/BatchAbsenceNotificationModal').then((m) => ({ default: m.BatchAbsenceNotificationModal }))
+);
+const NotificationPresetsConfigModal = lazy(() =>
+  import('./classes/NotificationPresetsConfigModal').then((m) => ({ default: m.NotificationPresetsConfigModal }))
+);
+const CourseHistoryTabView = lazy(() =>
+  import('./classes/CourseHistoryTabView').then((m) => ({ default: m.CourseHistoryTabView }))
+);
 import {
   DirectMessageModal,
   AddStudentModal,
@@ -55,8 +73,6 @@ import {
 } from './classes/CourseUtilityModals';
 import { DriveFolderModal, SheetsConnectModal } from './classes/DriveSheetsModals';
 import { CalendarSyncModal, EditCourseDetailsModal } from './classes/CourseCalendarAndEditModals';
-import { CourseHistoryTabView } from './classes/CourseHistoryTabView';
-import { StudentProfileObservationsModal } from './classes/StudentProfileObservationsModal';
 import { RemovedStudentsModals } from './classes/RemovedStudentsModals';
 import {
   ConductRecordModal,
@@ -70,8 +86,6 @@ import {
 } from './classes/EditDispositionAndAbsencesModals';
 import {
   IndividualAbsenceNotificationModal,
-  BatchAbsenceNotificationModal,
-  NotificationPresetsConfigModal,
 } from './classes/AbsenceAndConductNotificationModals';
 import {
   useCourseNotifications,
@@ -1591,37 +1605,39 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           {/* TAB 3: AUDITORÍA E HISTORIAL GENERAL (HOJA GOOGLE SHEETS)     */}
           {/* ------------------------------------------------------------- */}
           {activeTab === 'history' && (
-            <CourseHistoryTabView
-              activeCourse={activeCourse}
-              courseStudents={courseStudents}
-              courseHistory={courseHistory}
-              pendingAllItems={pendingAllItems}
-              selectedPendingHistoryIds={selectedPendingHistoryIds}
-              setSelectedPendingHistoryIds={setSelectedPendingHistoryIds}
-              historySubTab={historySubTab}
-              setHistorySubTab={setHistorySubTab}
-              isSyncingSheet={isSyncingSheet}
-              sheetConfig={sheetConfig}
-              isOpeningSheet={isOpeningSheet}
-              isTokenExpired={isTokenExpired}
-              handleOpenGoogleSheet={handleOpenGoogleSheet}
-              handleManualSheetsSync={handleManualSheetsSync}
-              setSheetsModalFeedback={setSheetsModalFeedback}
-              setShowSheetsConnectModal={setShowSheetsConnectModal}
-              renewGoogleSession={renewGoogleSession}
-              isDarkMode={isDarkMode}
-              handleBatchMarkOmitNotification={handleBatchMarkOmitNotification}
-              handleOpenBatchFromSelectedHistory={handleOpenBatchFromSelectedHistory}
-              toggleSelectAllPendingHistory={toggleSelectAllPendingHistory}
-              toggleSelectPendingHistory={toggleSelectPendingHistory}
-              handleOpenNotifyModal={handleOpenNotifyModal}
-              handleMarkOmitNotification={handleMarkOmitNotification}
-              handleDeleteHistoryEntry={handleDeleteHistoryEntry}
-              handleMarkAllPendingAsOmitted={handleMarkAllPendingAsOmitted}
-              handleOpenBatchFromPending={handleOpenBatchFromPending}
-              setToastMessage={setToastMessage}
-              getStudentMetrics={getStudentMetrics}
-            />
+            <Suspense fallback={null}>
+              <CourseHistoryTabView
+                activeCourse={activeCourse}
+                courseStudents={courseStudents}
+                courseHistory={courseHistory}
+                pendingAllItems={pendingAllItems}
+                selectedPendingHistoryIds={selectedPendingHistoryIds}
+                setSelectedPendingHistoryIds={setSelectedPendingHistoryIds}
+                historySubTab={historySubTab}
+                setHistorySubTab={setHistorySubTab}
+                isSyncingSheet={isSyncingSheet}
+                sheetConfig={sheetConfig}
+                isOpeningSheet={isOpeningSheet}
+                isTokenExpired={isTokenExpired}
+                handleOpenGoogleSheet={handleOpenGoogleSheet}
+                handleManualSheetsSync={handleManualSheetsSync}
+                setSheetsModalFeedback={setSheetsModalFeedback}
+                setShowSheetsConnectModal={setShowSheetsConnectModal}
+                renewGoogleSession={renewGoogleSession}
+                isDarkMode={isDarkMode}
+                handleBatchMarkOmitNotification={handleBatchMarkOmitNotification}
+                handleOpenBatchFromSelectedHistory={handleOpenBatchFromSelectedHistory}
+                toggleSelectAllPendingHistory={toggleSelectAllPendingHistory}
+                toggleSelectPendingHistory={toggleSelectPendingHistory}
+                handleOpenNotifyModal={handleOpenNotifyModal}
+                handleMarkOmitNotification={handleMarkOmitNotification}
+                handleDeleteHistoryEntry={handleDeleteHistoryEntry}
+                handleMarkAllPendingAsOmitted={handleMarkAllPendingAsOmitted}
+                handleOpenBatchFromPending={handleOpenBatchFromPending}
+                setToastMessage={setToastMessage}
+                getStudentMetrics={getStudentMetrics}
+              />
+            </Suspense>
           )}
         </>
       )}
@@ -1740,49 +1756,53 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
       {/* ------------------------------------------------------------- */}
       {/* MODAL: FICHA DEL ESTUDIANTE Y OBSERVACIONES DOCENTE (INFORMES) */}
       {/* ------------------------------------------------------------- */}
-      <StudentProfileObservationsModal
-        selectedStudentForProfile={selectedStudentForProfile}
-        setSelectedStudentForProfile={setSelectedStudentForProfile}
-        activeCourse={activeCourse}
-        user={user}
-        isDarkMode={isDarkMode}
-        isEditingStudentEmail={isEditingStudentEmail}
-        setIsEditingStudentEmail={setIsEditingStudentEmail}
-        editedStudentEmail={editedStudentEmail}
-        setEditedStudentEmail={setEditedStudentEmail}
-        handleSaveEditedStudentEmail={handleSaveEditedStudentEmail}
-        handleOpenDirectMessageModal={handleOpenDirectMessageModal}
-        getStudentMetrics={getStudentMetrics}
-        attendanceTerm={attendanceTerm}
-        attendanceSettings={attendanceSettings}
-        handleOpenEditAbsences={handleOpenEditAbsences}
-        setIsAttendanceSettingsModalOpen={setIsAttendanceSettingsModalOpen}
-        handleOpenExportProfileDocConfirm={handleOpenExportProfileDocConfirm}
-        isExportingProfileDoc={isExportingProfileDoc}
-        showProfileDocConfirm={showProfileDocConfirm}
-        setShowProfileDocConfirm={setShowProfileDocConfirm}
-        profileDocTitle={profileDocTitle}
-        setProfileDocTitle={setProfileDocTitle}
-        profileDocLinkToObs={profileDocLinkToObs}
-        setProfileDocLinkToObs={setProfileDocLinkToObs}
-        profileDocError={profileDocError}
-        handleConfirmExportProfileToGoogleDoc={handleConfirmExportProfileToGoogleDoc}
-        exportedProfileDoc={exportedProfileDoc}
-        setExportedProfileDoc={setExportedProfileDoc}
-        newObservationText={newObservationText}
-        setNewObservationText={setNewObservationText}
-        newObservationUrl={newObservationUrl}
-        setNewObservationUrl={setNewObservationUrl}
-        handleSaveObservation={handleSaveObservation}
-        studentObservations={studentObservations}
-        handleDeleteObservation={handleDeleteObservation}
-        filteredStudents={filteredStudents}
-        handleNavigateProfileStudent={handleNavigateProfileStudent}
-        setCourseReportModalStudentId={setCourseReportModalStudentId}
-        setCourseReportModalTab={setCourseReportModalTab}
-        setCourseReportModalOpen={setCourseReportModalOpen}
-        onDeleteStudent={setStudentToRemove}
-      />
+      {selectedStudentForProfile && (
+        <Suspense fallback={null}>
+          <StudentProfileObservationsModal
+            selectedStudentForProfile={selectedStudentForProfile}
+            setSelectedStudentForProfile={setSelectedStudentForProfile}
+            activeCourse={activeCourse}
+            user={user}
+            isDarkMode={isDarkMode}
+            isEditingStudentEmail={isEditingStudentEmail}
+            setIsEditingStudentEmail={setIsEditingStudentEmail}
+            editedStudentEmail={editedStudentEmail}
+            setEditedStudentEmail={setEditedStudentEmail}
+            handleSaveEditedStudentEmail={handleSaveEditedStudentEmail}
+            handleOpenDirectMessageModal={handleOpenDirectMessageModal}
+            getStudentMetrics={getStudentMetrics}
+            attendanceTerm={attendanceTerm}
+            attendanceSettings={attendanceSettings}
+            handleOpenEditAbsences={handleOpenEditAbsences}
+            setIsAttendanceSettingsModalOpen={setIsAttendanceSettingsModalOpen}
+            handleOpenExportProfileDocConfirm={handleOpenExportProfileDocConfirm}
+            isExportingProfileDoc={isExportingProfileDoc}
+            showProfileDocConfirm={showProfileDocConfirm}
+            setShowProfileDocConfirm={setShowProfileDocConfirm}
+            profileDocTitle={profileDocTitle}
+            setProfileDocTitle={setProfileDocTitle}
+            profileDocLinkToObs={profileDocLinkToObs}
+            setProfileDocLinkToObs={setProfileDocLinkToObs}
+            profileDocError={profileDocError}
+            handleConfirmExportProfileToGoogleDoc={handleConfirmExportProfileToGoogleDoc}
+            exportedProfileDoc={exportedProfileDoc}
+            setExportedProfileDoc={setExportedProfileDoc}
+            newObservationText={newObservationText}
+            setNewObservationText={setNewObservationText}
+            newObservationUrl={newObservationUrl}
+            setNewObservationUrl={setNewObservationUrl}
+            handleSaveObservation={handleSaveObservation}
+            studentObservations={studentObservations}
+            handleDeleteObservation={handleDeleteObservation}
+            filteredStudents={filteredStudents}
+            handleNavigateProfileStudent={handleNavigateProfileStudent}
+            setCourseReportModalStudentId={setCourseReportModalStudentId}
+            setCourseReportModalTab={setCourseReportModalTab}
+            setCourseReportModalOpen={setCourseReportModalOpen}
+            onDeleteStudent={setStudentToRemove}
+          />
+        </Suspense>
+      )}
 
       <RemovedStudentsModals
         activeCourse={activeCourse}
@@ -1865,51 +1885,59 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         isDarkMode={isDarkMode}
       />
 
-      <BatchAbsenceNotificationModal
-        batchAbsenceModal={batchAbsenceModal}
-        setBatchAbsenceModal={setBatchAbsenceModal}
-        activeCourse={activeCourse}
-        pendingAllItems={pendingAllItems}
-        students={students}
-        setIsNotifConfigModalOpen={setIsNotifConfigModalOpen}
-        savedPresets={savedPresets}
-        handleSavePreset={handleSavePreset}
-        getBatchMessageForItem={getBatchMessageForItem}
-        handleSendBatchNotifications={handleSendBatchNotifications}
-        isDarkMode={isDarkMode}
-      />
+      {batchAbsenceModal.isOpen && (
+        <Suspense fallback={null}>
+          <BatchAbsenceNotificationModal
+            batchAbsenceModal={batchAbsenceModal}
+            setBatchAbsenceModal={setBatchAbsenceModal}
+            activeCourse={activeCourse}
+            pendingAllItems={pendingAllItems}
+            students={students}
+            setIsNotifConfigModalOpen={setIsNotifConfigModalOpen}
+            savedPresets={savedPresets}
+            handleSavePreset={handleSavePreset}
+            getBatchMessageForItem={getBatchMessageForItem}
+            handleSendBatchNotifications={handleSendBatchNotifications}
+            isDarkMode={isDarkMode}
+          />
+        </Suspense>
+      )}
 
-      <NotificationPresetsConfigModal
-        isOpen={isNotifConfigModalOpen}
-        onClose={() => setIsNotifConfigModalOpen(false)}
-        notifConfigActiveTab={notifConfigActiveTab}
-        setNotifConfigActiveTab={setNotifConfigActiveTab}
-        conductReasonTemplates={conductReasonTemplates}
-        savedPresets={savedPresets}
-        searchReasonQuery={searchReasonQuery}
-        setSearchReasonQuery={setSearchReasonQuery}
-        isNewReasonFormOpen={isNewReasonFormOpen}
-        setIsNewReasonFormOpen={setIsNewReasonFormOpen}
-        newReasonName={newReasonName}
-        setNewReasonName={setNewReasonName}
-        newReasonTemplateText={newReasonTemplateText}
-        setNewReasonTemplateText={setNewReasonTemplateText}
-        getTemplateForReason={getTemplateForReason}
-        handleSaveTemplateForReason={handleSaveTemplateForReason}
-        allKnownReasonKeys={allKnownReasonKeys}
-        isReasonCustomized={isReasonCustomized}
-        reasonCardDrafts={reasonCardDrafts}
-        setReasonCardDrafts={setReasonCardDrafts}
-        handleResetTemplateForReason={handleResetTemplateForReason}
-        newConfigPreset={newConfigPreset}
-        setNewConfigPreset={setNewConfigPreset}
-        handleSavePreset={handleSavePreset}
-        handleDeletePreset={handleDeletePreset}
-        notifSettings={notifSettings}
-        setNotifSettings={setNotifSettings}
-        handleSaveNotifSettings={handleSaveNotifSettings}
-        isDarkMode={isDarkMode}
-      />
+      {isNotifConfigModalOpen && (
+        <Suspense fallback={null}>
+          <NotificationPresetsConfigModal
+            isOpen={isNotifConfigModalOpen}
+            onClose={() => setIsNotifConfigModalOpen(false)}
+            notifConfigActiveTab={notifConfigActiveTab}
+            setNotifConfigActiveTab={setNotifConfigActiveTab}
+            conductReasonTemplates={conductReasonTemplates}
+            savedPresets={savedPresets}
+            searchReasonQuery={searchReasonQuery}
+            setSearchReasonQuery={setSearchReasonQuery}
+            isNewReasonFormOpen={isNewReasonFormOpen}
+            setIsNewReasonFormOpen={setIsNewReasonFormOpen}
+            newReasonName={newReasonName}
+            setNewReasonName={setNewReasonName}
+            newReasonTemplateText={newReasonTemplateText}
+            setNewReasonTemplateText={setNewReasonTemplateText}
+            getTemplateForReason={getTemplateForReason}
+            handleSaveTemplateForReason={handleSaveTemplateForReason}
+            allKnownReasonKeys={allKnownReasonKeys}
+            isReasonCustomized={isReasonCustomized}
+            reasonCardDrafts={reasonCardDrafts}
+            setReasonCardDrafts={setReasonCardDrafts}
+            handleResetTemplateForReason={handleResetTemplateForReason}
+            newConfigPreset={newConfigPreset}
+            setNewConfigPreset={setNewConfigPreset}
+            handleSavePreset={handleSavePreset}
+            handleDeletePreset={handleDeletePreset}
+            notifSettings={notifSettings}
+            setNotifSettings={setNotifSettings}
+            handleSaveNotifSettings={handleSaveNotifSettings}
+            isDarkMode={isDarkMode}
+          />
+        </Suspense>
+      )}
 
       {/* Modal de confirmación y accesos directos a la Carpeta de Google Drive y sus 2 Subcarpetas */}
       <DriveFolderModal
@@ -2083,64 +2111,70 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 
       {/* Attendance & Calendar Weeks Settings Modal (Semáforo de Asistencia) */}
       {isAttendanceSettingsModalOpen && activeCourse && (
-        <AttendanceSettingsModal
-          isOpen={isAttendanceSettingsModalOpen}
-          onClose={() => setIsAttendanceSettingsModalOpen(false)}
-          course={activeCourse}
-          currentSettings={attendanceSettings}
-          onSaveSettings={handleSaveAttendanceSettings}
-          students={courseStudents}
-          studentMetricsMap={(() => {
-            const map: Record<string, StudentDispositionData> = {};
-            courseStudents.forEach((s) => {
-              map[s.id] = getStudentMetrics(s.id, attendanceTerm);
-            });
-            return map;
-          })()}
-          currentTerm={attendanceTerm}
-          isDarkMode={isDarkMode}
-        />
+        <Suspense fallback={null}>
+          <AttendanceSettingsModal
+            isOpen={isAttendanceSettingsModalOpen}
+            onClose={() => setIsAttendanceSettingsModalOpen(false)}
+            course={activeCourse}
+            currentSettings={attendanceSettings}
+            onSaveSettings={handleSaveAttendanceSettings}
+            students={courseStudents}
+            studentMetricsMap={(() => {
+              const map: Record<string, StudentDispositionData> = {};
+              courseStudents.forEach((s) => {
+                map[s.id] = getStudentMetrics(s.id, attendanceTerm);
+              });
+              return map;
+            })()}
+            currentTerm={attendanceTerm}
+            isDarkMode={isDarkMode}
+          />
+        </Suspense>
       )}
 
       {/* Backup and Restore Modal (Copia de Seguridad JSON 1 Clic) */}
       {isBackupModalOpen && activeCourse && (
-        <BackupRestoreModal
-          isOpen={isBackupModalOpen}
-          onClose={() => setIsBackupModalOpen(false)}
-          course={activeCourse}
-          students={courseStudents}
-          courseHistory={courseHistory}
-          studentObservations={studentObservations}
-          onRestoreObservations={(merged) => setStudentObservations(merged)}
-          onRestoreSuccess={(msg) => {
-            setToastMessage(msg);
-            setTimeout(() => setToastMessage(null), 4000);
-            onRefreshData();
-          }}
-          isDarkMode={isDarkMode}
-        />
+        <Suspense fallback={null}>
+          <BackupRestoreModal
+            isOpen={isBackupModalOpen}
+            onClose={() => setIsBackupModalOpen(false)}
+            course={activeCourse}
+            students={courseStudents}
+            courseHistory={courseHistory}
+            studentObservations={studentObservations}
+            onRestoreObservations={(merged) => setStudentObservations(merged)}
+            onRestoreSuccess={(msg) => {
+              setToastMessage(msg);
+              setTimeout(() => setToastMessage(null), 4000);
+              onRefreshData();
+            }}
+            isDarkMode={isDarkMode}
+          />
+        </Suspense>
       )}
 
       {/* Quick Roll-Call Modal (Pasar Lista Rápido) */}
       {isQuickRollCallOpen && activeCourse && (
-        <QuickRollCallModal
-          isOpen={isQuickRollCallOpen}
-          onClose={() => setIsQuickRollCallOpen(false)}
-          courseId={activeCourse.id}
-          courseName={activeCourse.name}
-          students={courseStudents}
-          attendanceTerm={attendanceTerm}
-          attendanceSettings={attendanceSettings}
-          historyList={historyList}
-          getStudentMetrics={getStudentMetrics}
-          teacherConductOptions={teacherConductOptions}
-          onAddAbsence={handleAddAbsence}
-          onRecordLateArrival={handleRecordLateArrival}
-          onDeleteLatestAbsence={handleDeleteLatestAbsence}
-          onDeleteLatestLate={handleDeleteLatestLate}
-          onRecordDispositionAction={handleRecordDispositionAction}
-          isDarkMode={isDarkMode}
-        />
+        <Suspense fallback={null}>
+          <QuickRollCallModal
+            isOpen={isQuickRollCallOpen}
+            onClose={() => setIsQuickRollCallOpen(false)}
+            courseId={activeCourse.id}
+            courseName={activeCourse.name}
+            students={courseStudents}
+            attendanceTerm={attendanceTerm}
+            attendanceSettings={attendanceSettings}
+            historyList={historyList}
+            getStudentMetrics={getStudentMetrics}
+            teacherConductOptions={teacherConductOptions}
+            onAddAbsence={handleAddAbsence}
+            onRecordLateArrival={handleRecordLateArrival}
+            onDeleteLatestAbsence={handleDeleteLatestAbsence}
+            onDeleteLatestLate={handleDeleteLatestLate}
+            onRecordDispositionAction={handleRecordDispositionAction}
+            isDarkMode={isDarkMode}
+          />
+        </Suspense>
       )}
     </div>
   );

@@ -13,6 +13,7 @@ import { getCachedAccessToken } from '../services/workspace/googleAuth';
 import { extractWeekdaysFromSchedule } from '../utils/schoolHolidays';
 import { formatLocalDateDMY } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
+import { getUserStorageKey } from '../services/storageHelpers';
 import { AttendanceSettings, saveCourseAttendanceSettings } from '../utils/attendanceCalculations';
 
 interface UseCourseRosterAndScheduleParams {
@@ -291,24 +292,28 @@ export function useCourseRosterAndSchedule({
         setAttendanceSettings(nextSettings);
 
         try {
-          const libroKey = `fds_libro_temas_${calendarModalCourse.id}`;
-          const currentLibroRaw = localStorage.getItem(libroKey);
-          if (currentLibroRaw) {
-            const parsed = JSON.parse(currentLibroRaw);
-            const updatedLibro = {
-              ...parsed,
-              metadata: {
-                ...(parsed.metadata || {}),
-                horario: cleanSchedule,
-                configuredWeekdays: extractedWeekdays,
-              },
-              updatedAt: new Date().toISOString(),
-            };
-            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
-            const uid = getActiveUserId();
-            if (uid) {
-              firestoreSync.saveUserSetting(uid, `libro_temas_${calendarModalCourse.id}`, updatedLibro).catch(() => {});
-            }
+          const rawLibroKey = `fds_libro_temas_${calendarModalCourse.id}`;
+          const scopedLibroKey = getUserStorageKey(rawLibroKey);
+          const currentLibroRaw =
+            localStorage.getItem(scopedLibroKey) || localStorage.getItem(rawLibroKey);
+          const parsed = currentLibroRaw ? JSON.parse(currentLibroRaw) : {};
+          const updatedLibro = {
+            ...parsed,
+            metadata: {
+              ...(parsed.metadata || {}),
+              horario: cleanSchedule,
+              configuredWeekdays: extractedWeekdays,
+            },
+            updatedAt: new Date().toISOString(),
+          };
+          const serialized = JSON.stringify(updatedLibro);
+          localStorage.setItem(scopedLibroKey, serialized);
+          if (scopedLibroKey !== rawLibroKey) {
+            localStorage.setItem(rawLibroKey, serialized);
+          }
+          const uid = getActiveUserId();
+          if (uid) {
+            firestoreSync.saveUserSetting(uid, `libro_temas_${calendarModalCourse.id}`, updatedLibro).catch(() => {});
           }
         } catch (_) {}
       }
@@ -393,25 +398,29 @@ export function useCourseRosterAndSchedule({
         setAttendanceSettings(nextSettings);
 
         try {
-          const libroKey = `fds_libro_temas_${editCourseData.id}`;
-          const currentLibroRaw = localStorage.getItem(libroKey);
-          if (currentLibroRaw) {
-            const parsed = JSON.parse(currentLibroRaw);
-            const updatedLibro = {
-              ...parsed,
-              metadata: {
-                ...(parsed.metadata || {}),
-                asignatura: `${editCourseData.name.trim()} (${editCourseData.division.trim() || editCourseData.grade.trim() || 'Curso'})`,
-                horario: cleanSchedule,
-                configuredWeekdays: extractedWeekdays,
-              },
-              updatedAt: new Date().toISOString(),
-            };
-            localStorage.setItem(libroKey, JSON.stringify(updatedLibro));
-            const uid = getActiveUserId();
-            if (uid) {
-              firestoreSync.saveUserSetting(uid, `libro_temas_${editCourseData.id}`, updatedLibro).catch(() => {});
-            }
+          const rawLibroKey = `fds_libro_temas_${editCourseData.id}`;
+          const scopedLibroKey = getUserStorageKey(rawLibroKey);
+          const currentLibroRaw =
+            localStorage.getItem(scopedLibroKey) || localStorage.getItem(rawLibroKey);
+          const parsed = currentLibroRaw ? JSON.parse(currentLibroRaw) : {};
+          const updatedLibro = {
+            ...parsed,
+            metadata: {
+              ...(parsed.metadata || {}),
+              asignatura: `${editCourseData.name.trim()} (${editCourseData.division.trim() || editCourseData.grade.trim() || 'Curso'})`,
+              horario: cleanSchedule,
+              configuredWeekdays: extractedWeekdays,
+            },
+            updatedAt: new Date().toISOString(),
+          };
+          const serialized = JSON.stringify(updatedLibro);
+          localStorage.setItem(scopedLibroKey, serialized);
+          if (scopedLibroKey !== rawLibroKey) {
+            localStorage.setItem(rawLibroKey, serialized);
+          }
+          const uid = getActiveUserId();
+          if (uid) {
+            firestoreSync.saveUserSetting(uid, `libro_temas_${editCourseData.id}`, updatedLibro).catch(() => {});
           }
         } catch (_) {}
       }

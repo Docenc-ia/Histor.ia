@@ -9,6 +9,8 @@ const TRANSIENT_KEY_PREFIXES = [
   'fds_fp_v1_',
   'fds_temp_',
   'fds_preview_cache_',
+  'fds_draft_preview_',
+  'fds_ephemeral_',
   'vite-',
 ];
 

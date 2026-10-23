@@ -225,7 +225,17 @@ export const OFFICIAL_HOLIDAYS_2026: SchoolHolidayItem[] = [
  */
 export function extractWeekdaysFromSchedule(schedule?: string): number[] {
   if (!schedule || typeof schedule !== 'string') return [];
-  const lower = schedule.toLowerCase();
+  const trimmed = schedule.trim();
+  if (!trimmed || trimmed === 'Lunes y Miércoles') return [];
+  const lower = trimmed.toLowerCase();
+  if (
+    lower === 'sin horario especificado' ||
+    lower.includes('coordinar') ||
+    lower.includes('sin horario') ||
+    lower.includes('pendiente')
+  ) {
+    return [];
+  }
   const days: number[] = [];
 
   const patterns: { day: number; regex: RegExp }[] = [

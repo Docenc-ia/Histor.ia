@@ -40,6 +40,7 @@ import { LibroDeTemasModals } from './classes/LibroDeTemasModals';
 import { LibroDeTemasHeaderToolbar } from './classes/LibroDeTemasHeaderToolbar';
 import { LibroDeTemasTodayCard } from './classes/LibroDeTemasTodayCard';
 import { useLibroDeTemasSync } from '../../hooks/useLibroDeTemasSync';
+import { isValidCourseSchedule } from '../../utils/courseFormatting';
 
 export type NoClassCategory =
   | 'feriado'
@@ -269,10 +270,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     () => ({
       asignatura: courseSubject ? `${courseSubject} (${courseName})` : courseName,
       profTitular: teacherName || 'Profesor/a Titular',
-      horario: courseSchedule || 'Sin horario especificado',
+      horario: isValidCourseSchedule(courseSchedule) ? courseSchedule!.trim() : 'Sin horario especificado',
       folioNumero: '1',
       configuredWeekdays: initialWeekdays,
-      isScheduleLocked: Boolean(courseSchedule && courseSchedule.trim().length > 0),
+      isScheduleLocked: isValidCourseSchedule(courseSchedule),
     }),
     [courseId, courseName, courseSubject, courseSchedule, teacherName, initialWeekdays]
   );
@@ -388,15 +389,20 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
               ? parsed.metadata.configuredWeekdays
               : initialWeekdays;
 
+          const resolvedLocalHorario = isValidCourseSchedule(courseSchedule)
+            ? courseSchedule!.trim()
+            : isValidCourseSchedule(parsed.metadata.horario)
+            ? parsed.metadata.horario!.trim()
+            : defaultMetadata.horario;
+
+          if (!isValidCourseSchedule(courseSchedule) && isValidCourseSchedule(resolvedLocalHorario)) {
+            api.updateCourse(courseId, { schedule: resolvedLocalHorario }).catch(() => {});
+          }
+
           const loadedMeta: LibroDeTemasMetadata = {
             asignatura: parsed.metadata.asignatura || defaultMetadata.asignatura,
             profTitular: parsed.metadata.profTitular || defaultMetadata.profTitular,
-            horario:
-              courseSchedule ||
-              (parsed.metadata.horario &&
-              parsed.metadata.horario !== 'Sin horario especificado'
-                ? parsed.metadata.horario
-                : defaultMetadata.horario),
+            horario: resolvedLocalHorario,
             folioNumero: parsed.metadata.folioNumero || '1',
             configuredWeekdays: savedWeekdays,
             isScheduleLocked: parsed.metadata.isScheduleLocked ?? true,
@@ -494,10 +500,22 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 ? cloudData.metadata.configuredWeekdays
                 : initialWeekdays;
 
+            const resolvedCloudHorario = isValidCourseSchedule(courseSchedule)
+              ? courseSchedule!.trim()
+              : isValidCourseSchedule(cloudData.metadata.horario)
+              ? cloudData.metadata.horario!.trim()
+              : isValidCourseSchedule(localParsed?.metadata?.horario)
+              ? localParsed!.metadata!.horario!.trim()
+              : defaultMetadata.horario;
+
+            if (!isValidCourseSchedule(courseSchedule) && isValidCourseSchedule(resolvedCloudHorario)) {
+              api.updateCourse(courseId, { schedule: resolvedCloudHorario }).catch(() => {});
+            }
+
             const mergedMeta: LibroDeTemasMetadata = {
               asignatura: cloudData.metadata.asignatura || defaultMetadata.asignatura,
               profTitular: cloudData.metadata.profTitular || defaultMetadata.profTitular,
-              horario: courseSchedule || cloudData.metadata.horario || defaultMetadata.horario,
+              horario: resolvedCloudHorario,
               folioNumero: cloudData.metadata.folioNumero || '1',
               configuredWeekdays: cloudWeekdays,
               isScheduleLocked: cloudData.metadata.isScheduleLocked ?? true,
@@ -645,7 +663,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Sincronizar automáticamente cuando cambie o se cargue courseSchedule (desde Calendar o edición del curso)
   useEffect(() => {
-    if (!courseSchedule) return;
+    if (!isValidCourseSchedule(courseSchedule)) return;
     const fromSchedule = extractWeekdaysFromSchedule(courseSchedule);
     if (fromSchedule.length === 0) return;
 

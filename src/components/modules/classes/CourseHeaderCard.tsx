@@ -11,6 +11,8 @@ import {
   CloudCheck,
 } from 'lucide-react';
 import { Course } from '../../../types';
+import { getEffectiveScheduleStringForCourse, isValidCourseSchedule } from '../../../utils/courseFormatting';
+import { api } from '../../../services/api';
 
 export interface CourseHeaderCardProps {
   activeCourse: Course;
@@ -33,6 +35,14 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
   onOpenCourseDriveFolder,
   onOpenCourseReport,
 }) => {
+  const effectiveSchedule = getEffectiveScheduleStringForCourse(activeCourse);
+
+  useEffect(() => {
+    if (effectiveSchedule && !isValidCourseSchedule(activeCourse.schedule)) {
+      api.updateCourse(activeCourse.id, { schedule: effectiveSchedule }).catch(() => {});
+    }
+  }, [activeCourse.id, activeCourse.schedule, effectiveSchedule]);
+
   const [queueSyncState, setQueueSyncState] = useState<{
     status: 'idle' | 'pending' | 'syncing' | 'synced' | 'error';
     lastSyncedAt?: string;
@@ -126,9 +136,7 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
               <span className={`font-semibold ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
                 Horario:
               </span>
-              {activeCourse.schedule &&
-              activeCourse.schedule !== 'Lunes y Miércoles' &&
-              !activeCourse.schedule.toLowerCase().includes('coordinar') ? (
+              {effectiveSchedule ? (
                 <span
                   className={`font-semibold px-2 py-0.5 rounded-md ${
                     isDarkMode
@@ -136,7 +144,7 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
                       : 'bg-blue-50 text-blue-800 border border-blue-200'
                   }`}
                 >
-                  {activeCourse.schedule}
+                  {effectiveSchedule}
                 </span>
               ) : (
                 <span
@@ -155,7 +163,13 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
             {/* Botón para sincronizar desde Google Calendar */}
             <button
               type="button"
-              onClick={() => onOpenCalendarSyncModal(activeCourse)}
+              onClick={() =>
+                onOpenCalendarSyncModal(
+                  effectiveSchedule && effectiveSchedule !== activeCourse.schedule
+                    ? { ...activeCourse, schedule: effectiveSchedule }
+                    : activeCourse
+                )
+              }
               className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
                 isDarkMode
                   ? 'bg-blue-950/50 hover:bg-blue-900/60 text-blue-300 border-blue-800/70'
@@ -170,7 +184,13 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
             {/* Botón para editar datos específicos del curso */}
             <button
               type="button"
-              onClick={() => onOpenEditCourseDetailsModal(activeCourse)}
+              onClick={() =>
+                onOpenEditCourseDetailsModal(
+                  effectiveSchedule && effectiveSchedule !== activeCourse.schedule
+                    ? { ...activeCourse, schedule: effectiveSchedule }
+                    : activeCourse
+                )
+              }
               className={`inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded-lg border transition-colors cursor-pointer ${
                 isDarkMode
                   ? 'border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800'

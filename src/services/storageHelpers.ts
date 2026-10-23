@@ -8,6 +8,7 @@ import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firesto
 export { isPrimaryOwnerAccount };
 import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
+import { isValidCourseSchedule, getEffectiveScheduleStringForCourse } from '../utils/courseFormatting';
 
 // Run non-destructive storage compaction once on startup
 runStorageMaintenanceOnce();
@@ -71,6 +72,14 @@ export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolea
   return false;
 }
 
+function isValidRoom(r?: string | null): boolean {
+  if (!r || typeof r !== 'string') return false;
+  const clean = r.trim();
+  if (!clean) return false;
+  const lower = clean.toLowerCase();
+  return lower !== 'aula asignada' && lower !== 'aula principal' && lower !== 'sin aula';
+}
+
 export function deduplicateCourses(coursesList: Course[]): Course[] {
   if (!Array.isArray(coursesList) || coursesList.length === 0) return [];
   const result: Course[] = [];
@@ -101,6 +110,21 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
           ? c.id
           : existing.id || c.id;
 
+      const resolvedSchedule = isValidCourseSchedule(c.schedule)
+        ? c.schedule!.trim()
+        : isValidCourseSchedule(existing.schedule)
+        ? existing.schedule!.trim()
+        : getEffectiveScheduleStringForCourse({ ...existing, ...c, id: preferredId }) ||
+          c.schedule ||
+          existing.schedule ||
+          '';
+
+      const resolvedRoom = isValidRoom(c.room)
+        ? c.room!.trim()
+        : isValidRoom(existing.room)
+        ? existing.room!.trim()
+        : c.room || existing.room || '';
+
       const merged: Course = {
         ...existing,
         ...c,
@@ -111,6 +135,19 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
         subject: existing.subject || c.subject,
         grade: existing.grade || c.grade,
         section: existing.section || c.section,
+        division: existing.division || c.division,
+        orientation:
+          existing.orientation && existing.orientation !== 'Secundaria'
+            ? existing.orientation
+            : c.orientation || existing.orientation,
+        room: resolvedRoom,
+        schedule: resolvedSchedule,
+        preferredCalendarId:
+          (c.preferredCalendarId && c.preferredCalendarId !== 'primary'
+            ? c.preferredCalendarId
+            : existing.preferredCalendarId) ||
+          c.preferredCalendarId ||
+          existing.preferredCalendarId,
         schoolYear: existing.schoolYear || c.schoolYear || '2026',
       };
       const classroomId = existing.classroomCourseId || c.classroomCourseId;
@@ -125,12 +162,26 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
       if (sheetUrl) merged.dispositionSheetUrl = sheetUrl;
       else delete merged.dispositionSheetUrl;
 
+      const driveFolderId = c.driveFolderId || existing.driveFolderId;
+      if (driveFolderId) merged.driveFolderId = driveFolderId;
+      else delete merged.driveFolderId;
+
+      const driveFolderUrl = c.driveFolderUrl || existing.driveFolderUrl;
+      if (driveFolderUrl) merged.driveFolderUrl = driveFolderUrl;
+      else delete merged.driveFolderUrl;
+
       result[existingIdx] = merged;
       if (merged.id) indexById.set(String(merged.id).trim(), existingIdx);
       if (merged.classroomCourseId) indexByClassroomId.set(String(merged.classroomCourseId).trim(), existingIdx);
     } else {
+      const hydratedCourse = isValidCourseSchedule(c.schedule)
+        ? c
+        : (() => {
+            const recovered = getEffectiveScheduleStringForCourse(c);
+            return recovered ? { ...c, schedule: recovered } : c;
+          })();
       const newIdx = result.length;
-      result.push(c);
+      result.push(hydratedCourse);
       if (cId) indexById.set(cId, newIdx);
       if (cClassroomId) indexByClassroomId.set(cClassroomId, newIdx);
       if (cCanonical) indexByCanonical.set(cCanonical, newIdx);

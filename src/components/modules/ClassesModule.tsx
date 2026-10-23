@@ -1,66 +1,21 @@
 import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import {
   Users,
-  UserPlus,
-  Calendar,
   CheckCircle2,
-  XCircle,
-  Clock,
   FileSpreadsheet,
-  GraduationCap,
-  FolderClosed,
-  Search,
-  Plus,
-  Minus,
-  Check,
-  X,
   Download,
   AlertCircle,
   RefreshCw,
   History,
-  Smartphone,
-  MessageSquare,
   BookOpen,
-  HelpCircle,
-  Trash2,
-  RotateCcw,
   Copy,
   ChevronRight,
-  ShieldAlert,
-  Sparkles,
-  SlidersHorizontal,
   ExternalLink,
   Loader2,
   Settings,
-  Pencil,
   Award,
-  Bell,
-  BellOff,
-  Mail,
-  Send,
-  CheckSquare,
-  Square,
-  CheckCheck,
-  Bookmark,
-  Save,
-  MessageCircle,
-  Info,
-  ChevronDown,
-  ChevronUp,
-  Filter,
   FileText,
-  Link,
-  Printer,
-  ArrowLeftRight,
-  Upload,
 } from 'lucide-react';
-import {
-  exportCourseClassHistoryToExcel,
-  exportCourseDispositionToExcel,
-  exportGradebookMatrixToExcel,
-  GradeHistoryEntry,
-} from '../../utils/excelExport';
-import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 
 const GradebookMatrix = lazy(() =>
@@ -75,7 +30,7 @@ const ImportGradesModal = lazy(() =>
 const CourseReportModal = lazy(() =>
   import('./CourseReportModal').then((m) => ({ default: m.CourseReportModal }))
 );
-import { Course, Student, AttendanceStatus, StudentHistoryItem, StudentDispositionData, AbsenceNotificationSettings, AbsencePresetTemplate, StudentObservation } from '../../types';
+import { Course, Student, StudentHistoryItem, StudentDispositionData } from '../../types';
 import {
   api,
   getUserStorageKey,
@@ -84,29 +39,11 @@ import {
   saveAllDispositionStorage,
   getAllDispositionStorage,
   getDeletedHistoryIds,
-  markHistoryIdDeleted,
-  getRemovedStudentIds,
-  getRemovedStudentsList,
-  syncRemovedStudentsFromCloud,
 } from '../../services/api';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { classroomService } from '../../services/workspace/classroomService';
-import { gmailService } from '../../services/workspace/gmailService';
-import { getCachedAccessToken, setCachedAccessToken, isValidGoogleAccessToken } from '../../services/workspace/googleAuth';
-import { sheetsService } from '../../services/workspace/sheetsService';
-import { calendarService } from '../../services/workspace/calendarService';
-import { driveService, CourseFolderStructure } from '../../services/workspace/driveService';
-import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../../utils/dateUtils';
-import { extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
-import { enqueueOfflineAction, flushOfflineSyncQueue } from '../../services/offlineSyncQueue';
-import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../../utils/sheetsUtils';
 import { AttendanceHeader } from './classes/AttendanceHeader';
 import { CourseHeaderCard } from './classes/CourseHeaderCard';
-import { StudentAttendanceRow } from './classes/StudentAttendanceRow';
-import { GoogleSyncManager } from './classes/GoogleSyncManager';
-import { GoogleSessionExpiryBanner } from './classes/GoogleSessionExpiryBanner';
-import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
 import { AttendanceSettingsModal } from './classes/AttendanceSettingsModal';
 import { BackupRestoreModal } from './classes/BackupRestoreModal';
 import { QuickRollCallModal } from './classes/QuickRollCallModal';
@@ -121,7 +58,6 @@ import { CalendarSyncModal, EditCourseDetailsModal } from './classes/CourseCalen
 import { CourseHistoryTabView } from './classes/CourseHistoryTabView';
 import { StudentProfileObservationsModal } from './classes/StudentProfileObservationsModal';
 import { RemovedStudentsModals } from './classes/RemovedStudentsModals';
-import { PendingNotificationsInbox } from './classes/PendingNotificationsInbox';
 import {
   ConductRecordModal,
   ManageConductOptionsModal,
@@ -137,7 +73,6 @@ import {
   BatchAbsenceNotificationModal,
   NotificationPresetsConfigModal,
 } from './classes/AbsenceAndConductNotificationModals';
-import { useAttendanceSync } from '../../hooks/useAttendanceSync';
 import {
   useCourseNotifications,
   DEFAULT_ABSENCE_PRESETS,
@@ -150,7 +85,6 @@ import {
   getCourseAttendanceSettings,
   saveCourseAttendanceSettings,
   loadCourseAttendanceSettingsFromCloud,
-  computeStudentAttendanceTrafficLight,
   computeCourseAttendanceSummary,
   getCurrentCalendarTerm,
 } from '../../utils/attendanceCalculations';
@@ -158,6 +92,10 @@ import { useCourseRosterAndSchedule } from '../../hooks/useCourseRosterAndSchedu
 import { useGoogleSheetsAndDriveSync } from '../../hooks/useGoogleSheetsAndDriveSync';
 import { useCourseAttendanceAndDispositionActions } from '../../hooks/useCourseAttendanceAndDispositionActions';
 import { CourseRosterTabView } from './classes/CourseRosterTabView';
+import {
+  deduplicateHistory,
+  calculateStudentMetrics,
+} from '../../utils/studentMetricsCalculator';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -168,23 +106,6 @@ interface ClassesModuleProps {
   onRefreshData: () => void;
   onNavigate: (tab: string, filterCourseId?: string) => void;
   onOpenNewModal?: (type: 'course' | 'plan' | 'task' | 'file') => void;
-}
-
-const LOCAL_DISPOSITION_KEY = 'fds_disposition_data_v2';
-const LOCAL_HISTORY_KEY = 'fds_disposition_history_v2';
-
-// Helper function to deduplicate history entries (only filters identical IDs or deleted tombstones)
-function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
-  const result: StudentHistoryItem[] = [];
-  const seenIds = new Set<string>();
-  const deleted = getDeletedHistoryIds();
-
-  for (const item of list) {
-    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
-    seenIds.add(item.id);
-    result.push(item);
-  }
-  return result;
 }
 
 export const ClassesModule: React.FC<ClassesModuleProps> = ({
@@ -382,140 +303,16 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const getStudentMetrics = (
     studentId: string,
     targetTerm: '1c' | '2c' | 'annual' | 'all' = attendanceTerm
-  ): StudentDispositionData => {
-    if (targetTerm === 'annual' || targetTerm === 'all') {
-      const m1 = getStudentMetrics(studentId, '1c');
-      const m2 = getStudentMetrics(studentId, '2c');
-      const totalAbsences = m1.totalAbsences + m2.totalAbsences;
-      const totalLates = (m1.totalLates || 0) + (m2.totalLates || 0);
-      const totalDisposition = Number(((m1.totalDisposition + m2.totalDisposition) / 2).toFixed(1));
-      return {
-        totalAbsences,
-        totalLates,
-        totalDisposition,
-      };
-    }
-
-    const is2c = targetTerm === '2c';
-    const rawFromMap = is2c ? dispositionMap2c[studentId] : dispositionMap[studentId];
-
-    // Check if this student is shared with another course or has history in another course
-    const isSharedStudent = activeCourse?.id
-      ? students.some((s) => s.id === studentId && s.courseId && s.courseId !== activeCourse.id) ||
-        historyList.some((h) => h.studentId === studentId && h.courseId && h.courseId !== activeCourse.id)
-      : false;
-
-    // Only trust fromMap if it is explicitly stamped with activeCourse.id, or if the student is not shared across courses
-    const isMapScopedToThisCourse =
-      rawFromMap &&
-      (!activeCourse?.id ||
-        (rawFromMap as any).courseId === activeCourse.id ||
-        (!((rawFromMap as any).courseId) && !isSharedStudent));
-
-    const fromMap = isMapScopedToThisCourse ? rawFromMap : undefined;
-
-    const studentHistory = historyList.filter(
-      (h) =>
-        h.studentId === studentId &&
-        (!activeCourse?.id ||
-          h.courseId === activeCourse.id ||
-          (!h.courseId && !isSharedStudent)) &&
-        (is2c ? h.term === '2c' : (h.term === '1c' || !h.term))
-    );
-
-    let historyAbsences = studentHistory.filter(
-      (h) =>
-        (h.category === 'Ausencia' ||
-          h.action === 'Ausencia' ||
-          h.action?.toLowerCase().includes('ausencia') ||
-          h.action?.toLowerCase().includes('falta')) &&
-        h.category !== 'Sistema' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste')
-    ).length;
-
-    // Also respect manual absence edits recorded as 'Sistema' for this course ("Inasistencias actualizadas...: X → Y faltas")
-    const latestManualAbsEdit = [...studentHistory]
-      .filter(
-        (h) =>
-          h.category === 'Sistema' &&
-          (h.action?.includes('Inasistencias actualizadas') || h.action?.includes('Verificación de inasistencias'))
-      )
-      .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
-    if (latestManualAbsEdit && fromMap?.totalAbsences === undefined) {
-      const matchArrow = latestManualAbsEdit.action.match(/→\s*(\d+)\s*falta/i);
-      const matchColon = latestManualAbsEdit.action.match(/:\s*(\d+)\s*falta/i);
-      const baseAbs = matchArrow ? parseInt(matchArrow[1], 10) : matchColon ? parseInt(matchColon[1], 10) : NaN;
-      if (!isNaN(baseAbs)) {
-        const absencesAfterEdit = studentHistory.filter(
-          (h) =>
-            (h.timestamp || 0) > (latestManualAbsEdit.timestamp || 0) &&
-            (h.category === 'Ausencia' ||
-              h.action === 'Ausencia' ||
-              h.action?.toLowerCase().includes('ausencia') ||
-              h.action?.toLowerCase().includes('falta')) &&
-            h.category !== 'Sistema'
-        ).length;
-        historyAbsences = baseAbs + absencesAfterEdit;
-      }
-    }
-
-    const historyLates = studentHistory.filter(
-      (h) =>
-        (h.category === 'Llegada tarde' ||
-          h.action === 'Llegada tarde' ||
-          h.action?.toLowerCase().includes('llegada tarde') ||
-          h.action?.toLowerCase().includes('tarde') ||
-          h.action?.toLowerCase().includes('tardanza')) &&
-        h.category !== 'Sistema'
-    ).length;
-
-    let calculatedDisp = 10;
-    const sortedStudentEvents = [...studentHistory].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-    for (const ev of sortedStudentEvents) {
-      const isReset =
-        ev.category === 'Sistema' ||
-        ev.action?.toLowerCase().includes('restablecid') ||
-        ev.action?.toLowerCase().includes('reinicio');
-      if (isReset) {
-        calculatedDisp = 10;
-        continue;
-      }
-      if (ev.pointsChange !== undefined) {
-        calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
-      } else if (ev.category === 'Disposición') {
-        calculatedDisp = Math.max(0, calculatedDisp - 1);
-      }
-    }
-
-    let totalAbsences = 0;
-    if (fromMap?.totalAbsences !== undefined && fromMap?.totalAbsences !== null) {
-      totalAbsences = Math.max(0, Number(fromMap.totalAbsences) || 0);
-    } else {
-      totalAbsences = historyAbsences;
-    }
-
-    let totalLates = 0;
-    if (fromMap?.totalLates !== undefined && fromMap?.totalLates !== null) {
-      totalLates = Math.max(0, Number(fromMap.totalLates) || 0);
-    } else {
-      totalLates = historyLates;
-    }
-
-    let totalDisposition = 10;
-    if (fromMap?.totalDisposition !== undefined && fromMap?.totalDisposition !== null) {
-      totalDisposition = Number(fromMap.totalDisposition);
-    } else {
-      totalDisposition = calculatedDisp;
-    }
-
-    return {
-      totalAbsences,
-      totalLates,
-      totalDisposition,
-    };
-  };
+  ): StudentDispositionData =>
+    calculateStudentMetrics({
+      studentId,
+      targetTerm,
+      activeCourseId: activeCourse?.id,
+      students,
+      dispositionMap,
+      dispositionMap2c,
+      historyList,
+    });
 
   const {
     removedStudentIds,

@@ -388,7 +388,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
       subject: newCourseSubject || newCourseName,
       studentsCount: Number(newCourseStudents) || 25,
       section: 'A',
-      schoolYear: '2026',
+      schoolYear: String(new Date().getFullYear()),
     });
     setNewCourseName('');
     setNewCourseSubject('');
@@ -421,7 +421,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
               }`}
             >
               <GraduationCap className="w-4 h-4 text-white" />
-              <span>{user?.school || 'Colegio Secundario FDS'} • Ciclo Lectivo 2026</span>
+              <span>{user?.school || 'Colegio Secundario FDS'} • Ciclo Lectivo {new Date().getFullYear()}</span>
             </div>
             <h1
               className="text-2xl sm:text-3xl font-bold tracking-tight text-white"

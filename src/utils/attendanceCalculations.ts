@@ -457,3 +457,26 @@ export function computeCourseAttendanceSummary(
     avgAttendanceRate,
   };
 }
+
+/**
+ * Computes a student's real attendance percentage for the active calendar term
+ * using the course's configured weekly schedule and school holidays.
+ */
+export function computeQuickStudentAttendanceRate(
+  studentId: string,
+  courseId: string | undefined,
+  totalAbsences: number,
+  totalLates = 0,
+  schedule?: string
+): number {
+  const settings = getCourseAttendanceSettings(courseId, schedule);
+  const currentTerm = getCurrentCalendarTerm(settings);
+  return computeStudentAttendanceTrafficLight(
+    studentId,
+    totalAbsences,
+    totalLates,
+    currentTerm,
+    settings
+  ).percentage;
+}
+

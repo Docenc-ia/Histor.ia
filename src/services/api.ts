@@ -6,6 +6,7 @@ import {
 import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
 import { isSameCalendarDay } from '../utils/dateUtils';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
+import { computeQuickStudentAttendanceRate } from '../utils/attendanceCalculations';
 import { apiSecondaryEndpoints } from './apiSecondaryEndpoints';
 import {
   STORAGE_KEYS,
@@ -251,7 +252,7 @@ export const api = {
       section: courseData.section || '1',
       orientation: courseData.orientation,
       division: courseData.division,
-      schoolYear: courseData.schoolYear || '2026',
+      schoolYear: courseData.schoolYear || String(new Date().getFullYear()),
     };
     const list = deduplicateCourses([...getLocalCourses(), newCourse]);
     saveLocalCourses(list);
@@ -322,7 +323,7 @@ export const api = {
           classroomCourseId: incomingClassroomId || undefined,
           code: item.code || Math.random().toString(36).substring(2, 8),
           section: item.section || '1',
-          schoolYear: item.schoolYear || '2026',
+          schoolYear: item.schoolYear || String(new Date().getFullYear()),
           driveFolderId: item.driveFolderId || `f-${Date.now().toString().slice(-4)}`,
         };
         processed.push(newCourse);
@@ -478,11 +479,22 @@ export const api = {
   // Students
   async getStudents(courseId?: string): Promise<Student[]> {
     const localDisp = getAllDispositionStorage().disposition || {};
+    const localCourses = getLocalCourses();
+    const scheduleByCourseId = new Map<string, string>();
+    localCourses.forEach((c) => {
+      if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
+    });
     const enrichStudents = (list: Student[]) => {
       return list.map((st) => {
         const d = localDisp[st.id];
         if (d && typeof d.totalAbsences === 'number') {
-          const rate = Math.max(0, Math.round(100 - (d.totalAbsences * 5)));
+          const rate = computeQuickStudentAttendanceRate(
+            st.id,
+            st.courseId,
+            d.totalAbsences,
+            d.totalLates || 0,
+            st.courseId ? scheduleByCourseId.get(st.courseId) : undefined
+          );
           return { ...st, attendanceRate: rate };
         }
         return st;
@@ -1008,7 +1020,15 @@ export const api = {
       if (stIdx !== -1) {
         const studentCourseId = allLocalStudents[stIdx].courseId;
         const newAbs = allDisposition[data.studentId]?.totalAbsences || 0;
-        const newRate = Math.max(0, Math.round(100 - (newAbs * 5)));
+        const newLates = allDisposition[data.studentId]?.totalLates || 0;
+        const courseObj = getLocalCourses().find((c) => c.id === studentCourseId);
+        const newRate = computeQuickStudentAttendanceRate(
+          data.studentId,
+          studentCourseId,
+          newAbs,
+          newLates,
+          courseObj?.schedule
+        );
         allLocalStudents[stIdx] = {
           ...allLocalStudents[stIdx],
           attendanceRate: newRate,
@@ -1174,7 +1194,15 @@ export const api = {
         if (stIdx !== -1) {
           const studentCourseId = allLocalStudents[stIdx].courseId;
           const newAbs = allDisposition[studentIdToDelete]?.totalAbsences || 0;
-          const newRate = Math.max(0, Math.round(100 - (newAbs * 5)));
+          const newLates = allDisposition[studentIdToDelete]?.totalLates || 0;
+          const courseObj = getLocalCourses().find((c) => c.id === studentCourseId);
+          const newRate = computeQuickStudentAttendanceRate(
+            studentIdToDelete,
+            studentCourseId,
+            newAbs,
+            newLates,
+            courseObj?.schedule
+          );
           allLocalStudents[stIdx] = {
             ...allLocalStudents[stIdx],
             attendanceRate: newRate,

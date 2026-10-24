@@ -224,7 +224,7 @@ function deduplicateCoursesList(list: Course[]): Course[] {
         subject: existing.subject || c.subject,
         grade: existing.grade || c.grade,
         section: existing.section || c.section,
-        schoolYear: existing.schoolYear || c.schoolYear || "2026",
+        schoolYear: existing.schoolYear || c.schoolYear || String(new Date().getFullYear()),
       };
     } else {
       result.push(c);
@@ -368,18 +368,6 @@ async function startServer() {
         fs.writeFileSync(path.join(distDir, "logo.mp4"), buffer);
         fs.writeFileSync(path.join(distDir, "logo-dinamico.mp4"), buffer);
       }
-
-      // Generate webm format asynchronously if ffmpeg is available
-      try {
-        const { exec } = await import("child_process");
-        exec(`ffmpeg -y -i "${path.join(publicDir, "logo-animado.mp4")}" -c:v libvpx-vp9 -b:v 0 -crf 28 "${path.join(publicDir, "logo-animado.webm")}"`, (err) => {
-          if (!err && fs.existsSync(distDir)) {
-            try {
-              fs.copyFileSync(path.join(publicDir, "logo-animado.webm"), path.join(distDir, "logo-animado.webm"));
-            } catch {}
-          }
-        });
-      } catch {}
 
       console.log(`[Logo] Saved dynamic logo to ${targetPath}`);
       return res.json({ success: true, url: "/logo-animado.mp4?v=" + Date.now() });
@@ -563,14 +551,6 @@ async function startServer() {
     if (!coursesLoadedFromDisk) {
       loadCoursesFromDisk();
     }
-    // Sanitize any course that had "Ciencias Sociales" by mistake
-    courses.forEach((c) => {
-      if (c.id === "c-104" || c.name.includes("Ciencias Sociales") || c.subject === "Ciencias Sociales") {
-        c.name = c.name.replace(/Ciencias Sociales/g, "Historia");
-        c.subject = "Historia";
-      }
-    });
-
     courses = deduplicateCoursesList(courses);
     res.json({ courses });
   });
@@ -624,7 +604,7 @@ async function startServer() {
       section: req.body.section || undefined,
       orientation: orientation || req.body.orientation || undefined,
       division: division || req.body.division || undefined,
-      schoolYear: req.body.schoolYear || "2026",
+      schoolYear: req.body.schoolYear || String(new Date().getFullYear()),
       driveFolderId: req.body.driveFolderId || `f-${Date.now().toString().slice(-4)}`,
     };
     courses.push(newCourse);
@@ -711,7 +691,7 @@ async function startServer() {
         section: item.section || "1",
         orientation: item.orientation || undefined,
         division: item.division || undefined,
-        schoolYear: item.schoolYear || "2026",
+        schoolYear: item.schoolYear || String(new Date().getFullYear()),
         driveFolderId: item.driveFolderId || `f-${Date.now().toString().slice(-4)}`,
       };
 
@@ -1932,74 +1912,8 @@ async function startServer() {
     syncedToGoogle?: boolean;
   }
 
-  // Preloaded school calendar and course schedule events
-  let calendarEvents: CalendarEventItemServer[] = [
-    {
-      id: "cal-ev-1",
-      title: "Jornada Institucional y Docente",
-      description: "Reunión general de claustro docente, evaluación de trayectoria pedagógica y acuerdos curriculares.",
-      location: "SUM / Sala de Profesores",
-      start: new Date(new Date().setDate(new Date().getDate() + 2)).toISOString().split('T')[0] + "T08:00:00",
-      end: new Date(new Date().setDate(new Date().getDate() + 2)).toISOString().split('T')[0] + "T12:30:00",
-      isAllDay: false,
-      category: "colegio",
-      color: "#0284c7",
-      recurrence: "Única vez",
-      syncedToGoogle: false,
-    },
-    {
-      id: "cal-ev-2",
-      title: "Cierre de Calificaciones y Libretas - 2do Trimestre",
-      description: "Fecha límite para subir promedios trimestrales y notas de TPs al sistema institucional.",
-      location: "Secretaría Académica",
-      start: new Date(new Date().setDate(new Date().getDate() + 8)).toISOString().split('T')[0] + "T07:30:00",
-      end: new Date(new Date().setDate(new Date().getDate() + 8)).toISOString().split('T')[0] + "T18:00:00",
-      isAllDay: true,
-      category: "colegio",
-      color: "#d97706",
-      recurrence: "Única vez",
-      syncedToGoogle: false,
-    },
-    {
-      id: "cal-ev-3",
-      title: "Reunión de Departamento de Ciencias",
-      description: "Coordinación de criterios de evaluación de laboratorios y proyectos integradores.",
-      location: "Laboratorio de Ciencias",
-      start: new Date(new Date().setDate(new Date().getDate() + 4)).toISOString().split('T')[0] + "T14:00:00",
-      end: new Date(new Date().setDate(new Date().getDate() + 4)).toISOString().split('T')[0] + "T15:30:00",
-      isAllDay: false,
-      category: "reunion",
-      color: "#7c3aed",
-      recurrence: "Quincenal",
-      syncedToGoogle: false,
-    },
-    {
-      id: "cal-ev-4",
-      title: "Mesa de Exámenes Previos y Libres",
-      description: "Constitución de tribunales evaluadores para alumnos con materias pendientes.",
-      location: "Aulas 101 a 104",
-      start: new Date(new Date().setDate(new Date().getDate() + 15)).toISOString().split('T')[0] + "T08:00:00",
-      end: new Date(new Date().setDate(new Date().getDate() + 15)).toISOString().split('T')[0] + "T13:00:00",
-      isAllDay: false,
-      category: "examen",
-      color: "#dc2626",
-      recurrence: "Período institucional",
-      syncedToGoogle: false,
-    },
-    {
-      id: "cal-ev-5",
-      title: "Feriado Nacional y Día Escolar",
-      description: "Sin actividad académica institucional en concordancia con el calendario oficial.",
-      location: "Todo el establecimiento",
-      start: new Date(new Date().setDate(new Date().getDate() + 12)).toISOString().split('T')[0] + "T00:00:00",
-      end: new Date(new Date().setDate(new Date().getDate() + 12)).toISOString().split('T')[0] + "T23:59:59",
-      isAllDay: true,
-      category: "feriado",
-      color: "#16a34a",
-      recurrence: "Feriado",
-      syncedToGoogle: false,
-    },
-  ];
+  // School calendar and course schedule events
+  let calendarEvents: CalendarEventItemServer[] = [];
 
   // GET /api/calendar/events
   app.get("/api/calendar/events", (req, res) => {

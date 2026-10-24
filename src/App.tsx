@@ -15,6 +15,7 @@ import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 import { subscribeAppEvents } from './utils/appEventBus';
+import { computeQuickStudentAttendanceRate } from './utils/attendanceCalculations';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 // Safe lazy loading with retry for secondary modals and views
@@ -161,11 +162,22 @@ function AppContent() {
     const handleStudentStatusSync = () => {
       try {
         const localStudents = api.getLocalStudents();
+        const localCourses = api.getLocalCourses();
+        const scheduleByCourseId = new Map<string, string>();
+        localCourses.forEach((c) => {
+          if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
+        });
         const localDisp = api.getAllDispositionStorage().disposition || {};
         const enriched = localStudents.map((st) => {
           const d = localDisp[st.id];
           if (d && typeof d.totalAbsences === 'number') {
-            const rate = Math.max(0, Math.round(100 - d.totalAbsences * 5));
+            const rate = computeQuickStudentAttendanceRate(
+              st.id,
+              st.courseId,
+              d.totalAbsences,
+              d.totalLates || 0,
+              st.courseId ? scheduleByCourseId.get(st.courseId) : undefined
+            );
             if (rate !== st.attendanceRate) {
               return { ...st, attendanceRate: rate };
             }

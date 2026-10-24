@@ -393,15 +393,23 @@ export function getActiveUserEmail(): string {
   return '';
 }
 
+const DEFAULT_LINKED_OWNER_EMAILS = ['jorge.cano@fds-esc.edu.ar', 'canomorenojj@gmail.com'];
+
 export function isPrimaryOwnerAccount(email?: string): boolean {
   const e = (email ?? getActiveUserEmail()).trim().toLowerCase();
   if (!e) return true;
-  return (
-    e === 'jorge.cano@fds-esc.edu.ar' ||
-    e === 'canomorenojj@gmail.com' ||
-    e.startsWith('jorge.cano@') ||
-    e.startsWith('canomorenojj@')
-  );
+  const envEmailsRaw = (import.meta as any).env?.VITE_OWNER_EMAILS as string | undefined;
+  const linkedList = envEmailsRaw
+    ? envEmailsRaw
+        .split(',')
+        .map((item) => item.trim().toLowerCase())
+        .filter(Boolean)
+    : DEFAULT_LINKED_OWNER_EMAILS;
+
+  return linkedList.some((ownerEmail) => {
+    const prefix = ownerEmail.split('@')[0];
+    return e === ownerEmail || (prefix && e.startsWith(`${prefix}@`));
+  });
 }
 
 export function getActiveUserId(): string {

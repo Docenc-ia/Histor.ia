@@ -274,7 +274,7 @@ export const Header: React.FC<HeaderProps> = ({
       }
 
       exportCourseDispositionToExcel(
-        'Todas_Las_Materias_Ciclo_2026',
+        `Todas_Las_Materias_Ciclo_${new Date().getFullYear()}`,
         students,
         dispStorage.disposition || {},
         disp2c
@@ -774,7 +774,7 @@ export const Header: React.FC<HeaderProps> = ({
 
                 <button
                   onClick={() => {
-                    loginWithGoogle('jorge.cano@fds-esc.edu.ar');
+                    loginWithGoogle();
                     setShowProfileMenu(false);
                   }}
                   className={`w-full flex items-center justify-between px-2 py-2 text-left rounded-lg transition-colors ${

@@ -210,8 +210,8 @@ export const api = {
 
     const [serverCourses, cloudCourses] = await Promise.all([serverPromise, cloudPromise]);
 
-    // Merge local, cloud (Firestore), and server courses so data is never lost on Vercel serverless
-    const mergedList = deduplicateCourses([...local, ...cloudCourses, ...serverCourses]);
+    // Merge server, cloud (Firestore), and local courses so local edits always take precedence
+    const mergedList = deduplicateCourses([...serverCourses, ...cloudCourses, ...local]);
 
     if (mergedList.length > 0) {
       saveLocalCourses(mergedList);
@@ -232,13 +232,13 @@ export const api = {
         const list = deduplicateCourses([...getLocalCourses(), data.course]);
         saveLocalCourses(list);
         const userId = getActiveUserId();
-        if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
+        if (userId) await firestoreSync.saveCourses(userId, list).catch(() => {});
         return data.course;
       }
     }
 
     const newCourse: Course = {
-      id: courseData.classroomCourseId || courseData.id || `c-${Date.now().toString().slice(-4)}`,
+      id: courseData.classroomCourseId || courseData.id || `c-${Date.now().toString().slice(-4)}-${Math.random().toString(36).substring(2, 5)}`,
       name: courseData.name || 'Nueva Materia',
       subject: courseData.subject || courseData.name || 'Materia',
       grade: courseData.grade || 'Secundaria',
@@ -258,7 +258,7 @@ export const api = {
     saveLocalCourses(list);
     const userId = getActiveUserId();
     if (userId) {
-      firestoreSync.saveCourses(userId, list).catch(() => {});
+      await firestoreSync.saveCourses(userId, list).catch(() => {});
     }
     return newCourse;
   },
@@ -373,33 +373,47 @@ export const api = {
   },
 
   async updateCourse(id: string, patch: Partial<Course>): Promise<{ success: boolean; course: Course }> {
+    const currentLocal = getLocalCourses();
+    const list = currentLocal.map((c) =>
+      c.id === id || (c.classroomCourseId && c.classroomCourseId === id)
+        ? { ...c, ...patch }
+        : c
+    );
+    saveLocalCourses(list);
+    const updated =
+      list.find((c) => c.id === id || (c.classroomCourseId && c.classroomCourseId === id)) ||
+      ({ id, ...patch } as Course);
+
+    const userId = getActiveUserId();
+    const cloudSavePromise = userId
+      ? firestoreSync.saveCourses(userId, list).catch(() => {})
+      : Promise.resolve();
+
     if (isPrimaryOwnerAccount()) {
       try {
         const res = await fetch(`/api/courses/${encodeURIComponent(id)}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(patch),
+          body: JSON.stringify(updated),
         });
         if (res.ok) {
           const data = await res.json();
           if (data && data.course) {
-            const list = getLocalCourses().map((c) => (c.id === id ? data.course : c));
-            saveLocalCourses(list);
-            const userId = getActiveUserId();
-            if (userId) firestoreSync.saveCourses(userId, list).catch(() => {});
-            return data;
+            const syncedList = getLocalCourses().map((c) =>
+              c.id === id || (c.classroomCourseId && c.classroomCourseId === id)
+                ? { ...c, ...data.course, ...patch }
+                : c
+            );
+            saveLocalCourses(syncedList);
+            await cloudSavePromise;
+            if (userId) await firestoreSync.saveCourses(userId, syncedList).catch(() => {});
+            return { success: true, course: { ...data.course, ...patch } };
           }
         }
       } catch (_) {}
     }
 
-    const list = getLocalCourses().map((c) => (c.id === id ? { ...c, ...patch } : c));
-    saveLocalCourses(list);
-    const updated = list.find((c) => c.id === id) || (patch as Course);
-    const userId = getActiveUserId();
-    if (userId) {
-      firestoreSync.saveCourses(userId, list).catch(() => {});
-    }
+    await cloudSavePromise;
     return { success: true, course: updated };
   },
 

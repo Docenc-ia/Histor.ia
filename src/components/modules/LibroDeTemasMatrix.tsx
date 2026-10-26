@@ -695,13 +695,22 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Días de cursada activos: el horario superior (Google Calendar o edición del curso) es la fuente directa
   const activeWeekdays = useMemo<number[]>(() => {
-    // 1. Si el horario del curso tiene días explícitos, siempre tiene prioridad absoluta para coincidir con "Horario"
+    // Si el docente está editando los días de cursada manualmente, respetar los botones seleccionados
+    if (
+      isEditingScheduleConfig &&
+      Array.isArray(metadata.configuredWeekdays) &&
+      metadata.configuredWeekdays.length > 0
+    ) {
+      return [...metadata.configuredWeekdays].sort((a, b) => a - b);
+    }
+
+    // 1. Si el horario del curso tiene días explícitos, tiene prioridad para coincidir con "Horario"
     const fromSchedule = extractWeekdaysFromSchedule(courseSchedule || metadata.horario);
     if (fromSchedule.length > 0) {
       return fromSchedule;
     }
 
-    // 2. Si no hay horario de texto pero sí días configurados en metadata
+    // 2. Si no hay horario de texto con días pero sí días configurados en metadata
     if (
       Array.isArray(metadata.configuredWeekdays) &&
       metadata.configuredWeekdays.length > 0
@@ -718,7 +727,13 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     }
 
     return [1, 3];
-  }, [courseSchedule, metadata.horario, metadata.configuredWeekdays, attendanceSettings?.courseWeekdays]);
+  }, [
+    isEditingScheduleConfig,
+    courseSchedule,
+    metadata.horario,
+    metadata.configuredWeekdays,
+    attendanceSettings?.courseWeekdays,
+  ]);
 
   // Módulos y horas diarias extraídas del horario del curso (Google Calendar o edición)
   // Cada hora/módulo genera una fila independiente en el Libro de Temas
@@ -761,6 +776,24 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       : [...activeWeekdays, dayNumber].sort((a, b) => a - b);
 
     if (nextWeekdays.length === 0) return; // Al menos 1 día de cursada
+
+    // Si hay rangos horarios en customScheduleInput, sincronizar los nombres de días seleccionados con esas horas
+    setCustomScheduleInput((prevInput) => {
+      const cleanPrev = (prevInput || '').trim();
+      const timeMatches = Array.from(
+        cleanPrev.matchAll(/\d{1,2}:\d{2}\s*(?:[-–—aà]|hasta|al)\s*\d{1,2}:\d{2}/gi)
+      ).map((m) => m[0]);
+      if (timeMatches.length > 0) {
+        // Conservar las franjas horarias aplicándolas a los nuevos días seleccionados
+        return nextWeekdays
+          .map((d) => {
+            const dn = WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d];
+            return timeMatches.map((tm) => `${dn} ${tm}`).join(', ');
+          })
+          .join(', ');
+      }
+      return nextWeekdays.map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]).join(', ');
+    });
 
     const nextMeta: LibroDeTemasMetadata = {
       ...metadata,

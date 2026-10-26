@@ -25,6 +25,7 @@ import {
   saveCourseAttendanceSettings,
 } from '../../../utils/attendanceCalculations';
 import { WEEKDAY_LABELS, extractWeekdaysFromSchedule } from '../../../utils/schoolHolidays';
+import { isValidCourseSchedule } from '../../../utils/courseFormatting';
 import { CloudSyncStatusInfo } from '../../../services/firestoreSync';
 import { api } from '../../../services/api';
 import {
@@ -520,7 +521,12 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                   <button
                     type="button"
                     onClick={() => {
-                      setCustomScheduleInput(courseSchedule || metadata.horario || '');
+                      const initialSched = isValidCourseSchedule(courseSchedule)
+                        ? courseSchedule!
+                        : isValidCourseSchedule(metadata.horario)
+                        ? metadata.horario
+                        : activeWeekdays.map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]).join(', ');
+                      setCustomScheduleInput(initialSched);
                       setIsEditingScheduleConfig(true);
                     }}
                     className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer shrink-0 ${
@@ -624,9 +630,19 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                     <button
                       type="button"
                       onClick={async () => {
-                        const scheduleToSave = customScheduleInput.trim() || activeWeekdays.map((d) => WEEKDAY_LABELS[d]).join(', ');
-                        const nextWeekdays = extractWeekdaysFromSchedule(scheduleToSave);
-                        const finalWeekdays = nextWeekdays.length > 0 ? nextWeekdays : activeWeekdays;
+                        const rawInput = customScheduleInput.trim();
+                        const inputWeekdays = extractWeekdaysFromSchedule(rawInput);
+                        const finalWeekdays = inputWeekdays.length > 0 ? inputWeekdays : activeWeekdays;
+
+                        let scheduleToSave = rawInput;
+                        if (!isValidCourseSchedule(rawInput)) {
+                          scheduleToSave = finalWeekdays.map((d) => WEEKDAY_LABELS[d]).join(', ');
+                        } else if (inputWeekdays.length === 0 && /\d{1,2}:\d{2}/.test(rawInput)) {
+                          // El docente seleccionó los días arriba con los botones y escribió solo las horas abajo
+                          scheduleToSave = finalWeekdays
+                            .map((d) => `${WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]} ${rawInput}`)
+                            .join(', ');
+                        }
 
                         const nextMeta: LibroDeTemasMetadata = {
                           ...metadata,

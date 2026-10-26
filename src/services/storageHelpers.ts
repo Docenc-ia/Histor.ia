@@ -8,7 +8,11 @@ import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firesto
 export { isPrimaryOwnerAccount };
 import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
-import { isValidCourseSchedule, getEffectiveScheduleStringForCourse } from '../utils/courseFormatting';
+import {
+  isValidCourseSchedule,
+  getEffectiveScheduleStringForCourse,
+  formatCourseSidebarLabel,
+} from '../utils/courseFormatting';
 
 // Run non-destructive storage compaction once on startup
 runStorageMaintenanceOnce();
@@ -28,29 +32,35 @@ export function getUserStorageKey(baseKey: string): string {
   return userId ? `${baseKey}_${userId}` : baseKey;
 }
 
-const courseCanonicalCache = new WeakMap<object, string>();
-
 export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
   if (!c) return '';
-  const cached = courseCanonicalCache.get(c);
-  if (cached !== undefined) return cached;
-
-  let key = '';
-  if (c.classroomCourseId && !c.classroomCourseId.startsWith('gc-') && !isNaN(Number(c.classroomCourseId))) {
-    key = `classroom:${String(c.classroomCourseId).trim()}`;
-  } else {
-    const name = (c.name || '').trim().toLowerCase();
-    const sub = (c.subject || '').trim().toLowerCase();
-    const sec = (c.section || c.grade || c.division || '').trim().toLowerCase();
-    const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
-    if (paren) {
-      key = `name:${paren[1].trim()}:${paren[2].trim()}`;
-    } else {
-      key = `name:${sub || name}:${sec || 'main'}`;
-    }
+  if (
+    c.classroomCourseId &&
+    !c.classroomCourseId.startsWith('gc-') &&
+    !isNaN(Number(c.classroomCourseId))
+  ) {
+    return `classroom:${String(c.classroomCourseId).trim()}`;
   }
-  courseCanonicalCache.set(c, key);
-  return key;
+
+  const label = formatCourseSidebarLabel(c as Course)
+    .trim()
+    .toLowerCase();
+  const name = (c.name || '').trim().toLowerCase();
+  const sub = (c.subject || '').trim().toLowerCase();
+  const div = (c.division || '').trim().toLowerCase();
+  const grade = (c.grade || '').trim().toLowerCase();
+  const sec = (c.section || '').trim().toLowerCase();
+  const meaningfulSec = sec && sec !== '1' && sec !== 'a' ? sec : '';
+
+  const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+  if (paren) {
+    return `name:${paren[1].trim()}:${paren[2].trim()}`;
+  }
+  if (label && label.includes('(')) {
+    return `label:${label}`;
+  }
+  const groupKey = div || meaningfulSec || grade || sec || 'main';
+  return `name:${name || sub}:${sub || name}:${groupKey}`;
 }
 
 export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolean {
@@ -65,6 +75,19 @@ export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolea
   if (id1 && (c2.id === id1 || c2.classroomCourseId === id1)) return true;
   if (id2 && (c1.id === id2 || c1.classroomCourseId === id2)) return true;
 
+  // If both are manual courses with distinct IDs and neither is a Classroom ID, check full identity
+  if (
+    c1.id &&
+    c2.id &&
+    c1.id !== c2.id &&
+    !id1 &&
+    !id2 &&
+    ((c1.name || '').trim().toLowerCase() !== (c2.name || '').trim().toLowerCase() ||
+      (c1.division || '').trim().toLowerCase() !== (c2.division || '').trim().toLowerCase())
+  ) {
+    return false;
+  }
+
   const k1 = normalizeCourseCanonicalKey(c1);
   const k2 = normalizeCourseCanonicalKey(c2);
   if (k1 && k2 && k1 === k2) return true;
@@ -78,6 +101,25 @@ function isValidRoom(r?: string | null): boolean {
   if (!clean) return false;
   const lower = clean.toLowerCase();
   return lower !== 'aula asignada' && lower !== 'aula principal' && lower !== 'sin aula';
+}
+
+function pickBestSchedule(newerSched?: string | null, olderSched?: string | null, fallbackCourse?: Partial<Course>): string {
+  const nValid = isValidCourseSchedule(newerSched);
+  const oValid = isValidCourseSchedule(olderSched);
+  const nHasTime = nValid && /\d{1,2}:\d{2}/.test(newerSched!);
+  const oHasTime = oValid && /\d{1,2}:\d{2}/.test(olderSched!);
+
+  // If newer has explicit time, or both/neither have explicit time and newer is valid, prefer newer
+  if (nHasTime) return newerSched!.trim();
+  if (oHasTime && !nValid) return olderSched!.trim();
+  if (nValid) return newerSched!.trim();
+  if (oValid) return olderSched!.trim();
+
+  if (fallbackCourse) {
+    const eff = getEffectiveScheduleStringForCourse(fallbackCourse);
+    if (eff) return eff;
+  }
+  return (newerSched || olderSched || '').trim();
 }
 
 export function deduplicateCourses(coursesList: Course[]): Course[] {
@@ -99,7 +141,13 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
     else if (cId && indexByClassroomId.has(cId)) existingIdx = indexByClassroomId.get(cId)!;
     else if (cClassroomId && indexByClassroomId.has(cClassroomId)) existingIdx = indexByClassroomId.get(cClassroomId)!;
     else if (cClassroomId && indexById.has(cClassroomId)) existingIdx = indexById.get(cClassroomId)!;
-    else if (cCanonical && indexByCanonical.has(cCanonical)) existingIdx = indexByCanonical.get(cCanonical)!;
+    else if (cCanonical && indexByCanonical.has(cCanonical)) {
+      const candidateIdx = indexByCanonical.get(cCanonical)!;
+      const candidate = result[candidateIdx];
+      if (areCoursesSame(candidate, c)) {
+        existingIdx = candidateIdx;
+      }
+    }
 
     if (existingIdx >= 0) {
       const existing = result[existingIdx];
@@ -110,14 +158,11 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
           ? c.id
           : existing.id || c.id;
 
-      const resolvedSchedule = isValidCourseSchedule(c.schedule)
-        ? c.schedule!.trim()
-        : isValidCourseSchedule(existing.schedule)
-        ? existing.schedule!.trim()
-        : getEffectiveScheduleStringForCourse({ ...existing, ...c, id: preferredId }) ||
-          c.schedule ||
-          existing.schedule ||
-          '';
+      const resolvedSchedule = pickBestSchedule(c.schedule, existing.schedule, {
+        ...existing,
+        ...c,
+        id: preferredId,
+      });
 
       const resolvedRoom = isValidRoom(c.room)
         ? c.room!.trim()
@@ -131,13 +176,15 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
         id: preferredId,
         classroomSynced: Boolean(existing.classroomSynced || c.classroomSynced),
         studentsCount: Math.max(Number(existing.studentsCount) || 0, Number(c.studentsCount) || 0),
-        name: existing.name || c.name,
-        subject: existing.subject || c.subject,
-        grade: existing.grade || c.grade,
-        section: existing.section || c.section,
-        division: existing.division || c.division,
+        name: c.name || existing.name,
+        subject: c.subject || existing.subject,
+        grade: c.grade || existing.grade,
+        section: c.section || existing.section,
+        division: c.division || existing.division,
         orientation:
-          existing.orientation && existing.orientation !== 'Secundaria'
+          c.orientation && c.orientation !== 'Secundaria'
+            ? c.orientation
+            : existing.orientation && existing.orientation !== 'Secundaria'
             ? existing.orientation
             : c.orientation || existing.orientation,
         room: resolvedRoom,
@@ -148,7 +195,7 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
             : existing.preferredCalendarId) ||
           c.preferredCalendarId ||
           existing.preferredCalendarId,
-        schoolYear: existing.schoolYear || c.schoolYear || '2026',
+        schoolYear: c.schoolYear || existing.schoolYear || '2026',
       };
       const classroomId = existing.classroomCourseId || c.classroomCourseId;
       if (classroomId) merged.classroomCourseId = classroomId;
@@ -395,6 +442,7 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
     }
     cachedCourses = { userId, list: cleanList };
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
+    emitAppEvent('docencia_courses_updated');
 
     scheduleWriteBehind(`courses_${userId}`, () => {
       const dataStr = JSON.stringify(cleanList);

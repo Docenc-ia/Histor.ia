@@ -743,9 +743,33 @@ async function startServer() {
   // Patch a single course
   app.patch("/api/courses/:id", (req, res) => {
     const { id } = req.params;
-    const course = courses.find((c) => c.id === id);
+    if (!coursesLoadedFromDisk) {
+      loadCoursesFromDisk();
+    }
+    let course = courses.find((c) => c.id === id || c.classroomCourseId === id);
     if (!course) {
-      return res.status(404).json({ error: "Materia no encontrada." });
+      if (req.body && (req.body.name || req.body.subject)) {
+        course = {
+          id,
+          name: req.body.name || req.body.subject || "Materia",
+          subject: req.body.subject || req.body.name || "Materia",
+          grade: req.body.grade || "Secundaria",
+          room: req.body.room || "Aula Principal",
+          schedule: req.body.schedule || "A coordinar",
+          color: req.body.color || "#1a73e8",
+          studentsCount: typeof req.body.studentsCount === "number" ? req.body.studentsCount : 25,
+          classroomSynced: Boolean(req.body.classroomSynced),
+          classroomCourseId: req.body.classroomCourseId,
+          code: req.body.code || Math.random().toString(36).substring(2, 8),
+          section: req.body.section || "1",
+          orientation: req.body.orientation,
+          division: req.body.division,
+          schoolYear: req.body.schoolYear || String(new Date().getFullYear()),
+        };
+        courses.push(course);
+      } else {
+        return res.status(404).json({ error: "Materia no encontrada." });
+      }
     }
     if (typeof req.body.studentsCount === "number") {
       course.studentsCount = req.body.studentsCount;

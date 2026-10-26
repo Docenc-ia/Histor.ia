@@ -205,6 +205,21 @@ function AppContent() {
     );
   }, []);
 
+  // Immediately reflect course schedule/details updates across Sidebar, Mis Materias, and Workspace
+  useEffect(() => {
+    const handleCoursesUpdated = () => {
+      try {
+        const latestCourses = api.deduplicateCourses(api.getLocalCourses());
+        setCourses((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(latestCourses)) return prev;
+          return latestCourses;
+        });
+      } catch (_) {}
+    };
+
+    return subscribeAppEvents(['docencia_courses_updated'], handleCoursesUpdated, 40);
+  }, []);
+
   const handleOpenCreateModal = (type: 'course' | 'plan' | 'task' | 'file' = 'course') => {
     setCreateModalType(type);
     setIsCreateModalOpen(true);

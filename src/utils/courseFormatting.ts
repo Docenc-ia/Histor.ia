@@ -92,8 +92,17 @@ export function formatCourseSidebarLabel(course: Course | null | undefined): str
     return `${sPatternMatch[1].trim()} (${sPatternMatch[2].trim()})`;
   }
 
-  // 6. Check section or grade with secondary division (S1, S2, etc.)
-  if (section) {
+  // 6. Check explicit division, meaningful section, or grade
+  if (division) {
+    const mainSubject = subject || name;
+    if (!mainSubject.toLowerCase().includes(division.toLowerCase())) {
+      return `${mainSubject} (${division})`;
+    }
+    return mainSubject;
+  }
+
+  const isPlaceholderSection = section === '1' || section.toUpperCase() === 'A';
+  if (section && !isPlaceholderSection) {
     const mainSubject = subject || name;
     return `${mainSubject} (${section})`;
   }
@@ -105,10 +114,16 @@ export function formatCourseSidebarLabel(course: Course | null | undefined): str
       grade.toLowerCase().includes('secundaria'))
   ) {
     const cleanGrade = grade.replace(/secundaria\s*[-–—]?\s*/i, '').trim();
-    const mainSubject = subject || name;
-    if (cleanGrade) {
+    const mainSubject = name || subject;
+    if (cleanGrade && !mainSubject.toLowerCase().includes(cleanGrade.toLowerCase())) {
       return `${mainSubject} (${cleanGrade})`;
     }
+    return mainSubject;
+  }
+
+  if (section) {
+    const mainSubject = name || subject;
+    return `${mainSubject} (${section})`;
   }
 
   // 7. Fallback if both subject and name exist and differ
@@ -143,24 +158,45 @@ export function isValidCourseSchedule(sched?: string | null): boolean {
   if (!sched || typeof sched !== 'string') return false;
   const raw = sched.trim();
   if (!raw) return false;
-  const lower = raw.toLowerCase();
+  const lower = raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
   if (
     raw === 'Lunes y Miércoles' ||
     lower === 'sin horario especificado' ||
     lower === 'horario escolar' ||
     lower.includes('coordinar') ||
+    lower.includes('convenir') ||
     lower.includes('sin horario') ||
     lower.includes('pendiente')
   ) {
     return false;
   }
-  return true;
+  const hasWeekdayOrTime =
+    /(?:^|[^a-z])(domingo|dom|lunes|lun|martes|mar|miercoles|mie|jueves|jue|viernes|vie|sabado|sab)(?=$|[^a-z])/i.test(
+      lower
+    ) || /\d{1,2}:\d{2}/.test(lower);
+  return hasWeekdayOrTime;
 }
 
 export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | null): string {
   if (!course) return '';
   const rawSched = (course.schedule || '').trim();
-  if (isValidCourseSchedule(rawSched)) return rawSched;
+  const rawValid = isValidCourseSchedule(rawSched);
+  const hasDayRegex = /(?:^|[^a-z])(domingo|dom|lunes|lun|martes|mar|miercoles|mie|jueves|jue|viernes|vie|sabado|sab)(?=$|[^a-z])/i;
+  const normalizeAscii = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const rawHasDay = rawValid && hasDayRegex.test(normalizeAscii(rawSched));
+  const rawHasTime = rawValid && /\d{1,2}:\d{2}/.test(rawSched);
+
+  if (rawHasDay && rawHasTime) {
+    return rawSched;
+  }
 
   if (typeof window !== 'undefined' && course.id) {
     try {
@@ -184,16 +220,42 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
         const raw = localStorage.getItem(k);
         if (!raw) continue;
         const parsed = JSON.parse(raw);
-        const h = parsed?.metadata?.horario;
+        const h = typeof parsed?.metadata?.horario === 'string' ? parsed.metadata.horario.trim() : '';
+        const cfgDays: number[] = Array.isArray(parsed?.metadata?.configuredWeekdays)
+          ? parsed.metadata.configuredWeekdays.map(Number).filter((n: number) => !isNaN(n))
+          : [];
+        const dayLabels = cfgDays.map((d) => DAY_NAMES_ES[d]).filter(Boolean);
+
         if (isValidCourseSchedule(h)) {
-          return String(h).trim();
+          const hNorm = normalizeAscii(h);
+          const hHasDay = hasDayRegex.test(hNorm);
+          const hHasTime = /\d{1,2}:\d{2}/.test(h);
+          if (hHasDay && hHasTime) {
+            return h;
+          }
+          if (!hHasDay && hHasTime && dayLabels.length > 0) {
+            return dayLabels.map((dl) => `${dl} ${h}`).join(', ');
+          }
+          if (!rawValid) {
+            return h;
+          }
+        }
+        if (rawHasTime && !rawHasDay && dayLabels.length > 0) {
+          return dayLabels.map((dl) => `${dl} ${rawSched}`).join(', ');
+        }
+        if (!rawValid && dayLabels.length > 0) {
+          return dayLabels.join(', ');
         }
       }
 
       // Fallback: reconstruct schedule from saved attendance settings (dailySlots or courseWeekdays)
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith(`fds_course_attendance_settings_${course.id}`)) {
+        if (
+          k &&
+          (k.startsWith(`fds_attendance_settings_${course.id}`) ||
+            k.startsWith(`fds_course_attendance_settings_${course.id}`))
+        ) {
           const raw = localStorage.getItem(k);
           if (!raw) continue;
           const settings = JSON.parse(raw);
@@ -227,13 +289,94 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
               return parts.join(', ');
             }
           }
+          if (Array.isArray(settings?.courseWeekdays) && settings.courseWeekdays.length > 0) {
+            const dayLabels = settings.courseWeekdays
+              .map((d: any) => DAY_NAMES_ES[Number(d)])
+              .filter(Boolean);
+            if (dayLabels.length > 0) {
+              return dayLabels.join(', ');
+            }
+          }
           break;
         }
       }
     } catch (_) {}
   }
 
-  return '';
+  return rawValid ? rawSched : '';
+}
+
+function normalizeForMatch(s?: string | null): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function doesCalendarSlotMatchCourse(
+  slot: { title?: string; courseId?: string },
+  course: Partial<Course>
+): boolean {
+  if (!slot || !course) return false;
+  if (
+    slot.courseId &&
+    (slot.courseId === course.id ||
+      (course.classroomCourseId && slot.courseId === course.classroomCourseId))
+  ) {
+    return true;
+  }
+
+  const sTitle = normalizeForMatch(slot.title);
+  if (!sTitle) return false;
+
+  const sidebarLabel = normalizeForMatch(formatCourseSidebarLabel(course as Course));
+  const cName = normalizeForMatch(course.name);
+  const cSubj = normalizeForMatch(course.subject);
+
+  if (sidebarLabel && (sTitle === sidebarLabel || sTitle.includes(sidebarLabel))) {
+    return true;
+  }
+  if (cName && (sTitle === cName || sTitle.includes(cName))) {
+    return true;
+  }
+
+  // Extract group/division inside parentheses if present, e.g. "Historia (S2 Nat)" -> "s2 nat"
+  const rawName = (course.name || '').trim();
+  const parenMatch = rawName.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+  const baseSubj = parenMatch ? normalizeForMatch(parenMatch[1]) : cSubj || cName;
+  const groupFromParen = parenMatch ? normalizeForMatch(parenMatch[2]) : '';
+  const explicitDiv = normalizeForMatch(course.division || course.section || '');
+  // Ignore default placeholder sections like '1' or 'a' unless paired with explicit division
+  const meaningfulDiv =
+    groupFromParen ||
+    (explicitDiv && explicitDiv !== '1' && explicitDiv !== 'a' && explicitDiv !== 'main'
+      ? explicitDiv
+      : '');
+
+  if (baseSubj && sTitle.includes(baseSubj)) {
+    if (!meaningfulDiv) {
+      return sTitle === baseSubj;
+    }
+    const divTokens = meaningfulDiv.split(' ').filter((t) => t.length >= 2);
+    if (divTokens.length > 0 && divTokens.every((tok) => sTitle.includes(tok))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function normalizeTimeToken(raw?: string): string {
+  if (!raw) return '';
+  const clean = raw.trim();
+  if (clean.includes(':')) {
+    const [h, m] = clean.split(':');
+    return `${String(parseInt(h, 10) || 0).padStart(2, '0')}:${String(parseInt(m, 10) || 0).padStart(2, '0')}`;
+  }
+  return `${String(parseInt(clean, 10) || 0).padStart(2, '0')}:00`;
 }
 
 /**
@@ -248,6 +391,7 @@ export function getNextCourseClassInfo(
     startTime: string;
     endTime: string;
     title: string;
+    courseId?: string;
   }[]
 ): NextCourseClassInfo {
   const effectiveSchedule = getEffectiveScheduleStringForCourse(course);
@@ -255,15 +399,42 @@ export function getNextCourseClassInfo(
   // Collect weekly blocks { dayOfWeek, startTime, endTime }
   const rawBlocks: { dayOfWeek: number; startTime: string; endTime: string; hasExplicitTime: boolean }[] = [];
 
-  // 1. Check attendance settings saved in localStorage for this course
+  // 1. Check attendance settings & libro de temas configuredWeekdays/slotsConfig saved in localStorage for this course
+  let fallbackConfiguredDays: number[] = [];
   if (typeof window !== 'undefined' && course.id) {
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith(`fds_course_attendance_settings_${course.id}`)) {
+        if (!k) continue;
+        if (k.startsWith(`fds_libro_temas_${course.id}`)) {
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (
+              Array.isArray(parsed?.metadata?.configuredWeekdays) &&
+              parsed.metadata.configuredWeekdays.length > 0
+            ) {
+              fallbackConfiguredDays = parsed.metadata.configuredWeekdays
+                .map(Number)
+                .filter((n: number) => !isNaN(n));
+            }
+          }
+        } else if (
+          k.startsWith(`fds_attendance_settings_${course.id}`) ||
+          k.startsWith(`fds_course_attendance_settings_${course.id}`)
+        ) {
           const raw = localStorage.getItem(k);
           if (!raw) continue;
           const settings = JSON.parse(raw);
+          if (
+            fallbackConfiguredDays.length === 0 &&
+            Array.isArray(settings?.courseWeekdays) &&
+            settings.courseWeekdays.length > 0
+          ) {
+            fallbackConfiguredDays = settings.courseWeekdays
+              .map(Number)
+              .filter((n: number) => !isNaN(n));
+          }
           if (settings?.dailySlots && typeof settings.dailySlots === 'object') {
             for (const [dayKey, slotsArr] of Object.entries(settings.dailySlots)) {
               const dNum = Number(dayKey);
@@ -273,8 +444,10 @@ export function getNextCourseClassInfo(
                 const sorted = [...validSlots].sort((a: any, b: any) =>
                   String(a.startTime).localeCompare(String(b.startTime))
                 );
-                const firstStart = String(sorted[0].startTime).padStart(5, '0');
-                const lastEnd = String(sorted[sorted.length - 1].endTime || sorted[0].startTime).padStart(5, '0');
+                const firstStart = normalizeTimeToken(String(sorted[0].startTime));
+                const lastEnd = normalizeTimeToken(
+                  String(sorted[sorted.length - 1].endTime || sorted[0].startTime)
+                );
                 rawBlocks.push({
                   dayOfWeek: dNum,
                   startTime: firstStart,
@@ -284,51 +457,76 @@ export function getNextCourseClassInfo(
               }
             }
           }
-          break;
         }
       }
     } catch (_) {}
   }
 
-  // 2. Parse schedule string (e.g. "Martes 08:00 - 09:30, Jueves 10:10 - 11:10")
+  // 2. Parse schedule string (e.g. "Martes 08:00 - 09:30, Jueves 10:10 - 11:10" or "Jueves 07:50 - 08:50, 08:50 - 09:50")
   if (effectiveSchedule) {
-    const dayMap: Record<string, number> = {
-      domingo: 0,
-      lunes: 1,
-      martes: 2,
-      miercoles: 3,
-      miércoles: 3,
-      jueves: 4,
-      viernes: 5,
-      sabado: 6,
-      sábado: 6,
-    };
+    const dayPatterns: { day: number; regex: RegExp }[] = [
+      { day: 0, regex: /(?:^|[^a-z])(domingo|dom|do)(?=$|[^a-z])/i },
+      { day: 1, regex: /(?:^|[^a-z])(lunes|lun|lu)(?=$|[^a-z])/i },
+      { day: 2, regex: /(?:^|[^a-z])(martes|mar|ma)(?=$|[^a-z])/i },
+      { day: 3, regex: /(?:^|[^a-z])(miercoles|mie|mi)(?=$|[^a-z])/i },
+      { day: 4, regex: /(?:^|[^a-z])(jueves|jue|ju)(?=$|[^a-z])/i },
+      { day: 5, regex: /(?:^|[^a-z])(viernes|vie|vi)(?=$|[^a-z])/i },
+      { day: 6, regex: /(?:^|[^a-z])(sabado|sab|sa)(?=$|[^a-z])/i },
+    ];
 
-    const parts = effectiveSchedule.split(/[,;|/]+/);
+    const parts = effectiveSchedule.split(/[,;|/\n]+/);
+    let lastMatchedDays: number[] = [];
+
     for (const part of parts) {
       const clean = part.trim();
       if (!clean) continue;
 
-      // Match day(s) and time range
-      const timeMatch = clean.match(/([0-9]{1,2}:[0-9]{2})\s*(?:[-–—aà]|hasta)\s*([0-9]{1,2}:[0-9]{2})/i);
-      const singleTimeMatch = !timeMatch ? clean.match(/([0-9]{1,2}:[0-9]{2})/) : null;
+      const normalizedClean = clean
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
 
-      const startTime = timeMatch
-        ? timeMatch[1].padStart(5, '0')
-        : singleTimeMatch
-        ? singleTimeMatch[1].padStart(5, '0')
-        : '';
-      const endTime = timeMatch ? timeMatch[2].padStart(5, '0') : '';
+      // Match time range (supports "08:00 - 09:30", "8:00 a 9:30", "07:50 - 08:50 hs")
+      const timeRangeMatches = Array.from(
+        normalizedClean.matchAll(
+          /([0-9]{1,2}:[0-9]{2})\s*(?:[-–—aà]|hasta|al)\s*([0-9]{1,2}:[0-9]{2})/gi
+        )
+      );
+      const singleTimeMatch =
+        timeRangeMatches.length === 0 ? normalizedClean.match(/([0-9]{1,2}:[0-9]{2})/) : null;
+
+      let startTime = '';
+      let endTime = '';
+      if (timeRangeMatches.length > 0) {
+        startTime = normalizeTimeToken(timeRangeMatches[0][1]);
+        endTime = normalizeTimeToken(timeRangeMatches[timeRangeMatches.length - 1][2]);
+      } else if (singleTimeMatch) {
+        startTime = normalizeTimeToken(singleTimeMatch[1]);
+        endTime = startTime;
+      }
 
       const matchedDays: number[] = [];
-      for (const [dName, dIdx] of Object.entries(dayMap)) {
-        const regex = new RegExp(`\\b${dName}\\b`, 'i');
-        if (regex.test(clean)) {
-          if (!matchedDays.includes(dIdx)) matchedDays.push(dIdx);
+      for (const { day, regex } of dayPatterns) {
+        if (regex.test(normalizedClean)) {
+          if (!matchedDays.includes(day)) matchedDays.push(day);
         }
       }
 
-      for (const dNum of matchedDays) {
+      // Carry over previous day when a second hour is listed after a comma, or fallback to configuredWeekdays if user entered only hours
+      const effectiveDays =
+        matchedDays.length > 0
+          ? matchedDays
+          : startTime && lastMatchedDays.length > 0
+          ? lastMatchedDays
+          : startTime && fallbackConfiguredDays.length > 0
+          ? fallbackConfiguredDays
+          : [];
+
+      if (matchedDays.length > 0) {
+        lastMatchedDays = matchedDays;
+      }
+
+      for (const dNum of effectiveDays) {
         const alreadyHasWithTime = rawBlocks.some(
           (b) => b.dayOfWeek === dNum && b.hasExplicitTime
         );
@@ -350,30 +548,38 @@ export function getNextCourseClassInfo(
     }
   }
 
-  // 3. Also check external Google Calendar slots if matched by course name/division
-  if (rawBlocks.length === 0 && Array.isArray(externalSlots) && externalSlots.length > 0) {
-    const cleanStr = (s: string) =>
-      (s || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    const cName = cleanStr(course.name);
-    const cDiv = cleanStr(course.division || course.grade || course.section || '');
-    for (const slot of externalSlots) {
-      const sTitle = cleanStr(slot.title);
-      if (
-        (cName && sTitle.includes(cName) && (!cDiv || sTitle.includes(cDiv))) ||
-        (cName && sTitle === cName)
-      ) {
-        rawBlocks.push({
-          dayOfWeek: slot.dayOfWeek,
-          startTime: slot.startTime,
-          endTime: slot.endTime,
-          hasExplicitTime: true,
-        });
+  // 3. Also check external Google Calendar slots if matched by course ID or name/division
+  let activeExternalSlots = externalSlots;
+  if ((!Array.isArray(activeExternalSlots) || activeExternalSlots.length === 0) && typeof window !== 'undefined') {
+    try {
+      const cachedRaw = sessionStorage.getItem('docencia_live_calendar_slots');
+      if (cachedRaw) {
+        const parsedSlots = JSON.parse(cachedRaw);
+        if (Array.isArray(parsedSlots)) {
+          activeExternalSlots = parsedSlots;
+        }
+      }
+    } catch (_) {}
+  }
+
+  if (Array.isArray(activeExternalSlots) && activeExternalSlots.length > 0) {
+    const hasExplicitLocalTime = rawBlocks.some((b) => b.hasExplicitTime);
+    if (!hasExplicitLocalTime) {
+      for (const slot of activeExternalSlots) {
+        if (doesCalendarSlotMatchCourse(slot, course)) {
+          const existingNoTimeIdx = rawBlocks.findIndex(
+            (b) => b.dayOfWeek === slot.dayOfWeek && !b.hasExplicitTime
+          );
+          if (existingNoTimeIdx !== -1) {
+            rawBlocks.splice(existingNoTimeIdx, 1);
+          }
+          rawBlocks.push({
+            dayOfWeek: slot.dayOfWeek,
+            startTime: normalizeTimeToken(slot.startTime),
+            endTime: normalizeTimeToken(slot.endTime),
+            hasExplicitTime: true,
+          });
+        }
       }
     }
   }

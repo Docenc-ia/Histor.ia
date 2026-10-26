@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
-import { formatCourseSidebarLabel } from '../../utils/courseFormatting';
+import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 import { ClassesModule } from './ClassesModule';
 
 export type CourseTabType = 'alumnos';
@@ -43,6 +43,11 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
   const { user, isDarkMode } = useWorkspaceAuth();
   const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  const sortedCourses = React.useMemo(
+    () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
+    [courses]
+  );
 
   const schoolName = user?.school || 'Institución Educativa';
   const schoolCycle = course.schoolYear || '2026';
@@ -82,7 +87,7 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
                   : 'bg-white border border-neutral-200 text-neutral-800 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20'
               }`}
             >
-              {courses.map((c) => (
+              {sortedCourses.map((c) => (
                 <option key={c.id} value={c.id}>
                   {formatCourseSidebarLabel(c)}
                 </option>

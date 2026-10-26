@@ -65,9 +65,22 @@ export function resolveCourseForEvent(
   dayOfWeek?: number,
   startTime?: string,
   endTime?: string,
-  rawTitle?: string
+  rawTitle?: string,
+  rawDescription?: string
 ): Course | undefined {
   if (!Array.isArray(courses) || courses.length === 0) return undefined;
+
+  // 0. Check explicit [DocencIA-Curso:ID] tag in description
+  if (rawDescription) {
+    const tagMatch = rawDescription.match(/\[DocencIA-Curso:([^\]]+)\]/i);
+    if (tagMatch && tagMatch[1]) {
+      const taggedId = tagMatch[1].trim();
+      const byTag = courses.find(
+        (c) => c.id === taggedId || (c.classroomCourseId && c.classroomCourseId === taggedId)
+      );
+      if (byTag) return byTag;
+    }
+  }
 
   const cleanStr = (s: string) =>
     (s || '')
@@ -88,17 +101,34 @@ export function resolveCourseForEvent(
       let score = 0;
       const cName = cleanStr(c.name);
       const cSubj = cleanStr(c.subject || '');
-      const cGrade = cleanStr(c.grade || '');
-      const cDiv = cleanStr(c.division || '');
-      const cSec = cleanStr(c.section || '');
+      const rawName = (c.name || '').trim();
+      const parenMatch = rawName.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+      const groupFromParen = parenMatch ? cleanStr(parenMatch[2]) : '';
+      const explicitDiv = cleanStr(c.division || '');
+      const rawSec = cleanStr(c.section || '');
+      const cSec = rawSec && rawSec !== '1' && rawSec !== 'a' ? rawSec : '';
+      const cGrade = cleanStr((c.grade || '').replace(/secundaria\s*[-–—]?\s*/i, ''));
 
-      if (cName && (titleClean === cName || titleClean.includes(cName))) score += 120;
-      if (cSubj && titleClean.includes(cSubj)) score += 60;
-      for (const tag of [cGrade, cDiv, cSec].filter((t) => t && t.length >= 2)) {
-        if (titleClean.includes(tag)) score += 70;
+      const divTag = groupFromParen || explicitDiv || cSec;
+
+      if (cName && (titleClean === cName || titleClean.includes(cName))) {
+        score += 150;
+      } else if (cSubj && titleClean.includes(cSubj)) {
+        // Only award subject match if either the course has no division tag or its division tokens appear in the title
+        if (!divTag) {
+          if (titleClean === cSubj) score += 90;
+        } else {
+          const divTokens = divTag.split(' ').filter((t) => t.length >= 2);
+          if (divTokens.length > 0 && divTokens.every((t) => titleClean.includes(t))) {
+            score += 130;
+          }
+        }
       }
 
-      if (score > bestScore && score >= 60) {
+      if (divTag && titleClean.includes(divTag)) score += 70;
+      else if (cGrade && cGrade.length >= 2 && titleClean.includes(cGrade)) score += 40;
+
+      if (score > bestScore && score >= 90) {
         bestScore = score;
         bestCourse = c;
       }
@@ -720,6 +750,7 @@ export const calendarService = {
       endTime: string;
       displayText: string;
       calendarName?: string;
+      courseId?: string;
     }[];
     message: string;
   }> {
@@ -732,6 +763,11 @@ export const calendarService = {
       !calendarId || calendarId === 'all' || calendarId.toLowerCase() === 'canomorenojj@gmail.com'
         ? 'primary'
         : calendarId;
+
+    const calendarIdsToQuery = new Set<string>([targetCalendarId]);
+    if (targetCalendarId === 'primary') {
+      calendarIdsToQuery.add('jorge.cano@fds-esc.edu.ar');
+    }
 
     const fetchSlotsWithToken = async (activeToken: string) => {
       // Scan 14-day window starting from current week's Monday (to catch bi-weekly or next-week modules if current week had a holiday)
@@ -754,27 +790,33 @@ export const calendarService = {
       params.set('timeMin', monday.toISOString());
       params.set('timeMax', twoWeeksEnd.toISOString());
 
-      try {
-        const res = await fetch(
-          `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendarId)}/events?${params.toString()}`,
-          { headers: { Authorization: `Bearer ${activeToken}` } }
-        );
-        if (res.status === 401) {
-          return { unauthorized: true, rawEntries: [] };
-        }
-        if (!res.ok) {
-          return { unauthorized: false, rawEntries: [] };
-        }
-        const data = await res.json();
-        const calSummary = data.summary || (targetCalendarId === 'primary' ? 'Calendario Principal (Cuenta Colegio)' : targetCalendarId);
-        const rawEntries = (data.items || []).map((item: any) => ({
-          item,
-          calName: calSummary,
-        }));
-        return { unauthorized: false, rawEntries };
-      } catch (_) {
-        return { unauthorized: false, rawEntries: [] };
-      }
+      let unauthorized = false;
+      const allRawEntries: { item: any; calName: string }[] = [];
+
+      await Promise.all(
+        Array.from(calendarIdsToQuery).map(async (calId) => {
+          try {
+            const res = await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calId)}/events?${params.toString()}`,
+              { headers: { Authorization: `Bearer ${activeToken}` } }
+            );
+            if (res.status === 401) {
+              unauthorized = true;
+              return;
+            }
+            if (!res.ok) return;
+            const data = await res.json();
+            const calSummary =
+              data.summary ||
+              (calId === 'primary' ? 'Calendario Principal (Cuenta Colegio)' : calId);
+            for (const item of data.items || []) {
+              allRawEntries.push({ item, calName: calSummary });
+            }
+          } catch (_) {}
+        })
+      );
+
+      return { unauthorized: unauthorized && allRawEntries.length === 0, rawEntries: allRawEntries };
     };
 
     try {
@@ -814,7 +856,15 @@ export const calendarService = {
         const displayText = `${dayName} ${startTime} - ${endTime}`;
 
         const rawSummary = (item.summary || '').trim();
-        const matchedCourse = resolveCourseForEvent(availableCourses, dow, startTime, endTime, rawSummary);
+        const rawDescription = (item.description || '').trim();
+        const matchedCourse = resolveCourseForEvent(
+          availableCourses,
+          dow,
+          startTime,
+          endTime,
+          rawSummary,
+          rawDescription
+        );
         const title =
           matchedCourse && isBusyOrGenericTitle(rawSummary)
             ? formatCourseCalendarTitle(matchedCourse)
@@ -832,6 +882,7 @@ export const calendarService = {
             endTime,
             displayText,
             calendarName: calName,
+            courseId: matchedCourse?.id,
           });
         }
       }
@@ -839,6 +890,12 @@ export const calendarService = {
       // Sort by day of week (Mon to Sun) then time
       const daySortOrder = (d: number) => (d === 0 ? 7 : d);
       slots.sort((a, b) => daySortOrder(a.dayOfWeek) - daySortOrder(b.dayOfWeek) || a.startTime.localeCompare(b.startTime));
+
+      if (typeof window !== 'undefined' && slots.length > 0) {
+        try {
+          sessionStorage.setItem('docencia_live_calendar_slots', JSON.stringify(slots));
+        } catch (_) {}
+      }
 
       return {
         success: true,

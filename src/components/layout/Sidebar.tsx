@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   GraduationCap,
@@ -15,6 +15,7 @@ import {
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { Course } from '../../types';
 import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
+import { subscribeAppEvents } from '../../utils/appEventBus';
 
 interface SidebarProps {
   currentTab: string;
@@ -50,9 +51,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { user, isDarkMode } = useWorkspaceAuth();
   const [coursesExpanded, setCoursesExpanded] = useState<boolean>(true);
+  const [nowTick, setNowTick] = useState<Date>(() => new Date());
+  const [scheduleSyncTick, setScheduleSyncTick] = useState<number>(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(new Date()), 60000);
+    const unsub = subscribeAppEvents(
+      ['docencia_courses_updated'],
+      () => setScheduleSyncTick((t) => t + 1),
+      40
+    );
+    return () => {
+      clearInterval(timer);
+      unsub();
+    };
+  }, []);
+
   const sortedSidebarCourses = React.useMemo(
-    () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
-    [courses]
+    () => sortCoursesByUpcomingSchedule(courses, nowTick).map((item) => item.course),
+    [courses, nowTick, scheduleSyncTick]
   );
 
   const navItems: NavGroup[] = [

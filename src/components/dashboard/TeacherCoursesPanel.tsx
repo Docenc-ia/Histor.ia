@@ -255,29 +255,50 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
   // Sync real students for a single course (MANUALLY triggered by user)
   const handleSyncSingleCourse = async (course: Course) => {
-    const activeToken = token || getCachedAccessToken();
-    if (!activeToken) {
-      setRosterSyncMsg('Por favor, conectá tu cuenta de Google para sincronizar.');
-      setTimeout(() => setRosterSyncMsg(null), 4000);
-      return;
-    }
-
     try {
       setSyncingCourseId(course.id);
-      const res = await classroomService.resolveAndFetchCourseStudents(course, activeToken);
+
+      // 1. Hydrate cloud removed lists and heal from any sibling course of the same division (e.g. Filosofía <-> Historia)
+      await api.getStudents(course.id).catch(() => []);
+      const healedAfterCheck = api.getLocalStudents(course.id);
+
+      const activeToken = token || getCachedAccessToken();
+      if (!activeToken) {
+        if (healedAfterCheck.length > 0) {
+          if (onRefreshData) onRefreshData();
+          setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${healedAfterCheck.length} estudiantes repuestos.`);
+          setTimeout(() => setRosterSyncMsg(null), 4000);
+          return;
+        }
+        setRosterSyncMsg('Por favor, conectá tu cuenta de Google para sincronizar.');
+        setTimeout(() => setRosterSyncMsg(null), 4000);
+        return;
+      }
+
+      const res = await classroomService.resolveAndFetchCourseStudents(course, activeToken, undefined, true);
 
       if (res.rosterPermissionRequired) {
+        if (healedAfterCheck.length > 0) {
+          if (onRefreshData) onRefreshData();
+          setRosterSyncMsg(`Materia "${course.name}": ${healedAfterCheck.length} estudiantes del curso repuestos.`);
+          setTimeout(() => setRosterSyncMsg(null), 4000);
+          return;
+        }
         setNeedsRosterPermission(true);
       }
 
-      if (res.success && Array.isArray(res.students)) {
-        await api.syncCourseStudentsRoster(course.id, res.students);
-        await api.syncCourseStudents([{ id: course.id, studentsCount: res.students.length }]);
+      if (res.success && Array.isArray(res.students) && res.students.length > 0) {
+        const syncRes = await api.syncCourseStudentsRoster(course.id, res.students);
+        await api.syncCourseStudents([{ id: course.id, studentsCount: syncRes.count }]);
         if (res.realClassroomId && res.realClassroomId !== course.classroomCourseId) {
           await api.updateCourse(course.id, { classroomCourseId: res.realClassroomId, classroomSynced: true });
         }
         if (onRefreshData) onRefreshData();
-        setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${res.students.length} estudiantes reales desde Google Classroom.`);
+        setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${syncRes.count} estudiantes activos desde Google Classroom.`);
+        setTimeout(() => setRosterSyncMsg(null), 4000);
+      } else if (healedAfterCheck.length > 0) {
+        if (onRefreshData) onRefreshData();
+        setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${healedAfterCheck.length} estudiantes verificados.`);
         setTimeout(() => setRosterSyncMsg(null), 4000);
       } else {
         setRosterSyncMsg(res.message || `No se encontraron estudiantes para "${course.name}" en Classroom.`);

@@ -12,6 +12,7 @@ import {
   isValidCourseSchedule,
   getEffectiveScheduleStringForCourse,
   formatCourseSidebarLabel,
+  countDistinctScheduleWeekdays,
 } from '../utils/courseFormatting';
 
 // Run non-destructive storage compaction once on startup
@@ -109,17 +110,35 @@ function pickBestSchedule(newerSched?: string | null, olderSched?: string | null
   const nHasTime = nValid && /\d{1,2}:\d{2}/.test(newerSched!);
   const oHasTime = oValid && /\d{1,2}:\d{2}/.test(olderSched!);
 
-  // If newer has explicit time, or both/neither have explicit time and newer is valid, prefer newer
-  if (nHasTime) return newerSched!.trim();
-  if (oHasTime && !nValid) return olderSched!.trim();
-  if (nValid) return newerSched!.trim();
-  if (oValid) return olderSched!.trim();
+  let chosen = '';
+  if (nHasTime && oHasTime) {
+    const nDays = countDistinctScheduleWeekdays(newerSched);
+    const oDays = countDistinctScheduleWeekdays(olderSched);
+    chosen = oDays > nDays ? olderSched!.trim() : newerSched!.trim();
+  } else if (nHasTime) {
+    chosen = newerSched!.trim();
+  } else if (oHasTime) {
+    chosen = olderSched!.trim();
+  } else if (nValid) {
+    chosen = newerSched!.trim();
+  } else if (oValid) {
+    chosen = olderSched!.trim();
+  }
 
   if (fallbackCourse) {
     const eff = getEffectiveScheduleStringForCourse(fallbackCourse);
-    if (eff) return eff;
+    if (eff) {
+      const effHasTime = /\d{1,2}:\d{2}/.test(eff);
+      const chosenHasTime = /\d{1,2}:\d{2}/.test(chosen);
+      const effDays = countDistinctScheduleWeekdays(eff);
+      const chosenDays = countDistinctScheduleWeekdays(chosen);
+      if (!chosen || (effHasTime && !chosenHasTime) || (effHasTime && effDays > chosenDays)) {
+        return eff;
+      }
+    }
   }
-  return (newerSched || olderSched || '').trim();
+
+  return chosen || (newerSched || olderSched || '').trim();
 }
 
 export function deduplicateCourses(coursesList: Course[]): Course[] {
@@ -242,7 +261,6 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
   if (!Array.isArray(studentsList) || studentsList.length === 0) return [];
   const result: Student[] = [];
   const indexByCourseAndId = new Map<string, number>();
-  const indexByUnscopedId = new Map<string, number>();
   const indexByCourseAndEmail = new Map<string, number>();
   const indexByCourseAndName = new Map<string, number>();
 
@@ -251,22 +269,14 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
     const stId = st.id ? String(st.id).trim() : '';
     const cleanEmail = (st.email || '').trim().toLowerCase();
     const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.trim().toLowerCase();
-    const cId = st.courseId ? String(st.courseId).trim() : '';
+    const cId = st.courseId ? String(st.courseId).trim() : 'unassigned';
 
     let existingIdx = -1;
-    if (stId && cId && indexByCourseAndId.has(`${cId}::${stId}`)) {
+    if (stId && indexByCourseAndId.has(`${cId}::${stId}`)) {
       existingIdx = indexByCourseAndId.get(`${cId}::${stId}`)!;
-    } else if (stId && (!cId || indexByUnscopedId.has(stId))) {
-      const candidateIdx = indexByUnscopedId.get(stId);
-      if (candidateIdx !== undefined) {
-        const ex = result[candidateIdx];
-        if (!cId || !ex.courseId || ex.courseId === cId) {
-          existingIdx = candidateIdx;
-        }
-      }
-    } else if (cId && cleanEmail && indexByCourseAndEmail.has(`${cId}::${cleanEmail}`)) {
+    } else if (cleanEmail && indexByCourseAndEmail.has(`${cId}::${cleanEmail}`)) {
       existingIdx = indexByCourseAndEmail.get(`${cId}::${cleanEmail}`)!;
-    } else if (cId && cleanName && indexByCourseAndName.has(`${cId}::${cleanName}`)) {
+    } else if (cleanName && indexByCourseAndName.has(`${cId}::${cleanName}`)) {
       existingIdx = indexByCourseAndName.get(`${cId}::${cleanName}`)!;
     }
 
@@ -275,24 +285,23 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
         ...result[existingIdx],
         ...st,
         id: result[existingIdx].id || st.id,
+        courseId: result[existingIdx].courseId || st.courseId,
       };
       result[existingIdx] = merged;
-      const mCourse = merged.courseId ? String(merged.courseId).trim() : '';
+      const mCourse = merged.courseId ? String(merged.courseId).trim() : 'unassigned';
       if (merged.id) {
-        if (mCourse) indexByCourseAndId.set(`${mCourse}::${merged.id}`, existingIdx);
-        indexByUnscopedId.set(String(merged.id).trim(), existingIdx);
+        indexByCourseAndId.set(`${mCourse}::${String(merged.id).trim()}`, existingIdx);
       }
-      if (mCourse && cleanEmail) indexByCourseAndEmail.set(`${mCourse}::${cleanEmail}`, existingIdx);
-      if (mCourse && cleanName) indexByCourseAndName.set(`${mCourse}::${cleanName}`, existingIdx);
+      if (cleanEmail) indexByCourseAndEmail.set(`${mCourse}::${cleanEmail}`, existingIdx);
+      if (cleanName) indexByCourseAndName.set(`${mCourse}::${cleanName}`, existingIdx);
     } else {
       const newIdx = result.length;
       result.push(st);
       if (stId) {
-        if (cId) indexByCourseAndId.set(`${cId}::${stId}`, newIdx);
-        indexByUnscopedId.set(stId, newIdx);
+        indexByCourseAndId.set(`${cId}::${stId}`, newIdx);
       }
-      if (cId && cleanEmail) indexByCourseAndEmail.set(`${cId}::${cleanEmail}`, newIdx);
-      if (cId && cleanName) indexByCourseAndName.set(`${cId}::${cleanName}`, newIdx);
+      if (cleanEmail) indexByCourseAndEmail.set(`${cId}::${cleanEmail}`, newIdx);
+      if (cleanName) indexByCourseAndName.set(`${cId}::${cleanName}`, newIdx);
     }
   }
 
@@ -484,6 +493,115 @@ function filterOutRemovedStudents(students: Student[]): Student[] {
   });
 }
 
+export function getCourseDivisionGroupKey(course: Course): string {
+  if (!course) return '';
+  const name = (course.name || '').trim();
+  const parenMatch = name.match(/\(([^)]+)\)\s*$/);
+  if (parenMatch && parenMatch[1]) {
+    const inside = parenMatch[1].toLowerCase().replace(/\s+/g, ' ').trim();
+    if (inside.length >= 2) return inside;
+  }
+  if (course.division && course.orientation) {
+    return `${course.division} ${course.orientation} ${course.section || ''}`
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+  const grade = (course.grade || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (grade && grade !== 'secundaria' && grade.length > 4) {
+    return grade;
+  }
+  return '';
+}
+
+/**
+ * Self-heals sibling courses of the exact same school division (e.g., Historia (S3 Soc 1) and Filosofía (S3 Soc 1))
+ * whose student rosters were previously truncated when a shared student ID was removed in only one of the subjects.
+ * Respects each course's own `getRemovedStudentIds(course.id)` so Pareja Pedagógica filters remain 100% independent per subject.
+ */
+export function healSiblingCourseRosters(rawStudents: Student[]): {
+  students: Student[];
+  healedCourseIds: string[];
+} {
+  if (typeof window === 'undefined' || !Array.isArray(rawStudents)) {
+    return { students: rawStudents || [], healedCourseIds: [] };
+  }
+  try {
+    const courses = getLocalCourses();
+    if (!Array.isArray(courses) || courses.length < 2) {
+      return { students: rawStudents, healedCourseIds: [] };
+    }
+
+    const byDivision = new Map<string, Course[]>();
+    for (const c of courses) {
+      if (!c?.id) continue;
+      const divKey = getCourseDivisionGroupKey(c);
+      if (!divKey) continue;
+      const group = byDivision.get(divKey) || [];
+      group.push(c);
+      byDivision.set(divKey, group);
+    }
+
+    let workingList = [...rawStudents];
+    const healedCourseIds: string[] = [];
+
+    for (const [, siblingCourses] of Array.from(byDivision.entries())) {
+      if (siblingCourses.length < 2) continue;
+
+      // Build complete division student pool from active students + removed students objects across all sibling courses of this division
+      const divisionPool = new Map<string, Student>();
+      for (const c of siblingCourses) {
+        const courseActive = workingList.filter((s) => s && s.courseId === c.id && s.id);
+        for (const st of courseActive) {
+          if (!divisionPool.has(st.id)) {
+            divisionPool.set(st.id, st);
+          }
+        }
+        const courseRemovedObjs = getRemovedStudentsList(c.id);
+        for (const st of courseRemovedObjs) {
+          if (st && st.id && (st.firstName || st.lastName) && !divisionPool.has(st.id)) {
+            divisionPool.set(st.id, st);
+          }
+        }
+      }
+
+      if (divisionPool.size === 0) continue;
+
+      for (const c of siblingCourses) {
+        const removedInTarget = getRemovedStudentIds(c.id);
+        const existingInTarget = new Set(
+          workingList.filter((s) => s && s.courseId === c.id).map((s) => s.id)
+        );
+        let addedForThisCourse = 0;
+
+        for (const [stId, templateStudent] of Array.from(divisionPool.entries())) {
+          if (!existingInTarget.has(stId) && !removedInTarget.has(stId)) {
+            workingList.push({
+              ...templateStudent,
+              id: stId,
+              courseId: c.id,
+            });
+            existingInTarget.add(stId);
+            addedForThisCourse++;
+          }
+        }
+
+        if (addedForThisCourse > 0) {
+          healedCourseIds.push(c.id);
+        }
+      }
+    }
+
+    if (healedCourseIds.length > 0) {
+      workingList = deduplicateStudents(workingList);
+    }
+
+    return { students: workingList, healedCourseIds };
+  } catch (_) {
+    return { students: rawStudents, healedCourseIds: [] };
+  }
+}
+
 export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -505,8 +623,19 @@ export function getLocalStudents(courseId?: string): Student[] {
       const parsed: Student[] = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
         const deduped = deduplicateStudents(parsed);
-        cachedStudents = { userId, list: deduped };
-        const clean = filterOutRemovedStudents(deduped);
+        const { students: healed, healedCourseIds } = healSiblingCourseRosters(deduped);
+        cachedStudents = { userId, list: healed };
+        if (healedCourseIds.length > 0) {
+          scheduleWriteBehind(`students_${userId}`, () => {
+            const dataStr = JSON.stringify(healed);
+            safeSetLocalStorageItem(key, dataStr);
+            if (isOwner) {
+              safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
+              safeSetLocalStorageItem('docencia_persisted_students', dataStr);
+            }
+          });
+        }
+        const clean = filterOutRemovedStudents(healed);
         return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
       }
     }
@@ -520,8 +649,9 @@ export function getLocalStudents(courseId?: string): Student[] {
               const p = JSON.parse(item);
               if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
                 const deduped = deduplicateStudents(p);
-                cachedStudents = { userId, list: deduped };
-                const clean = filterOutRemovedStudents(deduped);
+                const { students: healed } = healSiblingCourseRosters(deduped);
+                cachedStudents = { userId, list: healed };
+                const clean = filterOutRemovedStudents(healed);
                 return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
               }
             }
@@ -546,7 +676,8 @@ export function saveLocalStudents(courseIdOrList: string | Student[], studentsLi
       const courseId = courseIdOrList;
       const all = getLocalStudents();
       const rest = all.filter((s) => s.courseId !== courseId);
-      updated = deduplicateStudents([...rest, ...(studentsList || [])]);
+      const stamped = (studentsList || []).map((s) => ({ ...s, courseId }));
+      updated = deduplicateStudents([...rest, ...stamped]);
     }
     cachedStudents = { userId, list: updated };
 
@@ -1006,6 +1137,7 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
     if (cloudDoc && cloudDoc.courses && typeof cloudDoc.courses === 'object') {
       const mergedIndex: Record<string, string[]> = { ...localIndex, ...cloudDoc.courses };
       let changed = false;
+      const missingObjSyncs: Promise<any>[] = [];
       for (const [cid, ids] of Object.entries(mergedIndex)) {
         if (!Array.isArray(ids)) continue;
         const prevSet = getRemovedStudentIds(cid);
@@ -1016,6 +1148,13 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
           setUserScopedItem(`fds_removed_students_${cid}`, JSON.stringify(ids));
           changed = true;
         }
+        if (ids.length > 0 && getRemovedStudentsList(cid).length < ids.length) {
+          missingObjSyncs.push(syncRemovedStudentsFromCloud(cid).catch(() => null));
+        }
+      }
+      if (missingObjSyncs.length > 0) {
+        await Promise.all(missingObjSyncs);
+        changed = true;
       }
       saveRemovedStudentsIndex(mergedIndex, false);
       if (changed) {

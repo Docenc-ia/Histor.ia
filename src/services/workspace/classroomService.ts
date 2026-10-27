@@ -258,7 +258,11 @@ export const classroomService = {
   /**
    * Detailed Google Classroom roster fetch with status and permission detection
    */
-  async listCourseStudentsDetailed(classroomCourseId: string, providedToken?: string): Promise<{
+  async listCourseStudentsDetailed(
+    classroomCourseId: string,
+    providedToken?: string,
+    forceFresh = false
+  ): Promise<{
     success: boolean;
     students: any[];
     studentsRaw: any[];
@@ -272,7 +276,7 @@ export const classroomService = {
 
     const now = Date.now();
     const cached = cachedRosters.get(classroomCourseId);
-    if (cached && cached.token === token && now - cached.timestamp < ROSTER_CACHE_TTL_MS) {
+    if (!forceFresh && cached && cached.token === token && now - cached.timestamp < ROSTER_CACHE_TTL_MS && cached.students.length > 0) {
       return {
         success: true,
         students: cached.students,
@@ -285,7 +289,7 @@ export const classroomService = {
       const res = await fetchWithTimeout(
         `https://classroom.googleapis.com/v1/courses/${classroomCourseId}/students?pageSize=100`,
         { headers: { Authorization: `Bearer ${token}` } },
-        3500
+        5000
       );
 
       if (res.ok) {
@@ -365,9 +369,10 @@ export const classroomService = {
    * Smart resolver to find real Google Classroom ID and load real students for a Course
    */
   async resolveAndFetchCourseStudents(
-    course: { id: string; name: string; subject?: string; classroomCourseId?: string },
+    course: { id: string; name: string; subject?: string; grade?: string; division?: string; orientation?: string; section?: string; classroomCourseId?: string },
     providedToken?: string,
-    preloadedClassroomCourses?: any[]
+    preloadedClassroomCourses?: any[],
+    forceFresh = true
   ): Promise<{
     success: boolean;
     students: any[];
@@ -380,13 +385,13 @@ export const classroomService = {
       return { success: false, students: [], rosterPermissionRequired: false, message: 'No hay sesión de Google activa.' };
     }
 
-    let targetClassroomId = course.classroomCourseId;
+    let targetClassroomId = course.classroomCourseId || (!isNaN(Number(course.id)) ? course.id : undefined);
     const isPlaceholderId = !targetClassroomId || targetClassroomId.startsWith('gc-') || isNaN(Number(targetClassroomId));
 
     // 1. If we have a genuine numeric classroom course ID, try direct query first
     if (targetClassroomId && !isPlaceholderId) {
-      const directRes = await this.listCourseStudentsDetailed(targetClassroomId, token);
-      if (directRes.success) {
+      const directRes = await this.listCourseStudentsDetailed(targetClassroomId, token, forceFresh);
+      if (directRes.success && directRes.students.length > 0) {
         return {
           success: true,
           students: directRes.students,
@@ -408,7 +413,7 @@ export const classroomService = {
     // 2. Query or reuse active Google Classroom courses to match by real ID or name
     let availableCourses = preloadedClassroomCourses;
     if (!availableCourses || availableCourses.length === 0) {
-      const listRes = await this.listClassroomCourses(token, { fetchStudentCounts: false });
+      const listRes = await this.listClassroomCourses(token, { fetchStudentCounts: false, forceFresh });
       if (listRes.rosterPermissionRequired) {
         return {
           success: false,
@@ -423,36 +428,60 @@ export const classroomService = {
     }
 
     if (Array.isArray(availableCourses) && availableCourses.length > 0) {
-      const cleanName = course.name.toLowerCase().trim();
-      const cleanSubj = (course.subject || '').toLowerCase().trim();
+      const normalizeText = (s: string) =>
+        (s || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/\bsenior\s*([123])\b/g, 's$1')
+          .replace(/\bciencias\s+sociales\b/g, 'soc')
+          .replace(/\bciencias\s+naturales\b/g, 'nat')
+          .replace(/\b20\d{2}\b/g, '')
+          .replace(/[^a-z0-9\s]/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+      const cleanName = (course.name || '').toLowerCase().trim();
+      const cleanSubj = normalizeText(course.subject || course.name.replace(/\([^)]*\)/g, ''));
+      const cleanGrade = normalizeText(course.grade || '');
+      const normCourseFull = normalizeText(`${course.name || ''} ${course.grade || ''}`);
 
       const matched = availableCourses.find((gc: any) => {
         if (!gc) return false;
         // 1. Direct ID match (Google Classroom numeric ID)
-        if (gc.id && (gc.id === course.classroomCourseId || gc.id === course.id)) return true;
+        if (gc.id && (String(gc.id) === String(course.classroomCourseId) || String(gc.id) === String(course.id))) {
+          return true;
+        }
 
         const gcName = (gc.name || '').toLowerCase().trim();
         const gcSection = (gc.section || '').toLowerCase().trim();
         const fullGc = `${gcName} ${gcSection}`.trim();
+        const normGcFull = normalizeText(`${gc.name || ''} ${gc.section || ''} ${gc.descriptionHeading || ''}`);
 
         // 2. Exact match
-        if (gcName === cleanName || fullGc === cleanName) return true;
+        if (gcName === cleanName || fullGc === cleanName || normGcFull === normCourseFull) return true;
 
-        // 3. Match subject AND section/group specifically (never match on subject alone!)
+        // 3. Match subject AND normalized division/group (handles "S3 Soc 1" <-> "SENIOR 3 CIENCIAS SOCIALES 1 2026")
         const parenMatch = cleanName.match(/^([^(]+?)\s*\(([^)]+)\)$/);
         if (parenMatch) {
-          const sub = parenMatch[1].trim();
-          const group = parenMatch[2].trim();
-          const matchesSub = gcName.includes(sub) || (cleanSubj && gcName.includes(cleanSubj));
-          const matchesGroup = gcSection === group || fullGc.includes(group);
+          const sub = normalizeText(parenMatch[1]);
+          const group = normalizeText(parenMatch[2]);
+          const matchesSub = (sub && normGcFull.includes(sub)) || (cleanSubj && normGcFull.includes(cleanSubj));
+          const matchesGroup =
+            (group && normGcFull.includes(group)) ||
+            (cleanGrade && cleanGrade !== 'secundaria' && normGcFull.includes(cleanGrade));
           if (matchesSub && matchesGroup) return true;
+        } else if (cleanSubj && cleanGrade && cleanGrade !== 'secundaria') {
+          if (normGcFull.includes(cleanSubj) && normGcFull.includes(cleanGrade)) {
+            return true;
+          }
         }
 
         return false;
       });
 
       if (matched && matched.id) {
-        const fetchRes = await this.listCourseStudentsDetailed(matched.id, token);
+        const fetchRes = await this.listCourseStudentsDetailed(matched.id, token, forceFresh);
         return {
           success: fetchRes.success,
           students: fetchRes.students,

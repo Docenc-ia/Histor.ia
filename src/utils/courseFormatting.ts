@@ -180,6 +180,28 @@ export function isValidCourseSchedule(sched?: string | null): boolean {
   return hasWeekdayOrTime;
 }
 
+export function countDistinctScheduleWeekdays(sched?: string | null): number {
+  if (!sched || typeof sched !== 'string') return 0;
+  const norm = sched
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  const patterns = [
+    /(?:^|[^a-z])(domingo|dom)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(lunes|lun)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(martes|mar)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(miercoles|mie)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(jueves|jue)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(viernes|vie)(?=$|[^a-z])/i,
+    /(?:^|[^a-z])(sabado|sab)(?=$|[^a-z])/i,
+  ];
+  let count = 0;
+  for (const rx of patterns) {
+    if (rx.test(norm)) count++;
+  }
+  return count;
+}
+
 export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | null): string {
   if (!course) return '';
   const rawSched = (course.schedule || '').trim();
@@ -193,10 +215,10 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
 
   const rawHasDay = rawValid && hasDayRegex.test(normalizeAscii(rawSched));
   const rawHasTime = rawValid && /\d{1,2}:\d{2}/.test(rawSched);
+  const rawDayCount = rawHasDay ? countDistinctScheduleWeekdays(rawSched) : 0;
 
-  if (rawHasDay && rawHasTime) {
-    return rawSched;
-  }
+  let bestCandidate = rawHasDay && rawHasTime ? rawSched : '';
+  let bestDayCount = bestCandidate ? rawDayCount : 0;
 
   if (typeof window !== 'undefined' && course.id) {
     try {
@@ -231,24 +253,31 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
           const hHasDay = hasDayRegex.test(hNorm);
           const hHasTime = /\d{1,2}:\d{2}/.test(h);
           if (hHasDay && hHasTime) {
-            return h;
-          }
-          if (!hHasDay && hHasTime && dayLabels.length > 0) {
-            return dayLabels.map((dl) => `${dl} ${h}`).join(', ');
-          }
-          if (!rawValid) {
-            return h;
+            const hDayCount = countDistinctScheduleWeekdays(h);
+            if (!bestCandidate || hDayCount > bestDayCount) {
+              bestCandidate = h;
+              bestDayCount = hDayCount;
+            }
+          } else if (!hHasDay && hHasTime && dayLabels.length > 0) {
+            const combined = dayLabels.map((dl) => `${dl} ${h}`).join(', ');
+            if (!bestCandidate || dayLabels.length > bestDayCount) {
+              bestCandidate = combined;
+              bestDayCount = dayLabels.length;
+            }
+          } else if (!rawValid && !bestCandidate) {
+            bestCandidate = h;
           }
         }
-        if (rawHasTime && !rawHasDay && dayLabels.length > 0) {
-          return dayLabels.map((dl) => `${dl} ${rawSched}`).join(', ');
+        if (!bestCandidate && rawHasTime && !rawHasDay && dayLabels.length > 0) {
+          bestCandidate = dayLabels.map((dl) => `${dl} ${rawSched}`).join(', ');
+          bestDayCount = dayLabels.length;
         }
-        if (!rawValid && dayLabels.length > 0) {
-          return dayLabels.join(', ');
+        if (!bestCandidate && !rawValid && dayLabels.length > 0) {
+          bestCandidate = dayLabels.join(', ');
         }
       }
 
-      // Fallback: reconstruct schedule from saved attendance settings (dailySlots or courseWeekdays)
+      // Check saved attendance settings (dailySlots or courseWeekdays)
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
         if (
@@ -285,16 +314,17 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
                 );
               }
             }
-            if (parts.length > 0) {
-              return parts.join(', ');
+            if (parts.length > 0 && (!bestCandidate || parts.length > bestDayCount)) {
+              bestCandidate = parts.join(', ');
+              bestDayCount = parts.length;
             }
           }
-          if (Array.isArray(settings?.courseWeekdays) && settings.courseWeekdays.length > 0) {
+          if (!bestCandidate && Array.isArray(settings?.courseWeekdays) && settings.courseWeekdays.length > 0) {
             const dayLabels = settings.courseWeekdays
               .map((d: any) => DAY_NAMES_ES[Number(d)])
               .filter(Boolean);
             if (dayLabels.length > 0) {
-              return dayLabels.join(', ');
+              bestCandidate = dayLabels.join(', ');
             }
           }
           break;
@@ -303,6 +333,7 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
     } catch (_) {}
   }
 
+  if (bestCandidate) return bestCandidate;
   return rawValid ? rawSched : '';
 }
 
@@ -679,6 +710,33 @@ export function getNextCourseClassInfo(
     }
   }
 
+  // Format complete schedule label across all days so the card in "Mis materias" always matches the course header
+  const sortedBlocks = Array.from(byDay.values()).sort((a, b) => {
+    const orderA = a.dayOfWeek === 0 ? 7 : a.dayOfWeek;
+    const orderB = b.dayOfWeek === 0 ? 7 : b.dayOfWeek;
+    return orderA - orderB;
+  });
+
+  if (sortedBlocks.length > 1) {
+    const fullScheduleParts = sortedBlocks.map((b) => {
+      const dName = DAY_NAMES_ES[b.dayOfWeek] || 'Día';
+      if (b.hasExplicitTime) {
+        return b.endTime && b.endTime !== b.startTime
+          ? `${dName} ${b.startTime} - ${b.endTime}`
+          : `${dName} ${b.startTime}`;
+      }
+      return dName;
+    });
+    const fullText = `${fullScheduleParts.join(', ')} hs`;
+    if (bestCandidate.status === 'in_progress') {
+      bestCandidate.badgeText = `En curso · ${fullText}`;
+    } else if (bestCandidate.status === 'today') {
+      bestCandidate.badgeText = `Hoy · ${fullText}`;
+    } else {
+      bestCandidate.badgeText = fullText;
+    }
+  }
+
   return bestCandidate;
 }
 
@@ -707,4 +765,80 @@ export function sortCoursesByUpcomingSchedule(
       return formatCourseSidebarLabel(a.course).localeCompare(formatCourseSidebarLabel(b.course));
     });
 }
+
+/**
+ * Resolves a course identifier or query string (such as from URL ?course=ID)
+ * against a list of courses. Matches exact id, classroomCourseId, name,
+ * formatted label, or cleaned identifier with zero-friction tolerance.
+ */
+export function findCourseMatch(
+  targetIdOrQuery: string | null | undefined,
+  courseList: Course[] | null | undefined
+): Course | undefined {
+  if (!targetIdOrQuery || !courseList || courseList.length === 0) return undefined;
+  const raw = String(targetIdOrQuery).trim();
+  if (!raw) return undefined;
+
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw).trim();
+  } catch (_) {}
+
+  const rawLower = raw.toLowerCase();
+  const decodedLower = decoded.toLowerCase();
+
+  // 1. Exact ID match (case-sensitive first, then case-insensitive)
+  const exactId = courseList.find((c) => c.id === raw || c.id === decoded);
+  if (exactId) return exactId;
+
+  const caseId = courseList.find(
+    (c) => String(c.id).toLowerCase() === rawLower || String(c.id).toLowerCase() === decodedLower
+  );
+  if (caseId) return caseId;
+
+  // 2. Classroom course ID match
+  const classroomId = courseList.find(
+    (c) =>
+      c.classroomCourseId &&
+      (c.classroomCourseId === raw ||
+        c.classroomCourseId === decoded ||
+        String(c.classroomCourseId).toLowerCase() === rawLower ||
+        String(c.classroomCourseId).toLowerCase() === decodedLower)
+  );
+  if (classroomId) return classroomId;
+
+  // 3. Name or formatted label match
+  const labelMatch = courseList.find((c) => {
+    const lbl = formatCourseSidebarLabel(c).trim().toLowerCase();
+    const name = (c.name || '').trim().toLowerCase();
+    const subject = (c.subject || '').trim().toLowerCase();
+    return (
+      lbl === rawLower ||
+      lbl === decodedLower ||
+      name === rawLower ||
+      name === decodedLower ||
+      subject === rawLower ||
+      subject === decodedLower
+    );
+  });
+  if (labelMatch) return labelMatch;
+
+  // 4. Loose substring match if target is specific (e.g. "s3 soc 1" in "Filosofía (S3 Soc 1)")
+  if (rawLower.length >= 3) {
+    const loose = courseList.find((c) => {
+      const lbl = formatCourseSidebarLabel(c).trim().toLowerCase();
+      const name = (c.name || '').trim().toLowerCase();
+      return (
+        lbl.includes(rawLower) ||
+        lbl.includes(decodedLower) ||
+        name.includes(rawLower) ||
+        name.includes(decodedLower)
+      );
+    });
+    if (loose) return loose;
+  }
+
+  return undefined;
+}
+
 

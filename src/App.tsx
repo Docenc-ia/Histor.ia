@@ -17,6 +17,7 @@ import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 import { subscribeAppEvents } from './utils/appEventBus';
 import { computeQuickStudentAttendanceRate } from './utils/attendanceCalculations';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { findCourseMatch } from './utils/courseFormatting';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -52,7 +53,7 @@ function AppContent() {
     if (typeof window === 'undefined') return { view: 'courses' as const, courseId: '' };
     try {
       const params = new URLSearchParams(window.location.search);
-      const urlCourse = params.get('course') || '';
+      const urlCourse = (params.get('course') || '').trim();
       const urlView = params.get('view');
       const validView = (urlView === 'course_detail' || urlView === 'calendar' || urlView === 'courses')
         ? (urlView as 'courses' | 'course_detail' | 'calendar')
@@ -71,7 +72,11 @@ function AppContent() {
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCourseId, setSelectedCourseId] = useState<string>(() => {
-    if (initialUrlState.courseId) return initialUrlState.courseId;
+    if (initialUrlState.courseId) {
+      const local = api.getLocalCourses();
+      const matched = findCourseMatch(initialUrlState.courseId, local);
+      return matched ? matched.id : initialUrlState.courseId;
+    }
     const local = api.getLocalCourses();
     return local.length > 0 ? local[0].id : '';
   });
@@ -91,6 +96,38 @@ function AppContent() {
   const [students, setStudents] = useState<Student[]>(() => api.getLocalStudents());
   const [isLoading, setIsLoading] = useState<boolean>(() => api.getLocalCourses().length === 0);
 
+  // Strictly resolve target course ID against loaded courses list, prioritizing URL
+  const resolveTargetCourseId = (courseList: Course[], currentId: string): string => {
+    let urlCourse = '';
+    if (typeof window !== 'undefined') {
+      try {
+        urlCourse = (new URLSearchParams(window.location.search).get('course') || '').trim();
+      } catch (_) {}
+    }
+
+    // 1. If URL specifies a course, prioritize matching it
+    if (urlCourse) {
+      const matchedFromUrl = findCourseMatch(urlCourse, courseList);
+      if (matchedFromUrl) {
+        return matchedFromUrl.id;
+      }
+      // If courseList is still empty or loading from cloud/storage, preserve urlCourse.
+      // NEVER overwrite urlCourse with a default course (e.g. S3 Soc 2)!
+      return urlCourse;
+    }
+
+    // 2. Validate current state ID
+    if (currentId) {
+      const matchedCurrent = findCourseMatch(currentId, courseList);
+      if (matchedCurrent) {
+        return matchedCurrent.id;
+      }
+    }
+
+    // 3. Only if no course was requested in the URL and no currentId exists, fallback to first course
+    return courseList.length > 0 ? courseList[0].id : '';
+  };
+
   // Load courses and students data
   const loadData = async () => {
     try {
@@ -102,8 +139,8 @@ function AppContent() {
       const cleanStudents = api.deduplicateStudents(s);
       setCourses(cleanCourses);
       setStudents(cleanStudents);
-      if (cleanCourses.length > 0 && (!selectedCourseId || !cleanCourses.some((item) => item.id === selectedCourseId || item.classroomCourseId === selectedCourseId))) {
-        setSelectedCourseId(cleanCourses[0].id);
+      if (cleanCourses.length > 0) {
+        setSelectedCourseId((prevId) => resolveTargetCourseId(cleanCourses, prevId));
       }
     } catch (err) {
       console.error('Error fetching workspace courses and students:', err);
@@ -112,37 +149,91 @@ function AppContent() {
     }
   };
 
-  // Keep URL parameters in sync with active course and view without full reload
+  // Strict bidirectional validation between URL parameters and state
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (typeof window === 'undefined' || !user) return;
     try {
       const url = new URL(window.location.href);
-      if (currentView === 'course_detail' && selectedCourseId) {
-        url.searchParams.set('course', selectedCourseId);
-        url.searchParams.set('view', 'course_detail');
-      } else if (currentView === 'calendar') {
-        url.searchParams.set('view', 'calendar');
-        url.searchParams.delete('course');
-      } else {
-        url.searchParams.set('view', 'courses');
-        url.searchParams.delete('course');
+      const urlCourseParam = (url.searchParams.get('course') || '').trim();
+      const urlViewParam = url.searchParams.get('view');
+
+      // Validation 1: If URL has a specific course parameter, state MUST strictly match it
+      if (urlCourseParam) {
+        const pool = courses.length > 0 ? courses : api.getLocalCourses();
+        const matched = findCourseMatch(urlCourseParam, pool);
+        if (matched) {
+          if (selectedCourseId !== matched.id) {
+            setSelectedCourseId(matched.id);
+            if (currentView !== 'course_detail' && (!urlViewParam || urlViewParam === 'course_detail')) {
+              setCurrentView('course_detail');
+            }
+            return;
+          }
+        } else if (isLoading || courses.length === 0) {
+          // Still loading courses from cloud, NEVER overwrite the requested URL parameter!
+          return;
+        }
       }
-      window.history.replaceState(null, '', url.toString());
+
+      // Validation 2: Ensure URL matches current state
+      if (currentView === 'course_detail' && selectedCourseId) {
+        if (urlCourseParam !== selectedCourseId || urlViewParam !== 'course_detail') {
+          url.searchParams.set('course', selectedCourseId);
+          url.searchParams.set('view', 'course_detail');
+          window.history.replaceState(null, '', url.toString());
+        }
+      } else if (currentView === 'calendar') {
+        if (urlViewParam !== 'calendar' || urlCourseParam) {
+          url.searchParams.set('view', 'calendar');
+          url.searchParams.delete('course');
+          window.history.replaceState(null, '', url.toString());
+        }
+      } else {
+        if (urlViewParam !== 'courses' || urlCourseParam) {
+          url.searchParams.set('view', 'courses');
+          url.searchParams.delete('course');
+          window.history.replaceState(null, '', url.toString());
+        }
+      }
     } catch (_) {}
-  }, [currentView, selectedCourseId]);
+  }, [currentView, selectedCourseId, user, courses, isLoading]);
+
+  // Listen to browser navigation (back/forward or URL state changes)
+  useEffect(() => {
+    const handlePopState = () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const urlCourse = (params.get('course') || '').trim();
+        const urlView = params.get('view');
+
+        if (urlCourse) {
+          const list = courses.length > 0 ? courses : api.getLocalCourses();
+          const matched = findCourseMatch(urlCourse, list);
+          setSelectedCourseId(matched ? matched.id : urlCourse);
+          setCurrentView('course_detail');
+        } else if (urlView === 'calendar') {
+          setCurrentView('calendar');
+        } else {
+          setCurrentView('courses');
+        }
+      } catch (_) {}
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [courses]);
 
   useEffect(() => {
     if (!user) {
       setCourses([]);
       setStudents([]);
-      setSelectedCourseId('');
       return;
     }
-    const localC = api.getLocalCourses();
+    const localC = api.deduplicateCourses(api.getLocalCourses());
     const localS = api.getLocalStudents();
     setCourses(localC);
     setStudents(localS);
-    setSelectedCourseId(localC.length > 0 ? localC[0].id : '');
+    setSelectedCourseId((prevId) => resolveTargetCourseId(localC, prevId));
     loadData();
   }, [user?.id, user?.email]);
 
@@ -214,6 +305,15 @@ function AppContent() {
           if (JSON.stringify(prev) === JSON.stringify(latestCourses)) return prev;
           return latestCourses;
         });
+
+        // Revalidate selectedCourseId if URL has a course param
+        const urlParam = typeof window !== 'undefined' ? (new URLSearchParams(window.location.search).get('course') || '').trim() : '';
+        if (urlParam) {
+          const match = findCourseMatch(urlParam, latestCourses);
+          if (match) {
+            setSelectedCourseId(match.id);
+          }
+        }
       } catch (_) {}
     };
 
@@ -338,18 +438,54 @@ function AppContent() {
     );
   }
 
-  // Selected course object
-  const selectedCourse = courses.find((c) => c.id === selectedCourseId || c.classroomCourseId === selectedCourseId) || courses[0] || {
-    id: 'course-1',
-    name: 'Materia Seleccionada',
-    code: 'DOC-101',
-    room: 'Aula Principal',
-    schedule: 'Horario Escolar',
-    gradeLevel: 'Secundaria',
-    studentCount: 28,
-    color: 'bg-blue-600',
-    description: 'Curso en Docenc.ia',
-  };
+  // Selected course instance strictly validated against selectedCourseId and URL parameter
+  const selectedCourse = React.useMemo<Course>(() => {
+    // 1. Identify target course ID from state or URL
+    let target = selectedCourseId;
+    if (typeof window !== 'undefined') {
+      try {
+        const urlParam = (new URLSearchParams(window.location.search).get('course') || '').trim();
+        if (urlParam) target = urlParam;
+      } catch (_) {}
+    }
+
+    if (target) {
+      // Find in current courses state
+      const match = findCourseMatch(target, courses);
+      if (match) return match;
+
+      // Find in local storage cache
+      const localMatch = findCourseMatch(target, api.getLocalCourses());
+      if (localMatch) return localMatch;
+
+      // If a specific target was requested, NEVER fallback to courses[0] (which may be S3 Soc 2)!
+      // Provide an instance with the requested target ID so the view maintains the correct identity while loading
+      return {
+        id: target,
+        name: 'Cargando materia...',
+        subject: 'Cargando...',
+        grade: 'Secundaria',
+        room: '',
+        schedule: '',
+        color: '#1a73e8',
+        studentsCount: 0,
+        schoolYear: '2026',
+      };
+    }
+
+    // Only if NO specific course was requested anywhere, default to courses[0]
+    return courses[0] || {
+      id: 'course-1',
+      name: 'Materia Seleccionada',
+      subject: 'Materia',
+      grade: 'Secundaria',
+      room: 'Aula Principal',
+      schedule: 'Horario Escolar',
+      studentsCount: 28,
+      color: '#1a73e8',
+      schoolYear: '2026',
+    };
+  }, [courses, selectedCourseId]);
 
   const currentActiveSidebarTab =
     currentView === 'courses' ? 'courses' : currentView === 'calendar' ? 'calendar' : 'course_detail';

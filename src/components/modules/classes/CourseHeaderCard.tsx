@@ -9,6 +9,7 @@ import {
   FileText,
   ExternalLink,
   CloudCheck,
+  RefreshCw,
 } from 'lucide-react';
 import { Course } from '../../../types';
 import { getEffectiveScheduleStringForCourse, isValidCourseSchedule } from '../../../utils/courseFormatting';
@@ -23,6 +24,8 @@ export interface CourseHeaderCardProps {
   onOpenEditCourseDetailsModal: (course: Course) => void;
   onOpenCourseDriveFolder: () => void;
   onOpenCourseReport: () => void;
+  onSyncRoster?: () => void;
+  isSyncingRoster?: boolean;
 }
 
 export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
@@ -34,11 +37,13 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
   onOpenEditCourseDetailsModal,
   onOpenCourseDriveFolder,
   onOpenCourseReport,
+  onSyncRoster,
+  isSyncingRoster = false,
 }) => {
   const effectiveSchedule = getEffectiveScheduleStringForCourse(activeCourse);
 
   useEffect(() => {
-    if (effectiveSchedule && !isValidCourseSchedule(activeCourse.schedule)) {
+    if (effectiveSchedule && effectiveSchedule !== (activeCourse.schedule || '').trim()) {
       api.updateCourse(activeCourse.id, { schedule: effectiveSchedule }).catch(() => {});
     }
   }, [activeCourse.id, activeCourse.schedule, effectiveSchedule]);
@@ -203,8 +208,25 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
             </button>
           </div>
 
-          {/* Debajo de Horario y Sincronizar con Calendar: Carpeta de Drive y Hacer Informe */}
+          {/* Debajo de Horario y Sincronizar con Calendar: Sincronizar Alumnos, Carpeta de Drive y Hacer Informe */}
           <div className="flex flex-wrap items-center gap-2">
+            {onSyncRoster && (
+              <button
+                type="button"
+                onClick={onSyncRoster}
+                disabled={isSyncingRoster}
+                className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-emerald-950/50 hover:bg-emerald-900/60 text-emerald-300 border-emerald-800/60'
+                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 shadow-2xs'
+                }`}
+                title={`Sincronizar y reponer los alumnos de "${activeCourse.name}" desde Google Classroom`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-500 ${isSyncingRoster ? 'animate-spin' : ''}`} />
+                <span>{isSyncingRoster ? 'Sincronizando alumnos...' : 'Sincronizar Alumnos'}</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={onOpenCourseDriveFolder}

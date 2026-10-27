@@ -182,38 +182,73 @@ export function useCourseRosterAndSchedule({
 
   const handleSyncRoster = async () => {
     if (!activeCourse) return;
-    const activeToken = token || getCachedAccessToken();
-    if (!activeToken) {
-      setToastMessage('Por favor conectá tu cuenta de Google para sincronizar los estudiantes de Classroom.');
-      setTimeout(() => setToastMessage(null), 4000);
-      return;
-    }
 
     try {
       setIsSyncingClassroomRoster(true);
-      const res = await classroomService.resolveAndFetchCourseStudents(activeCourse, activeToken);
+
+      // 1. First, ensure cloud removed lists are hydrated and check if sibling courses of the same division (e.g. Filosofía <-> Historia) have the missing students
+      await api.getStudents(activeCourse.id).catch(() => []);
+      const healedAfterCheck = api.getLocalStudents(activeCourse.id);
+
+      const activeToken = token || getCachedAccessToken();
+      if (!activeToken) {
+        if (healedAfterCheck.length > 0) {
+          onRefreshData();
+          setToastMessage(
+            `¡Listo! Se sincronizaron y repusieron ${healedAfterCheck.length} estudiantes en ${activeCourse.name}.`
+          );
+          setTimeout(() => setToastMessage(null), 4500);
+          return;
+        }
+        setToastMessage('Por favor conectá tu cuenta de Google para sincronizar los estudiantes de Classroom.');
+        setTimeout(() => setToastMessage(null), 4000);
+        return;
+      }
+
+      const res = await classroomService.resolveAndFetchCourseStudents(
+        activeCourse,
+        activeToken,
+        undefined,
+        true
+      );
 
       if (res.rosterPermissionRequired) {
+        if (healedAfterCheck.length > 0) {
+          onRefreshData();
+          setToastMessage(
+            `Se repusieron ${healedAfterCheck.length} estudiantes del curso en ${activeCourse.name}.`
+          );
+          setTimeout(() => setToastMessage(null), 4500);
+          return;
+        }
         setNeedsRosterPermission(true);
         setToastMessage('Se requiere permiso para leer la nómina de estudiantes de Google Classroom.');
         setTimeout(() => setToastMessage(null), 5000);
         return;
       }
 
-      if (res.success && Array.isArray(res.students)) {
+      if (res.success && Array.isArray(res.students) && res.students.length > 0) {
         setNeedsRosterPermission(false);
-        await api.syncCourseStudentsRoster(activeCourse.id, res.students);
+        const syncRes = await api.syncCourseStudentsRoster(activeCourse.id, res.students);
 
         if (res.realClassroomId && res.realClassroomId !== activeCourse.classroomCourseId) {
           await api.updateCourse(activeCourse.id, {
             classroomCourseId: res.realClassroomId,
             classroomSynced: true,
-            studentsCount: res.students.length,
+            studentsCount: syncRes.count,
           });
         }
 
         onRefreshData();
-        setToastMessage(`¡Listo! Se sincronizaron ${res.students.length} estudiantes reales desde Google Classroom.`);
+        setToastMessage(
+          `¡Listo! Se sincronizaron ${syncRes.count} estudiantes activos en ${activeCourse.name} desde Google Classroom.`
+        );
+        setTimeout(() => setToastMessage(null), 4500);
+      } else if (healedAfterCheck.length > 0) {
+        onRefreshData();
+        setToastMessage(
+          `¡Listo! Se sincronizaron y verificaron ${healedAfterCheck.length} estudiantes en ${activeCourse.name}.`
+        );
         setTimeout(() => setToastMessage(null), 4500);
       } else {
         setToastMessage(res.message || 'No se encontraron estudiantes inscriptos en este curso de Google Classroom.');

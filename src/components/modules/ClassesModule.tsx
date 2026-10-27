@@ -133,7 +133,9 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   onOpenNewModal,
 }) => {
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
-  const activeCourse = courses.find((c) => c.id === selectedCourseId) || courses[0];
+  const activeCourse =
+    courses.find((c) => c.id === selectedCourseId || (selectedCourseId && c.classroomCourseId === selectedCourseId)) ||
+    courses[0];
 
   // Active view: 'roster' (Alumnos/as) vs 'libro_temas' (Libro de Temas) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
   const [activeTab, setActiveTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>(
@@ -1140,6 +1142,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
               setCourseReportModalTab('course');
               setCourseReportModalOpen(true);
             }}
+            onSyncRoster={handleSyncRoster}
+            isSyncingRoster={isSyncingClassroomRoster}
           />
 
           {/* Roster Permission Notice if Google 403 */}

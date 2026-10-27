@@ -38,6 +38,8 @@ import {
   unmarkStudentRemoved,
   syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
+  getCourseDivisionGroupKey,
+  healSiblingCourseRosters,
 } from './storageHelpers';
 
 export {
@@ -69,6 +71,8 @@ export {
   unmarkStudentRemoved,
   syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
+  getCourseDivisionGroupKey,
+  healSiblingCourseRosters,
 };
 
 // Detect if we are running on a static/serverless host (e.g. Vercel) where local Express disk persistence is unavailable
@@ -515,8 +519,8 @@ export const api = {
       });
     };
 
-    // 1. Immediately get deduplicated local students
-    const local = deduplicateStudents(getLocalStudents(courseId));
+    // 1. Immediately get deduplicated local students (full list so division sibling healing can cross-reference)
+    const allLocal = deduplicateStudents(getLocalStudents());
     // 2. Fetch server students (only for primary owner when Express backend is active) & cloud students in parallel
     const url = courseId ? `/api/students?courseId=${encodeURIComponent(courseId)}` : '/api/students';
     const serverPromise = canUseExpressBackend()
@@ -527,16 +531,17 @@ export const api = {
 
     const userId = getActiveUserId();
     const cloudPromise = userId
-      ? firestoreSync.loadStudents(userId, courseId).catch((err) => {
+      ? firestoreSync.loadStudents(userId).catch((err) => {
           console.warn('Firestore loadStudents error:', err);
           return [] as Student[];
         })
       : Promise.resolve([] as Student[]);
 
     const removedSyncPromise = userId
-      ? courseId
-        ? syncRemovedStudentsFromCloud(courseId).catch(() => null)
-        : syncAllRemovedStudentsIndexFromCloud().catch(() => null)
+      ? Promise.all([
+          syncAllRemovedStudentsIndexFromCloud().catch(() => null),
+          courseId ? syncRemovedStudentsFromCloud(courseId).catch(() => null) : Promise.resolve(null),
+        ])
       : Promise.resolve(null);
 
     const [serverStudents, cloudStudents] = await Promise.all([
@@ -545,31 +550,53 @@ export const api = {
       removedSyncPromise,
     ]);
 
-    const mergedStudents = enrichStudents(deduplicateStudents([...local, ...cloudStudents, ...serverStudents]));
+    const rawCombined = deduplicateStudents([...allLocal, ...cloudStudents, ...serverStudents]);
+    const { students: healedCombined, healedCourseIds } = healSiblingCourseRosters(rawCombined);
+    const mergedStudents = enrichStudents(healedCombined);
 
-    const filteredStudents = mergedStudents.filter((st) => {
+    const allFilteredStudents = mergedStudents.filter((st) => {
       if (st.courseId && getRemovedStudentIds(st.courseId).has(st.id)) return false;
       return true;
     });
 
-    if (filteredStudents.length > 0) {
-      if (courseId) {
-        saveLocalStudents(courseId, filteredStudents);
-      } else {
-        const byCourse = new Map<string, Student[]>();
-        for (const st of filteredStudents) {
-          if (!st.courseId) continue;
-          const arr = byCourse.get(st.courseId) || [];
-          arr.push(st);
-          byCourse.set(st.courseId, arr);
+    if (allFilteredStudents.length > 0) {
+      const byCourse = new Map<string, Student[]>();
+      for (const st of allFilteredStudents) {
+        if (!st.courseId) continue;
+        const arr = byCourse.get(st.courseId) || [];
+        arr.push(st);
+        byCourse.set(st.courseId, arr);
+      }
+      byCourse.forEach((courseList, cid) => {
+        saveLocalStudents(cid, courseList);
+      });
+
+      if (healedCourseIds.length > 0) {
+        const courses = getLocalCourses();
+        let coursesChanged = false;
+        for (const hCid of healedCourseIds) {
+          const healedList = byCourse.get(hCid) || [];
+          const cIdx = courses.findIndex((c) => c.id === hCid);
+          if (cIdx >= 0 && courses[cIdx].studentsCount !== healedList.length) {
+            courses[cIdx].studentsCount = healedList.length;
+            coursesChanged = true;
+          }
+          if (userId && healedList.length > 0) {
+            firestoreSync.saveStudents(userId, hCid, healedList).catch(() => {});
+          }
         }
-        byCourse.forEach((courseList, cid) => {
-          saveLocalStudents(cid, courseList);
-        });
+        if (coursesChanged) {
+          saveLocalCourses(courses);
+          if (userId) {
+            firestoreSync.saveCourses(userId, courses).catch(() => {});
+          }
+        }
       }
     }
 
-    return filteredStudents;
+    return courseId
+      ? allFilteredStudents.filter((st) => st.courseId === courseId)
+      : allFilteredStudents;
   },
 
   async createStudent(studentData: Partial<Student> & { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> {

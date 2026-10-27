@@ -410,6 +410,8 @@ export const coursesAndStudentsRepo = {
     const writeIds = getTargetWriteUserIds(userId);
     const nowIso = new Date().toISOString();
 
+    const makeCompositeKey = (cId: string | undefined, sId: string) => `${cId || 'global'}::${sId}`;
+
     const currentStudentsMap = new Map<string, Student>();
     if (typeof window !== 'undefined') {
       try {
@@ -428,7 +430,7 @@ export const coursesAndStudentsRepo = {
             const parsedLocal = JSON.parse(rawLocal);
             if (Array.isArray(parsedLocal)) {
               for (const s of parsedLocal) {
-                if (s?.id) currentStudentsMap.set(s.id, s);
+                if (s?.id) currentStudentsMap.set(makeCompositeKey(s.courseId, s.id), s);
               }
             }
           }
@@ -436,17 +438,17 @@ export const coursesAndStudentsRepo = {
       } catch (_) {}
     }
     (studentsReadCache?.data || []).forEach((s) => {
-      if (s?.id) currentStudentsMap.set(s.id, s);
+      if (s?.id) currentStudentsMap.set(makeCompositeKey(s.courseId, s.id), s);
     });
 
-    for (const [sId, st] of Array.from(currentStudentsMap.entries())) {
+    for (const [compKey, st] of Array.from(currentStudentsMap.entries())) {
       if (st.courseId === courseId) {
-        currentStudentsMap.delete(sId);
+        currentStudentsMap.delete(compKey);
       }
     }
     for (const st of students) {
       if (st?.id) {
-        currentStudentsMap.set(st.id, { ...st, courseId });
+        currentStudentsMap.set(makeCompositeKey(courseId, st.id), { ...st, courseId });
       }
     }
 
@@ -485,11 +487,12 @@ export const coursesAndStudentsRepo = {
           for (const st of students) {
             if (!st?.id) continue;
             const normalizedStudent = { ...st, courseId };
-            const itemKey = `student_doc:${uid}:${st.id}`;
+            const itemKey = `student_doc:${uid}:${courseId}:${st.id}`;
             const itemCheck = isPayloadDirty(itemKey, normalizedStudent);
             if (!itemCheck.dirty) continue;
 
-            const ref = doc(targetDb, 'users', uid, 'students', st.id);
+            const safeDocId = `${courseId}_${st.id}`.replace(/[/\\]/g, '_');
+            const ref = doc(targetDb, 'users', uid, 'students', safeDocId);
             batch.set(
               ref,
               sanitizeForFirestore({
@@ -534,6 +537,7 @@ export const coursesAndStudentsRepo = {
     const candidateIds = getCandidateUserIds(userId);
     const writeIds = getTargetWriteUserIds(userId);
     const studentsMap = new Map<string, Student>();
+    const makeCompositeKey = (cId: string | undefined, sId: string) => `${cId || 'global'}::${sId}`;
 
     try {
       const compactQueries: Promise<any>[] = [];
@@ -558,7 +562,7 @@ export const coursesAndStudentsRepo = {
         }
         for (const s of items) {
           if (s && s.id && (s.firstName || s.lastName || s.email)) {
-            studentsMap.set(s.id, s);
+            studentsMap.set(makeCompositeKey(s.courseId, s.id), s);
           }
         }
       }
@@ -577,7 +581,7 @@ export const coursesAndStudentsRepo = {
           snap.forEach((docSnap: any) => {
             const data = docSnap.data() as Student;
             if (data && data.id) {
-              studentsMap.set(data.id, data);
+              studentsMap.set(makeCompositeKey(data.courseId, data.id), data);
             }
           });
         }
@@ -588,7 +592,7 @@ export const coursesAndStudentsRepo = {
         studentsReadCache = { userId, timestamp: Date.now(), data: allStudents };
         for (const uid of writeIds) {
           for (const st of allStudents) {
-            markPayloadSynced(`student_doc:${uid}:${st.id}`, computePayloadFingerprint(st));
+            markPayloadSynced(`student_doc:${uid}:${st.courseId || 'global'}:${st.id}`, computePayloadFingerprint(st));
           }
           if (hasMigratedDoc) {
             markPayloadSynced(

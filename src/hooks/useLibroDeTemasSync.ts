@@ -10,6 +10,7 @@ import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 import { SchoolHolidayItem } from '../utils/schoolHolidays';
 import { api } from '../services/api';
 import { buildOfficialLibroDeTemasHtml as buildLibroHtml } from '../utils/libroDeTemasHtml';
+import { touchCourseDataLru } from '../utils/lruCourseCache';
 import {
   LibroDeTemasEntry,
   LibroDeTemasMetadata,
@@ -80,6 +81,12 @@ export function useLibroDeTemasSync({
   onOpenBackupModal,
   persistLibroData,
 }: UseLibroDeTemasSyncProps) {
+  React.useEffect(() => {
+    if (courseId) {
+      touchCourseDataLru(courseId, `fds_libro_temas_${courseId}`);
+    }
+  }, [courseId]);
+
   const buildOfficialLibroDeTemasHtml = () =>
     buildLibroHtml({
       filteredRows,

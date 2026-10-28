@@ -33,16 +33,23 @@ import {
   NextCourseClassInfo,
   doesCalendarSlotMatchCourse,
   isValidCourseSchedule,
+  getEffectiveScheduleStringForCourse,
 } from '../../utils/courseFormatting';
 import { classroomService } from '../../services/workspace/classroomService';
 import { calendarService } from '../../services/workspace/calendarService';
-import { api, getRemovedStudentIds, syncAllRemovedStudentsIndexFromCloud } from '../../services/api';
+import { api, getRemovedStudentIds, getUserScopedItem, syncAllRemovedStudentsIndexFromCloud } from '../../services/api';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { ImportClassroomModal } from './ImportClassroomModal';
+import { SelectiveStudentSyncModal } from '../modules/classes/SelectiveStudentSyncModal';
+import { areCourseListsEqual, areStudentListsEqual } from '../../utils/entityEquality';
+
+const EMPTY_STUDENTS: Student[] = [];
 
 interface TeacherCoursesPanelProps {
   courses: Course[];
   students?: Student[];
+  externalSearchQuery?: string;
+  onExternalSearchChange?: (query: string) => void;
   onSelectCourseAndTab: (courseId: string, tab: 'planificacion' | 'planificacion_anual' | 'material' | 'actividades' | 'evaluaciones' | 'alumnos' | 'libro_temas') => void;
   onCreateCourse: (courseData: Partial<Course>) => void;
   onDeleteCourse: (courseId: string) => Promise<void> | void;
@@ -53,9 +60,46 @@ interface TeacherCoursesPanelProps {
   onImportSuccess?: (message: string) => void;
 }
 
-export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
+function areTeacherCoursesPanelPropsEqual(
+  prev: TeacherCoursesPanelProps,
+  next: TeacherCoursesPanelProps
+): boolean {
+  if (
+    prev.externalSearchQuery !== next.externalSearchQuery ||
+    prev.onExternalSearchChange !== next.onExternalSearchChange ||
+    prev.onSelectCourseAndTab !== next.onSelectCourseAndTab ||
+    prev.onCreateCourse !== next.onCreateCourse ||
+    prev.onDeleteCourse !== next.onDeleteCourse ||
+    prev.onClearCourses !== next.onClearCourses ||
+    prev.onRestoreDemoCourses !== next.onRestoreDemoCourses ||
+    prev.onOpenImportClassroom !== next.onOpenImportClassroom ||
+    prev.onRefreshData !== next.onRefreshData ||
+    prev.onImportSuccess !== next.onImportSuccess
+  ) {
+    return false;
+  }
+
+  if (!areCourseListsEqual(prev.courses, next.courses)) {
+    return false;
+  }
+
+  if (
+    !areStudentListsEqual(
+      prev.students ?? EMPTY_STUDENTS,
+      next.students ?? EMPTY_STUDENTS
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
   courses,
-  students = [],
+  students = EMPTY_STUDENTS,
+  externalSearchQuery,
+  onExternalSearchChange,
   onSelectCourseAndTab,
   onCreateCourse,
   onDeleteCourse,
@@ -66,7 +110,19 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   onImportSuccess,
 }) => {
   const { user, isDarkMode, token, loginWithGoogle } = useWorkspaceAuth();
-  const [searchQuery, setSearchQuery] = useState('');
+  const [localSearchQuery, setLocalSearchQuery] = useState(externalSearchQuery || '');
+
+  useEffect(() => {
+    if (externalSearchQuery !== undefined && externalSearchQuery !== localSearchQuery) {
+      setLocalSearchQuery(externalSearchQuery);
+    }
+  }, [externalSearchQuery]);
+
+  const searchQuery = localSearchQuery;
+  const setSearchQuery = (val: string) => {
+    setLocalSearchQuery(val);
+    onExternalSearchChange?.(val);
+  };
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [courseToDelete, setCourseToDelete] = useState<Course | null>(null);
@@ -82,6 +138,7 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
   const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [syncingCourseId, setSyncingCourseId] = useState<string | null>(null);
+  const [selectiveSyncTargetCourse, setSelectiveSyncTargetCourse] = useState<Course | null>(null);
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
   const [removedSyncTick, setRemovedSyncTick] = useState<number>(0);
   const [liveCalendarSlots, setLiveCalendarSlots] = useState<
@@ -142,175 +199,20 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
     };
   }, [token, courses.length]);
 
-  // Sync real students from Google Classroom (MANUALLY triggered by user)
-  const handleSyncRealClassroomStudents = async (showNotice = true) => {
-    const activeToken = token || getCachedAccessToken();
-    if (!activeToken) {
-      setRosterSyncMsg('Por favor, conecta tu cuenta de Google para sincronizar.');
+  // Open Selective Student Synchronization modal (prevents auto-inserting students across all courses)
+  const handleSyncRealClassroomStudents = async (_showNotice = true) => {
+    const firstCourse = courses[0] || null;
+    if (!firstCourse) {
+      setRosterSyncMsg('Primero creá o importá una materia para sincronizar sus alumnos.');
       setTimeout(() => setRosterSyncMsg(null), 4000);
       return;
     }
-
-    try {
-      setIsSyncingRoster(true);
-      // Fetch active courses from Classroom (fast, without blocking on individual student counts)
-      const res = await classroomService.listClassroomCourses(activeToken, { fetchStudentCounts: false });
-      if (res.rosterPermissionRequired) {
-        setNeedsRosterPermission(true);
-      } else {
-        setNeedsRosterPermission(false);
-      }
-      const classroomMap = new Map<string, number>();
-
-      if (res.success && Array.isArray(res.courses) && res.courses.length > 0) {
-        res.courses.forEach((gc: any) => {
-          if (gc.id && typeof gc.studentsCount === 'number') {
-            classroomMap.set(gc.id, gc.studentsCount);
-            if (gc.name) {
-              classroomMap.set(gc.name.trim().toLowerCase(), gc.studentsCount);
-            }
-          }
-        });
-      }
-
-      // STRICTLY UPDATE EXISTING COURSES ONLY - DO NOT AUTO-IMPORT ANY MISSING/DELETED COURSES
-      const updates: Array<{ id: string; studentsCount: number }> = [];
-
-      // Process all unique courses in full parallel for maximum speed
-      const uniqueCoursesToSync = api.deduplicateCourses(courses);
-      await Promise.all(
-        uniqueCoursesToSync.map(async (course) => {
-          let realCount: number | null = null;
-          let realStudents: any[] = [];
-          let matchedId = course.classroomCourseId;
-
-          try {
-            const rosterRes = await classroomService.resolveAndFetchCourseStudents(
-              course,
-              activeToken,
-              res.courses
-            );
-            if (rosterRes.rosterPermissionRequired) {
-              setNeedsRosterPermission(true);
-            }
-            if (rosterRes.success) {
-              realStudents = rosterRes.students || [];
-              realCount = realStudents.length;
-              matchedId = rosterRes.realClassroomId || matchedId;
-            }
-          } catch (_) {}
-
-          if (realCount === null) {
-            if (course.classroomCourseId && classroomMap.has(course.classroomCourseId)) {
-              realCount = classroomMap.get(course.classroomCourseId)!;
-            } else {
-              const cleanName = course.name.toLowerCase().trim();
-              const cleanSubject = course.subject.toLowerCase().trim();
-              if (classroomMap.has(cleanName)) {
-                realCount = classroomMap.get(cleanName)!;
-              } else if (classroomMap.has(cleanSubject)) {
-                realCount = classroomMap.get(cleanSubject)!;
-              }
-            }
-          }
-
-          if (realStudents.length > 0) {
-            try {
-              await api.syncCourseStudentsRoster(course.id, realStudents);
-            } catch (e) {
-              console.warn('Error saving students in batch sync:', e);
-            }
-          }
-
-          if (realCount !== null && (realCount !== course.studentsCount || matchedId !== course.classroomCourseId)) {
-            updates.push({ id: course.id, studentsCount: realCount });
-            if (matchedId && matchedId !== course.classroomCourseId) {
-              await api.updateCourse(course.id, { classroomCourseId: matchedId, classroomSynced: true });
-            }
-          }
-        })
-      );
-
-      if (updates.length > 0) {
-        await api.syncCourseStudents(updates);
-        if (onRefreshData) onRefreshData();
-      }
-
-      if (showNotice) {
-        if (updates.length > 0) {
-          setRosterSyncMsg(`Se sincronizó la nómina real desde Classroom (${updates.length} materias actualizadas).`);
-        } else {
-          setRosterSyncMsg('Las materias actuales ya reflejan los inscriptos de Classroom.');
-        }
-        setTimeout(() => setRosterSyncMsg(null), 5000);
-      }
-    } catch (err: any) {
-      console.warn('Sync students error:', err);
-      setRosterSyncMsg('Error al conectar con Classroom para sincronizar.');
-      setTimeout(() => setRosterSyncMsg(null), 4000);
-    } finally {
-      setIsSyncingRoster(false);
-    }
+    setSelectiveSyncTargetCourse(firstCourse);
   };
 
-  // Sync real students for a single course (MANUALLY triggered by user)
+  // Open Selective Student Synchronization modal for a specific course
   const handleSyncSingleCourse = async (course: Course) => {
-    try {
-      setSyncingCourseId(course.id);
-
-      // 1. Hydrate cloud removed lists and heal from any sibling course of the same division (e.g. Filosofía <-> Historia)
-      await api.getStudents(course.id).catch(() => []);
-      const healedAfterCheck = api.getLocalStudents(course.id);
-
-      const activeToken = token || getCachedAccessToken();
-      if (!activeToken) {
-        if (healedAfterCheck.length > 0) {
-          if (onRefreshData) onRefreshData();
-          setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${healedAfterCheck.length} estudiantes repuestos.`);
-          setTimeout(() => setRosterSyncMsg(null), 4000);
-          return;
-        }
-        setRosterSyncMsg('Por favor, conectá tu cuenta de Google para sincronizar.');
-        setTimeout(() => setRosterSyncMsg(null), 4000);
-        return;
-      }
-
-      const res = await classroomService.resolveAndFetchCourseStudents(course, activeToken, undefined, true);
-
-      if (res.rosterPermissionRequired) {
-        if (healedAfterCheck.length > 0) {
-          if (onRefreshData) onRefreshData();
-          setRosterSyncMsg(`Materia "${course.name}": ${healedAfterCheck.length} estudiantes del curso repuestos.`);
-          setTimeout(() => setRosterSyncMsg(null), 4000);
-          return;
-        }
-        setNeedsRosterPermission(true);
-      }
-
-      if (res.success && Array.isArray(res.students) && res.students.length > 0) {
-        const syncRes = await api.syncCourseStudentsRoster(course.id, res.students);
-        await api.syncCourseStudents([{ id: course.id, studentsCount: syncRes.count }]);
-        if (res.realClassroomId && res.realClassroomId !== course.classroomCourseId) {
-          await api.updateCourse(course.id, { classroomCourseId: res.realClassroomId, classroomSynced: true });
-        }
-        if (onRefreshData) onRefreshData();
-        setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${syncRes.count} estudiantes activos desde Google Classroom.`);
-        setTimeout(() => setRosterSyncMsg(null), 4000);
-      } else if (healedAfterCheck.length > 0) {
-        if (onRefreshData) onRefreshData();
-        setRosterSyncMsg(`Materia "${course.name}" sincronizada: ${healedAfterCheck.length} estudiantes verificados.`);
-        setTimeout(() => setRosterSyncMsg(null), 4000);
-      } else {
-        setRosterSyncMsg(res.message || `No se encontraron estudiantes para "${course.name}" en Classroom.`);
-        setTimeout(() => setRosterSyncMsg(null), 4000);
-      }
-    } catch (err) {
-      console.warn('Error syncing single course:', err);
-      setRosterSyncMsg(`Error al sincronizar "${course.name}".`);
-      setTimeout(() => setRosterSyncMsg(null), 4000);
-    } finally {
-      setSyncingCourseId(null);
-    }
+    setSelectiveSyncTargetCourse(course);
   };
 
   // NOTE: Automatic background synchronization is intentionally disabled per user instructions.
@@ -326,14 +228,38 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
     }
   }, [students]);
 
-  // Read local disposition data for real-time student metrics
-  const localDisposition = React.useMemo(() => {
-    try {
-      return api.getAllDispositionStorage();
-    } catch (_) {
-      return {};
-    }
-  }, [searchQuery]);
+  // Helper to resolve per-course disposition and attendance metrics for a student
+  const getStudentQuickMetrics = React.useCallback(
+    (studentId: string, courseId?: string) => {
+      try {
+        if (courseId) {
+          const raw1c = getUserScopedItem(`fds_disposition_data_${courseId}_1c`);
+          if (raw1c) {
+            const parsed1c = JSON.parse(raw1c);
+            const entry = parsed1c?.[studentId];
+            if (entry && (!entry.courseId || entry.courseId === courseId)) {
+              return {
+                score: entry.totalDisposition ?? entry.disposition ?? 10,
+                absences: entry.totalAbsences ?? entry.absences ?? 0,
+                late: entry.totalLates ?? entry.late ?? 0,
+              };
+            }
+          }
+        }
+        const stored = api.getAllDispositionStorage();
+        const globalEntry = stored?.disposition?.[studentId];
+        if (globalEntry && (!courseId || !globalEntry.courseId || globalEntry.courseId === courseId)) {
+          return {
+            score: globalEntry.totalDisposition ?? (globalEntry as any).disposition ?? 10,
+            absences: globalEntry.totalAbsences ?? (globalEntry as any).absences ?? 0,
+            late: globalEntry.totalLates ?? (globalEntry as any).late ?? 0,
+          };
+        }
+      } catch (_) {}
+      return { score: 10, absences: 0, late: 0 };
+    },
+    [searchQuery]
+  );
 
   // Strictly deduplicate courses to prevent any repeating subjects in UI
   const uniqueCourses = React.useMemo(() => api.deduplicateCourses(courses), [courses]);
@@ -404,15 +330,20 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
 
   const matchingStudents = React.useMemo(() => {
     if (!cleanQuery || cleanQuery.length < 2) return [];
-    return allStudents.filter((s) => {
-      const first = (s.firstName || '').toLowerCase();
-      const last = (s.lastName || '').toLowerCase();
-      const full = `${first} ${last}`;
-      const rev = `${last} ${first}`;
-      const email = (s.email || '').toLowerCase();
-      return full.includes(cleanQuery) || rev.includes(cleanQuery) || email.includes(cleanQuery);
-    }).slice(0, 16);
-  }, [allStudents, cleanQuery]);
+    return allStudents
+      .filter((s) => {
+        if (s.courseId && getRemovedStudentIds(s.courseId).has(s.id)) {
+          return false;
+        }
+        const first = (s.firstName || '').toLowerCase();
+        const last = (s.lastName || '').toLowerCase();
+        const full = `${first} ${last}`;
+        const rev = `${last} ${first}`;
+        const email = (s.email || '').toLowerCase();
+        return full.includes(cleanQuery) || rev.includes(cleanQuery) || email.includes(cleanQuery);
+      })
+      .slice(0, 16);
+  }, [allStudents, cleanQuery, removedSyncTick]);
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -780,21 +711,18 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
               const matchedCourse = uniqueCourses.find(
                 (c) => c.id === st.courseId || c.classroomCourseId === st.courseId
               );
-              const disp = localDisposition[st.id];
-              const score = disp?.disposition ?? 10;
-              const absences = disp?.absences ?? 0;
-              const late = disp?.late ?? 0;
+              const { score, absences, late } = getStudentQuickMetrics(st.id, matchedCourse?.id || st.courseId);
 
               return (
                 <div
-                  key={st.id}
+                  key={`${st.courseId || 'none'}::${st.id}`}
                   onClick={() => {
                     if (st.courseId) {
                       try {
                         sessionStorage.setItem('docencia_focus_student_id', st.id);
                         sessionStorage.setItem('docencia_focus_student_name', `${st.lastName || ''} ${st.firstName || ''}`.trim());
                       } catch (_) {}
-                      onSelectCourseAndTab(st.courseId, 'alumnos');
+                      onSelectCourseAndTab(matchedCourse?.id || st.courseId, 'alumnos');
                     }
                   }}
                   className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all hover:scale-[1.01] hover:shadow-md group ${
@@ -991,71 +919,98 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
         </div>
       ) : (
         <div className={viewMode === 'list' ? 'flex flex-col space-y-4 w-full' : 'grid grid-cols-1 lg:grid-cols-2 gap-6'}>
-          {filteredCourses.map((course) => (
-          <div
-            key={course.id}
-            className={`border rounded-2xl p-5 sm:p-6 transition-all flex flex-col justify-between group ${
-              viewMode === 'list' ? 'w-full shadow-xs hover:shadow-md' : 'shadow-xs hover:shadow-md'
-            } ${
-              isDarkMode
-                ? 'bg-slate-900/90 border-slate-700/80 hover:border-blue-500/60 hover:bg-slate-900'
-                : 'bg-white border-neutral-200 hover:border-blue-300'
-            }`}
-          >
-            <div className="space-y-4">
-              {/* Header of the Course Card with Top Actions: Eliminar y Entrar a la materia */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border ${
-                        isDarkMode
-                          ? 'bg-blue-950/60 text-blue-400 border-blue-800/60'
-                          : 'bg-blue-50 text-blue-700 border-blue-100'
-                      }`}
-                    >
-                      {course.grade}
-                    </span>
-                    <span className={`text-xs font-medium flex items-center gap-1 tabular-nums ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                      <Users className="w-3.5 h-3.5 text-neutral-400" />
-                      <span>
-                        {courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount}{' '}
-                        {(courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount) === 1
-                          ? 'estudiante'
-                          : 'estudiantes'}
-                      </span>
-                      {(courseStudentCountsMap[course.id]?.hiddenCount ?? 0) > 0 && (
-                        <>
-                          <span aria-hidden="true">·</span>
-                          <span className={isDarkMode ? 'text-slate-500' : 'text-neutral-400'}>
-                            {courseStudentCountsMap[course.id].hiddenCount} oculto
-                            {courseStudentCountsMap[course.id].hiddenCount === 1 ? '' : 's'}
+          {filteredCourses.map((course) => {
+            const fullCourseSchedule = getEffectiveScheduleStringForCourse(course) || course.schedule || '';
+            const nextClass = nextClassMap[course.id];
+
+            return (
+              <div
+                key={course.id}
+                className={`border rounded-2xl p-5 sm:p-6 transition-all flex flex-col justify-between group ${
+                  viewMode === 'list' ? 'w-full shadow-xs hover:shadow-md' : 'shadow-xs hover:shadow-md'
+                } ${
+                  isDarkMode
+                    ? 'bg-slate-900/90 border-slate-700/80 hover:border-blue-500/60 hover:bg-slate-900'
+                    : 'bg-white border-neutral-200 hover:border-blue-300'
+                }`}
+              >
+                <div className="space-y-4">
+                  {/* Header of the Course Card with Top Actions: Eliminar y Entrar a la materia */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border ${
+                            isDarkMode
+                              ? 'bg-blue-950/60 text-blue-400 border-blue-800/60'
+                              : 'bg-blue-50 text-blue-700 border-blue-100'
+                          }`}
+                        >
+                          {course.grade}
+                        </span>
+                        <span className={`text-xs font-medium flex items-center gap-1 tabular-nums ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                          <Users className="w-3.5 h-3.5 text-neutral-400" />
+                          <span>
+                            {courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount}{' '}
+                            {(courseStudentCountsMap[course.id]?.activeCount ?? course.studentsCount) === 1
+                              ? 'estudiante'
+                              : 'estudiantes'}
                           </span>
-                        </>
-                      )}
-                    </span>
-                    {nextClassMap[course.id]?.badgeText && (
-                      <span
-                        className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
-                          nextClassMap[course.id]?.status === 'in_progress'
-                            ? isDarkMode
-                              ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/80'
-                              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : nextClassMap[course.id]?.status === 'today'
-                            ? isDarkMode
-                              ? 'bg-amber-950/70 text-amber-300 border-amber-800/70'
-                              : 'bg-amber-50 text-amber-800 border-amber-200'
-                            : isDarkMode
-                            ? 'bg-slate-800 text-slate-300 border-slate-700'
-                            : 'bg-neutral-100 text-neutral-700 border-neutral-200'
-                        }`}
-                        title="Próxima clase según calendario"
-                      >
-                        <Clock className="w-3 h-3 shrink-0" />
-                        <span>{nextClassMap[course.id]?.badgeText}</span>
-                      </span>
-                    )}
-                  </div>
+                          {(courseStudentCountsMap[course.id]?.hiddenCount ?? 0) > 0 && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className={isDarkMode ? 'text-slate-500' : 'text-neutral-400'}>
+                                {courseStudentCountsMap[course.id].hiddenCount} oculto
+                                {courseStudentCountsMap[course.id].hiddenCount === 1 ? '' : 's'}
+                              </span>
+                            </>
+                          )}
+                        </span>
+                        {fullCourseSchedule ? (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
+                              isDarkMode
+                                ? 'bg-slate-800 text-blue-300 border-slate-700'
+                                : 'bg-blue-50 text-blue-800 border-blue-200'
+                            }`}
+                            title={`Horario de la materia: ${fullCourseSchedule}`}
+                          >
+                            <Clock className="w-3 h-3 shrink-0 text-blue-500" />
+                            <span>{fullCourseSchedule}</span>
+                          </span>
+                        ) : nextClass?.badgeText ? (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
+                              isDarkMode
+                                ? 'bg-slate-800 text-slate-300 border-slate-700'
+                                : 'bg-neutral-100 text-neutral-700 border-neutral-200'
+                            }`}
+                            title="Próxima clase según calendario"
+                          >
+                            <Clock className="w-3 h-3 shrink-0" />
+                            <span>{nextClass.badgeText}</span>
+                          </span>
+                        ) : null}
+                        {nextClass?.badgeText &&
+                          (nextClass.status === 'in_progress' || nextClass.status === 'today') &&
+                          nextClass.badgeText !== fullCourseSchedule && (
+                            <span
+                              className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-md border ${
+                                nextClass.status === 'in_progress'
+                                  ? isDarkMode
+                                    ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/80'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : isDarkMode
+                                  ? 'bg-amber-950/70 text-amber-300 border-amber-800/70'
+                                  : 'bg-amber-50 text-amber-800 border-amber-200'
+                              }`}
+                              title={nextClass.status === 'in_progress' ? 'Clase en curso' : 'Clase hoy'}
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                              <span>{nextClass.badgeText}</span>
+                            </span>
+                          )}
+                      </div>
                   <h3
                     className={`text-lg font-bold transition-colors ${
                       isDarkMode
@@ -1212,9 +1167,10 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
                 <RefreshCw className={`w-3 h-3 ${syncingCourseId === course.id ? 'animate-spin text-blue-500' : ''}`} />
                 <span>{syncingCourseId === course.id ? 'Sincronizando...' : 'Sincronizar'}</span>
               </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       )}
 
@@ -1532,6 +1488,30 @@ export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = ({
           }
         }}
       />
+
+      {/* Modal: Sincronización Selectiva de Estudiantes por Materia */}
+      <SelectiveStudentSyncModal
+        isOpen={Boolean(selectiveSyncTargetCourse)}
+        onClose={() => setSelectiveSyncTargetCourse(null)}
+        targetCourse={selectiveSyncTargetCourse}
+        allCourses={uniqueCourses}
+        token={token}
+        userEmail={user?.email}
+        onLoginWithGoogle={loginWithGoogle}
+        isDarkMode={isDarkMode}
+        onSyncCompleted={(message) => {
+          if (onRefreshData) onRefreshData();
+          setRosterSyncMsg(message);
+          setTimeout(() => setRosterSyncMsg(null), 5000);
+        }}
+      />
     </div>
   );
 };
+
+export const TeacherCoursesPanel = React.memo(
+  TeacherCoursesPanelComponent,
+  areTeacherCoursesPanelPropsEqual
+);
+TeacherCoursesPanel.displayName = 'TeacherCoursesPanel';
+

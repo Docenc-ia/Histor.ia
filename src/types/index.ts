@@ -36,10 +36,14 @@ export interface Course {
 
 export interface Student {
   id: string;
+  /** ID de la materia/curso al que pertenece exclusivamente esta instancia del estudiante */
   courseId: string;
+  /** ID original del usuario en Google Classroom (si fue sincronizado), independiente de courseId */
+  classroomUserId?: string;
   firstName: string;
   lastName: string;
   email: string;
+  phone?: string;
   avatar: string;
   attendanceRate: number;
   averageGrade: number;
@@ -102,6 +106,7 @@ export interface AbsenceNotificationSettings {
 }
 
 export interface StudentDispositionData {
+  courseId?: string;
   totalAbsences: number;
   totalLates?: number;
   totalDisposition: number; // starts at 10

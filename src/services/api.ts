@@ -39,6 +39,7 @@ import {
   syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
   getCourseDivisionGroupKey,
+  getDivisionCandidateStudentsForCourse,
   healSiblingCourseRosters,
 } from './storageHelpers';
 
@@ -72,6 +73,7 @@ export {
   syncAllRemovedStudentsIndexFromCloud,
   syncRemovedStudentsFromCloud,
   getCourseDivisionGroupKey,
+  getDivisionCandidateStudentsForCourse,
   healSiblingCourseRosters,
 };
 
@@ -189,6 +191,8 @@ export const api = {
   },
 
   ...apiSecondaryEndpoints,
+  getUserScopedItem,
+  setUserScopedItem,
 
   // Courses
   async getCourses(): Promise<Course[]> {
@@ -499,12 +503,30 @@ export const api = {
     const localDisp = getAllDispositionStorage().disposition || {};
     const localCourses = getLocalCourses();
     const scheduleByCourseId = new Map<string, string>();
+    const perCourseDispMap = new Map<string, Record<string, any>>();
     localCourses.forEach((c) => {
       if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
+      if (c.id) {
+        try {
+          const rawCourseDisp = getUserScopedItem(`fds_disposition_data_${c.id}_1c`);
+          if (rawCourseDisp) {
+            const parsed = JSON.parse(rawCourseDisp);
+            if (parsed && typeof parsed === 'object') {
+              perCourseDispMap.set(c.id, parsed);
+            }
+          }
+        } catch (_) {}
+      }
     });
     const enrichStudents = (list: Student[]) => {
       return list.map((st) => {
-        const d = localDisp[st.id];
+        const courseDisp = st.courseId ? perCourseDispMap.get(st.courseId) : undefined;
+        const candidateGlobal = localDisp[`${st.courseId}::${st.id}`] || localDisp[st.id];
+        const d =
+          courseDisp?.[st.id] ||
+          (candidateGlobal && (!candidateGlobal.courseId || candidateGlobal.courseId === st.courseId)
+            ? candidateGlobal
+            : undefined);
         if (d && typeof d.totalAbsences === 'number') {
           const rate = computeQuickStudentAttendanceRate(
             st.id,
@@ -550,7 +572,22 @@ export const api = {
       removedSyncPromise,
     ]);
 
-    const rawCombined = deduplicateStudents([...allLocal, ...cloudStudents, ...serverStudents]);
+    // Courses that already have an explicit per-course local roster should not have removed/unselected
+    // students resurrected by stale Express server seed data.
+    const coursesWithExplicitLocalBucket = new Set<string>();
+    if (typeof window !== 'undefined') {
+      for (const c of localCourses) {
+        if (c?.id && getUserScopedItem(`docencia_course_students_${c.id}`) !== null) {
+          coursesWithExplicitLocalBucket.add(c.id);
+        }
+      }
+    }
+
+    const filteredServerStudents = serverStudents.filter(
+      (st) => !st?.courseId || !coursesWithExplicitLocalBucket.has(st.courseId)
+    );
+
+    const rawCombined = deduplicateStudents([...allLocal, ...cloudStudents, ...filteredServerStudents]);
     const { students: healedCombined, healedCourseIds } = healSiblingCourseRosters(rawCombined);
     const mergedStudents = enrichStudents(healedCombined);
 
@@ -610,13 +647,14 @@ export const api = {
         if (res.ok) {
           const data = await res.json();
           if (data && data.student) {
+            const scopedStudent: Student = { ...data.student, courseId: studentData.courseId };
             const current = getLocalStudents(studentData.courseId);
-            saveLocalStudents(studentData.courseId, [...current, data.student]);
+            saveLocalStudents(studentData.courseId, [...current, scopedStudent]);
             const userId = getActiveUserId();
             if (userId) {
-              firestoreSync.saveStudents(userId, studentData.courseId, [...current, data.student]).catch(() => {});
+              firestoreSync.saveStudents(userId, studentData.courseId, [...current, scopedStudent]).catch(() => {});
             }
-            return data.student;
+            return scopedStudent;
           }
         }
       } catch (_) {}
@@ -655,16 +693,31 @@ export const api = {
   },
 
   async updateStudent(studentId: string, courseId: string, updates: Partial<Student>): Promise<Student | null> {
+    if (!courseId || !studentId) return null;
     const current = getLocalStudents(courseId);
-    const idx = current.findIndex((s) => s.id === studentId);
+    const idx = current.findIndex((s) => s.id === studentId && s.courseId === courseId);
     if (idx !== -1) {
-      current[idx] = { ...current[idx], ...updates };
+      // Strictly preserve id and courseId so editing in one course never alters another course
+      const updatedStudent: Student = {
+        ...current[idx],
+        ...updates,
+        id: studentId,
+        courseId,
+      };
+      current[idx] = updatedStudent;
       saveLocalStudents(courseId, current);
       const userId = getActiveUserId();
       if (userId) {
         firestoreSync.saveStudents(userId, courseId, current).catch(() => {});
       }
-      return current[idx];
+      if (isPrimaryOwnerAccount() && canUseExpressBackend()) {
+        fetch(`/api/students/${encodeURIComponent(courseId)}/${encodeURIComponent(studentId)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates),
+        }).catch(() => {});
+      }
+      return updatedStudent;
     }
     return null;
   },
@@ -674,9 +727,11 @@ export const api = {
       const firstName = st.firstName || 'Estudiante';
       const lastName = st.lastName || '';
       const fullName = `${firstName} ${lastName}`.trim();
+      const rawUserId = st.id || (st as any).userId || `st-${courseId}-${i + 1}`;
       return {
         ...st,
-        id: st.id || (st as any).userId || `st-${courseId}-${i + 1}`,
+        id: rawUserId,
+        classroomUserId: String(rawUserId),
         courseId,
         firstName,
         lastName,
@@ -732,13 +787,192 @@ export const api = {
     };
   },
 
+  getDivisionCandidateStudentsForCourse(courseId: string): Student[] {
+    return getDivisionCandidateStudentsForCourse(courseId);
+  },
+
+  /**
+   * Selective Student Synchronization: imports ONLY the explicitly selected students
+   * into a single specific `courseId`, preventing duplicates within that course and
+   * never inserting or modifying students in any other course.
+   */
+  async syncSelectedCourseStudents(
+    courseId: string,
+    selectedStudents: Partial<Student>[],
+    options?: {
+      mode?: 'merge' | 'replace';
+      allCandidates?: Partial<Student>[];
+      realClassroomId?: string;
+    }
+  ): Promise<{
+    success: boolean;
+    count: number;
+    addedCount: number;
+    students: Student[];
+  }> {
+    const mode = options?.mode || 'merge';
+    const currentInCourse = getLocalStudents(courseId);
+    const existingById = new Map<string, Student>();
+    const existingByEmail = new Map<string, Student>();
+    const existingByName = new Map<string, Student>();
+
+    for (const ex of currentInCourse) {
+      if (ex.id) existingById.set(String(ex.id).trim(), ex);
+      if (ex.email) existingByEmail.set(ex.email.trim().toLowerCase(), ex);
+      const full = `${(ex.firstName || '').trim()} ${(ex.lastName || '').trim()}`.trim().toLowerCase();
+      if (full) existingByName.set(full, ex);
+    }
+
+    const formattedSelected: Student[] = selectedStudents.map((st, i) => {
+      const firstName = (st.firstName || 'Estudiante').trim();
+      const lastName = (st.lastName || '').trim();
+      const fullName = `${firstName} ${lastName}`.trim();
+      const cleanEmail = (st.email || '').trim().toLowerCase();
+      const rawId = String(st.id || (st as any).userId || `st-${courseId}-${i + 1}`).trim();
+
+      // Match existing record in THIS courseId if already enrolled so we preserve their ID, attendanceRate, notes, etc.
+      const matchedExisting =
+        existingById.get(rawId) ||
+        (cleanEmail ? existingByEmail.get(cleanEmail) : undefined) ||
+        (fullName ? existingByName.get(fullName.toLowerCase()) : undefined);
+
+      const finalId = matchedExisting?.id || rawId;
+      // Ensure selected student is unmarked from the removed list of THIS courseId
+      unmarkStudentRemoved(courseId, finalId);
+      if (rawId !== finalId) {
+        unmarkStudentRemoved(courseId, rawId);
+      }
+
+      return {
+        ...matchedExisting,
+        ...st,
+        id: finalId,
+        classroomUserId: String(st.classroomUserId || rawId),
+        courseId,
+        firstName,
+        lastName,
+        email: st.email || matchedExisting?.email || '',
+        attendanceRate:
+          typeof matchedExisting?.attendanceRate === 'number'
+            ? matchedExisting.attendanceRate
+            : typeof st.attendanceRate === 'number'
+            ? st.attendanceRate
+            : 100,
+        averageGrade:
+          typeof matchedExisting?.averageGrade === 'number'
+            ? matchedExisting.averageGrade
+            : typeof st.averageGrade === 'number'
+            ? st.averageGrade
+            : 0,
+        notes: matchedExisting?.notes || st.notes || 'Importado selectivamente desde Google Classroom',
+        avatar:
+          st.avatar ||
+          matchedExisting?.avatar ||
+          `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName)}&background=1a73e8&color=ffffff&bold=true`,
+      };
+    });
+
+    const selectedKeys = new Set<string>();
+    for (const s of formattedSelected) {
+      selectedKeys.add(s.id);
+      if (s.classroomUserId) selectedKeys.add(s.classroomUserId);
+      if (s.email) selectedKeys.add(s.email.trim().toLowerCase());
+      const full = `${s.firstName} ${s.lastName}`.trim().toLowerCase();
+      if (full) selectedKeys.add(full);
+    }
+
+    let finalCourseRoster: Student[];
+    if (mode === 'replace') {
+      // Mark any unchecked candidate as excluded in THIS courseId so it stays hidden here without affecting other courses
+      const candidates = options?.allCandidates || [];
+      for (const cand of candidates) {
+        const cId = String(cand.id || (cand as any).userId || '').trim();
+        const cEmail = (cand.email || '').trim().toLowerCase();
+        const cFull = `${(cand.firstName || '').trim()} ${(cand.lastName || '').trim()}`.trim().toLowerCase();
+        const isSelected =
+          (cId && selectedKeys.has(cId)) ||
+          (cEmail && selectedKeys.has(cEmail)) ||
+          (cFull && selectedKeys.has(cFull));
+        if (!isSelected && cId) {
+          markStudentRemoved(courseId, {
+            ...(cand as Student),
+            id: cId,
+            courseId,
+            firstName: cand.firstName || 'Estudiante',
+            lastName: cand.lastName || '',
+            email: cand.email || '',
+            avatar: cand.avatar || '',
+            attendanceRate: 100,
+            averageGrade: 0,
+            notes: '',
+          });
+        }
+      }
+      finalCourseRoster = deduplicateStudents(
+        formattedSelected.map((s) => ({ ...s, courseId }))
+      );
+    } else {
+      // 'merge' mode: add selected students to current course roster without duplicating
+      finalCourseRoster = deduplicateStudents(
+        [...currentInCourse, ...formattedSelected].map((s) => ({ ...s, courseId }))
+      );
+    }
+
+    const addedCount = Math.max(0, finalCourseRoster.length - currentInCourse.length);
+
+    // Persist strictly for this courseId only
+    saveLocalStudents(courseId, finalCourseRoster);
+
+    const courses = getLocalCourses();
+    const courseIndex = courses.findIndex((c) => c.id === courseId);
+    if (courseIndex >= 0) {
+      courses[courseIndex].studentsCount = finalCourseRoster.length;
+      courses[courseIndex].classroomSynced = true;
+      if (options?.realClassroomId) {
+        courses[courseIndex].classroomCourseId = options.realClassroomId;
+      }
+      saveLocalCourses(courses);
+    }
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveStudents(userId, courseId, finalCourseRoster).catch(() => {});
+      if (courseIndex >= 0) {
+        firestoreSync.saveCourses(userId, courses).catch(() => {});
+      }
+    }
+
+    if (isPrimaryOwnerAccount() && canUseExpressBackend()) {
+      fetch('/api/students/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ courseId, students: finalCourseRoster }),
+      }).catch(() => {});
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('docencia_student_status_updated'));
+    }
+
+    return {
+      success: true,
+      count: finalCourseRoster.length,
+      addedCount,
+      students: finalCourseRoster,
+    };
+  },
+
   async removeStudentFromCourse(studentOrId: Student | string, courseId: string): Promise<{ success: boolean; message: string }> {
     const studentId = typeof studentOrId === 'string' ? studentOrId : studentOrId.id;
     const current = getLocalStudents(courseId);
-    const existingObj = typeof studentOrId === 'object' ? studentOrId : current.find((s) => s.id === studentId);
+    const existingObj =
+      typeof studentOrId === 'object'
+        ? { ...studentOrId, courseId }
+        : current.find((s) => s.id === studentId && s.courseId === courseId);
     markStudentRemoved(courseId, existingObj || studentId);
 
-    const updated = current.filter((s) => s.id !== studentId);
+    // Strictly remove ONLY the student relation for this specific courseId
+    const updated = current.filter((s) => !(s.id === studentId && s.courseId === courseId));
     saveLocalStudents(courseId, updated);
 
     const courses = getLocalCourses();
@@ -756,11 +990,17 @@ export const api = {
       }
     }
 
+    if (isPrimaryOwnerAccount() && canUseExpressBackend()) {
+      fetch(`/api/students/${encodeURIComponent(courseId)}/${encodeURIComponent(studentId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
+    }
+
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('docencia_student_status_updated'));
     }
 
-    return { success: true, message: 'Estudiante quitado de la lista en esta app' };
+    return { success: true, message: 'Estudiante quitado de la lista en esta materia' };
   },
 
   async restoreStudentInCourse(student: Student, courseId: string): Promise<{ success: boolean; message: string }> {
@@ -785,11 +1025,19 @@ export const api = {
       }
     }
 
+    if (isPrimaryOwnerAccount() && canUseExpressBackend()) {
+      fetch('/api/students', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(restoredStudent),
+      }).catch(() => {});
+    }
+
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new Event('docencia_student_status_updated'));
     }
 
-    return { success: true, message: 'Estudiante reincorporado a la lista' };
+    return { success: true, message: 'Estudiante reincorporado a la lista de esta materia' };
   },
 
   async cleanMockStudents(): Promise<{ success: boolean; remaining: number }> {
@@ -922,6 +1170,7 @@ export const api = {
     notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
     omitNotification?: boolean;
     notifiedAt?: string;
+    pointsChange?: number;
     expectedSummary?: { totalAbsences: number; totalLates?: number; totalDisposition: number };
   }): Promise<{
     success: boolean;
@@ -941,11 +1190,39 @@ export const api = {
         const raw1c = data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_1c`) : null;
         if (raw1c) {
           allDisposition1c = JSON.parse(raw1c);
+        } else if (data.courseId) {
+          Object.entries(local.disposition || {}).forEach(([k, val]: [string, any]) => {
+            if (!val || typeof val !== 'object') return;
+            if (k.startsWith(`${data.courseId}::`)) {
+              const cleanStudentId = k.slice(`${data.courseId}::`.length);
+              allDisposition1c[cleanStudentId] = { ...val, courseId: data.courseId };
+            } else if (!k.includes('::') && val.courseId === data.courseId) {
+              allDisposition1c[k] = { ...val };
+            }
+          });
         } else {
           allDisposition1c = { ...local.disposition };
         }
-        const raw2c = (data.courseId ? getUserScopedItem(`fds_disposition_data_${data.courseId}_2c`) : null) || getUserScopedItem('fds_disposition_data_2c');
-        if (raw2c) allDisposition2c = JSON.parse(raw2c);
+        const raw2c = data.courseId
+          ? getUserScopedItem(`fds_disposition_data_${data.courseId}_2c`)
+          : getUserScopedItem('fds_disposition_data_2c');
+        if (raw2c) {
+          allDisposition2c = JSON.parse(raw2c);
+        } else if (data.courseId) {
+          const global2cRaw = getUserScopedItem('fds_disposition_data_2c');
+          if (global2cRaw) {
+            const parsedGlobal2c = JSON.parse(global2cRaw);
+            Object.entries(parsedGlobal2c || {}).forEach(([k, val]: [string, any]) => {
+              if (!val || typeof val !== 'object') return;
+              if (k.startsWith(`${data.courseId}::`)) {
+                const cleanStudentId = k.slice(`${data.courseId}::`.length);
+                allDisposition2c[cleanStudentId] = { ...val, courseId: data.courseId };
+              } else if (!k.includes('::') && val.courseId === data.courseId) {
+                allDisposition2c[k] = { ...val };
+              }
+            });
+          }
+        }
       } catch (_) {}
     }
 
@@ -975,7 +1252,7 @@ export const api = {
         const now = new Date();
         const isTodayAbsence = (h: any) => {
           if (h.studentId !== data.studentId) return false;
-          if (data.courseId && h.courseId && h.courseId !== data.courseId) return false;
+          if (data.courseId && h.courseId !== data.courseId) return false;
           const isAbs =
             h.category === 'Ausencia' ||
             h.action === 'Ausencia' ||
@@ -997,19 +1274,21 @@ export const api = {
           }
         }
         if (userId) {
-          firestoreSync.deleteTodayAbsencesForStudent(userId, data.studentId, now).catch(() => {});
+          firestoreSync.deleteTodayAbsencesForStudent(userId, data.studentId, now, data.courseId).catch(() => {});
         }
       } else if (data.category === 'Disposición') {
-        current.totalDisposition = Math.max(0, current.totalDisposition - 1);
+        const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
+        current.totalDisposition = Math.max(0, Math.min(10, current.totalDisposition + delta));
       }
     }
 
     if (is2c) {
       allDisposition2c[data.studentId] = current;
       if (typeof window !== 'undefined') {
-        setUserScopedItem('fds_disposition_data_2c', JSON.stringify(allDisposition2c));
         if (data.courseId) {
           setUserScopedItem(`fds_disposition_data_${data.courseId}_2c`, JSON.stringify(allDisposition2c));
+        } else {
+          setUserScopedItem('fds_disposition_data_2c', JSON.stringify(allDisposition2c));
         }
       }
     } else {
@@ -1025,7 +1304,9 @@ export const api = {
       id: recordId,
       ...data,
       pointsChange:
-        data.category === 'Ausencia' || data.category === 'Llegada tarde'
+        typeof data.pointsChange === 'number'
+          ? data.pointsChange
+          : data.category === 'Ausencia' || data.category === 'Llegada tarde'
           ? 0
           : data.category === 'Disposición'
           ? -1
@@ -1042,22 +1323,24 @@ export const api = {
 
     // Persist immediately across storage
     if (is2c) {
-      saveAllDispositionStorage(allDisposition1c, history, { silent: true });
+      saveAllDispositionStorage(allDisposition1c, history, { silent: true, courseId: data.courseId });
       if (typeof window !== 'undefined') {
         window.dispatchEvent(
           new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '2c', disposition: allDisposition2c, history },
+            detail: { term: '2c', courseId: data.courseId, disposition: allDisposition2c, history },
           })
         );
       }
     } else {
-      saveAllDispositionStorage(allDisposition1c, history);
+      saveAllDispositionStorage(allDisposition1c, history, { courseId: data.courseId });
     }
 
-    // Cascaded update of local student record
+    // Cascaded update of local student record strictly for this course
     try {
       const allLocalStudents = getLocalStudents();
-      const stIdx = allLocalStudents.findIndex((s) => s.id === data.studentId);
+      const stIdx = allLocalStudents.findIndex(
+        (s) => s.id === data.studentId && (!data.courseId || s.courseId === data.courseId)
+      );
       if (stIdx !== -1) {
         const studentCourseId = allLocalStudents[stIdx].courseId;
         const newAbs = allDisposition[data.studentId]?.totalAbsences || 0;
@@ -1080,6 +1363,7 @@ export const api = {
         new CustomEvent('docencia_student_status_updated', {
           detail: {
             studentId: data.studentId,
+            courseId: data.courseId,
             summary: current,
             disposition: allDisposition,
           },
@@ -1157,6 +1441,8 @@ export const api = {
     id: string,
     extra?: {
       studentId?: string;
+      courseId?: string;
+      term?: '1c' | '2c';
       isAbsence?: boolean;
       isLate?: boolean;
       pointsToReturn?: number;
@@ -1178,14 +1464,34 @@ export const api = {
     if (targetItem && !studentIdToDelete) {
       studentIdToDelete = targetItem.studentId;
     }
+    const targetCourseId = extra?.courseId || targetItem?.courseId;
+    const targetTerm: '1c' | '2c' = extra?.term || (targetItem?.term === '2c' ? '2c' : '1c');
+
+    let perCourseMap: Record<string, any> = {};
+    if (typeof window !== 'undefined' && targetCourseId) {
+      try {
+        const rawCourse = getUserScopedItem(`fds_disposition_data_${targetCourseId}_${targetTerm}`);
+        if (rawCourse) perCourseMap = JSON.parse(rawCourse);
+      } catch (_) {}
+    }
 
     let currentSummary: any = null;
     if (studentIdToDelete) {
-      const current = allDisposition[studentIdToDelete] || {
-        totalAbsences: 0,
-        totalLates: 0,
-        totalDisposition: 10,
-      };
+      const compositeKey = targetCourseId ? `${targetCourseId}::${studentIdToDelete}` : studentIdToDelete;
+      const baseExisting =
+        perCourseMap[studentIdToDelete] ||
+        allDisposition[compositeKey] ||
+        (!targetCourseId || allDisposition[studentIdToDelete]?.courseId === targetCourseId
+          ? allDisposition[studentIdToDelete]
+          : null);
+      const current = baseExisting
+        ? { ...baseExisting }
+        : {
+            totalAbsences: 0,
+            totalLates: 0,
+            totalDisposition: 10,
+          };
+      if (targetCourseId) current.courseId = targetCourseId;
 
       if (extra?.newDisposition !== undefined) {
         current.totalDisposition = extra.newDisposition;
@@ -1220,22 +1526,35 @@ export const api = {
         current.totalLates = Math.max(0, (current.totalLates || 0) - 1);
       }
 
-      allDisposition[studentIdToDelete] = current;
+      perCourseMap[studentIdToDelete] = current;
+      if (targetCourseId) {
+        allDisposition[compositeKey] = current;
+        if (typeof window !== 'undefined') {
+          setUserScopedItem(
+            `fds_disposition_data_${targetCourseId}_${targetTerm}`,
+            JSON.stringify(perCourseMap)
+          );
+        }
+      } else {
+        allDisposition[studentIdToDelete] = current;
+      }
       currentSummary = current;
     }
 
     // 3. Save across all client storage keys
-    saveAllDispositionStorage(allDisposition, history);
+    saveAllDispositionStorage(allDisposition, history, { courseId: targetCourseId });
 
-    // Cascaded update of local student record
+    // Cascaded update of local student record strictly for targetCourseId
     if (studentIdToDelete) {
       try {
         const allLocalStudents = getLocalStudents();
-        const stIdx = allLocalStudents.findIndex((s) => s.id === studentIdToDelete);
+        const stIdx = allLocalStudents.findIndex(
+          (s) => s.id === studentIdToDelete && (!targetCourseId || s.courseId === targetCourseId)
+        );
         if (stIdx !== -1) {
           const studentCourseId = allLocalStudents[stIdx].courseId;
-          const newAbs = allDisposition[studentIdToDelete]?.totalAbsences || 0;
-          const newLates = allDisposition[studentIdToDelete]?.totalLates || 0;
+          const newAbs = currentSummary?.totalAbsences || 0;
+          const newLates = currentSummary?.totalLates || 0;
           const courseObj = getLocalCourses().find((c) => c.id === studentCourseId);
           const newRate = computeQuickStudentAttendanceRate(
             studentIdToDelete,
@@ -1254,8 +1573,9 @@ export const api = {
           new CustomEvent('docencia_student_status_updated', {
             detail: {
               studentId: studentIdToDelete,
+              courseId: targetCourseId,
               summary: currentSummary,
-              disposition: allDisposition,
+              disposition: targetCourseId ? perCourseMap : allDisposition,
             },
           })
         );
@@ -1284,45 +1604,72 @@ export const api = {
       } catch (_) {}
     }
 
-    return { success: true, summary: currentSummary, disposition: allDisposition };
+    return {
+      success: true,
+      summary: currentSummary,
+      disposition: targetCourseId ? perCourseMap : allDisposition,
+    };
   },
 
   async resetDisposition(data: {
     studentId?: string;
     courseId?: string;
+    term?: '1c' | '2c';
     resetWhat: 'disposition' | 'absences' | 'all';
     clearHistory?: boolean;
   }): Promise<{ success: boolean; disposition: Record<string, any>; history?: any[] }> {
+    const targetTerm: '1c' | '2c' = data.term === '2c' ? '2c' : '1c';
     const local = getAllDispositionStorage();
     const map = { ...local.disposition };
     let history = [...local.history];
 
-    if (data.studentId) {
-      if (!map[data.studentId]) {
-        map[data.studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-      }
+    let courseMap: Record<string, any> = {};
+    if (typeof window !== 'undefined' && data.courseId) {
+      try {
+        const raw = getUserScopedItem(`fds_disposition_data_${data.courseId}_${targetTerm}`);
+        if (raw) courseMap = JSON.parse(raw);
+      } catch (_) {}
+    }
+
+    const applyResetToEntry = (entry: any) => {
+      const next = entry ? { ...entry } : { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+      if (data.courseId) next.courseId = data.courseId;
       if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
-        map[data.studentId].totalDisposition = 10;
+        next.totalDisposition = 10;
       }
       if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
-        map[data.studentId].totalAbsences = 0;
+        next.totalAbsences = 0;
       }
       if (data.resetWhat === 'all') {
-        map[data.studentId].totalLates = 0;
+        next.totalLates = 0;
+      }
+      return next;
+    };
+
+    if (data.studentId) {
+      if (data.courseId) {
+        courseMap[data.studentId] = applyResetToEntry(courseMap[data.studentId]);
+        map[`${data.courseId}::${data.studentId}`] = courseMap[data.studentId];
+      } else {
+        map[data.studentId] = applyResetToEntry(map[data.studentId]);
       }
     } else if (data.courseId) {
-      Object.keys(map).forEach((sId) => {
-        if (!map[sId]) map[sId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
-        if (data.resetWhat === 'disposition' || data.resetWhat === 'all' || !data.resetWhat) {
-          map[sId].totalDisposition = 10;
-        }
-        if (data.resetWhat === 'absences' || data.resetWhat === 'all') {
-          map[sId].totalAbsences = 0;
-        }
-        if (data.resetWhat === 'all') {
-          map[sId].totalLates = 0;
-        }
+      const courseStudents = getLocalStudents(data.courseId);
+      const targetStudentIds = new Set<string>([
+        ...courseStudents.map((s) => s.id),
+        ...Object.keys(courseMap),
+      ]);
+      targetStudentIds.forEach((sId) => {
+        courseMap[sId] = applyResetToEntry(courseMap[sId]);
+        map[`${data.courseId}::${sId}`] = courseMap[sId];
       });
+    }
+
+    if (typeof window !== 'undefined' && data.courseId) {
+      setUserScopedItem(
+        `fds_disposition_data_${data.courseId}_${targetTerm}`,
+        JSON.stringify(courseMap)
+      );
     }
 
     if (data.clearHistory) {
@@ -1330,7 +1677,8 @@ export const api = {
       history = history.filter((h: any) => {
         const matchesStudent = data.studentId ? h.studentId === data.studentId : true;
         const matchesCourse = data.courseId ? h.courseId === data.courseId : true;
-        if (matchesStudent && matchesCourse) {
+        const matchesTerm = data.term ? (h.term || '1c') === data.term : true;
+        if (matchesStudent && matchesCourse && matchesTerm) {
           const isDisp =
             h.category === 'Disposición' ||
             (!h.category && h.action !== 'Ausencia' && h.action !== 'Llegada tarde') ||
@@ -1354,13 +1702,13 @@ export const api = {
       removedIds.forEach((id) => markHistoryIdDeleted(id));
     }
 
-    saveAllDispositionStorage(map, history);
+    saveAllDispositionStorage(map, history, { courseId: data.courseId });
 
     const userId = getActiveUserId();
     if (userId) {
-      if (data.studentId) {
+      if (data.studentId && !data.courseId) {
         firestoreSync.deleteStudentDispositionDocs(userId, data.studentId, data.clearHistory).catch(() => {});
-      } else if (data.courseId) {
+      } else if (data.courseId && !data.studentId) {
         firestoreSync.deleteCourseDispositionDocs(userId, data.courseId, data.clearHistory).catch(() => {});
       } else {
         firestoreSync.syncCompactDispositionNow(userId, false);
@@ -1383,7 +1731,7 @@ export const api = {
 
     return {
       success: true,
-      disposition: map,
+      disposition: data.courseId ? courseMap : map,
       history,
     };
   },
@@ -1448,7 +1796,11 @@ export const api = {
     // 1. Check course object in local store / Firestore for dispositionSheetId
     try {
       const localCourses = this.getLocalCourses();
-      const matched = localCourses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
+      const matched =
+        localCourses.find((c) => c.id === courseId) ||
+        (localCourses.filter((c) => c.classroomCourseId === courseId).length === 1
+          ? localCourses.find((c) => c.classroomCourseId === courseId)
+          : undefined);
       if (matched?.dispositionSheetId && isRealGoogleSpreadsheetId(matched.dispositionSheetId)) {
         const sheetInfo = {
           spreadsheetId: matched.dispositionSheetId,
@@ -1525,9 +1877,10 @@ export const api = {
     // Clear dispositionSheetId on the course in localStorage and Firestore
     try {
       const courses = getLocalCourses();
+      const hasExactIdMatch = courses.some((c) => c.id === courseId);
       let changed = false;
       const updated = courses.map((c) => {
-        if (c.id === courseId || c.classroomCourseId === courseId) {
+        if (c.id === courseId || (!hasExactIdMatch && c.classroomCourseId === courseId)) {
           changed = true;
           const next = { ...c };
           delete next.dispositionSheetId;
@@ -1575,9 +1928,10 @@ export const api = {
         firestoreSync.saveUserSetting(userId, `sheet_${courseId}`, sanitizedData).catch(() => {});
       }
       const courses = getLocalCourses();
+      const hasExactIdMatch = courses.some((c) => c.id === courseId);
       let changed = false;
       const updated = courses.map((c) => {
-        if (c.id === courseId || c.classroomCourseId === courseId) {
+        if (c.id === courseId || (!hasExactIdMatch && c.classroomCourseId === courseId)) {
           changed = true;
           return {
             ...c,

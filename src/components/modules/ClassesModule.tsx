@@ -74,6 +74,7 @@ import {
 import { DriveFolderModal, SheetsConnectModal } from './classes/DriveSheetsModals';
 import { CalendarSyncModal, EditCourseDetailsModal } from './classes/CourseCalendarAndEditModals';
 import { RemovedStudentsModals } from './classes/RemovedStudentsModals';
+import { SelectiveStudentSyncModal } from './classes/SelectiveStudentSyncModal';
 import {
   ConductRecordModal,
   ManageConductOptionsModal,
@@ -103,30 +104,63 @@ import {
   getCurrentCalendarTerm,
 } from '../../utils/attendanceCalculations';
 import { useCourseRosterAndSchedule } from '../../hooks/useCourseRosterAndSchedule';
+import { useCourseDispositionSync } from '../../hooks/useCourseDispositionSync';
 import { useGoogleSheetsAndDriveSync } from '../../hooks/useGoogleSheetsAndDriveSync';
 import { useCourseAttendanceAndDispositionActions } from '../../hooks/useCourseAttendanceAndDispositionActions';
 import { CourseRosterTabView } from './classes/CourseRosterTabView';
-import {
-  deduplicateHistory,
-  calculateStudentMetrics,
-} from '../../utils/studentMetricsCalculator';
+import { deduplicateHistory } from '../../utils/studentMetricsCalculator';
+import { navigationService, CourseSubTabType } from '../../services/navigationService';
+import { subscribeAppEvents } from '../../utils/appEventBus';
+import { areCourseListsEqual, areStudentListsEqual } from '../../utils/entityEquality';
 
 interface ClassesModuleProps {
   courses: Course[];
   students: Student[];
   selectedCourseId?: string;
-  initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
+  initialSubTab?: CourseSubTabType;
+  externalSearchQuery?: string;
+  onExternalSearchChange?: (query: string) => void;
   onSelectCourse?: (id: string) => void;
   onRefreshData: () => void;
   onNavigate: (tab: string, filterCourseId?: string) => void;
   onOpenNewModal?: (type: 'course' | 'plan' | 'task' | 'file') => void;
 }
 
-export const ClassesModule: React.FC<ClassesModuleProps> = ({
+function areClassesModulePropsEqual(
+  prev: ClassesModuleProps,
+  next: ClassesModuleProps
+): boolean {
+  if (
+    prev.selectedCourseId !== next.selectedCourseId ||
+    prev.initialSubTab !== next.initialSubTab ||
+    prev.externalSearchQuery !== next.externalSearchQuery ||
+    prev.onExternalSearchChange !== next.onExternalSearchChange ||
+    prev.onSelectCourse !== next.onSelectCourse ||
+    prev.onRefreshData !== next.onRefreshData ||
+    prev.onNavigate !== next.onNavigate ||
+    prev.onOpenNewModal !== next.onOpenNewModal
+  ) {
+    return false;
+  }
+
+  if (!areCourseListsEqual(prev.courses, next.courses)) {
+    return false;
+  }
+
+  if (!areStudentListsEqual(prev.students, next.students)) {
+    return false;
+  }
+
+  return true;
+}
+
+const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   courses,
   students,
   selectedCourseId,
   initialSubTab,
+  externalSearchQuery,
+  onExternalSearchChange,
   onSelectCourse,
   onRefreshData,
   onNavigate,
@@ -134,22 +168,58 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
 }) => {
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
   const activeCourse =
-    courses.find((c) => c.id === selectedCourseId || (selectedCourseId && c.classroomCourseId === selectedCourseId)) ||
+    courses.find((c) => c.id === selectedCourseId) ||
+    courses.find((c) => selectedCourseId && c.classroomCourseId === selectedCourseId) ||
+    (selectedCourseId ? navigationService.getLastActiveCourseSnapshot(selectedCourseId) : null) ||
     courses[0];
 
   // Active view: 'roster' (Alumnos/as) vs 'libro_temas' (Libro de Temas) vs 'grades' (Calificaciones) vs 'history' (Bitácora / Historial Google Sheets)
-  const [activeTab, setActiveTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>(
-    initialSubTab || 'roster'
+  const [activeTabState, setActiveTabState] = useState<CourseSubTabType>(
+    initialSubTab || navigationService.getState().subTab || 'roster'
   );
 
-  useEffect(() => {
-    if (initialSubTab) {
-      setActiveTab(initialSubTab);
-    }
-  }, [initialSubTab]);
+  const setActiveTab = React.useCallback((nextTab: CourseSubTabType) => {
+    setActiveTabState(nextTab);
+    navigationService.setSubTab(nextTab);
+  }, []);
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const activeTab = activeTabState;
+
+  useEffect(() => {
+    if (initialSubTab && initialSubTab !== activeTabState) {
+      setActiveTabState(initialSubTab);
+    }
+  }, [initialSubTab, activeTabState]);
+
+  const [localSearchQuery, setLocalSearchQuery] = useState(externalSearchQuery || '');
+  useEffect(() => {
+    if (externalSearchQuery !== undefined && externalSearchQuery !== localSearchQuery) {
+      setLocalSearchQuery(externalSearchQuery);
+    }
+  }, [externalSearchQuery]);
+
+  const searchQuery = localSearchQuery;
+  const setSearchQuery = React.useCallback(
+    (val: React.SetStateAction<string>) => {
+      setLocalSearchQuery((prev) => {
+        const nextVal = typeof val === 'function' ? val(prev) : val;
+        onExternalSearchChange?.(nextVal);
+        return nextVal;
+      });
+    },
+    [onExternalSearchChange]
+  );
+
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Centralized toast timer so rapid consecutive notifications never truncate each other early
+  useEffect(() => {
+    if (!toastMessage) return;
+    const timer = setTimeout(() => {
+      setToastMessage(null);
+    }, 3800);
+    return () => clearTimeout(timer);
+  }, [toastMessage]);
 
   // Semáforo de asistencia, semanas de clase y calendario escolar
   const [isAttendanceSettingsModalOpen, setIsAttendanceSettingsModalOpen] = useState(false);
@@ -176,45 +246,27 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   }, [activeCourse?.id, activeCourse?.schedule]);
 
-  // Listen to open attendance settings triggered from Sidebar
+  // Listen to open attendance settings triggered from Sidebar via appEventBus
   useEffect(() => {
-    const handleOpenSettingsEvent = () => {
-      setIsAttendanceSettingsModalOpen(true);
-    };
-    const handleGlobalUpdate = () => {
-      if (activeCourse) {
-        setAttendanceSettings(getCourseAttendanceSettings(activeCourse.id, activeCourse.schedule));
-      }
-    };
-    window.addEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
-    window.addEventListener('docencia_global_attendance_settings_updated', handleGlobalUpdate);
+    const unsubOpen = subscribeAppEvents(
+      ['docencia_open_attendance_settings'],
+      () => setIsAttendanceSettingsModalOpen(true),
+      0
+    );
+    const unsubGlobalUpdate = subscribeAppEvents(
+      ['docencia_global_attendance_settings_updated'],
+      () => {
+        if (activeCourse) {
+          setAttendanceSettings(getCourseAttendanceSettings(activeCourse.id, activeCourse.schedule));
+        }
+      },
+      40
+    );
     return () => {
-      window.removeEventListener('docencia_open_attendance_settings', handleOpenSettingsEvent);
-      window.removeEventListener('docencia_global_attendance_settings_updated', handleGlobalUpdate);
+      unsubOpen();
+      unsubGlobalUpdate();
     };
   }, [activeCourse?.id, activeCourse?.schedule]);
-
-  // Disposition state map: studentId -> { totalAbsences: number, totalDisposition: number }
-  const [dispositionMap, setDispositionMap] = useState<Record<string, StudentDispositionData>>(() => {
-    if (typeof window !== 'undefined' && activeCourse?.id) {
-      try {
-        const raw1c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`);
-        if (raw1c) return JSON.parse(raw1c);
-      } catch (_) {}
-    }
-    return {};
-  });
-
-  // 2° Cuatrimestre disposition state map
-  const [dispositionMap2c, setDispositionMap2c] = useState<Record<string, StudentDispositionData>>(() => {
-    if (typeof window !== 'undefined' && activeCourse?.id) {
-      try {
-        const raw2c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`);
-        if (raw2c) return JSON.parse(raw2c);
-      } catch (_) {}
-    }
-    return {};
-  });
 
   // Academic term for Attendance & Disposition & Grades: '1c' | '2c' | 'annual'
   // Defaults automatically to the current cuatrimestre according to the school calendar (1°C or 2°C),
@@ -254,81 +306,25 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     }
   };
 
-  // History entries list: array of StudentHistoryItem
-  const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = getAllDispositionStorage();
-        if (Array.isArray(stored.history) && stored.history.length > 0) {
-          return deduplicateHistory(stored.history);
-        }
-      } catch (_) {}
-    }
-    return [];
+  const teacherEmail = user?.email || 'profesor';
+
+  const {
+    dispositionMap,
+    setDispositionMap,
+    dispositionMap2c,
+    setDispositionMap2c,
+    historyList,
+    setHistoryList,
+    saveTermDisposition,
+    getStudentMetrics,
+    courseHistory,
+  } = useCourseDispositionSync({
+    activeCourse,
+    courses,
+    students,
+    attendanceTerm,
+    teacherEmail,
   });
-
-  const saveTermDisposition = (
-    term: '1c' | '2c',
-    updatedMap: Record<string, StudentDispositionData>,
-    updatedHistory: StudentHistoryItem[]
-  ) => {
-    const uid = getActiveUserId();
-    const courseStampedMap: Record<string, StudentDispositionData> = {};
-    for (const [k, val] of Object.entries(updatedMap)) {
-      courseStampedMap[k] = activeCourse?.id
-        ? ({ ...val, courseId: activeCourse.id } as StudentDispositionData)
-        : val;
-    }
-
-    if (term === '2c') {
-      setDispositionMap2c(courseStampedMap);
-      if (typeof window !== 'undefined') {
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(courseStampedMap));
-        }
-        window.dispatchEvent(
-          new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '2c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
-          })
-        );
-      }
-      saveAllDispositionStorage(dispositionMap, updatedHistory, { silent: true });
-      if (uid) {
-        firestoreSync.syncCompactDispositionNow(uid, false);
-      }
-    } else {
-      setDispositionMap(courseStampedMap);
-      if (typeof window !== 'undefined') {
-        if (activeCourse?.id) {
-          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(courseStampedMap));
-        }
-        window.dispatchEvent(
-          new CustomEvent('docencia_disposition_storage_change', {
-            detail: { term: '1c', courseId: activeCourse?.id, disposition: courseStampedMap, history: updatedHistory },
-          })
-        );
-      }
-      saveAllDispositionStorage(courseStampedMap, updatedHistory);
-      if (uid) {
-        firestoreSync.syncCompactDispositionNow(uid, false);
-      }
-    }
-  };
-
-  // Helper to get student disposition data (reconciled with historyList and dispositionMap per term)
-  const getStudentMetrics = (
-    studentId: string,
-    targetTerm: '1c' | '2c' | 'annual' | 'all' = attendanceTerm
-  ): StudentDispositionData =>
-    calculateStudentMetrics({
-      studentId,
-      targetTerm,
-      activeCourseId: activeCourse?.id,
-      students,
-      dispositionMap,
-      dispositionMap2c,
-      historyList,
-    });
 
   const {
     removedStudentIds,
@@ -344,6 +340,8 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setNeedsRosterPermission,
     studentToRemove,
     setStudentToRemove,
+    isSelectiveSyncModalOpen,
+    setIsSelectiveSyncModalOpen,
     isCalendarModalOpen,
     setIsCalendarModalOpen,
     calendarModalCourse,
@@ -409,95 +407,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     onRefreshData,
     setToastMessage,
   });
-
-  // Reload course-scoped disposition data whenever activeCourse changes
-  // IMPORTANT: Never copy global disposition entries for students who are shared across multiple courses
-  useEffect(() => {
-    if (!activeCourse?.id) return;
-    try {
-      const course1cKey = `fds_disposition_data_${activeCourse.id}_1c`;
-      const course2cKey = `fds_disposition_data_${activeCourse.id}_2c`;
-
-      // Identify students that exist in MORE THAN ONE course (e.g. Historia & Filosofía in S3 Soc 1)
-      const sharedStudentIds = new Set<string>();
-      const seenCourseByStudent = new Map<string, string>();
-      for (const s of students) {
-        if (!s?.id || !s?.courseId) continue;
-        const prevCourse = seenCourseByStudent.get(s.id);
-        if (prevCourse && prevCourse !== s.courseId) {
-          sharedStudentIds.add(s.id);
-        } else {
-          seenCourseByStudent.set(s.id, s.courseId);
-        }
-      }
-
-      const raw1c = getUserScopedItem(course1cKey);
-      if (raw1c) {
-        const parsed1c = JSON.parse(raw1c);
-        const cleaned1c: Record<string, StudentDispositionData> = {};
-        for (const [sId, data] of Object.entries(parsed1c)) {
-          const entryCourseId = (data as any)?.courseId;
-          if (entryCourseId && entryCourseId !== activeCourse.id) continue;
-          if (!entryCourseId && sharedStudentIds.has(sId)) continue;
-          cleaned1c[sId] = data as StudentDispositionData;
-        }
-        setDispositionMap(cleaned1c);
-      } else {
-        const globalDisp = getAllDispositionStorage().disposition || {};
-        const courseStudentIds = new Set(courseStudents.map((s) => s.id));
-        const filtered: Record<string, StudentDispositionData> = {};
-        for (const [sId, data] of Object.entries(globalDisp)) {
-          if (!courseStudentIds.has(sId)) continue;
-          const entryCourseId = (data as any)?.courseId;
-          if (entryCourseId === activeCourse.id || (!entryCourseId && !sharedStudentIds.has(sId))) {
-            filtered[sId] = data as StudentDispositionData;
-          }
-        }
-        setDispositionMap(filtered);
-      }
-
-      const raw2c = getUserScopedItem(course2cKey);
-      if (raw2c) {
-        const parsed2c = JSON.parse(raw2c);
-        const cleaned2c: Record<string, StudentDispositionData> = {};
-        for (const [sId, data] of Object.entries(parsed2c)) {
-          const entryCourseId = (data as any)?.courseId;
-          if (entryCourseId && entryCourseId !== activeCourse.id) continue;
-          if (!entryCourseId && sharedStudentIds.has(sId)) continue;
-          cleaned2c[sId] = data as StudentDispositionData;
-        }
-        setDispositionMap2c(cleaned2c);
-      } else {
-        const global2cRaw = getUserScopedItem('fds_disposition_data_2c');
-        const global2c = global2cRaw ? JSON.parse(global2cRaw) : {};
-        const courseStudentIds = new Set(courseStudents.map((s) => s.id));
-        const filtered2c: Record<string, StudentDispositionData> = {};
-        for (const [sId, data] of Object.entries(global2c)) {
-          if (!courseStudentIds.has(sId)) continue;
-          const entryCourseId = (data as any)?.courseId;
-          if (entryCourseId === activeCourse.id || (!entryCourseId && !sharedStudentIds.has(sId))) {
-            filtered2c[sId] = data as StudentDispositionData;
-          }
-        }
-        setDispositionMap2c(filtered2c);
-      }
-    } catch (err) {
-      console.warn('Error loading course-specific disposition data:', err);
-    }
-  }, [activeCourse?.id, courseStudents, students]);
-
-  // Calculations for summary pills & history
-  const courseHistory = useMemo(() => {
-    if (!activeCourse) return [];
-    const courseStudentIds = new Set(courseStudents.map((s) => s.id));
-    const relevant = historyList.filter(
-      (h) =>
-        h.courseId === activeCourse.id ||
-        (activeCourse.classroomCourseId && h.courseId === activeCourse.classroomCourseId) ||
-        (!h.courseId && courseStudentIds.has(h.studentId))
-    );
-    return deduplicateHistory(relevant).sort((a, b) => b.timestamp - a.timestamp);
-  }, [historyList, activeCourse, courseStudents]);
 
   const {
     sheetConfig,
@@ -566,8 +475,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     setToastMessage,
   });
 
-  const teacherEmail = user?.email || 'profesor';
-
   const showToastWithTimeout = (msg: string, durationMs = 3500) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), durationMs);
@@ -634,30 +541,6 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     onShowToast: showToastWithTimeout,
   });
 
-  // Sync 2°C disposition map from Firestore
-  useEffect(() => {
-    let isMounted = true;
-    const uid = getActiveUserId();
-    if (uid) {
-      firestoreSync
-        .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
-        .then((cloud2c) => {
-          if (!isMounted || !cloud2c || typeof cloud2c !== 'object' || Object.keys(cloud2c).length === 0) return;
-          setDispositionMap2c((prev) => {
-            const merged = { ...cloud2c, ...prev };
-            try {
-              setUserScopedItem('fds_disposition_data_2c', JSON.stringify(merged));
-            } catch (_) {}
-            return merged;
-          });
-        })
-        .catch(() => {});
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [teacherEmail]);
-
   const {
     isEditingStudentEmail,
     setIsEditingStudentEmail,
@@ -702,7 +585,7 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   const [courseReportModalTab, setCourseReportModalTab] = useState<'course' | 'individual'>('course');
   const [courseReportModalStudentId, setCourseReportModalStudentId] = useState<string>('all');
 
-  // Auto-open modal if specified in URL query params (?openReport=true or ?studentId=...)
+  // Auto-open modal if specified in URL query params (?openReport=true or ?studentId=...) or sessionStorage ('docencia_focus_student_id')
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -719,168 +602,20 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
           setCourseReportModalStudentId(urlStudentId);
         }
         setCourseReportModalOpen(true);
-      } else if (urlStudentId && courseStudents.length > 0) {
-        const target = courseStudents.find((s) => s.id === urlStudentId);
+        return;
+      }
+
+      const focusStudentId = sessionStorage.getItem('docencia_focus_student_id') || urlStudentId;
+      if (focusStudentId && courseStudents.length > 0) {
+        const target = courseStudents.find((s) => s.id === focusStudentId);
         if (target) {
+          sessionStorage.removeItem('docencia_focus_student_id');
+          sessionStorage.removeItem('docencia_focus_student_name');
           setSelectedStudentForProfile(target);
         }
       }
     } catch (_) {}
-  }, [courseStudents]);
-
-  // Listen for storage changes across tabs / modules to update instantly
-  useEffect(() => {
-    const handleStorageChange = (e: any) => {
-      if (e?.detail) {
-        const { disposition, history, term, courseId: eventCourseId } = e.detail;
-        // Only apply disposition map changes if they belong to the active course
-        if (
-          disposition &&
-          typeof disposition === 'object' &&
-          (!eventCourseId || !activeCourse?.id || eventCourseId === activeCourse.id)
-        ) {
-          const filterForCurrentCourse = (incomingMap: Record<string, any>) => {
-            if (!activeCourse?.id) return incomingMap;
-            const res: Record<string, any> = {};
-            for (const [k, val] of Object.entries(incomingMap)) {
-              const entryCourseId = (val as any)?.courseId;
-              if (!entryCourseId || entryCourseId === activeCourse.id) {
-                res[k] = val;
-              }
-            }
-            return res;
-          };
-
-          if (term === '2c') {
-            const scopedDisp = filterForCurrentCourse(disposition);
-            if (Object.keys(scopedDisp).length > 0) {
-              setDispositionMap2c((prev) => ({ ...prev, ...scopedDisp }));
-            }
-          } else if (eventCourseId && eventCourseId === activeCourse?.id) {
-            const scopedDisp = filterForCurrentCourse(disposition);
-            if (Object.keys(scopedDisp).length > 0) {
-              setDispositionMap((prev) => ({ ...prev, ...scopedDisp }));
-            }
-          }
-        }
-        if (Array.isArray(history)) {
-          setHistoryList((prev) => {
-            const incomingDedup = deduplicateHistory(history);
-            if (
-              prev.length === incomingDedup.length &&
-              prev.every((p, i) => p.id === incomingDedup[i]?.id)
-            ) {
-              return prev;
-            }
-            return incomingDedup;
-          });
-        }
-      }
-    };
-    window.addEventListener('docencia_disposition_storage_change', handleStorageChange);
-
-    // Cross-tab real-time sync: when another tab updates attendance/disposition
-    const handleCrossTabStorage = (e: StorageEvent) => {
-      if (!e.key) return;
-      if (
-        e.key.includes('fds_disposition') ||
-        e.key.includes('docencia_disposition') ||
-        e.key.includes('fds_grade')
-      ) {
-        try {
-          const stored = getAllDispositionStorage();
-          if (Array.isArray(stored.history)) {
-            setHistoryList(deduplicateHistory(stored.history));
-          }
-          if (activeCourse?.id) {
-            const raw1c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`);
-            if (raw1c) setDispositionMap(JSON.parse(raw1c));
-            const raw2c = getUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`);
-            if (raw2c) setDispositionMap2c(JSON.parse(raw2c));
-          }
-        } catch (_) {}
-      }
-    };
-    window.addEventListener('storage', handleCrossTabStorage);
-
-    return () => {
-      window.removeEventListener('docencia_disposition_storage_change', handleStorageChange);
-      window.removeEventListener('storage', handleCrossTabStorage);
-    };
-  }, [activeCourse?.id]);
-
-  // Load from Compact v2 Cloud Engine / backend API, keeping localStorage synced (1°C, 2°C & History in a single round-trip)
-  useEffect(() => {
-    let isMounted = true;
-    if (activeCourse?.id) {
-      api
-        .getDisposition(activeCourse.id)
-        .then((res) => {
-          if (!isMounted) return;
-          // Only merge disposition entries that explicitly belong to activeCourse.id
-          if (res.disposition && Object.keys(res.disposition).length > 0) {
-            setDispositionMap((prev) => {
-              const incoming = res.disposition;
-              const next = { ...prev };
-              let hasChanged = false;
-              for (const [k, val] of Object.entries(incoming)) {
-                if ((val as any)?.courseId !== activeCourse.id) continue;
-                if (
-                  !prev[k] ||
-                  prev[k].totalAbsences !== val?.totalAbsences ||
-                  prev[k].totalLates !== val?.totalLates ||
-                  prev[k].totalDisposition !== val?.totalDisposition
-                ) {
-                  next[k] = val;
-                  hasChanged = true;
-                }
-              }
-              return hasChanged ? next : prev;
-            });
-          }
-          if (res.disposition2c && Object.keys(res.disposition2c).length > 0) {
-            setDispositionMap2c((prev) => {
-              const incoming2c = res.disposition2c!;
-              const next = { ...prev };
-              let hasChanged = false;
-              for (const [k, val] of Object.entries(incoming2c)) {
-                if ((val as any)?.courseId !== activeCourse.id) continue;
-                if (
-                  !prev[k] ||
-                  prev[k].totalAbsences !== val?.totalAbsences ||
-                  prev[k].totalLates !== val?.totalLates ||
-                  prev[k].totalDisposition !== val?.totalDisposition
-                ) {
-                  next[k] = val;
-                  hasChanged = true;
-                }
-              }
-              return hasChanged ? next : prev;
-            });
-          }
-          if (Array.isArray(res.history)) {
-            const deleted = getDeletedHistoryIds();
-            const cleanIncoming = res.history.filter((h) => h?.id && !deleted.has(h.id));
-            setHistoryList((prev) => {
-              const cleanPrev = prev.filter((h) => h?.id && !deleted.has(h.id));
-              const prevIds = new Set(cleanPrev.map((p) => p.id));
-              const genuinelyNewFromCloud = cleanIncoming.filter((ci) => !prevIds.has(ci.id));
-              if (genuinelyNewFromCloud.length > 0) {
-                return deduplicateHistory([...cleanPrev, ...genuinelyNewFromCloud]);
-              }
-              if (cleanPrev.length === 0 && cleanIncoming.length > 0) {
-                return deduplicateHistory(cleanIncoming);
-              }
-              return cleanPrev;
-            });
-          }
-        })
-        .catch(() => {});
-    }
-    return () => {
-      isMounted = false;
-    };
-  }, [activeCourse?.id]);
+  }, [courseStudents, setSelectedStudentForProfile]);
 
   const filteredStudents = courseStudents.filter((s) =>
     `${s.firstName} ${s.lastName} ${s.email}`.toLowerCase().includes(searchQuery.toLowerCase())
@@ -909,15 +644,14 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
     saveCourseAttendanceSettings(activeCourse.id, newSettings);
     setAttendanceSettings(newSettings);
     if (updatedSchedule && updatedSchedule !== activeCourse.schedule) {
-      activeCourse.schedule = updatedSchedule;
-      fetch(`/api/courses/${encodeURIComponent(activeCourse.id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ schedule: updatedSchedule }),
-      }).catch(() => {});
+      api
+        .updateCourse(activeCourse.id, { schedule: updatedSchedule })
+        .then(() => {
+          onRefreshData?.();
+        })
+        .catch(() => {});
     }
     setToastMessage('¡Parámetros del semáforo y semanas guardados exitosamente!');
-    setTimeout(() => setToastMessage(null), 3500);
   };
 
   const {
@@ -1822,6 +1556,22 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
         onRefreshData={onRefreshData}
       />
 
+      <SelectiveStudentSyncModal
+        isOpen={isSelectiveSyncModalOpen}
+        onClose={() => setIsSelectiveSyncModalOpen(false)}
+        targetCourse={activeCourse || null}
+        allCourses={courses}
+        token={token}
+        userEmail={user?.email}
+        onLoginWithGoogle={loginWithGoogle}
+        isDarkMode={isDarkMode}
+        onSyncCompleted={(msg) => {
+          onRefreshData();
+          setToastMessage(msg);
+          setTimeout(() => setToastMessage(null), 4500);
+        }}
+      />
+
       {/* ------------------------------------------------------------- */}
       {/* MODAL 1: SINCRONIZAR / SELECCIONAR CON GOOGLE CALENDAR        */}
       {/* ------------------------------------------------------------- */}
@@ -2184,4 +1934,11 @@ export const ClassesModule: React.FC<ClassesModuleProps> = ({
   );
 };
 
+export const ClassesModule = React.memo(
+  ClassesModuleComponent,
+  areClassesModulePropsEqual
+);
+ClassesModule.displayName = 'ClassesModule';
+
 export default ClassesModule;
+

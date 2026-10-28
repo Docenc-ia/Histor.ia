@@ -21,6 +21,12 @@ import {
 import { useWorkspaceAuth } from '../context/WorkspaceAuthContext';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 import { getUserStorageKey } from '../services/api';
+import {
+  getCourseCachedItem,
+  setCourseCachedItem,
+  touchCourseDataLru,
+  capCourseHistoryEntries,
+} from '../utils/lruCourseCache';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -58,8 +64,8 @@ export function useGradebookSync({
     if (typeof window !== 'undefined') {
       try {
         const saved =
-          localStorage.getItem(getCatKey('1c')) ||
-          localStorage.getItem(`fds_grades_categories_${courseId}`);
+          getCourseCachedItem(courseId, getCatKey('1c')) ||
+          getCourseCachedItem(courseId, `fds_grades_categories_${courseId}`);
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -71,8 +77,8 @@ export function useGradebookSync({
     if (typeof window !== 'undefined') {
       try {
         const saved =
-          localStorage.getItem(getGradesKey('1c')) ||
-          localStorage.getItem(`fds_grades_data_${courseId}`);
+          getCourseCachedItem(courseId, getGradesKey('1c')) ||
+          getCourseCachedItem(courseId, `fds_grades_data_${courseId}`);
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -84,8 +90,8 @@ export function useGradebookSync({
     if (typeof window !== 'undefined') {
       try {
         const saved =
-          localStorage.getItem(getCalcKey('1c')) ||
-          localStorage.getItem(`fds_grades_final_calc_${courseId}`);
+          getCourseCachedItem(courseId, getCalcKey('1c')) ||
+          getCourseCachedItem(courseId, `fds_grades_final_calc_${courseId}`);
         if (saved === 'manual_final' || saved === 'average_of_categories') return saved;
       } catch (_) {}
     }
@@ -96,7 +102,7 @@ export function useGradebookSync({
   const [categories2c, setCategories2c] = useState<GradeCategory[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getCatKey('2c'));
+        const saved = getCourseCachedItem(courseId, getCatKey('2c'));
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -111,7 +117,7 @@ export function useGradebookSync({
   const [gradesMap2c, setGradesMap2c] = useState<StudentGradesMap>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getGradesKey('2c'));
+        const saved = getCourseCachedItem(courseId, getGradesKey('2c'));
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -122,7 +128,7 @@ export function useGradebookSync({
   const [overallCalc2c, setOverallCalc2c] = useState<'average_of_categories' | 'manual_final'>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getCalcKey('2c'));
+        const saved = getCourseCachedItem(courseId, getCalcKey('2c'));
         if (saved === 'manual_final' || saved === 'average_of_categories') return saved;
       } catch (_) {}
     }
@@ -133,7 +139,7 @@ export function useGradebookSync({
   const [annualOverrides, setAnnualOverrides] = useState<Record<string, string>>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(STORAGE_KEY_ANNUAL_OVERRIDES);
+        const saved = getCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES);
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -144,7 +150,7 @@ export function useGradebookSync({
   const [preliminaryValuation1c, setPreliminaryValuation1c] = useState<PreliminaryValuationRecord | null>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getPreliminaryValuationKey('1c'));
+        const saved = getCourseCachedItem(courseId, getPreliminaryValuationKey('1c'));
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -154,7 +160,7 @@ export function useGradebookSync({
   const [preliminaryValuation2c, setPreliminaryValuation2c] = useState<PreliminaryValuationRecord | null>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getPreliminaryValuationKey('2c'));
+        const saved = getCourseCachedItem(courseId, getPreliminaryValuationKey('2c'));
         if (saved) return JSON.parse(saved);
       } catch (_) {}
     }
@@ -164,12 +170,112 @@ export function useGradebookSync({
   const [gradeHistory, setGradeHistory] = useState<GradeHistoryEntry[]>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const saved = localStorage.getItem(getUserStorageKey(`fds_grade_history_${courseId}`));
-        if (saved) return JSON.parse(saved);
+        const saved = getCourseCachedItem(courseId, getUserStorageKey(`fds_grade_history_${courseId}`));
+        if (saved) return capCourseHistoryEntries(JSON.parse(saved));
       } catch (_) {}
     }
     return [];
   });
+
+  // Re-hydrate local gradebook state immediately when switching courseId so previous course grades never leak
+  const prevCourseIdRef = useRef(courseId);
+  useEffect(() => {
+    if (courseId) {
+      touchCourseDataLru(courseId);
+    }
+    if (prevCourseIdRef.current === courseId) return;
+    prevCourseIdRef.current = courseId;
+    if (typeof window === 'undefined') return;
+
+    try {
+      const savedCat1 =
+        getCourseCachedItem(courseId, getCatKey('1c')) ||
+        getCourseCachedItem(courseId, `fds_grades_categories_${courseId}`);
+      setCategories1c(savedCat1 ? JSON.parse(savedCat1) : DEFAULT_CATEGORIES);
+    } catch (_) {
+      setCategories1c(DEFAULT_CATEGORIES);
+    }
+
+    try {
+      const savedGrades1 =
+        getCourseCachedItem(courseId, getGradesKey('1c')) ||
+        getCourseCachedItem(courseId, `fds_grades_data_${courseId}`);
+      setGradesMap1c(savedGrades1 ? JSON.parse(savedGrades1) : {});
+    } catch (_) {
+      setGradesMap1c({});
+    }
+
+    try {
+      const savedCalc1 =
+        getCourseCachedItem(courseId, getCalcKey('1c')) ||
+        getCourseCachedItem(courseId, `fds_grades_final_calc_${courseId}`);
+      setOverallCalc1c(
+        savedCalc1 === 'average_of_categories' || savedCalc1 === 'manual_final'
+          ? savedCalc1
+          : 'manual_final'
+      );
+    } catch (_) {
+      setOverallCalc1c('manual_final');
+    }
+
+    const default2cCats = DEFAULT_CATEGORIES.map((cat) => ({
+      ...cat,
+      id: `c2-${cat.id}`,
+      subcategories: cat.subcategories.map((sub) => ({ ...sub, id: `c2-${sub.id}` })),
+    }));
+    try {
+      const savedCat2 = getCourseCachedItem(courseId, getCatKey('2c'));
+      setCategories2c(savedCat2 ? JSON.parse(savedCat2) : default2cCats);
+    } catch (_) {
+      setCategories2c(default2cCats);
+    }
+
+    try {
+      const savedGrades2 = getCourseCachedItem(courseId, getGradesKey('2c'));
+      setGradesMap2c(savedGrades2 ? JSON.parse(savedGrades2) : {});
+    } catch (_) {
+      setGradesMap2c({});
+    }
+
+    try {
+      const savedCalc2 = getCourseCachedItem(courseId, getCalcKey('2c'));
+      setOverallCalc2c(
+        savedCalc2 === 'average_of_categories' || savedCalc2 === 'manual_final'
+          ? savedCalc2
+          : 'manual_final'
+      );
+    } catch (_) {
+      setOverallCalc2c('manual_final');
+    }
+
+    try {
+      const savedOverrides = getCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES);
+      setAnnualOverrides(savedOverrides ? JSON.parse(savedOverrides) : {});
+    } catch (_) {
+      setAnnualOverrides({});
+    }
+
+    try {
+      const savedPv1 = getCourseCachedItem(courseId, getPreliminaryValuationKey('1c'));
+      setPreliminaryValuation1c(savedPv1 ? JSON.parse(savedPv1) : null);
+    } catch (_) {
+      setPreliminaryValuation1c(null);
+    }
+
+    try {
+      const savedPv2 = getCourseCachedItem(courseId, getPreliminaryValuationKey('2c'));
+      setPreliminaryValuation2c(savedPv2 ? JSON.parse(savedPv2) : null);
+    } catch (_) {
+      setPreliminaryValuation2c(null);
+    }
+
+    try {
+      const savedHist = getCourseCachedItem(courseId, getUserStorageKey(`fds_grade_history_${courseId}`));
+      setGradeHistory(savedHist ? capCourseHistoryEntries(JSON.parse(savedHist)) : []);
+    } catch (_) {
+      setGradeHistory([]);
+    }
+  }, [courseId]);
 
   const [isSavingSheets, setIsSavingSheets] = useState(false);
   const [sheetsSavedInfo, setSheetsSavedInfo] = useState<{
@@ -204,9 +310,7 @@ export function useGradebookSync({
     if (!userId || !courseId) return;
     const nowIso = new Date().toISOString();
     if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(getTermUpdatedAtKey(term), nowIso);
-      } catch (_) {}
+      setCourseCachedItem(courseId, getTermUpdatedAtKey(term), nowIso);
     }
     const timerKey = `grades_${courseId}_${term}`;
     if (cloudSyncTimerRef.current[timerKey]) {
@@ -330,10 +434,10 @@ export function useGradebookSync({
             gradesToSync = pullRes.updatedGradesMap;
             if (is2c) {
               setGradesMap2c(gradesToSync);
-              localStorage.setItem(getGradesKey('2c'), JSON.stringify(gradesToSync));
+              setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(gradesToSync));
             } else {
               setGradesMap1c(gradesToSync);
-              localStorage.setItem(getGradesKey('1c'), JSON.stringify(gradesToSync));
+              setCourseCachedItem(courseId, getGradesKey('1c'), JSON.stringify(gradesToSync));
             }
           }
         } catch (pullErr) {
@@ -353,7 +457,8 @@ export function useGradebookSync({
       );
 
       if (res.isLiveGoogle && isRealGoogleSpreadsheetId(res.spreadsheetId) && typeof window !== 'undefined') {
-        localStorage.setItem(
+        setCourseCachedItem(
+          courseId,
           `fds_grades_sheet_${courseId}`,
           JSON.stringify({
             spreadsheetId: res.spreadsheetId,
@@ -394,15 +499,16 @@ export function useGradebookSync({
     if (is2c) {
       setCategories2c(newCategories);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('2c'), JSON.stringify(newCategories));
+        setCourseCachedItem(courseId, getCatKey('2c'), JSON.stringify(newCategories));
       }
       persistTermSnapshotToCloud('2c', newCategories, gradesMap2c);
       enqueueBackgroundSheetsSync('2c', newCategories, gradesMap2c);
     } else {
       setCategories1c(newCategories);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('1c'), JSON.stringify(newCategories));
-        localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(newCategories));
+        const serialized = JSON.stringify(newCategories);
+        setCourseCachedItem(courseId, getCatKey('1c'), serialized);
+        setCourseCachedItem(courseId, `fds_grades_categories_${courseId}`, serialized);
       }
       persistTermSnapshotToCloud('1c', newCategories, gradesMap1c);
       enqueueBackgroundSheetsSync('1c', newCategories, gradesMap1c);
@@ -413,15 +519,16 @@ export function useGradebookSync({
     if (is2c) {
       setGradesMap2c(newGrades);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getGradesKey('2c'), JSON.stringify(newGrades));
+        setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(newGrades));
       }
       persistTermSnapshotToCloud('2c', categories2c, newGrades);
       enqueueBackgroundSheetsSync('2c', categories2c, newGrades);
     } else {
       setGradesMap1c(newGrades);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getGradesKey('1c'), JSON.stringify(newGrades));
-        localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(newGrades));
+        const serialized = JSON.stringify(newGrades);
+        setCourseCachedItem(courseId, getGradesKey('1c'), serialized);
+        setCourseCachedItem(courseId, `fds_grades_data_${courseId}`, serialized);
       }
       persistTermSnapshotToCloud('1c', categories1c, newGrades);
       enqueueBackgroundSheetsSync('1c', categories1c, newGrades);
@@ -432,14 +539,14 @@ export function useGradebookSync({
     if (is2c) {
       setOverallCalc2c(type);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCalcKey('2c'), type);
+        setCourseCachedItem(courseId, getCalcKey('2c'), type);
       }
       persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { overallCalc: type });
     } else {
       setOverallCalc1c(type);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCalcKey('1c'), type);
-        localStorage.setItem(`fds_grades_final_calc_${courseId}`, type);
+        setCourseCachedItem(courseId, getCalcKey('1c'), type);
+        setCourseCachedItem(courseId, `fds_grades_final_calc_${courseId}`, type);
       }
       persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { overallCalc: type });
     }
@@ -454,7 +561,7 @@ export function useGradebookSync({
     }
     setAnnualOverrides(updated);
     if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(updated));
+      setCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(updated));
     }
     persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { annualOverrides: updated });
   };
@@ -475,13 +582,13 @@ export function useGradebookSync({
     if (is2c) {
       setPreliminaryValuation2c(record);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(record));
+        setCourseCachedItem(courseId, getPreliminaryValuationKey('2c'), JSON.stringify(record));
       }
       persistTermSnapshotToCloud('2c', categories2c, gradesMap2c, { preliminaryValuation: record });
     } else {
       setPreliminaryValuation1c(record);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(record));
+        setCourseCachedItem(courseId, getPreliminaryValuationKey('1c'), JSON.stringify(record));
       }
       persistTermSnapshotToCloud('1c', categories1c, gradesMap1c, { preliminaryValuation: record });
     }
@@ -531,10 +638,14 @@ export function useGradebookSync({
 
     saveGrades(currentTargetGrades);
 
-    const updatedHistory = [data.historyEntry, ...gradeHistory];
+    const updatedHistory = capCourseHistoryEntries([data.historyEntry, ...gradeHistory]);
     setGradeHistory(updatedHistory);
     if (typeof window !== 'undefined') {
-      localStorage.setItem(getUserStorageKey(`fds_grade_history_${courseId}`), JSON.stringify(updatedHistory));
+      setCourseCachedItem(
+        courseId,
+        getUserStorageKey(`fds_grade_history_${courseId}`),
+        JSON.stringify(updatedHistory)
+      );
     }
 
     const userId = getActiveUserId();
@@ -564,23 +675,24 @@ export function useGradebookSync({
       setCategories2c(payload.updatedCategories);
       setGradesMap2c(payload.updatedGradesMap);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('2c'), JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(getGradesKey('2c'), JSON.stringify(payload.updatedGradesMap));
+        setCourseCachedItem(courseId, getCatKey('2c'), JSON.stringify(payload.updatedCategories));
+        setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(payload.updatedGradesMap));
       }
     } else {
       setCategories1c(payload.updatedCategories);
       setGradesMap1c(payload.updatedGradesMap);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(getCatKey('1c'), JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(getGradesKey('1c'), JSON.stringify(payload.updatedGradesMap));
+        setCourseCachedItem(courseId, getCatKey('1c'), JSON.stringify(payload.updatedCategories));
+        setCourseCachedItem(courseId, getGradesKey('1c'), JSON.stringify(payload.updatedGradesMap));
       }
     }
 
     if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
-      const updatedHistory = [...payload.historyEntries, ...gradeHistory];
+      const updatedHistory = capCourseHistoryEntries([...payload.historyEntries, ...gradeHistory]);
       setGradeHistory(updatedHistory);
       if (typeof window !== 'undefined') {
-        localStorage.setItem(
+        setCourseCachedItem(
+          courseId,
           getUserStorageKey(`fds_grade_history_${courseId}`),
           JSON.stringify(updatedHistory)
         );
@@ -632,15 +744,19 @@ export function useGradebookSync({
 
         const snap1c = snapshots['1c'];
         if (snap1c) {
-          const local1cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('1c')) || '' : '';
+          const local1cUpdated =
+            typeof window !== 'undefined'
+              ? getCourseCachedItem(courseId, getTermUpdatedAtKey('1c')) || ''
+              : '';
           const isCloud1cNewer = !local1cUpdated || !snap1c.updatedAt || snap1c.updatedAt >= local1cUpdated;
 
           if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
             setCategories1c((prev) => {
-              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('1c'));
+              const hasLocal =
+                typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('1c'));
               if (!hasLocal || prev === DEFAULT_CATEGORIES || isCloud1cNewer) {
                 if (typeof window !== 'undefined') {
-                  localStorage.setItem(getCatKey('1c'), JSON.stringify(snap1c.categories));
+                  setCourseCachedItem(courseId, getCatKey('1c'), JSON.stringify(snap1c.categories));
                 }
                 return snap1c.categories;
               }
@@ -651,7 +767,7 @@ export function useGradebookSync({
             setGradesMap1c((prev) => {
               const merged = isCloud1cNewer ? { ...prev, ...snap1c.gradesMap } : { ...snap1c.gradesMap, ...prev };
               if (typeof window !== 'undefined') {
-                localStorage.setItem(getGradesKey('1c'), JSON.stringify(merged));
+                setCourseCachedItem(courseId, getGradesKey('1c'), JSON.stringify(merged));
               }
               return merged;
             });
@@ -660,7 +776,7 @@ export function useGradebookSync({
             setPreliminaryValuation1c((prev) => {
               const val = isCloud1cNewer ? snap1c.preliminaryValuation : prev || snap1c.preliminaryValuation;
               if (typeof window !== 'undefined' && val) {
-                localStorage.setItem(getPreliminaryValuationKey('1c'), JSON.stringify(val));
+                setCourseCachedItem(courseId, getPreliminaryValuationKey('1c'), JSON.stringify(val));
               }
               return val;
             });
@@ -671,29 +787,31 @@ export function useGradebookSync({
                 ? { ...prev, ...snap1c.annualOverrides }
                 : { ...snap1c.annualOverrides, ...prev };
               if (typeof window !== 'undefined') {
-                localStorage.setItem(STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
+                setCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
               }
               return merged;
             });
           }
           if (snap1c.updatedAt && isCloud1cNewer && typeof window !== 'undefined') {
-            try {
-              localStorage.setItem(getTermUpdatedAtKey('1c'), snap1c.updatedAt);
-            } catch (_) {}
+            setCourseCachedItem(courseId, getTermUpdatedAtKey('1c'), snap1c.updatedAt);
           }
         }
 
         const snap2c = snapshots['2c'];
         if (snap2c) {
-          const local2cUpdated = typeof window !== 'undefined' ? localStorage.getItem(getTermUpdatedAtKey('2c')) || '' : '';
+          const local2cUpdated =
+            typeof window !== 'undefined'
+              ? getCourseCachedItem(courseId, getTermUpdatedAtKey('2c')) || ''
+              : '';
           const isCloud2cNewer = !local2cUpdated || !snap2c.updatedAt || snap2c.updatedAt >= local2cUpdated;
 
           if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
             setCategories2c((prev) => {
-              const hasLocal = typeof window !== 'undefined' && !!localStorage.getItem(getCatKey('2c'));
+              const hasLocal =
+                typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('2c'));
               if (!hasLocal || isCloud2cNewer) {
                 if (typeof window !== 'undefined') {
-                  localStorage.setItem(getCatKey('2c'), JSON.stringify(snap2c.categories));
+                  setCourseCachedItem(courseId, getCatKey('2c'), JSON.stringify(snap2c.categories));
                 }
                 return snap2c.categories;
               }
@@ -704,7 +822,7 @@ export function useGradebookSync({
             setGradesMap2c((prev) => {
               const merged = isCloud2cNewer ? { ...prev, ...snap2c.gradesMap } : { ...snap2c.gradesMap, ...prev };
               if (typeof window !== 'undefined') {
-                localStorage.setItem(getGradesKey('2c'), JSON.stringify(merged));
+                setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(merged));
               }
               return merged;
             });
@@ -713,15 +831,13 @@ export function useGradebookSync({
             setPreliminaryValuation2c((prev) => {
               const val = isCloud2cNewer ? snap2c.preliminaryValuation : prev || snap2c.preliminaryValuation;
               if (typeof window !== 'undefined' && val) {
-                localStorage.setItem(getPreliminaryValuationKey('2c'), JSON.stringify(val));
+                setCourseCachedItem(courseId, getPreliminaryValuationKey('2c'), JSON.stringify(val));
               }
               return val;
             });
           }
           if (snap2c.updatedAt && isCloud2cNewer && typeof window !== 'undefined') {
-            try {
-              localStorage.setItem(getTermUpdatedAtKey('2c'), snap2c.updatedAt);
-            } catch (_) {}
+            setCourseCachedItem(courseId, getTermUpdatedAtKey('2c'), snap2c.updatedAt);
           }
         }
       })

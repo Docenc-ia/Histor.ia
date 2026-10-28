@@ -30,6 +30,8 @@ import {
   isPayloadDirty,
   markPayloadSynced,
   removeFingerprintPrefix,
+  BatchOperation,
+  commitBatchOperationsInChunks,
 } from './firestoreClient';
 
 let coursesReadCache: { userId: string; timestamp: number; data: Course[] } | null = null;
@@ -80,7 +82,7 @@ export const coursesAndStudentsRepo = {
   },
 
   /**
-   * Save courses to Firestore using Incremental Dirty-Tracking
+   * Save courses to Firestore using Compact v2 Document (1 write instead of N+1 writes)
    */
   async saveCourses(userId: string, courses: Course[]): Promise<void> {
     if (!userId || !Array.isArray(courses) || !isFirestoreAvailable()) return;
@@ -116,24 +118,6 @@ export const coursesAndStudentsRepo = {
             );
             opsCount++;
             pendingMarks.push({ key: compactKey, fp: compactCheck.fingerprint });
-          }
-
-          for (const course of cleanCourses) {
-            const itemKey = `course_doc:${uid}:${course.id}`;
-            const itemCheck = isPayloadDirty(itemKey, course);
-            if (!itemCheck.dirty) continue;
-
-            const ref = doc(targetDb, 'users', uid, 'courses', course.id);
-            batch.set(
-              ref,
-              sanitizeForFirestore({
-                ...course,
-                updatedAt: nowIso,
-              }),
-              { merge: true }
-            );
-            opsCount++;
-            pendingMarks.push({ key: itemKey, fp: itemCheck.fingerprint });
           }
         }
 
@@ -392,11 +376,11 @@ export const coursesAndStudentsRepo = {
         try {
           const snap = await executeWithTimeout(getDocs(collection(targetDb, 'users', uid, 'courses')));
           if (!snap || snap.empty) continue;
-          const batch = writeBatch(targetDb);
+          const deleteOps: BatchOperation[] = [];
           snap.forEach((docSnap: any) => {
-            batch.delete(docSnap.ref);
+            deleteOps.push({ type: 'delete', ref: docSnap.ref });
           });
-          await executeWithTimeout(batch.commit());
+          await commitBatchOperationsInChunks(targetDb, deleteOps);
         } catch (_) {}
       }
     }
@@ -404,6 +388,7 @@ export const coursesAndStudentsRepo = {
 
   /**
    * Save students roster for a course to Firestore globally using Incremental Dirty-Tracking
+   * and per-course sharding + chunked batching to scale safely beyond 500 students and 1 MB doc limits.
    */
   async saveStudents(userId: string, courseId: string, students: Student[]): Promise<void> {
     if (!userId || !courseId || !Array.isArray(students) || !isFirestoreAvailable()) return;
@@ -446,19 +431,35 @@ export const coursesAndStudentsRepo = {
         currentStudentsMap.delete(compKey);
       }
     }
+    const normalizedCourseStudents: Student[] = [];
     for (const st of students) {
       if (st?.id) {
-        currentStudentsMap.set(makeCompositeKey(courseId, st.id), { ...st, courseId });
+        const normalized = { ...st, courseId };
+        currentStudentsMap.set(makeCompositeKey(courseId, st.id), normalized);
+        normalizedCourseStudents.push(normalized);
       }
     }
 
     const fullCleanStudents = Array.from(currentStudentsMap.values());
     studentsReadCache = { userId, timestamp: Date.now(), data: fullCleanStudents };
 
+    const safeCourseDocKey = String(courseId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 96);
+    const courseShardCore = {
+      version: 2,
+      courseId,
+      items: normalizedCourseStudents,
+    };
+    const courseShardPayload = sanitizeForFirestore({
+      ...courseShardCore,
+      updatedAt: nowIso,
+    });
+
+    // Only include full roster in global compact document if under 450 students to stay well below Firestore's 1 MB limit
     const compactCore = {
       version: 2,
       migratedFromLegacy: true,
-      items: fullCleanStudents,
+      shardedByCourse: fullCleanStudents.length > 450,
+      items: fullCleanStudents.length <= 450 ? fullCleanStudents : [],
     };
     const compactPayload = sanitizeForFirestore({
       ...compactCore,
@@ -467,50 +468,61 @@ export const coursesAndStudentsRepo = {
 
     for (const targetDb of ALL_DBS) {
       try {
-        const batch = writeBatch(targetDb);
-        let opsCount = 0;
-        const pendingMarks: Array<{ key: string; fp: string }> = [];
+        const operations: BatchOperation[] = [];
 
         for (const uid of writeIds) {
+          // 1. Per-course compact shard (scales indefinitely across any number of courses)
+          const shardKey = `students_course_shard:${uid}:${safeCourseDocKey}`;
+          const shardCheck = isPayloadDirty(shardKey, courseShardCore);
+          if (shardCheck.dirty) {
+            operations.push({
+              type: 'set',
+              ref: doc(targetDb, 'users', uid, 'settings', `students_course_${safeCourseDocKey}_v2`),
+              data: { value: courseShardPayload, updatedAt: nowIso },
+              merge: true,
+              fingerprintKey: shardKey,
+              fingerprint: shardCheck.fingerprint,
+            });
+          }
+
+          // 2. Global compact v2 document (when total roster fits safely under 1MB)
           const compactKey = `students_compact:${uid}`;
           const compactCheck = isPayloadDirty(compactKey, compactCore);
           if (compactCheck.dirty) {
-            batch.set(
-              doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
-              { value: compactPayload, updatedAt: nowIso },
-              { merge: true }
-            );
-            opsCount++;
-            pendingMarks.push({ key: compactKey, fp: compactCheck.fingerprint });
+            operations.push({
+              type: 'set',
+              ref: doc(targetDb, 'users', uid, 'settings', 'students_compact_v2'),
+              data: { value: compactPayload, updatedAt: nowIso },
+              merge: true,
+              fingerprintKey: compactKey,
+              fingerprint: compactCheck.fingerprint,
+            });
           }
 
-          for (const st of students) {
-            if (!st?.id) continue;
-            const normalizedStudent = { ...st, courseId };
-            const itemKey = `student_doc:${uid}:${courseId}:${st.id}`;
+          // 3. Individual dirty student documents (chunked automatically in 450-op batches)
+          for (const normalizedStudent of normalizedCourseStudents) {
+            const itemKey = `student_doc:${uid}:${courseId}:${normalizedStudent.id}`;
             const itemCheck = isPayloadDirty(itemKey, normalizedStudent);
             if (!itemCheck.dirty) continue;
 
-            const safeDocId = `${courseId}_${st.id}`.replace(/[/\\]/g, '_');
+            const safeDocId = `${courseId}_${normalizedStudent.id}`.replace(/[/\\]/g, '_');
             const ref = doc(targetDb, 'users', uid, 'students', safeDocId);
-            batch.set(
+            operations.push({
+              type: 'set',
               ref,
-              sanitizeForFirestore({
+              data: sanitizeForFirestore({
                 ...normalizedStudent,
                 updatedAt: nowIso,
               }),
-              { merge: true }
-            );
-            opsCount++;
-            pendingMarks.push({ key: itemKey, fp: itemCheck.fingerprint });
+              merge: true,
+              fingerprintKey: itemKey,
+              fingerprint: itemCheck.fingerprint,
+            });
           }
         }
 
-        if (opsCount > 0) {
-          const res = await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
-          if (res !== null) {
-            pendingMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
-          }
+        if (operations.length > 0) {
+          await commitBatchOperationsInChunks(targetDb, operations, FIRESTORE_TIMEOUT_MS, true);
         }
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/students_compact_v2`);
@@ -557,7 +569,7 @@ export const coursesAndStudentsRepo = {
         const raw = snap.data();
         const val = raw?.value || raw;
         const items = Array.isArray(val?.items) ? val.items : [];
-        if (val?.migratedFromLegacy || items.length > 0) {
+        if ((val?.migratedFromLegacy && !val?.shardedByCourse) || items.length > 0) {
           hasMigratedDoc = true;
         }
         for (const s of items) {

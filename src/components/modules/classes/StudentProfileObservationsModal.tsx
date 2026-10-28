@@ -106,7 +106,10 @@ export const StudentProfileObservationsModal: React.FC<StudentProfileObservation
 
   if (!selectedStudentForProfile) return null;
 
-  const currentObservations = studentObservations[selectedStudentForProfile.id] || [];
+  const targetCourseId = activeCourse?.id || selectedStudentForProfile.courseId;
+  const currentObservations = (studentObservations[selectedStudentForProfile.id] || []).filter(
+    (obs) => !obs.courseId || !targetCourseId || obs.courseId === targetCourseId
+  );
 
   const handleApplyTag = (tag: string) => {
     setSelectedTag(tag);

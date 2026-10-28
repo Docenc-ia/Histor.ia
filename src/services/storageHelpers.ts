@@ -28,19 +28,77 @@ export const STORAGE_KEYS = {
   DISPOSITION_HISTORY: 'docencia_disposition_history',
 };
 
+const MAX_DISPOSITION_HISTORY_ITEMS = 2500;
+const MAX_DELETED_HISTORY_IDS = 1500;
+const LEGACY_MIGRATED_SESSION_USERS = new Set<string>();
+
 export function getUserStorageKey(baseKey: string): string {
   const userId = getActiveUserId();
   return userId ? `${baseKey}_${userId}` : baseKey;
 }
 
+/**
+ * Runs at most once per user session to migrate any legacy owner keys into canonical
+ * user-scoped keys, eliminating O(localStorage.length) scans on runtime reads.
+ */
+function ensureLegacyOwnerStorageMigrated(userId: string): void {
+  if (typeof window === 'undefined' || !isPrimaryOwnerAccount()) return;
+  const migrationTag = userId || '__owner__';
+  if (LEGACY_MIGRATED_SESSION_USERS.has(migrationTag)) return;
+  LEGACY_MIGRATED_SESSION_USERS.add(migrationTag);
+
+  try {
+    const coursesKey = getUserStorageKey(STORAGE_KEYS.COURSES);
+    if (!localStorage.getItem(coursesKey)) {
+      const fallbackCourses =
+        localStorage.getItem(STORAGE_KEYS.COURSES) ||
+        localStorage.getItem('docencia_persisted_courses');
+      if (fallbackCourses) {
+        safeSetLocalStorageItem(coursesKey, fallbackCourses);
+      }
+    }
+
+    const studentsKey = getUserStorageKey(STORAGE_KEYS.STUDENTS);
+    if (!localStorage.getItem(studentsKey)) {
+      const fallbackStudents =
+        localStorage.getItem(STORAGE_KEYS.STUDENTS) ||
+        localStorage.getItem('docencia_persisted_students');
+      if (fallbackStudents) {
+        safeSetLocalStorageItem(studentsKey, fallbackStudents);
+      }
+    }
+  } catch (_) {}
+}
+
+function getCourseSubjectSignature(c: Partial<Course>): string {
+  if (!c) return '';
+  const rawName = (c.name || '').trim();
+  const parenMatch = rawName.match(/^([^(]+?)\s*\(([^)]+)\)$/);
+  const baseFromName = parenMatch ? parenMatch[1].trim() : rawName;
+  const sub = (c.subject || '').trim();
+  const chosen = (baseFromName || sub)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return chosen;
+}
+
 export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
   if (!c) return '';
+  const subjSig = getCourseSubjectSignature(c);
+  const yearSuffix = c.schoolYear && String(c.schoolYear).trim() && String(c.schoolYear).trim() !== '2026'
+    ? `:yr${String(c.schoolYear).trim()}`
+    : '';
+
   if (
     c.classroomCourseId &&
     !c.classroomCourseId.startsWith('gc-') &&
     !isNaN(Number(c.classroomCourseId))
   ) {
-    return `classroom:${String(c.classroomCourseId).trim()}`;
+    const cleanClassroomId = String(c.classroomCourseId).trim();
+    return (subjSig ? `classroom:${cleanClassroomId}:${subjSig}` : `classroom:${cleanClassroomId}`) + yearSuffix;
   }
 
   const label = formatCourseSidebarLabel(c as Course)
@@ -55,13 +113,13 @@ export function normalizeCourseCanonicalKey(c: Partial<Course>): string {
 
   const paren = name.match(/^([^(]+?)\s*\(([^)]+)\)$/);
   if (paren) {
-    return `name:${paren[1].trim()}:${paren[2].trim()}`;
+    return `name:${paren[1].trim()}:${paren[2].trim()}${yearSuffix}`;
   }
   if (label && label.includes('(')) {
-    return `label:${label}`;
+    return `label:${label}${yearSuffix}`;
   }
   const groupKey = div || meaningfulSec || grade || sec || 'main';
-  return `name:${name || sub}:${sub || name}:${groupKey}`;
+  return `name:${name || sub}:${sub || name}:${groupKey}${yearSuffix}`;
 }
 
 export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolean {
@@ -69,8 +127,36 @@ export function areCoursesSame(c1: Partial<Course>, c2: Partial<Course>): boolea
   if (c1 === c2) return true;
   if (c1.id && c2.id && String(c1.id).trim() === String(c2.id).trim()) return true;
 
+  // Courses explicitly belonging to two different school years (e.g., 2026 vs 2027) are never the same course
+  const y1 = c1.schoolYear ? String(c1.schoolYear).trim() : '';
+  const y2 = c2.schoolYear ? String(c2.schoolYear).trim() : '';
+  if (y1 && y2 && y1 !== y2) {
+    return false;
+  }
+
+  const sig1 = getCourseSubjectSignature(c1);
+  const sig2 = getCourseSubjectSignature(c2);
+  // Two distinct subjects (e.g., Filosofía vs Historia in the same division/Classroom) are NEVER the same course
+  if (sig1 && sig2 && sig1 !== sig2) {
+    return false;
+  }
+
   const id1 = c1.classroomCourseId ? String(c1.classroomCourseId).trim() : null;
   const id2 = c2.classroomCourseId ? String(c2.classroomCourseId).trim() : null;
+
+  // If both have distinct primary IDs and neither primary ID is the other's classroomCourseId,
+  // check that their labels/divisions also match before treating them as the same course.
+  if (
+    c1.id &&
+    c2.id &&
+    String(c1.id).trim() !== String(c2.id).trim() &&
+    String(c1.id).trim() !== id2 &&
+    String(c2.id).trim() !== id1
+  ) {
+    const k1 = normalizeCourseCanonicalKey(c1);
+    const k2 = normalizeCourseCanonicalKey(c2);
+    return Boolean(k1 && k2 && k1 === k2);
+  }
 
   if (id1 && id2 && id1 === id2) return true;
   if (id1 && (c2.id === id1 || c2.classroomCourseId === id1)) return true;
@@ -156,11 +242,18 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
     const cCanonical = normalizeCourseCanonicalKey(c);
 
     let existingIdx = -1;
-    if (cId && indexById.has(cId)) existingIdx = indexById.get(cId)!;
-    else if (cId && indexByClassroomId.has(cId)) existingIdx = indexByClassroomId.get(cId)!;
-    else if (cClassroomId && indexByClassroomId.has(cClassroomId)) existingIdx = indexByClassroomId.get(cClassroomId)!;
-    else if (cClassroomId && indexById.has(cClassroomId)) existingIdx = indexById.get(cClassroomId)!;
-    else if (cCanonical && indexByCanonical.has(cCanonical)) {
+    if (cId && indexById.has(cId)) {
+      existingIdx = indexById.get(cId)!;
+    } else if (cId && indexByClassroomId.has(cId)) {
+      const candidateIdx = indexByClassroomId.get(cId)!;
+      if (areCoursesSame(result[candidateIdx], c)) existingIdx = candidateIdx;
+    } else if (cClassroomId && indexByClassroomId.has(cClassroomId)) {
+      const candidateIdx = indexByClassroomId.get(cClassroomId)!;
+      if (areCoursesSame(result[candidateIdx], c)) existingIdx = candidateIdx;
+    } else if (cClassroomId && indexById.has(cClassroomId)) {
+      const candidateIdx = indexById.get(cClassroomId)!;
+      if (areCoursesSame(result[candidateIdx], c)) existingIdx = candidateIdx;
+    } else if (cCanonical && indexByCanonical.has(cCanonical)) {
       const candidateIdx = indexByCanonical.get(cCanonical)!;
       const candidate = result[candidateIdx];
       if (areCoursesSame(candidate, c)) {
@@ -311,6 +404,7 @@ export function deduplicateStudents(studentsList: Student[]): Student[] {
 // In-memory read caches + Write-Behind queue for 0ms reads and non-blocking writes
 let cachedCourses: { userId: string; list: Course[] } | null = null;
 let cachedStudents: { userId: string; list: Student[] } | null = null;
+const cachedCourseStudents = new Map<string, Student[]>();
 let cachedDisposition: {
   userId: string;
   data: { disposition: Record<string, any>; history: any[] };
@@ -356,6 +450,7 @@ export function invalidateStorageMemoryCache(): void {
   flushStorageWriteBehind();
   cachedCourses = null;
   cachedStudents = null;
+  cachedCourseStudents.clear();
   cachedDisposition = null;
   cachedDisposition2c = null;
   cachedDeletedHistoryIds = null;
@@ -368,6 +463,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', () => {
     cachedCourses = null;
     cachedStudents = null;
+    cachedCourseStudents.clear();
     cachedDisposition = null;
     cachedDisposition2c = null;
     cachedDeletedHistoryIds = null;
@@ -398,14 +494,13 @@ export function getLocalCourses(): Course[] {
     if (cachedCourses && cachedCourses.userId === userId) {
       return cachedCourses.list;
     }
+    ensureLegacyOwnerStorageMigrated(userId);
     const isOwner = isPrimaryOwnerAccount();
-    const explicitlyCleared = localStorage.getItem('docencia_courses_explicitly_cleared') === 'true';
     const key = getUserStorageKey(STORAGE_KEYS.COURSES);
-    const primaryRaw = localStorage.getItem(key);
-    const candidateKeys = isOwner ? [key, STORAGE_KEYS.COURSES, 'docencia_persisted_courses'] : [key];
+    const candidateKeys = isOwner ? [key, STORAGE_KEYS.COURSES] : [key];
 
     for (const k of candidateKeys) {
-      const raw = k === key ? primaryRaw : localStorage.getItem(k);
+      const raw = localStorage.getItem(k);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -415,25 +510,6 @@ export function getLocalCourses(): Course[] {
             return deduped;
           }
         } catch (_) {}
-      }
-    }
-
-    if (isOwner && !explicitlyCleared) {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && (k.startsWith('docencia_courses') || k.includes('courses'))) {
-          try {
-            const item = localStorage.getItem(k);
-            if (item) {
-              const p = JSON.parse(item);
-              if (Array.isArray(p) && p.length > 0 && p[0]?.id && (p[0]?.name || p[0]?.subject)) {
-                const deduped = deduplicateCourses(p);
-                cachedCourses = { userId, list: deduped };
-                return deduped;
-              }
-            }
-          } catch (_) {}
-        }
       }
     }
   } catch (_) {}
@@ -456,24 +532,18 @@ export function saveLocalCourses(coursesList: Course[], forceClear = false): voi
     scheduleWriteBehind(`courses_${userId}`, () => {
       const dataStr = JSON.stringify(cleanList);
       safeSetLocalStorageItem(key, dataStr);
-      if (isOwner) {
+      if (isOwner && key !== STORAGE_KEYS.COURSES) {
         safeSetLocalStorageItem(STORAGE_KEYS.COURSES, dataStr);
-        safeSetLocalStorageItem('docencia_persisted_courses', dataStr);
       }
       if (cleanList.length > 0) {
         localStorage.removeItem('docencia_courses_explicitly_cleared');
       } else if (forceClear) {
         if (isOwner) {
           safeSetLocalStorageItem('docencia_courses_explicitly_cleared', 'true');
-          for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (k && (k.startsWith('docencia_courses') || k === 'docencia_persisted_courses')) {
-              safeSetLocalStorageItem(k, '[]');
-            }
-          }
-        } else {
-          safeSetLocalStorageItem(key, '[]');
+          safeSetLocalStorageItem(STORAGE_KEYS.COURSES, '[]');
+          localStorage.removeItem('docencia_persisted_courses');
         }
+        safeSetLocalStorageItem(key, '[]');
       }
     });
   } catch (_) {}
@@ -515,149 +585,182 @@ export function getCourseDivisionGroupKey(course: Course): string {
 }
 
 /**
- * Self-heals sibling courses of the exact same school division (e.g., Historia (S3 Soc 1) and Filosofía (S3 Soc 1))
- * whose student rosters were previously truncated when a shared student ID was removed in only one of the subjects.
- * Respects each course's own `getRemovedStudentIds(course.id)` so Pareja Pedagógica filters remain 100% independent per subject.
+ * Returns candidate students known for the same school division (or previously excluded in this course)
+ * strictly as selectable options for the Selective Student Synchronization tool, WITHOUT auto-inserting them.
+ */
+export function getDivisionCandidateStudentsForCourse(courseId: string): Student[] {
+  if (typeof window === 'undefined' || !courseId) return [];
+  try {
+    const courses = getLocalCourses();
+    const targetCourse = courses.find((c) => c.id === courseId);
+    const pool = new Map<string, Student>();
+
+    const addCandidate = (st: Student) => {
+      if (!st || (!st.firstName && !st.lastName)) return;
+      const cleanEmail = (st.email || '').trim().toLowerCase();
+      const cleanName = `${(st.firstName || '').trim()} ${(st.lastName || '').trim()}`.trim().toLowerCase();
+      const key = st.id || cleanEmail || cleanName;
+      if (!key) return;
+      // Avoid duplicates by id, email, or full name
+      const alreadyExists = Array.from(pool.values()).some((existing) => {
+        if (st.id && existing.id === st.id) return true;
+        if (cleanEmail && (existing.email || '').trim().toLowerCase() === cleanEmail) return true;
+        const exName = `${(existing.firstName || '').trim()} ${(existing.lastName || '').trim()}`
+          .trim()
+          .toLowerCase();
+        return Boolean(cleanName && exName === cleanName);
+      });
+      if (!alreadyExists) {
+        pool.set(key, { ...st, courseId });
+      }
+    };
+
+    // 1. Current active students in this course
+    const currentInCourse = getLocalStudents(courseId);
+    currentInCourse.forEach(addCandidate);
+
+    // 2. Previously removed/hidden students in this course
+    const removedInCourse = getRemovedStudentsList(courseId);
+    removedInCourse.forEach(addCandidate);
+
+    // 3. Students from sibling courses of the exact same school division (e.g. S3 Soc 1) as selectable candidates
+    if (targetCourse) {
+      const divKey = getCourseDivisionGroupKey(targetCourse);
+      if (divKey) {
+        const siblingCourses = courses.filter(
+          (c) => c.id && c.id !== courseId && getCourseDivisionGroupKey(c) === divKey
+        );
+        const allActive = getLocalStudents();
+        for (const sib of siblingCourses) {
+          allActive.filter((s) => s.courseId === sib.id).forEach(addCandidate);
+          getRemovedStudentsList(sib.id).forEach(addCandidate);
+        }
+      }
+    }
+
+    return Array.from(pool.values());
+  } catch (_) {
+    return [];
+  }
+}
+
+/**
+ * Automatic cross-course student insertion is intentionally disabled so students are never
+ * automatically inserted or duplicated across subjects. Use Selective Student Synchronization instead.
  */
 export function healSiblingCourseRosters(rawStudents: Student[]): {
   students: Student[];
   healedCourseIds: string[];
 } {
-  if (typeof window === 'undefined' || !Array.isArray(rawStudents)) {
-    return { students: rawStudents || [], healedCourseIds: [] };
-  }
-  try {
-    const courses = getLocalCourses();
-    if (!Array.isArray(courses) || courses.length < 2) {
-      return { students: rawStudents, healedCourseIds: [] };
-    }
+  return { students: deduplicateStudents(rawStudents || []), healedCourseIds: [] };
+}
 
-    const byDivision = new Map<string, Course[]>();
-    for (const c of courses) {
-      if (!c?.id) continue;
-      const divKey = getCourseDivisionGroupKey(c);
-      if (!divKey) continue;
-      const group = byDivision.get(divKey) || [];
-      group.push(c);
-      byDivision.set(divKey, group);
-    }
-
-    let workingList = [...rawStudents];
-    const healedCourseIds: string[] = [];
-
-    for (const [, siblingCourses] of Array.from(byDivision.entries())) {
-      if (siblingCourses.length < 2) continue;
-
-      // Build complete division student pool from active students + removed students objects across all sibling courses of this division
-      const divisionPool = new Map<string, Student>();
-      for (const c of siblingCourses) {
-        const courseActive = workingList.filter((s) => s && s.courseId === c.id && s.id);
-        for (const st of courseActive) {
-          if (!divisionPool.has(st.id)) {
-            divisionPool.set(st.id, st);
-          }
-        }
-        const courseRemovedObjs = getRemovedStudentsList(c.id);
-        for (const st of courseRemovedObjs) {
-          if (st && st.id && (st.firstName || st.lastName) && !divisionPool.has(st.id)) {
-            divisionPool.set(st.id, st);
-          }
-        }
-      }
-
-      if (divisionPool.size === 0) continue;
-
-      for (const c of siblingCourses) {
-        const removedInTarget = getRemovedStudentIds(c.id);
-        const existingInTarget = new Set(
-          workingList.filter((s) => s && s.courseId === c.id).map((s) => s.id)
-        );
-        let addedForThisCourse = 0;
-
-        for (const [stId, templateStudent] of Array.from(divisionPool.entries())) {
-          if (!existingInTarget.has(stId) && !removedInTarget.has(stId)) {
-            workingList.push({
-              ...templateStudent,
-              id: stId,
-              courseId: c.id,
-            });
-            existingInTarget.add(stId);
-            addedForThisCourse++;
-          }
-        }
-
-        if (addedForThisCourse > 0) {
-          healedCourseIds.push(c.id);
-        }
-      }
-    }
-
-    if (healedCourseIds.length > 0) {
-      workingList = deduplicateStudents(workingList);
-    }
-
-    return { students: workingList, healedCourseIds };
-  } catch (_) {
-    return { students: rawStudents, healedCourseIds: [] };
-  }
+export function getCourseStudentsStorageKey(courseId: string): string {
+  return `docencia_course_students_${String(courseId).trim()}`;
 }
 
 export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
     const userId = getActiveUserId();
+    const targetCourseId = courseId ? String(courseId).trim() : '';
+
+    // 1. Fast path for a specific courseId from isolated per-course cache or storage
+    if (targetCourseId) {
+      const courseCacheKey = `${userId}::${targetCourseId}`;
+      const cachedForCourse = cachedCourseStudents.get(courseCacheKey);
+      if (cachedForCourse) {
+        return filterOutRemovedStudents(cachedForCourse);
+      }
+
+      const perCourseRaw = getUserScopedItem(getCourseStudentsStorageKey(targetCourseId));
+      if (perCourseRaw !== null) {
+        try {
+          const parsedCourseList: Student[] = JSON.parse(perCourseRaw);
+          if (Array.isArray(parsedCourseList)) {
+            const stamped = deduplicateStudents(
+              parsedCourseList.map((s) => ({ ...s, courseId: targetCourseId }))
+            );
+            cachedCourseStudents.set(courseCacheKey, stamped);
+            return filterOutRemovedStudents(stamped);
+          }
+        } catch (_) {}
+      }
+    }
+
+    // 2. Global / multi-course read (or initial migration from legacy global key into per-course keys)
     if (cachedStudents && cachedStudents.userId === userId) {
       const visible = filterOutRemovedStudents(cachedStudents.list);
-      return courseId ? visible.filter((s) => s.courseId === courseId) : visible;
+      return targetCourseId ? visible.filter((s) => s.courseId === targetCourseId) : visible;
     }
+
+    ensureLegacyOwnerStorageMigrated(userId);
     const isOwner = isPrimaryOwnerAccount();
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
     let raw = localStorage.getItem(key);
     if (isOwner && !raw && key !== STORAGE_KEYS.STUDENTS) {
       raw = localStorage.getItem(STORAGE_KEYS.STUDENTS);
     }
-    if (isOwner && !raw) {
-      raw = localStorage.getItem('docencia_persisted_students');
-    }
+
+    let parsedGlobal: Student[] = [];
     if (raw) {
-      const parsed: Student[] = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const deduped = deduplicateStudents(parsed);
-        const { students: healed, healedCourseIds } = healSiblingCourseRosters(deduped);
-        cachedStudents = { userId, list: healed };
-        if (healedCourseIds.length > 0) {
-          scheduleWriteBehind(`students_${userId}`, () => {
-            const dataStr = JSON.stringify(healed);
-            safeSetLocalStorageItem(key, dataStr);
-            if (isOwner) {
-              safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
-              safeSetLocalStorageItem('docencia_persisted_students', dataStr);
-            }
-          });
-        }
-        const clean = filterOutRemovedStudents(healed);
-        return courseId ? clean.filter((s) => s.courseId === courseId) : clean;
+      try {
+        const p = JSON.parse(raw);
+        if (Array.isArray(p)) parsedGlobal = p;
+      } catch (_) {}
+    }
+
+    // Overlay any already-persisted per-course buckets on top of the global array
+    // so per-course edits/deletions are always authoritative for their own courseId
+    const courses = getLocalCourses();
+    const byCourse = new Map<string, Student[]>();
+    for (const st of deduplicateStudents(parsedGlobal)) {
+      if (!st?.courseId) continue;
+      const list = byCourse.get(st.courseId) || [];
+      list.push(st);
+      byCourse.set(st.courseId, list);
+    }
+
+    for (const c of courses) {
+      if (!c?.id) continue;
+      const cRaw = getUserScopedItem(getCourseStudentsStorageKey(c.id));
+      if (cRaw !== null) {
+        try {
+          const cParsed = JSON.parse(cRaw);
+          if (Array.isArray(cParsed)) {
+            const stamped = deduplicateStudents(
+              cParsed.map((s: Student) => ({ ...s, courseId: c.id }))
+            );
+            byCourse.set(c.id, stamped);
+            cachedCourseStudents.set(`${userId}::${c.id}`, stamped);
+          }
+        } catch (_) {}
       }
     }
-    if (isOwner) {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && (k.startsWith('docencia_students') || k.includes('students'))) {
-          try {
-            const item = localStorage.getItem(k);
-            if (item) {
-              const p = JSON.parse(item);
-              if (Array.isArray(p) && p.length > 0 && p[0]?.id && p[0]?.firstName) {
-                const deduped = deduplicateStudents(p);
-                const { students: healed } = healSiblingCourseRosters(deduped);
-                cachedStudents = { userId, list: healed };
-                const clean = filterOutRemovedStudents(healed);
-                return courseId ? clean.filter((s: Student) => s.courseId === courseId) : clean;
-              }
-            }
-          } catch (_) {}
-        }
+
+    const combinedRaw: Student[] = [];
+    for (const list of Array.from(byCourse.values())) {
+      combinedRaw.push(...list);
+    }
+
+    if (combinedRaw.length > 0) {
+      const deduped = deduplicateStudents(combinedRaw);
+      cachedStudents = { userId, list: deduped };
+
+      // Populate per-course memory cache without cross-course auto-insertion
+      const groupedByCourse = new Map<string, Student[]>();
+      for (const st of deduped) {
+        if (!st?.courseId) continue;
+        const list = groupedByCourse.get(st.courseId) || [];
+        list.push(st);
+        groupedByCourse.set(st.courseId, list);
       }
+      for (const [cId, cList] of Array.from(groupedByCourse.entries())) {
+        cachedCourseStudents.set(`${userId}::${cId}`, cList);
+      }
+
+      const clean = filterOutRemovedStudents(deduped);
+      return targetCourseId ? clean.filter((s) => s.courseId === targetCourseId) : clean;
     }
   } catch (_) {}
   return [];
@@ -669,24 +772,67 @@ export function saveLocalStudents(courseIdOrList: string | Student[], studentsLi
     const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const key = getUserStorageKey(STORAGE_KEYS.STUDENTS);
-    let updated: Student[];
-    if (Array.isArray(courseIdOrList)) {
-      updated = deduplicateStudents(courseIdOrList);
-    } else {
-      const courseId = courseIdOrList;
-      const all = getLocalStudents();
-      const rest = all.filter((s) => s.courseId !== courseId);
-      const stamped = (studentsList || []).map((s) => ({ ...s, courseId }));
-      updated = deduplicateStudents([...rest, ...stamped]);
+
+    if (typeof courseIdOrList === 'string') {
+      const targetCourseId = courseIdOrList.trim();
+      if (!targetCourseId) return;
+
+      // Strictly scope all students in this operation to targetCourseId
+      const stampedForCourse = deduplicateStudents(
+        (studentsList || []).map((s) => ({ ...s, courseId: targetCourseId }))
+      );
+      cachedCourseStudents.set(`${userId}::${targetCourseId}`, stampedForCourse);
+
+      // Update aggregated cache ONLY for targetCourseId without modifying any other course's roster
+      const all = cachedStudents && cachedStudents.userId === userId
+        ? cachedStudents.list
+        : getLocalStudents();
+      const otherCoursesStudents = all.filter((s) => s.courseId !== targetCourseId);
+      const updatedAll = deduplicateStudents([...otherCoursesStudents, ...stampedForCourse]);
+      cachedStudents = { userId, list: updatedAll };
+
+      scheduleWriteBehind(`course_students_${userId}_${targetCourseId}`, () => {
+        setUserScopedItem(
+          getCourseStudentsStorageKey(targetCourseId),
+          JSON.stringify(stampedForCourse)
+        );
+      });
+
+      scheduleWriteBehind(`students_${userId}`, () => {
+        const dataStr = JSON.stringify(updatedAll);
+        safeSetLocalStorageItem(key, dataStr);
+        if (isOwner && key !== STORAGE_KEYS.STUDENTS) {
+          safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
+        }
+      });
+      return;
     }
+
+    // Array overload: group by courseId and update each course's isolated bucket independently
+    const updated = deduplicateStudents(courseIdOrList);
     cachedStudents = { userId, list: updated };
+
+    const groupedByCourse = new Map<string, Student[]>();
+    for (const st of updated) {
+      if (!st?.courseId) continue;
+      const cId = String(st.courseId).trim();
+      const list = groupedByCourse.get(cId) || [];
+      list.push({ ...st, courseId: cId });
+      groupedByCourse.set(cId, list);
+    }
+
+    for (const [cId, cList] of Array.from(groupedByCourse.entries())) {
+      cachedCourseStudents.set(`${userId}::${cId}`, cList);
+      scheduleWriteBehind(`course_students_${userId}_${cId}`, () => {
+        setUserScopedItem(getCourseStudentsStorageKey(cId), JSON.stringify(cList));
+      });
+    }
 
     scheduleWriteBehind(`students_${userId}`, () => {
       const dataStr = JSON.stringify(updated);
       safeSetLocalStorageItem(key, dataStr);
-      if (isOwner) {
+      if (isOwner && key !== STORAGE_KEYS.STUDENTS) {
         safeSetLocalStorageItem(STORAGE_KEYS.STUDENTS, dataStr);
-        safeSetLocalStorageItem('docencia_persisted_students', dataStr);
       }
     });
   } catch (_) {}
@@ -752,7 +898,10 @@ export function markHistoryIdDeleted(id: string): void {
     const userId = getActiveUserId();
     const set = getDeletedHistoryIds();
     set.add(id);
-    cachedDeletedHistoryIds = { userId, set };
+    // Keep deleted history tombstones bounded to MAX_DELETED_HISTORY_IDS
+    const boundedArr = Array.from(set).slice(-MAX_DELETED_HISTORY_IDS);
+    const boundedSet = new Set<string>(boundedArr);
+    cachedDeletedHistoryIds = { userId, set: boundedSet };
     if (cachedDisposition && cachedDisposition.userId === userId) {
       cachedDisposition = {
         userId,
@@ -763,7 +912,7 @@ export function markHistoryIdDeleted(id: string): void {
       };
     }
     scheduleWriteBehind(`deleted_history_${userId}`, () => {
-      setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(Array.from(set)));
+      setUserScopedItem(DELETED_HISTORY_IDS_KEY, JSON.stringify(boundedArr));
     });
   } catch (_) {}
 }
@@ -783,15 +932,41 @@ export function deduplicateHistoryItems(list: any[]): any[] {
 export function saveAllDispositionStorage(
   disposition: Record<string, any>,
   history: any[],
-  options?: { silent?: boolean }
+  options?: { silent?: boolean; courseId?: string }
 ): void {
   if (typeof window === 'undefined') return;
   try {
     const userId = getActiveUserId();
     const isOwner = isPrimaryOwnerAccount();
     const deleted = getDeletedHistoryIds();
-    const cleanHistory = (history || []).filter((h) => h?.id && !deleted.has(h.id));
-    const safeDisposition = disposition || {};
+    const cleanHistory = deduplicateHistoryItems(
+      (history || []).filter((h) => h?.id && !deleted.has(h.id))
+    ).slice(0, MAX_DISPOSITION_HISTORY_ITEMS);
+    const incomingDisposition = disposition || {};
+    const targetCourseId = options?.courseId;
+
+    // Preserve other courses' entries in the global disposition map
+    const prevGlobalDisp =
+      cachedDisposition && cachedDisposition.userId === userId
+        ? { ...cachedDisposition.data.disposition }
+        : {};
+    const safeDisposition: Record<string, any> = { ...prevGlobalDisp };
+
+    Object.entries(incomingDisposition).forEach(([k, val]: [string, any]) => {
+      if (!val || typeof val !== 'object') return;
+      const entryCourseId = val.courseId || targetCourseId;
+      if (k.includes('::')) {
+        safeDisposition[k] = val;
+      } else if (entryCourseId) {
+        safeDisposition[`${entryCourseId}::${k}`] = { ...val, courseId: entryCourseId };
+        const existingBare = safeDisposition[k];
+        if (!existingBare || !existingBare.courseId || existingBare.courseId === entryCourseId) {
+          safeDisposition[k] = { ...val, courseId: entryCourseId };
+        }
+      } else {
+        safeDisposition[k] = val;
+      }
+    });
 
     // 1. Update in-memory cache immediately (0ms synchronous memory update)
     cachedDisposition = {
@@ -799,36 +974,34 @@ export function saveAllDispositionStorage(
       data: { disposition: safeDisposition, history: cleanHistory },
     };
 
-    // 2. Schedule JSON serialization & localStorage persistence via write-behind
+    // 2. Schedule JSON serialization & localStorage persistence via write-behind (canonical + 1 fallback)
     scheduleWriteBehind(`disposition_${userId}`, () => {
       const dispJson = JSON.stringify(safeDisposition);
       const histJson = JSON.stringify(cleanHistory);
 
-      const keysDisp: string[] = isOwner
-        ? [PRIMARY_DISPOSITION_KEY, 'docencia_disposition_data', STORAGE_KEYS.DISPOSITION]
-        : [];
-      const keysHist: string[] = isOwner
-        ? [PRIMARY_HISTORY_KEY, 'docencia_disposition_history', STORAGE_KEYS.DISPOSITION_HISTORY]
-        : [];
+      const keysDisp = new Set<string>();
+      const keysHist = new Set<string>();
       if (userId) {
-        keysDisp.push(`docencia_disposition_data_${userId}`);
-        keysHist.push(`docencia_disposition_history_${userId}`);
+        keysDisp.add(`docencia_disposition_data_${userId}`);
+        keysHist.add(`docencia_disposition_history_${userId}`);
+      }
+      if (isOwner) {
+        keysDisp.add(PRIMARY_DISPOSITION_KEY);
+        keysHist.add(PRIMARY_HISTORY_KEY);
       }
 
-      const uniqueDispKeys = Array.from(new Set(keysDisp));
-      const uniqueHistKeys = Array.from(new Set(keysHist));
-
-      for (const k of uniqueDispKeys) {
+      for (const k of Array.from(keysDisp)) {
         safeSetLocalStorageItem(k, dispJson);
       }
-      for (const k of uniqueHistKeys) {
+      for (const k of Array.from(keysHist)) {
         safeSetLocalStorageItem(k, histJson);
       }
     });
 
     if (!options?.silent) {
       emitAppEvent('docencia_disposition_storage_change', {
-        disposition: safeDisposition,
+        courseId: targetCourseId,
+        disposition: incomingDisposition,
         history: cleanHistory,
       });
     }
@@ -853,7 +1026,6 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
       ? [
           PRIMARY_DISPOSITION_KEY,
           ...(userId ? [`docencia_disposition_data_${userId}`] : []),
-          'docencia_disposition_data',
           STORAGE_KEYS.DISPOSITION,
         ]
       : userId
@@ -866,32 +1038,12 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
       ? [
           PRIMARY_HISTORY_KEY,
           ...(userId ? [`docencia_disposition_history_${userId}`] : []),
-          'docencia_disposition_history',
           STORAGE_KEYS.DISPOSITION_HISTORY,
         ]
       : userId
       ? [`docencia_disposition_history_${userId}`]
       : []
   );
-
-  if (isOwner) {
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (
-          (k.startsWith('docencia_disposition_data_') || k === 'fds_disposition_data' || k.startsWith('fds_disposition_data__')) &&
-          !k.endsWith('_1c') &&
-          !k.endsWith('_2c') &&
-          !k.includes('_data_2c')
-        ) {
-          keysDisp.add(k);
-        } else if (k.startsWith('docencia_disposition_history_') || k.startsWith('fds_disposition_history')) {
-          keysHist.add(k);
-        }
-      }
-    } catch (_) {}
-  }
 
   for (const k of Array.from(keysDisp)) {
     try {
@@ -918,7 +1070,7 @@ export function getAllDispositionStorage(): { disposition: Record<string, any>; 
       }
     } catch (_) {}
   }
-  history = deduplicateHistoryItems(mergedHistory);
+  history = deduplicateHistoryItems(mergedHistory).slice(0, MAX_DISPOSITION_HISTORY_ITEMS);
 
   const result = { disposition, history };
   cachedDisposition = {
@@ -1068,9 +1220,11 @@ export function markStudentRemoved(courseId: string, studentOrId: Student | stri
       cachedRemovedCourseLists.set(cacheKey, list);
     }
 
+    const nowIso = new Date().toISOString();
     scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
       setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
       setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+      setUserScopedItem(`fds_removed_students_updated_at_${courseId}`, nowIso);
     });
 
     const index = { ...getRemovedStudentsIndex(), [courseId]: idsArray };
@@ -1081,7 +1235,7 @@ export function markStudentRemoved(courseId: string, studentOrId: Student | stri
         .saveUserSetting(userId, `removed_students_${courseId}`, {
           ids: idsArray,
           students: list,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
         })
         .catch(() => {});
     }
@@ -1102,9 +1256,11 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
     const list = getRemovedStudentsList(courseId).filter((s) => s.id !== studentId);
     cachedRemovedCourseLists.set(cacheKey, list);
 
+    const nowIso = new Date().toISOString();
     scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
       setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(idsArray));
       setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(list));
+      setUserScopedItem(`fds_removed_students_updated_at_${courseId}`, nowIso);
     });
 
     const index = { ...getRemovedStudentsIndex(), [courseId]: idsArray };
@@ -1115,7 +1271,7 @@ export function unmarkStudentRemoved(courseId: string, studentId: string): void 
         .saveUserSetting(userId, `removed_students_${courseId}`, {
           ids: idsArray,
           students: list,
-          updatedAt: new Date().toISOString(),
+          updatedAt: nowIso,
         })
         .catch(() => {});
     }
@@ -1135,7 +1291,17 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
     }>(userId, 'removed_students_index');
 
     if (cloudDoc && cloudDoc.courses && typeof cloudDoc.courses === 'object') {
-      const mergedIndex: Record<string, string[]> = { ...localIndex, ...cloudDoc.courses };
+      const mergedIndex: Record<string, string[]> = { ...cloudDoc.courses };
+      // Preserve local course entries that are newer than cloudDoc.updatedAt
+      for (const [cid, localIds] of Object.entries(localIndex)) {
+        const localCourseTs = getUserScopedItem(`fds_removed_students_updated_at_${cid}`) || '';
+        if (localCourseTs && (!cloudDoc.updatedAt || localCourseTs > cloudDoc.updatedAt)) {
+          mergedIndex[cid] = localIds;
+        } else if (!mergedIndex[cid] && Array.isArray(localIds) && localIds.length > 0) {
+          mergedIndex[cid] = localIds;
+        }
+      }
+
       let changed = false;
       const missingObjSyncs: Promise<any>[] = [];
       for (const [cid, ids] of Object.entries(mergedIndex)) {
@@ -1159,7 +1325,7 @@ export async function syncAllRemovedStudentsIndexFromCloud(): Promise<Record<str
       saveRemovedStudentsIndex(mergedIndex, false);
       if (changed) {
         cachedStudents = null;
-        window.dispatchEvent(new Event('docencia_student_status_updated'));
+        emitAppEvent('docencia_student_status_updated');
       }
       return mergedIndex;
     } else {
@@ -1203,6 +1369,23 @@ export async function syncRemovedStudentsFromCloud(
       updatedAt?: string;
     }>(userId, `removed_students_${courseId}`);
 
+    const localUpdatedAt = getUserScopedItem(`fds_removed_students_updated_at_${courseId}`) || '';
+    const isLocalNewer = Boolean(
+      localUpdatedAt && (!cloudData?.updatedAt || localUpdatedAt > cloudData.updatedAt)
+    );
+
+    if (isLocalNewer) {
+      const idsArr = Array.from(localIds);
+      firestoreSync
+        .saveUserSetting(userId, `removed_students_${courseId}`, {
+          ids: idsArr,
+          students: localList,
+          updatedAt: localUpdatedAt,
+        })
+        .catch(() => {});
+      return { ids: localIds, list: localList };
+    }
+
     if (cloudData && (Array.isArray(cloudData.ids) || Array.isArray(cloudData.students))) {
       const cloudIds = Array.isArray(cloudData.ids) ? cloudData.ids : [];
       const cloudStudents = Array.isArray(cloudData.students) ? cloudData.students : [];
@@ -1220,6 +1403,9 @@ export async function syncRemovedStudentsFromCloud(
       scheduleWriteBehind(`removed_course_${cacheKey}`, () => {
         setUserScopedItem(`fds_removed_students_${courseId}`, JSON.stringify(Array.from(nextIds)));
         setUserScopedItem(`fds_removed_students_objs_${courseId}`, JSON.stringify(nextList));
+        if (cloudData.updatedAt) {
+          setUserScopedItem(`fds_removed_students_updated_at_${courseId}`, cloudData.updatedAt);
+        }
       });
 
       const index = { ...getRemovedStudentsIndex() };
@@ -1230,7 +1416,7 @@ export async function syncRemovedStudentsFromCloud(
 
       if (prevIdsStr !== nextIdsStr || localList.length !== nextList.length) {
         cachedStudents = null;
-        window.dispatchEvent(new Event('docencia_student_status_updated'));
+        emitAppEvent('docencia_student_status_updated');
       }
       return { ids: nextIds, list: nextList };
     } else if (localIds.size > 0 || localList.length > 0) {

@@ -143,15 +143,25 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     (includeDisposition ? 1 : 0) +
     (includeObservations ? 1 : 0);
 
-  // Load attendance, disposition and observations maps
+  // Load attendance, disposition and observations maps strictly scoped to courseId
   const disp1cMap = useMemo(() => {
     try {
       const raw =
         getStorageItemForUser(`fds_disposition_data_${courseId}_1c`) ||
-        localStorage.getItem(`fds_disposition_data_${courseId}_1c`) ||
-        getStorageItemForUser('fds_disposition_data_1c') ||
-        localStorage.getItem('fds_disposition_data_1c');
-      return raw ? JSON.parse(raw) : {};
+        localStorage.getItem(`fds_disposition_data_${courseId}_1c`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const filtered: Record<string, any> = {};
+          for (const [k, val] of Object.entries(parsed)) {
+            if (!(val as any)?.courseId || (val as any).courseId === courseId) {
+              filtered[k] = val;
+            }
+          }
+          return filtered;
+        }
+      }
+      return {};
     } catch {
       return {};
     }
@@ -161,10 +171,20 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     try {
       const raw =
         getStorageItemForUser(`fds_disposition_data_${courseId}_2c`) ||
-        localStorage.getItem(`fds_disposition_data_${courseId}_2c`) ||
-        getStorageItemForUser('fds_disposition_data_2c') ||
-        localStorage.getItem('fds_disposition_data_2c');
-      return raw ? JSON.parse(raw) : {};
+        localStorage.getItem(`fds_disposition_data_${courseId}_2c`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          const filtered: Record<string, any> = {};
+          for (const [k, val] of Object.entries(parsed)) {
+            if (!(val as any)?.courseId || (val as any).courseId === courseId) {
+              filtered[k] = val;
+            }
+          }
+          return filtered;
+        }
+      }
+      return {};
     } catch {
       return {};
     }
@@ -451,7 +471,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const effectiveOverrides = useMemo(() => {
     if (annualOverrides && Object.keys(annualOverrides).length > 0) return annualOverrides;
     try {
-      const raw = localStorage.getItem(`fds_grades_annual_override_${courseId}`);
+      const raw =
+        getStorageItemForUser(`fds_grades_annual_override_${courseId}`) ||
+        localStorage.getItem(`fds_grades_annual_override_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -519,9 +541,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       );
       const estimatedAttendance = trafficLight.percentage;
 
-      // Dedicated observation for official report / certificate (falls back to Student Profile observations if not customized yet)
+      // Dedicated observation for official report / certificate (falls back to Student Profile observations if not customized yet, strictly filtered by courseId)
       const customReportObs = reportObservations[st.id];
-      const profileObsList = profileObservationsMap[st.id] || [];
+      const profileObsList = (profileObservationsMap[st.id] || []).filter(
+        (o) => !o?.courseId || o.courseId === courseId
+      );
       const fallbackProfileObsText =
         profileObsList.length > 0
           ? profileObsList

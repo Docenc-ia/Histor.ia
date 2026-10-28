@@ -948,28 +948,67 @@ async function startServer() {
   });
 
   app.post("/api/students", (req, res) => {
-    const { courseId, firstName, lastName, email } = req.body;
+    const { id, courseId, firstName, lastName, email, avatar, attendanceRate, averageGrade, notes } = req.body;
     if (!courseId || !firstName || !lastName) {
       return res.status(400).json({ error: "Datos incompletos para crear estudiante." });
     }
+    const studentId = id || `s-${courseId}-${Date.now().toString().slice(-4)}`;
+    // Avoid duplicates within the exact same courseId
+    const existingIdx = students.findIndex((s) => s.courseId === courseId && s.id === studentId);
     const newStudent: Student = {
-      id: `s-${Date.now().toString().slice(-4)}`,
+      id: studentId,
       courseId,
       firstName,
       lastName,
       email: email || `${firstName.toLowerCase()}.${lastName.toLowerCase()}@colegio.edu.ar`,
-      avatar: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
-      attendanceRate: 100,
-      averageGrade: 0,
-      notes: "Nuevo estudiante incorporado a la nómina.",
+      avatar:
+        avatar ||
+        `https://ui-avatars.com/api/?name=${encodeURIComponent(`${firstName} ${lastName}`)}&background=1a73e8&color=ffffff&bold=true`,
+      attendanceRate: typeof attendanceRate === "number" ? attendanceRate : 100,
+      averageGrade: typeof averageGrade === "number" ? averageGrade : 0,
+      notes: notes || "Nuevo estudiante incorporado a la nómina.",
     };
-    students.push(newStudent);
-    // Update count in course
-    const course = courses.find((c) => c.id === courseId);
-    if (course) course.studentsCount += 1;
+    if (existingIdx >= 0) {
+      students[existingIdx] = newStudent;
+    } else {
+      students.push(newStudent);
+      const course = courses.find((c) => c.id === courseId);
+      if (course) course.studentsCount = students.filter((s) => s.courseId === courseId).length;
+    }
     saveStudentsToDisk();
     saveCoursesToDisk();
     res.status(201).json({ student: newStudent });
+  });
+
+  // Update a student strictly within a specific courseId
+  app.patch("/api/students/:courseId/:studentId", (req, res) => {
+    const { courseId, studentId } = req.params;
+    const updates = req.body || {};
+    const idx = students.findIndex((s) => s.courseId === courseId && s.id === studentId);
+    if (idx === -1) {
+      return res.status(404).json({ error: "Estudiante no encontrado en esta materia." });
+    }
+    students[idx] = {
+      ...students[idx],
+      ...updates,
+      id: studentId,
+      courseId,
+    };
+    saveStudentsToDisk();
+    res.json({ success: true, student: students[idx] });
+  });
+
+  // Remove a student strictly from a specific courseId without affecting other courses
+  app.delete("/api/students/:courseId/:studentId", (req, res) => {
+    const { courseId, studentId } = req.params;
+    students = students.filter((s) => !(s.courseId === courseId && s.id === studentId));
+    const course = courses.find((c) => c.id === courseId);
+    if (course) {
+      course.studentsCount = students.filter((s) => s.courseId === courseId).length;
+    }
+    saveStudentsToDisk();
+    saveCoursesToDisk();
+    res.json({ success: true });
   });
 
   // Attendance batch save

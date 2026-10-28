@@ -10,7 +10,12 @@ export type AppEventName =
   | 'docencia_open_attendance_settings'
   | 'docencia_global_attendance_settings_updated'
   | 'docencia_cloud_sync_status'
-  | 'docencia_course_settings_updated';
+  | 'docencia_course_settings_updated'
+  | 'docencia_courses_updated'
+  | 'docencia_offline_queue_changed'
+  | 'docencia_queue_flushed'
+  | 'docencia_trigger_queue_flush'
+  | 'docencia_network_restored';
 
 const pendingEventTimers = new Map<string, ReturnType<typeof setTimeout>>();
 

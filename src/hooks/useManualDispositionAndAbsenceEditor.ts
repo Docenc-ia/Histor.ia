@@ -20,6 +20,8 @@ import {
 } from '../services/api';
 import { getCachedAccessToken } from '../services/workspace/googleAuth';
 import { sheetsService } from '../services/workspace/sheetsService';
+import { classroomService } from '../services/workspace/classroomService';
+import { gmailService } from '../services/workspace/gmailService';
 import { formatLocalDateDMY } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { DEFAULT_ABSENCE_PRESETS } from './useCourseNotifications';
@@ -167,17 +169,14 @@ export function useManualDispositionAndAbsenceEditor({
     const clampedScore = Math.min(10, Math.max(0, Math.round(parsed * 10) / 10));
 
     const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || {
-      totalAbsences: 0,
-      totalLates: 0,
-      totalDisposition: 10,
-    };
+    const current = baseMap[student.id] || getStudentMetrics(student.id, term);
     const oldScore = current.totalDisposition ?? 10;
 
     const updatedMap: Record<string, StudentDispositionData> = {
       ...baseMap,
       [student.id]: {
         ...current,
+        courseId: activeCourse.id,
         totalDisposition: clampedScore,
       },
     };
@@ -230,6 +229,7 @@ export function useManualDispositionAndAbsenceEditor({
         courseId: activeCourse.id,
         action: actionText,
         category: 'Disposición',
+        pointsChange: editEntry.pointsChange,
         term,
         date,
         time,
@@ -405,12 +405,44 @@ export function useManualDispositionAndAbsenceEditor({
               h.action?.toLowerCase().includes('falta'))
           ) {
             markHistoryIdDeleted(h.id);
-            api.deleteDispositionHistory(h.id).catch(() => {});
+            api
+              .deleteDispositionHistory(h.id, {
+                studentId: student.id,
+                courseId: activeCourse.id,
+                term,
+                isAbsence: true,
+              })
+              .catch(() => {});
             removed++;
             return false;
           }
           return true;
         });
+      }
+
+      let notifSent = false;
+      const msgToSend = (editingAbsenceMessageText || '').trim();
+      if (editingAbsenceSendNotif && msgToSend) {
+        try {
+          if (editingAbsenceChannel === 'classroom') {
+            const cid = activeCourse.classroomCourseId || activeCourse.id;
+            await classroomService.createIndividualAnnouncement(cid, student.id, msgToSend);
+            notifSent = true;
+          } else if (editingAbsenceChannel === 'gmail') {
+            if (student.email) {
+              const subject = `Notificación de Inasistencia - ${activeCourse.name}`;
+              const res = await gmailService.sendEmail(student.email, subject, msgToSend);
+              if (!res.success) {
+                window.open(
+                  `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msgToSend)}`
+                );
+              }
+              notifSent = true;
+            }
+          }
+        } catch (notifErr) {
+          console.warn('Error enviando notificación en edición de faltas:', notifErr);
+        }
       }
 
       const auditAction =
@@ -430,11 +462,11 @@ export function useManualDispositionAndAbsenceEditor({
         category: 'Sistema',
         pointsChange: 0,
         timestamp: recordTimestamp,
-        messageSent: false,
-        messageText: '',
-        notificationMethod: 'omitted',
-        omitNotification: true,
-        notifiedAt: 'No enviar',
+        messageSent: notifSent,
+        messageText: notifSent ? msgToSend : '',
+        notificationMethod: notifSent ? editingAbsenceChannel : 'omitted',
+        omitNotification: !notifSent,
+        notifiedAt: notifSent ? time : 'No enviar',
       };
 
       updatedHistory = deduplicateHistory([auditEntry, ...updatedHistory]);
@@ -455,15 +487,16 @@ export function useManualDispositionAndAbsenceEditor({
           courseId: activeCourse.id,
           action: auditAction,
           category: 'Sistema',
+          pointsChange: 0,
           term,
           date: selectedDateDMY,
           time,
           timestamp: recordTimestamp,
-          messageSent: false,
-          messageText: '',
-          notificationMethod: 'omitted',
-          omitNotification: true,
-          notifiedAt: 'No enviar',
+          messageSent: auditEntry.messageSent,
+          messageText: auditEntry.messageText,
+          notificationMethod: auditEntry.notificationMethod,
+          omitNotification: auditEntry.omitNotification,
+          notifiedAt: auditEntry.notifiedAt,
           expectedSummary: {
             totalAbsences: finalAbsences,
             totalLates: current.totalLates ?? 0,
@@ -473,7 +506,9 @@ export function useManualDispositionAndAbsenceEditor({
         .catch(() => {});
 
       setToastMessage(
-        `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'}).`
+        notifSent
+          ? `Faltas actualizadas (${finalAbsences}) y aviso enviado a ${student.lastName}, ${student.firstName}.`
+          : `Faltas actualizadas: ${finalAbsences} para ${student.lastName}, ${student.firstName} (${term === '2c' ? '2°C' : '1°C'}).`
       );
       setTimeout(() => setToastMessage(null), 3500);
 
@@ -505,15 +540,12 @@ export function useManualDispositionAndAbsenceEditor({
     if (!activeCourse || !student) return;
     const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const current = baseMap[student.id] || {
-      totalAbsences: 0,
-      totalLates: 0,
-      totalDisposition: 10,
-    };
+    const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
     const updatedMap: Record<string, StudentDispositionData> = {
       ...baseMap,
       [student.id]: {
         ...current,
+        courseId: activeCourse.id,
         totalDisposition: 10,
       },
     };
@@ -576,6 +608,7 @@ export function useManualDispositionAndAbsenceEditor({
       .resetDisposition({
         studentId: student.id,
         courseId: activeCourse.id,
+        term: targetTerm,
         resetWhat: 'disposition',
         clearHistory,
       })
@@ -596,13 +629,10 @@ export function useManualDispositionAndAbsenceEditor({
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const updated: Record<string, StudentDispositionData> = { ...baseMap };
     courseStudents.forEach((st) => {
-      const current = updated[st.id] || {
-        totalAbsences: 0,
-        totalLates: 0,
-        totalDisposition: 10,
-      };
+      const current = updated[st.id] || getStudentMetrics(st.id, targetTerm);
       updated[st.id] = {
         ...current,
+        courseId: activeCourse.id,
         totalDisposition: 10,
       };
     });
@@ -665,7 +695,12 @@ export function useManualDispositionAndAbsenceEditor({
       targetTerm === '2c' ? updated : dispositionMap2c
     );
     api
-      .resetDisposition({ courseId: activeCourse.id, resetWhat: 'disposition', clearHistory })
+      .resetDisposition({
+        courseId: activeCourse.id,
+        term: targetTerm,
+        resetWhat: 'disposition',
+        clearHistory,
+      })
       .catch(() => {});
   };
 

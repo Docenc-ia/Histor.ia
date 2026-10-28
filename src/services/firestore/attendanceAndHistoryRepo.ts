@@ -459,9 +459,14 @@ export const attendanceAndHistoryRepo = {
   },
 
   /**
-   * Delete any absence records for a student recorded today
+   * Delete any absence records for a student recorded today (strictly scoped to courseId when provided)
    */
-  async deleteTodayAbsencesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
+  async deleteTodayAbsencesForStudent(
+    userId: string,
+    studentId: string,
+    targetDate: Date = new Date(),
+    courseId?: string
+  ): Promise<string[]> {
     if (!userId || !studentId) return [];
     const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
@@ -469,6 +474,7 @@ export const attendanceAndHistoryRepo = {
     for (const data of bundle.history) {
       if (
         data.studentId === studentId &&
+        (!courseId || !data.courseId || data.courseId === courseId) &&
         data.category === 'Ausencia' &&
         isSameCalendarDay(data.date, data.timestamp, targetDate)
       ) {
@@ -485,9 +491,14 @@ export const attendanceAndHistoryRepo = {
   },
 
   /**
-   * Delete any late arrival records for a student recorded today
+   * Delete any late arrival records for a student recorded today (strictly scoped to courseId when provided)
    */
-  async deleteTodayLatesForStudent(userId: string, studentId: string, targetDate: Date = new Date()): Promise<string[]> {
+  async deleteTodayLatesForStudent(
+    userId: string,
+    studentId: string,
+    targetDate: Date = new Date(),
+    courseId?: string
+  ): Promise<string[]> {
     if (!userId || !studentId) return [];
     const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
@@ -500,6 +511,7 @@ export const attendanceAndHistoryRepo = {
         String(data.action || '').toLowerCase().includes('tarde');
       if (
         data.studentId === studentId &&
+        (!courseId || !data.courseId || data.courseId === courseId) &&
         isLate &&
         isSameCalendarDay(data.date, data.timestamp, targetDate)
       ) {
@@ -516,15 +528,23 @@ export const attendanceAndHistoryRepo = {
   },
 
   /**
-   * Delete disposition documents for a single student
+   * Delete disposition documents for a single student (strictly scoped to courseId when provided)
    */
-  async deleteStudentDispositionDocs(userId: string, studentId: string, clearAll: boolean = false): Promise<string[]> {
+  async deleteStudentDispositionDocs(
+    userId: string,
+    studentId: string,
+    clearAll: boolean = false,
+    courseId?: string
+  ): Promise<string[]> {
     if (!userId || !studentId) return [];
     const bundle = readLocalDispositionBundle(userId);
     const deletedIds: string[] = [];
 
     for (const data of bundle.history) {
-      if (data.studentId === studentId) {
+      if (
+        data.studentId === studentId &&
+        (!courseId || !data.courseId || data.courseId === courseId)
+      ) {
         const isDisp =
           data.category === 'Disposición' ||
           (!data.category && data.action !== 'Ausencia' && data.action !== 'Llegada tarde');

@@ -10,8 +10,16 @@ import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 import { ClassesModule } from './ClassesModule';
+import {
+  areCoursesEqual,
+  areCourseListsEqual,
+  areStudentListsEqual,
+} from '../../utils/entityEquality';
 
 export type CourseTabType = 'alumnos';
+
+const EMPTY_STUDENTS: Student[] = [];
+const NOOP = () => {};
 
 interface CourseWorkspaceViewProps {
   course: Course;
@@ -19,6 +27,8 @@ interface CourseWorkspaceViewProps {
   students?: Student[];
   activeTab?: string;
   initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
+  externalSearchQuery?: string;
+  onExternalSearchChange?: (query: string) => void;
   onTabChange?: (tab: CourseTabType) => void;
   onBackToCourses: () => void;
   onSelectCourse: (courseId: string) => void;
@@ -28,16 +38,58 @@ interface CourseWorkspaceViewProps {
   onOpenNewModal?: (type: 'course' | 'plan' | 'task' | 'file') => void;
 }
 
-export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
+function areCourseWorkspaceViewPropsEqual(
+  prev: CourseWorkspaceViewProps,
+  next: CourseWorkspaceViewProps
+): boolean {
+  if (
+    prev.activeTab !== next.activeTab ||
+    prev.initialSubTab !== next.initialSubTab ||
+    prev.externalSearchQuery !== next.externalSearchQuery ||
+    prev.onExternalSearchChange !== next.onExternalSearchChange ||
+    prev.onTabChange !== next.onTabChange ||
+    prev.onBackToCourses !== next.onBackToCourses ||
+    prev.onSelectCourse !== next.onSelectCourse ||
+    prev.onDeleteCourse !== next.onDeleteCourse ||
+    prev.onRefreshData !== next.onRefreshData ||
+    prev.onNavigate !== next.onNavigate ||
+    prev.onOpenNewModal !== next.onOpenNewModal
+  ) {
+    return false;
+  }
+
+  if (!areCoursesEqual(prev.course, next.course)) {
+    return false;
+  }
+
+  if (!areCourseListsEqual(prev.courses, next.courses)) {
+    return false;
+  }
+
+  if (
+    !areStudentListsEqual(
+      prev.students ?? EMPTY_STUDENTS,
+      next.students ?? EMPTY_STUDENTS
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+const CourseWorkspaceViewComponent: React.FC<CourseWorkspaceViewProps> = ({
   course,
   courses,
-  students = [],
+  students = EMPTY_STUDENTS,
   initialSubTab,
+  externalSearchQuery,
+  onExternalSearchChange,
   onBackToCourses,
   onSelectCourse,
   onDeleteCourse,
-  onRefreshData = () => {},
-  onNavigate = () => {},
+  onRefreshData = NOOP,
+  onNavigate = NOOP,
   onOpenNewModal,
 }) => {
   const { user, isDarkMode } = useWorkspaceAuth();
@@ -150,6 +202,8 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
           students={students}
           selectedCourseId={course.id}
           initialSubTab={initialSubTab}
+          externalSearchQuery={externalSearchQuery}
+          onExternalSearchChange={onExternalSearchChange}
           onSelectCourse={onSelectCourse}
           onRefreshData={onRefreshData}
           onNavigate={onNavigate}
@@ -241,3 +295,10 @@ export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = ({
     </div>
   );
 };
+
+export const CourseWorkspaceView = React.memo(
+  CourseWorkspaceViewComponent,
+  areCourseWorkspaceViewPropsEqual
+);
+CourseWorkspaceView.displayName = 'CourseWorkspaceView';
+

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback, Suspense, lazy } from 'react';
 import {
   Plus,
   Trash2,
@@ -67,6 +67,248 @@ export interface GradebookMatrixProps {
 }
 
 export { DEFAULT_CATEGORIES };
+
+const EMPTY_STUDENT_GRADES: Record<string, string> = {};
+
+interface GradebookStudentRowProps {
+  student: Student;
+  idx: number;
+  studentGrades: Record<string, string>;
+  categories: GradeCategory[];
+  isDarkMode: boolean;
+  overallCalculation: 'average_of_categories' | 'manual_final';
+  finalScore: string;
+  preliminaryValuation?: PreliminaryValuationRecord | null;
+  onScoreChange: (studentId: string, colKey: string, val: string) => void;
+  onCellBlur: () => void;
+  onCellKeyDown: (e: React.KeyboardEvent<HTMLInputElement>, rowIdx: number, colIdx: number) => void;
+  onOpenPreliminaryModal: () => void;
+  onDeleteStudent?: (student: Student) => void;
+}
+
+const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
+  ({
+    student,
+    idx,
+    studentGrades,
+    categories,
+    isDarkMode,
+    overallCalculation,
+    finalScore,
+    preliminaryValuation,
+    onScoreChange,
+    onCellBlur,
+    onCellKeyDown,
+    onOpenPreliminaryModal,
+    onDeleteStudent,
+  }) => {
+    let runningColIdx = 0;
+    const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
+
+    return (
+      <tr
+        className={`group transition-colors ${
+          isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'
+        }`}
+      >
+        {/* Student Name (Sticky on horizontal scroll) */}
+        <td
+          className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center justify-between gap-2 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
+            isDarkMode
+              ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
+              : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
+            <div className="min-w-0">
+              <p className="font-semibold text-xs truncate">
+                {student.lastName}, {student.firstName}
+              </p>
+              <p className="text-[10px] text-neutral-400 dark:text-slate-500 truncate">
+                {student.email || 'Sin correo'}
+              </p>
+            </div>
+          </div>
+
+          {onDeleteStudent && (
+            <button
+              type="button"
+              onClick={() => onDeleteStudent(student)}
+              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-500 transition-all cursor-pointer shrink-0"
+              title={`Quitar a ${student.lastName}, ${student.firstName} de la lista de esta materia`}
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-500" />
+            </button>
+          )}
+        </td>
+
+        {/* Grade Cells per Category & Subcategory */}
+        {categories.map((cat) => {
+          if (cat.subcategories.length === 0) {
+            const val = studentGrades[cat.id] || '';
+            const thisColIdx = runningColIdx++;
+            return (
+              <td key={cat.id} className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
+                <input
+                  type="text"
+                  data-grade-row={idx}
+                  data-grade-col={thisColIdx}
+                  value={val}
+                  onChange={(e) => onScoreChange(student.id, cat.id, e.target.value)}
+                  onBlur={onCellBlur}
+                  onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
+                  placeholder="-"
+                  className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                    isDarkMode
+                      ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
+                      : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
+                  } ${getScoreColorClass(val)}`}
+                />
+              </td>
+            );
+          }
+
+          return (
+            <React.Fragment key={cat.id}>
+              {cat.subcategories.map((sub) => {
+                const val = studentGrades[sub.id] || '';
+                const thisColIdx = runningColIdx++;
+                return (
+                  <td
+                    key={sub.id}
+                    className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800"
+                  >
+                    <input
+                      type="text"
+                      data-grade-row={idx}
+                      data-grade-col={thisColIdx}
+                      value={val}
+                      onChange={(e) => onScoreChange(student.id, sub.id, e.target.value)}
+                      onBlur={onCellBlur}
+                      onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
+                      placeholder="-"
+                      className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                        isDarkMode
+                          ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
+                          : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
+                      } ${getScoreColorClass(val)}`}
+                    />
+                  </td>
+                );
+              })}
+            </React.Fragment>
+          );
+        })}
+
+        {/* Preliminary Valuation Cell (TEA / TEP) if enabled */}
+        {preliminaryValuation && preliminaryValuation.showInMatrix && (
+          <td
+            className={`p-2 border-l text-center font-bold text-xs ${
+              isDarkMode ? 'bg-amber-950/20 border-slate-800' : 'bg-amber-50/30 border-neutral-200'
+            }`}
+          >
+            {(() => {
+              const valData = preliminaryValuation.valuations[student.id];
+              const traj = valData?.trajectory;
+              if (traj === 'TEA') {
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenPreliminaryModal}
+                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:scale-105 transition-transform cursor-pointer"
+                    title={
+                      valData?.observation
+                        ? `TEA: ${valData.observation} (Haz clic para editar)`
+                        : 'Trayecto Educativo en Alcanzado (Haz clic para editar)'
+                    }
+                  >
+                    TEA
+                  </button>
+                );
+              }
+              if (traj === 'TEP') {
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenPreliminaryModal}
+                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:scale-105 transition-transform cursor-pointer"
+                    title={
+                      valData?.observation
+                        ? `TEP: ${valData.observation} (Haz clic para editar)`
+                        : 'Trayecto Educativo en Proceso (Haz clic para editar)'
+                    }
+                  >
+                    TEP
+                  </button>
+                );
+              }
+              if (traj === 'TED') {
+                return (
+                  <button
+                    type="button"
+                    onClick={onOpenPreliminaryModal}
+                    className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-300 dark:border-rose-800 hover:scale-105 transition-transform cursor-pointer"
+                    title={
+                      valData?.observation
+                        ? `TED: ${valData.observation} (Haz clic para editar)`
+                        : 'Trayecto Educativo Discontinuo (Haz clic para editar)'
+                    }
+                  >
+                    TED
+                  </button>
+                );
+              }
+              return (
+                <button
+                  type="button"
+                  onClick={onOpenPreliminaryModal}
+                  className="text-[11px] text-neutral-400 hover:text-amber-600 dark:hover:text-amber-400 underline cursor-pointer"
+                  title="Asignar TEA / TEP en Valoración Preliminar"
+                >
+                  Asignar
+                </button>
+              );
+            })()}
+          </td>
+        )}
+
+        {/* Final Grade Cell */}
+        <td
+          className={`p-2 border-l text-center font-extrabold text-sm ${
+            isDarkMode ? 'bg-blue-950/20 border-slate-800' : 'bg-blue-50/40 border-neutral-200'
+          }`}
+        >
+          {overallCalculation === 'manual_final' ? (
+            (() => {
+              const finalColIdx = runningColIdx++;
+              return (
+                <input
+                  type="text"
+                  data-grade-row={idx}
+                  data-grade-col={finalColIdx}
+                  value={studentGrades['__final__'] || ''}
+                  onChange={(e) => onScoreChange(student.id, '__final__', e.target.value)}
+                  onBlur={onCellBlur}
+                  onKeyDown={(e) => onCellKeyDown(e, idx, finalColIdx)}
+                  placeholder="-"
+                  className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
+                    isDarkMode
+                      ? 'bg-purple-950/40 border-purple-800/80 text-purple-300 focus:border-purple-500'
+                      : 'bg-purple-50 border-purple-200 text-purple-900 focus:border-purple-400'
+                  }`}
+                  title="Nota final asignada a criterio del docente"
+                />
+              );
+            })()
+          ) : (
+            <span className={getScoreColorClass(finalScore)}>{finalScore || '-'}</span>
+          )}
+        </td>
+      </tr>
+    );
+  }
+);
 
 export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   courseId,
@@ -204,58 +446,111 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     }
   };
 
-  // Cell edit handling
-  const handleScoreChange = (studentId: string, colKey: string, val: string) => {
-    // Clean input: allow numbers, comma, dot, or short text
-    const cleanVal = val.replace(',', '.');
-    const updated = {
-      ...gradesMap,
-      [studentId]: {
-        ...(gradesMap[studentId] || {}),
-        [colKey]: cleanVal,
-      },
+  // Local draft map for 0ms typing responsiveness with debounced persistence (220ms)
+  const [draftGradesMap, setDraftGradesMap] = useState<StudentGradesMap>(gradesMap);
+  const pendingGradesSaveRef = useRef<StudentGradesMap | null>(null);
+  const gradesSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveGradesRef = useRef(saveGrades);
+  saveGradesRef.current = saveGrades;
+
+  const flushPendingGradesSave = useCallback(() => {
+    if (gradesSaveTimerRef.current) {
+      clearTimeout(gradesSaveTimerRef.current);
+      gradesSaveTimerRef.current = null;
+    }
+    if (pendingGradesSaveRef.current) {
+      const toSave = pendingGradesSaveRef.current;
+      pendingGradesSaveRef.current = null;
+      saveGradesRef.current(toSave);
+    }
+  }, []);
+
+  // Sync draftGradesMap when underlying gradesMap or term/course changes externally
+  useEffect(() => {
+    if (!pendingGradesSaveRef.current) {
+      setDraftGradesMap(gradesMap);
+    }
+  }, [gradesMap]);
+
+  // Flush any pending keystroke saves when switching term/course or unmounting
+  useEffect(() => {
+    return () => {
+      flushPendingGradesSave();
     };
-    saveGrades(updated);
-  };
+  }, [courseId, currentTerm, flushPendingGradesSave]);
+
+  // Cell edit handling: immediate UI update + debounced storage/cloud write
+  const handleScoreChange = useCallback((studentId: string, colKey: string, val: string) => {
+    const cleanVal = val.replace(',', '.');
+    setDraftGradesMap((prev) => {
+      const updated: StudentGradesMap = {
+        ...prev,
+        [studentId]: {
+          ...(prev[studentId] || {}),
+          [colKey]: cleanVal,
+        },
+      };
+      pendingGradesSaveRef.current = updated;
+      if (gradesSaveTimerRef.current) {
+        clearTimeout(gradesSaveTimerRef.current);
+      }
+      gradesSaveTimerRef.current = setTimeout(() => {
+        gradesSaveTimerRef.current = null;
+        if (pendingGradesSaveRef.current) {
+          const toCommit = pendingGradesSaveRef.current;
+          pendingGradesSaveRef.current = null;
+          saveGradesRef.current(toCommit);
+        }
+      }, 220);
+      return updated;
+    });
+  }, []);
 
   // Excel-like keyboard navigation across grade cells (Enter / ArrowUp / ArrowDown / ArrowLeft / ArrowRight)
-  const handleGradeCellKeyDown = (
-    e: React.KeyboardEvent<HTMLInputElement>,
-    rowIdx: number,
-    colIdx: number
-  ) => {
-    let nextRow = rowIdx;
-    let nextCol = colIdx;
+  const handleGradeCellKeyDown = useCallback(
+    (
+      e: React.KeyboardEvent<HTMLInputElement>,
+      rowIdx: number,
+      colIdx: number
+    ) => {
+      let nextRow = rowIdx;
+      let nextCol = colIdx;
 
-    if (e.key === 'Enter' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      nextRow = rowIdx + 1;
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      nextRow = rowIdx - 1;
-    } else if (
-      e.key === 'ArrowRight' &&
-      e.currentTarget.selectionStart === e.currentTarget.value.length
-    ) {
-      e.preventDefault();
-      nextCol = colIdx + 1;
-    } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
-      e.preventDefault();
-      nextCol = colIdx - 1;
-    } else {
-      return;
-    }
-
-    if (tableRef.current) {
-      const target = tableRef.current.querySelector<HTMLInputElement>(
-        `input[data-grade-row="${nextRow}"][data-grade-col="${nextCol}"]`
-      );
-      if (target) {
-        target.focus();
-        target.select();
+      if (e.key === 'Enter' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        nextRow = rowIdx + 1;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        nextRow = rowIdx - 1;
+      } else if (
+        e.key === 'ArrowRight' &&
+        e.currentTarget.selectionStart === e.currentTarget.value.length
+      ) {
+        e.preventDefault();
+        nextCol = colIdx + 1;
+      } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
+        e.preventDefault();
+        nextCol = colIdx - 1;
+      } else {
+        return;
       }
-    }
-  };
+
+      if (tableRef.current) {
+        const target = tableRef.current.querySelector<HTMLInputElement>(
+          `input[data-grade-row="${nextRow}"][data-grade-col="${nextCol}"]`
+        );
+        if (target) {
+          target.focus();
+          target.select();
+        }
+      }
+    },
+    []
+  );
+
+  const handleOpenPreliminaryModal = useCallback(() => {
+    setIsPreliminaryModalOpen(true);
+  }, []);
 
   // Modals / State for adding & editing categories/subcategories
   const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
@@ -364,7 +659,12 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     studentId: string
   ): { scoreStr: string; num: number | null } => {
     const termCats = term === '1c' ? categories1c : categories2c;
-    const termGrades = term === '1c' ? gradesMap1c : gradesMap2c;
+    const termGrades =
+      term === (is2c ? '2c' : '1c')
+        ? draftGradesMap
+        : term === '1c'
+        ? gradesMap1c
+        : gradesMap2c;
     const termCalc = term === '1c' ? overallCalc1c : overallCalc2c;
     return calculateFinalScoreForStudent(termCats, termGrades, termCalc, studentId);
   };
@@ -1115,210 +1415,24 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   </td>
                 </tr>
               ) : (
-                students.map((student, idx) => {
-                  const studentGrades = gradesMap[student.id] || {};
-                  const finalScore = getFinalScore(student.id);
-                  let runningColIdx = 0;
-
-                  return (
-                    <tr
-                      key={student.id}
-                      className={`group transition-colors ${
-                        isDarkMode
-                          ? 'hover:bg-slate-800/40'
-                          : 'hover:bg-neutral-50/80'
-                      }`}
-                    >
-                      {/* Student Name (Sticky on horizontal scroll) */}
-                      <td
-                        className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center justify-between gap-2 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
-                          isDarkMode
-                            ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
-                            : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
-                          <div className="min-w-0">
-                            <p className="font-semibold text-xs truncate">
-                              {student.lastName}, {student.firstName}
-                            </p>
-                            <p className="text-[10px] text-neutral-400 dark:text-slate-500 truncate">
-                              {student.email || 'Sin correo'}
-                            </p>
-                          </div>
-                        </div>
-
-                        {onDeleteStudent && (
-                          <button
-                            type="button"
-                            onClick={() => onDeleteStudent(student)}
-                            className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-500 transition-all cursor-pointer shrink-0"
-                            title={`Quitar a ${student.lastName}, ${student.firstName} de la lista de esta materia`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-red-500" />
-                          </button>
-                        )}
-                      </td>
-
-                      {/* Grade Cells per Category & Subcategory */}
-                      {categories.map((cat) => {
-                        // Si no tiene subcategorías, celda directa para la categoría
-                        if (cat.subcategories.length === 0) {
-                          const val = studentGrades[cat.id] || '';
-                          const thisColIdx = runningColIdx++;
-                          return (
-                            <td key={cat.id} className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
-                              <input
-                                type="text"
-                                data-grade-row={idx}
-                                data-grade-col={thisColIdx}
-                                value={val}
-                                onChange={(e) => handleScoreChange(student.id, cat.id, e.target.value)}
-                                onKeyDown={(e) => handleGradeCellKeyDown(e, idx, thisColIdx)}
-                                placeholder="-"
-                                className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                                  isDarkMode
-                                    ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
-                                    : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
-                                } ${getScoreColorClass(val)}`}
-                              />
-                            </td>
-                          );
-                        }
-
-                        // Celdas de subcategorías
-                        return (
-                          <React.Fragment key={cat.id}>
-                            {cat.subcategories.map((sub) => {
-                              const val = studentGrades[sub.id] || '';
-                              const thisColIdx = runningColIdx++;
-                              return (
-                                <td
-                                  key={sub.id}
-                                  className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800"
-                                >
-                                  <input
-                                    type="text"
-                                    data-grade-row={idx}
-                                    data-grade-col={thisColIdx}
-                                    value={val}
-                                    onChange={(e) => handleScoreChange(student.id, sub.id, e.target.value)}
-                                    onKeyDown={(e) => handleGradeCellKeyDown(e, idx, thisColIdx)}
-                                    placeholder="-"
-                                    className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                                      isDarkMode
-                                        ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
-                                        : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
-                                    } ${getScoreColorClass(val)}`}
-                                  />
-                                </td>
-                              );
-                            })}
-                          </React.Fragment>
-                        );
-                      })}
-
-                      {/* Preliminary Valuation Cell (TEA / TEP) if enabled */}
-                      {activePreliminaryValuation && activePreliminaryValuation.showInMatrix && (
-                        <td
-                          className={`p-2 border-l text-center font-bold text-xs ${
-                            isDarkMode
-                              ? 'bg-amber-950/20 border-slate-800'
-                              : 'bg-amber-50/30 border-neutral-200'
-                          }`}
-                        >
-                          {(() => {
-                            const valData = activePreliminaryValuation.valuations[student.id];
-                            const traj = valData?.trajectory;
-                            if (traj === 'TEA') {
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() => setIsPreliminaryModalOpen(true)}
-                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:scale-105 transition-transform cursor-pointer"
-                                  title={valData?.observation ? `TEA: ${valData.observation} (Haz clic para editar)` : 'Trayecto Educativo en Alcanzado (Haz clic para editar)'}
-                                >
-                                  TEA
-                                </button>
-                              );
-                            }
-                            if (traj === 'TEP') {
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() => setIsPreliminaryModalOpen(true)}
-                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300 border border-amber-300 dark:border-amber-800 hover:scale-105 transition-transform cursor-pointer"
-                                  title={valData?.observation ? `TEP: ${valData.observation} (Haz clic para editar)` : 'Trayecto Educativo en Proceso (Haz clic para editar)'}
-                                >
-                                  TEP
-                                </button>
-                              );
-                            }
-                            if (traj === 'TED') {
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() => setIsPreliminaryModalOpen(true)}
-                                  className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300 border border-rose-300 dark:border-rose-800 hover:scale-105 transition-transform cursor-pointer"
-                                  title={valData?.observation ? `TED: ${valData.observation} (Haz clic para editar)` : 'Trayecto Educativo Discontinuo (Haz clic para editar)'}
-                                >
-                                  TED
-                                </button>
-                              );
-                            }
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => setIsPreliminaryModalOpen(true)}
-                                className="text-[11px] text-neutral-400 hover:text-amber-600 dark:hover:text-amber-400 underline cursor-pointer"
-                                title="Asignar TEA / TEP en Valoración Preliminar"
-                              >
-                                Asignar
-                              </button>
-                            );
-                          })()}
-                        </td>
-                      )}
-
-                      {/* Final Grade Cell: Either editable manual OR calculated automatically */}
-                      <td
-                        className={`p-2 border-l text-center font-extrabold text-sm ${
-                          isDarkMode
-                            ? 'bg-blue-950/20 border-slate-800'
-                            : 'bg-blue-50/40 border-neutral-200'
-                        }`}
-                      >
-                        {overallCalculation === 'manual_final' ? (
-                          (() => {
-                            const finalColIdx = runningColIdx++;
-                            return (
-                              <input
-                                type="text"
-                                data-grade-row={idx}
-                                data-grade-col={finalColIdx}
-                                value={studentGrades['__final__'] || ''}
-                                onChange={(e) => handleScoreChange(student.id, '__final__', e.target.value)}
-                                onKeyDown={(e) => handleGradeCellKeyDown(e, idx, finalColIdx)}
-                                placeholder="-"
-                                className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
-                                  isDarkMode
-                                    ? 'bg-purple-950/40 border-purple-800/80 text-purple-300 focus:border-purple-500'
-                                    : 'bg-purple-50 border-purple-200 text-purple-900 focus:border-purple-400'
-                                }`}
-                                title="Nota final asignada a criterio del docente"
-                              />
-                            );
-                          })()
-                        ) : (
-                          <span className={getScoreColorClass(finalScore)}>
-                            {finalScore || '-'}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
+                students.map((student, idx) => (
+                  <GradebookStudentRow
+                    key={student.id}
+                    student={student}
+                    idx={idx}
+                    studentGrades={draftGradesMap[student.id] || EMPTY_STUDENT_GRADES}
+                    categories={categories}
+                    isDarkMode={isDarkMode}
+                    overallCalculation={overallCalculation}
+                    finalScore={getFinalScore(student.id)}
+                    preliminaryValuation={activePreliminaryValuation}
+                    onScoreChange={handleScoreChange}
+                    onCellBlur={flushPendingGradesSave}
+                    onCellKeyDown={handleGradeCellKeyDown}
+                    onOpenPreliminaryModal={handleOpenPreliminaryModal}
+                    onDeleteStudent={onDeleteStudent}
+                  />
+                ))
               )}
             </tbody>
           </table>

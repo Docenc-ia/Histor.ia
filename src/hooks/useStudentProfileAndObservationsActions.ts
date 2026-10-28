@@ -189,7 +189,9 @@ export function useStudentProfileAndObservationsActions({
 
   const handleDeleteObservation = (studentId: string, obsId: string) => {
     const currentList = studentObservations[studentId] || [];
-    const updatedList = currentList.filter((o) => o.id !== obsId);
+    const updatedList = currentList.filter(
+      (o) => !(o.id === obsId && (!o.courseId || !activeCourse?.id || o.courseId === activeCourse.id))
+    );
     const updatedMap = {
       ...studentObservations,
       [studentId]: updatedList,

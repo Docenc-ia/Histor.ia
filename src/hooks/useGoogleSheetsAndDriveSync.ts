@@ -388,8 +388,8 @@ export function useGoogleSheetsAndDriveSync({
             setDispositionMap2c(pullRes.updatedMap2c);
 
             if (typeof window !== 'undefined' && activeCourse?.id) {
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(pullRes.updatedMap1c));
-              localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(pullRes.updatedMap2c));
+              setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(pullRes.updatedMap1c));
+              setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(pullRes.updatedMap2c));
             }
 
             const now = new Date();
@@ -415,7 +415,7 @@ export function useGoogleSheetsAndDriveSync({
 
             const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
             setHistoryList(updatedHistory);
-            saveAllDispositionStorage(pullRes.updatedMap1c, updatedHistory);
+            saveAllDispositionStorage(pullRes.updatedMap1c, updatedHistory, { courseId: activeCourse.id });
             window.dispatchEvent(new Event('docencia_student_status_updated'));
 
             setDobleEntradaDiffs(pullRes.changes);
@@ -716,8 +716,8 @@ export function useGoogleSheetsAndDriveSync({
         setDispositionMap(res.updatedMap1c);
         setDispositionMap2c(res.updatedMap2c);
         if (typeof window !== 'undefined' && activeCourse?.id) {
-          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(res.updatedMap1c));
-          localStorage.setItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(res.updatedMap2c));
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(res.updatedMap1c));
+          setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(res.updatedMap2c));
         }
 
         const now = new Date();
@@ -738,7 +738,7 @@ export function useGoogleSheetsAndDriveSync({
 
         const updatedHistory = deduplicateHistory([...newHistoryItems, ...historyList]);
         setHistoryList(updatedHistory);
-        saveAllDispositionStorage(res.updatedMap1c, updatedHistory);
+        saveAllDispositionStorage(res.updatedMap1c, updatedHistory, { courseId: activeCourse.id });
 
         window.dispatchEvent(new Event('docencia_student_status_updated'));
 
@@ -987,9 +987,10 @@ export function useGoogleSheetsAndDriveSync({
         if (is2c) {
           const updatedMap2c: Record<string, StudentDispositionData> = { ...dispositionMap2c };
           attEntries.forEach(([stId, upd]) => {
-            const current = updatedMap2c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            const current = updatedMap2c[stId] || getStudentMetrics(stId, '2c');
             updatedMap2c[stId] = {
               ...current,
+              courseId: activeCourse.id,
               totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
               totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
               totalDisposition:
@@ -999,13 +1000,10 @@ export function useGoogleSheetsAndDriveSync({
 
           setDispositionMap2c(updatedMap2c);
           updatedMapForEvent = updatedMap2c;
-          if (typeof window !== 'undefined') {
-            setUserScopedItem('fds_disposition_data_2c', JSON.stringify(updatedMap2c));
-            if (activeCourse?.id) {
-              setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap2c));
-            }
+          if (typeof window !== 'undefined' && activeCourse?.id) {
+            setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap2c));
           }
-          saveAllDispositionStorage(dispositionMap, historyList);
+          saveAllDispositionStorage(dispositionMap, historyList, { courseId: activeCourse.id });
           if (userId) {
             firestoreSync.syncCompactDispositionNow(userId, false);
           }
@@ -1013,9 +1011,10 @@ export function useGoogleSheetsAndDriveSync({
         } else {
           const updatedMap1c: Record<string, StudentDispositionData> = { ...dispositionMap };
           attEntries.forEach(([stId, upd]) => {
-            const current = updatedMap1c[stId] || { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+            const current = updatedMap1c[stId] || getStudentMetrics(stId, '1c');
             updatedMap1c[stId] = {
               ...current,
+              courseId: activeCourse.id,
               totalAbsences: upd.absences !== undefined ? upd.absences : current.totalAbsences,
               totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
               totalDisposition:
@@ -1028,7 +1027,7 @@ export function useGoogleSheetsAndDriveSync({
           if (typeof window !== 'undefined' && activeCourse?.id) {
             setUserScopedItem(`fds_disposition_data_${activeCourse.id}_1c`, JSON.stringify(updatedMap1c));
           }
-          saveAllDispositionStorage(updatedMap1c, historyList);
+          saveAllDispositionStorage(updatedMap1c, historyList, { courseId: activeCourse.id });
           if (userId) {
             firestoreSync.syncCompactDispositionNow(userId, false);
           }

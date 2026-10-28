@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   DEFAULT_TEACHER,
   getTeacherAvatar,
@@ -72,7 +72,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return true; // default dark mode consistent with landing
   });
 
-  const toggleDarkMode = () => {
+  const toggleDarkMode = useCallback(() => {
     setIsDarkMode((prev) => {
       const next = !prev;
       if (typeof window !== 'undefined') {
@@ -80,7 +80,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       return next;
     });
-  };
+  }, []);
 
   useEffect(() => {
     if (typeof document !== 'undefined') {
@@ -192,11 +192,11 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [mode]);
 
-  const dismissTokenExpiryBanner = () => {
+  const dismissTokenExpiryBanner = useCallback(() => {
     setIsTokenExpired(false);
-  };
+  }, []);
 
-  const renewGoogleSession = async (): Promise<boolean> => {
+  const renewGoogleSession = useCallback(async (): Promise<boolean> => {
     try {
       const emailHint = user?.email || undefined;
       const gsiRes = await signInWithGoogleIdentityServices(emailHint, {
@@ -212,82 +212,85 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       console.warn('Renew Google session error:', err);
       return false;
     }
-  };
+  }, [user?.email]);
 
-  const services: ServiceStatus[] = [
-    {
-      id: 'sheets',
-      name: 'Google Sheets',
-      scope: 'https://www.googleapis.com/auth/spreadsheets',
-      active: mode !== 'disconnected',
-      color: '#0f9d58',
-      iconName: 'FileSpreadsheet',
-      description: 'Sincronización en vivo de nómina de alumnos, inasistencias y notas de conducta.',
-    },
-    {
-      id: 'drive',
-      name: 'Google Drive',
-      scope: 'https://www.googleapis.com/auth/drive.file',
-      active: mode !== 'disconnected',
-      color: '#4285f4',
-      iconName: 'FolderClosed',
-      description: 'Creación y adjuntos de archivos en carpetas de curso.',
-    },
-    {
-      id: 'classroom_courses',
-      name: 'Classroom Cursos',
-      scope: 'https://www.googleapis.com/auth/classroom.courses.readonly',
-      active: mode !== 'disconnected',
-      color: '#0f9d58',
-      iconName: 'GraduationCap',
-      description: 'Lectura e importación de clases y nóminas de estudiantes.',
-    },
-    {
-      id: 'classroom_tasks',
-      name: 'Classroom Tareas',
-      scope: 'https://www.googleapis.com/auth/classroom.coursework.students',
-      active: mode !== 'disconnected',
-      color: '#0f9d58',
-      iconName: 'CheckSquare',
-      description: 'Creación, asignación y seguimiento de entregas estudiantiles.',
-    },
-    {
-      id: 'classroom_announcements',
-      name: 'Classroom Avisos & Notificaciones',
-      scope: 'https://www.googleapis.com/auth/classroom.announcements',
-      active: mode !== 'disconnected',
-      color: '#0f9d58',
-      iconName: 'Bell',
-      description: 'Publicación de avisos dirigidos al alumno por inasistencias o novedades.',
-    },
-    {
-      id: 'calendar',
-      name: 'Google Calendar',
-      scope: 'https://www.googleapis.com/auth/calendar.readonly',
-      active: mode !== 'disconnected',
-      color: '#4285f4',
-      iconName: 'Calendar',
-      description: 'Horarios de materias, seguimiento de clases y eventos de calendario escolar.',
-    },
-    {
-      id: 'gmail',
-      name: 'Gmail Institucional',
-      scope: 'https://www.googleapis.com/auth/gmail.send',
-      active: mode !== 'disconnected',
-      color: '#ea4335',
-      iconName: 'Mail',
-      description: 'Envío de notificaciones por correo electrónico institucional.',
-    },
-    {
-      id: 'user_profile',
-      name: 'Google Identity',
-      scope: 'https://www.googleapis.com/auth/userinfo.profile',
-      active: mode !== 'disconnected',
-      color: '#ea4335',
-      iconName: 'UserCheck',
-      description: 'Autenticación institucional de cuenta de profesor.',
-    },
-  ];
+  const services: ServiceStatus[] = useMemo(
+    () => [
+      {
+        id: 'sheets',
+        name: 'Google Sheets',
+        scope: 'https://www.googleapis.com/auth/spreadsheets',
+        active: mode !== 'disconnected',
+        color: '#0f9d58',
+        iconName: 'FileSpreadsheet',
+        description: 'Sincronización en vivo de nómina de alumnos, inasistencias y notas de conducta.',
+      },
+      {
+        id: 'drive',
+        name: 'Google Drive',
+        scope: 'https://www.googleapis.com/auth/drive.file',
+        active: mode !== 'disconnected',
+        color: '#4285f4',
+        iconName: 'FolderClosed',
+        description: 'Creación y adjuntos de archivos en carpetas de curso.',
+      },
+      {
+        id: 'classroom_courses',
+        name: 'Classroom Cursos',
+        scope: 'https://www.googleapis.com/auth/classroom.courses.readonly',
+        active: mode !== 'disconnected',
+        color: '#0f9d58',
+        iconName: 'GraduationCap',
+        description: 'Lectura e importación de clases y nóminas de estudiantes.',
+      },
+      {
+        id: 'classroom_tasks',
+        name: 'Classroom Tareas',
+        scope: 'https://www.googleapis.com/auth/classroom.coursework.students',
+        active: mode !== 'disconnected',
+        color: '#0f9d58',
+        iconName: 'CheckSquare',
+        description: 'Creación, asignación y seguimiento de entregas estudiantiles.',
+      },
+      {
+        id: 'classroom_announcements',
+        name: 'Classroom Avisos & Notificaciones',
+        scope: 'https://www.googleapis.com/auth/classroom.announcements',
+        active: mode !== 'disconnected',
+        color: '#0f9d58',
+        iconName: 'Bell',
+        description: 'Publicación de avisos dirigidos al alumno por inasistencias o novedades.',
+      },
+      {
+        id: 'calendar',
+        name: 'Google Calendar',
+        scope: 'https://www.googleapis.com/auth/calendar.readonly',
+        active: mode !== 'disconnected',
+        color: '#4285f4',
+        iconName: 'Calendar',
+        description: 'Horarios de materias, seguimiento de clases y eventos de calendario escolar.',
+      },
+      {
+        id: 'gmail',
+        name: 'Gmail Institucional',
+        scope: 'https://www.googleapis.com/auth/gmail.send',
+        active: mode !== 'disconnected',
+        color: '#ea4335',
+        iconName: 'Mail',
+        description: 'Envío de notificaciones por correo electrónico institucional.',
+      },
+      {
+        id: 'user_profile',
+        name: 'Google Identity',
+        scope: 'https://www.googleapis.com/auth/userinfo.profile',
+        active: mode !== 'disconnected',
+        color: '#ea4335',
+        iconName: 'UserCheck',
+        description: 'Autenticación institucional de cuenta de profesor.',
+      },
+    ],
+    [mode]
+  );
 
   // Check auth on startup (scoped to this browser's active teacher email)
   useEffect(() => {
@@ -366,7 +369,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return () => unsubscribe();
   }, []);
 
-  const loginWithGoogleIdToken = async (idToken: string) => {
+  const loginWithGoogleIdToken = useCallback(async (idToken: string) => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -390,18 +393,18 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } finally {
       setIsLoggingIn(false);
     }
-  };
+  }, []);
 
-  const requestAccessToken = async (): Promise<string> => {
+  const requestAccessToken = useCallback(async (): Promise<string> => {
     const liveToken = await requestGoogleAccessToken();
     if (liveToken) {
       setToken(liveToken);
       setMode('connected');
     }
     return liveToken;
-  };
+  }, []);
 
-  const loginWithGoogle = async (preferredEmail?: string): Promise<string | null> => {
+  const loginWithGoogle = useCallback(async (preferredEmail?: string): Promise<string | null> => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -453,9 +456,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } finally {
       setIsLoggingIn(false);
     }
-  };
+  }, []);
 
-  const loginWithEmail = async (email: string, _password?: string, name?: string) => {
+  const loginWithEmail = useCallback(async (email: string, _password?: string, name?: string) => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
@@ -521,9 +524,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } finally {
       setIsLoggingIn(false);
     }
-  };
+  }, []);
 
-  const updateUserProfile = async (updated: Partial<TeacherProfile>) => {
+  const updateUserProfile = useCallback(async (updated: Partial<TeacherProfile>) => {
     if (!user) return;
     const cleanName = updated.name || user.name;
     const cleanEmail = (updated.email || user.email).trim().toLowerCase();
@@ -550,11 +553,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       token: token || 'token_updated',
       scopes: WORKSPACE_SCOPES,
     });
-  };
+  }, [user, token]);
 
-
-
-  const logout = async () => {
+  const logout = useCallback(async () => {
     const currentEmail = user?.email;
     try {
       sheetsSyncQueue.flushAllPending();
@@ -577,43 +578,71 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setToken(null);
     setUser(null);
     setMode('disconnected');
-  };
+  }, [user?.email]);
 
-  const testConnection = async (): Promise<boolean> => {
+  const testConnection = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetch('/api/workspace/config');
       return res.ok;
     } catch {
       return false;
     }
-  };
+  }, []);
+
+  const permissions = useMemo(
+    () => user?.permissions || DEFAULT_TEACHER.permissions || [],
+    [user?.permissions]
+  );
+
+  const contextValue = useMemo<WorkspaceAuthContextType>(
+    () => ({
+      user,
+      mode,
+      token,
+      services,
+      scopes: WORKSPACE_SCOPES,
+      permissions,
+      isLoggingIn,
+      loginError,
+      isDarkMode,
+      isTokenExpired,
+      dismissTokenExpiryBanner,
+      renewGoogleSession,
+      toggleDarkMode,
+      loginWithGoogle,
+      requestAccessToken,
+      loginWithGoogleIdToken,
+      loginWithEmail,
+      updateUserProfile,
+      logout,
+      setMode,
+      testConnection,
+    }),
+    [
+      user,
+      mode,
+      token,
+      services,
+      permissions,
+      isLoggingIn,
+      loginError,
+      isDarkMode,
+      isTokenExpired,
+      dismissTokenExpiryBanner,
+      renewGoogleSession,
+      toggleDarkMode,
+      loginWithGoogle,
+      requestAccessToken,
+      loginWithGoogleIdToken,
+      loginWithEmail,
+      updateUserProfile,
+      logout,
+      testConnection,
+    ]
+  );
 
   return (
-    <WorkspaceAuthContext.Provider
-      value={{
-        user,
-        mode,
-        token,
-        services,
-        scopes: WORKSPACE_SCOPES,
-        permissions: user?.permissions || DEFAULT_TEACHER.permissions || [],
-        isLoggingIn,
-        loginError,
-        isDarkMode,
-        isTokenExpired,
-        dismissTokenExpiryBanner,
-        renewGoogleSession,
-        toggleDarkMode,
-        loginWithGoogle,
-        requestAccessToken,
-        loginWithGoogleIdToken,
-        loginWithEmail,
-        updateUserProfile,
-        logout,
-        setMode,
-        testConnection,
-      }}
-    >
+    <WorkspaceAuthContext.Provider value={contextValue}>
       {children}
     </WorkspaceAuthContext.Provider>
   );

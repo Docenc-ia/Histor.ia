@@ -56,11 +56,38 @@ export const Header: React.FC<HeaderProps> = ({
   const { user, mode, setMode, logout, loginWithGoogle, isDarkMode, toggleDarkMode, updateUserProfile } = useWorkspaceAuth();
   const [showAppsMenu, setShowAppsMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const appsMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [isFullBackupOpen, setIsFullBackupOpen] = useState(false);
   const [backupFeedback, setBackupFeedback] = useState<string | null>(null);
   const [isRestoringFullBackup, setIsRestoringFullBackup] = useState(false);
   const restoreInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!showAppsMenu && !showProfileMenu) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      const target = e.target as Node | null;
+      if (showAppsMenu && appsMenuRef.current && target && !appsMenuRef.current.contains(target)) {
+        setShowAppsMenu(false);
+      }
+      if (showProfileMenu && profileMenuRef.current && target && !profileMenuRef.current.contains(target)) {
+        setShowProfileMenu(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowAppsMenu(false);
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [showAppsMenu, showProfileMenu]);
 
   const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
     state: 'synced',
@@ -397,7 +424,7 @@ export const Header: React.FC<HeaderProps> = ({
     { name: 'Google Classroom', icon: '🎓', tab: 'classroom_sync', desc: 'Sincronizar y Alumnos' },
     { name: 'Gmail', icon: '✉️', tab: 'classes', desc: 'Avisos y Notificaciones' },
     { name: 'Google Sheets', icon: '📊', tab: 'classes', desc: 'Planilla de Asistencia' },
-    { name: 'Google Calendar', icon: '📅', tab: 'classes', desc: 'Horarios de Clases' },
+    { name: 'Google Calendar', icon: '📅', tab: 'calendar', desc: 'Horarios de Clases' },
   ];
 
   return (
@@ -590,9 +617,12 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* 9 Dots Google Apps Launcher */}
-        <div className="relative">
+        <div className="relative" ref={appsMenuRef}>
           <button
-            onClick={() => setShowAppsMenu(!showAppsMenu)}
+            onClick={() => {
+              setShowAppsMenu(!showAppsMenu);
+              setShowProfileMenu(false);
+            }}
             className="p-2 text-neutral-600 hover:bg-neutral-100 rounded-full transition-colors"
             title="Aplicaciones de Google Workspace"
           >
@@ -672,9 +702,12 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Teacher Profile */}
-        <div className="relative">
+        <div className="relative" ref={profileMenuRef}>
           <button
-            onClick={() => setShowProfileMenu(!showProfileMenu)}
+            onClick={() => {
+              setShowProfileMenu(!showProfileMenu);
+              setShowAppsMenu(false);
+            }}
             className={`flex items-center gap-2 p-1 rounded-full transition-colors ${
               isDarkMode ? 'hover:bg-slate-800' : 'hover:bg-neutral-100'
             }`}

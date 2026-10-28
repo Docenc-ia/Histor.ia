@@ -13,12 +13,43 @@ import {
   renewGoogleSessionSilently,
 } from '../services/workspace/googleAuth';
 import { formatLocalDateDMY, formatLocalTimeHMS } from '../utils/dateUtils';
+import { touchCourseDataLru, putCourseSnapshotInLru } from '../utils/lruCourseCache';
 
 interface SheetConfigState {
   spreadsheetId: string;
   url: string;
   isLiveGoogle: boolean;
   lastSyncedAt?: string;
+}
+
+const LEGACY_SHARED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
+
+/**
+ * Validates that a Google Spreadsheet ID is authentic and not already claimed by a different course.
+ */
+function isSpreadsheetValidForCourse(spreadsheetId?: string | null, course?: Course): boolean {
+  if (!spreadsheetId || !course || !isRealGoogleSpreadsheetId(spreadsheetId)) return false;
+
+  const isS2NatCourse =
+    (course.name || '').toLowerCase().includes('s2 nat') ||
+    (course.grade || '').toLowerCase().includes('s2 nat');
+  if (!isS2NatCourse && spreadsheetId === LEGACY_SHARED_S2_NAT_SHEET_ID) {
+    return false;
+  }
+
+  try {
+    const allCourses = api.getLocalCourses();
+    const claimedByOther = allCourses.some(
+      (other) =>
+        other.id &&
+        other.id !== course.id &&
+        other.dispositionSheetId === spreadsheetId &&
+        (other.subject || '').trim().toLowerCase() !== (course.subject || '').trim().toLowerCase()
+    );
+    if (claimedByOther) return false;
+  } catch (_) {}
+
+  return true;
 }
 
 interface UseAttendanceSyncOptions {
@@ -60,24 +91,18 @@ export function useAttendanceSync({
     message: string;
   } | null>(null);
 
-  // Initialize sheet configuration on activeCourse change
+  // Initialize sheet configuration on activeCourse change and touch LRU cache
   useEffect(() => {
     let isMounted = true;
     if (activeCourse?.id) {
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+      touchCourseDataLru(activeCourse.id);
+      putCourseSnapshotInLru(activeCourse);
 
       api
         .getCourseDispositionSheet(activeCourse.id)
         .then((data) => {
           if (!isMounted) return;
-          if (
-            data?.spreadsheetId &&
-            isRealGoogleSpreadsheetId(data.spreadsheetId) &&
-            (isS2NatCourse || data.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
-          ) {
+          if (data?.spreadsheetId && isSpreadsheetValidForCourse(data.spreadsheetId, activeCourse)) {
             setSheetConfig({
               spreadsheetId: data.spreadsheetId,
               url: data.url || `https://docs.google.com/spreadsheets/d/${data.spreadsheetId}/edit`,
@@ -85,7 +110,7 @@ export function useAttendanceSync({
               lastSyncedAt: data.lastSyncedAt,
             });
           } else {
-            if (data?.spreadsheetId === POISONED_S2_NAT_SHEET_ID && !isS2NatCourse) {
+            if (data?.spreadsheetId && !isSpreadsheetValidForCourse(data.spreadsheetId, activeCourse)) {
               api.unlinkCourseDispositionSheet(activeCourse.id).catch(() => {});
             }
             const fallbackId = `sheet-disp-${activeCourse.id}`;
@@ -131,20 +156,13 @@ export function useAttendanceSync({
         courseSnapshot.id,
         'attendance',
         async () => {
-          const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-          const isS2NatCourse =
-            (courseSnapshot.name || '').toLowerCase().includes('s2 nat') ||
-            (courseSnapshot.grade || '').toLowerCase().includes('s2 nat');
-
           setIsSyncingSheet(true);
           try {
             const realExistingId =
-              (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
-              (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+              (isSpreadsheetValidForCourse(sheetConfig?.spreadsheetId, courseSnapshot)
                 ? sheetConfig?.spreadsheetId
                 : undefined) ||
-              (isRealGoogleSpreadsheetId(courseSnapshot.dispositionSheetId) &&
-              (isS2NatCourse || courseSnapshot.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID)
+              (isSpreadsheetValidForCourse(courseSnapshot.dispositionSheetId, courseSnapshot)
                 ? courseSnapshot.dispositionSheetId
                 : undefined);
 
@@ -267,18 +285,12 @@ export function useAttendanceSync({
 
       if (onToast) onToast(`Subiendo información de la app a Google Sheets para "${activeCourse.name}"...`);
       const currentStudents = students.filter((s) => s.courseId === activeCourse.id);
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
 
       const realExistingId =
-        (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) &&
-        (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID)
+        (isSpreadsheetValidForCourse(sheetConfig?.spreadsheetId, activeCourse)
           ? sheetConfig?.spreadsheetId
           : undefined) ||
-        (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) &&
-        (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID)
+        (isSpreadsheetValidForCourse(activeCourse.dispositionSheetId, activeCourse)
           ? activeCourse.dispositionSheetId
           : undefined);
 
@@ -404,16 +416,15 @@ export function useAttendanceSync({
     setIsOpeningSheet(true);
 
     try {
-      const POISONED_S2_NAT_SHEET_ID = '12yId5S8Zj5KmS6Y1F-f6E6WbcBL44tKnjsxt32CqZW4';
-      const isS2NatCourse =
-        (activeCourse.name || '').toLowerCase().includes('s2 nat') ||
-        (activeCourse.grade || '').toLowerCase().includes('s2 nat');
+      const currentId =
+        (sheetConfig?.isLiveGoogle && isSpreadsheetValidForCourse(sheetConfig.spreadsheetId, activeCourse)
+          ? sheetConfig.spreadsheetId
+          : undefined) ||
+        (isSpreadsheetValidForCourse(activeCourse.dispositionSheetId, activeCourse)
+          ? activeCourse.dispositionSheetId
+          : undefined);
 
-      let currentId =
-        (sheetConfig?.isLiveGoogle && (isS2NatCourse || sheetConfig.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig.spreadsheetId : undefined) ||
-        (activeCourse.dispositionSheetId && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
-
-      if (currentId && isRealGoogleSpreadsheetId(currentId)) {
+      if (currentId) {
         window.open(`https://docs.google.com/spreadsheets/d/${currentId}/edit`, '_blank', 'noopener,noreferrer');
         return;
       }

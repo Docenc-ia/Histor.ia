@@ -15,6 +15,8 @@ import { formatLocalDateDMY } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { getUserStorageKey } from '../services/storageHelpers';
 import { AttendanceSettings, saveCourseAttendanceSettings } from '../utils/attendanceCalculations';
+import { touchCourseDataLru, putCourseSnapshotInLru } from '../utils/lruCourseCache';
+import { subscribeAppEvents } from '../utils/appEventBus';
 
 interface UseCourseRosterAndScheduleParams {
   courses: Course[];
@@ -69,6 +71,8 @@ export function useCourseRosterAndSchedule({
       setRemovedStudentsList([]);
       return;
     }
+    touchCourseDataLru(activeCourse.id);
+    putCourseSnapshotInLru(activeCourse);
     const refreshRemoved = () => {
       setRemovedStudentIds(getRemovedStudentIds(activeCourse.id));
       setRemovedStudentsList(getRemovedStudentsList(activeCourse.id));
@@ -83,10 +87,10 @@ export function useCourseRosterAndSchedule({
         }
       })
       .catch(() => {});
-    window.addEventListener('docencia_student_status_updated', refreshRemoved);
+    const unsub = subscribeAppEvents(['docencia_student_status_updated'], refreshRemoved, 30);
     return () => {
       mounted = false;
-      window.removeEventListener('docencia_student_status_updated', refreshRemoved);
+      unsub();
     };
   }, [activeCourse?.id]);
 
@@ -108,6 +112,7 @@ export function useCourseRosterAndSchedule({
   const [isSyncingClassroomRoster, setIsSyncingClassroomRoster] = useState(false);
   const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
   const [studentToRemove, setStudentToRemove] = useState<Student | null>(null);
+  const [isSelectiveSyncModalOpen, setIsSelectiveSyncModalOpen] = useState(false);
 
   // Modal 1: Sincronizar / Seleccionar Horarios con Google Calendar
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
@@ -182,85 +187,7 @@ export function useCourseRosterAndSchedule({
 
   const handleSyncRoster = async () => {
     if (!activeCourse) return;
-
-    try {
-      setIsSyncingClassroomRoster(true);
-
-      // 1. First, ensure cloud removed lists are hydrated and check if sibling courses of the same division (e.g. Filosofía <-> Historia) have the missing students
-      await api.getStudents(activeCourse.id).catch(() => []);
-      const healedAfterCheck = api.getLocalStudents(activeCourse.id);
-
-      const activeToken = token || getCachedAccessToken();
-      if (!activeToken) {
-        if (healedAfterCheck.length > 0) {
-          onRefreshData();
-          setToastMessage(
-            `¡Listo! Se sincronizaron y repusieron ${healedAfterCheck.length} estudiantes en ${activeCourse.name}.`
-          );
-          setTimeout(() => setToastMessage(null), 4500);
-          return;
-        }
-        setToastMessage('Por favor conectá tu cuenta de Google para sincronizar los estudiantes de Classroom.');
-        setTimeout(() => setToastMessage(null), 4000);
-        return;
-      }
-
-      const res = await classroomService.resolveAndFetchCourseStudents(
-        activeCourse,
-        activeToken,
-        undefined,
-        true
-      );
-
-      if (res.rosterPermissionRequired) {
-        if (healedAfterCheck.length > 0) {
-          onRefreshData();
-          setToastMessage(
-            `Se repusieron ${healedAfterCheck.length} estudiantes del curso en ${activeCourse.name}.`
-          );
-          setTimeout(() => setToastMessage(null), 4500);
-          return;
-        }
-        setNeedsRosterPermission(true);
-        setToastMessage('Se requiere permiso para leer la nómina de estudiantes de Google Classroom.');
-        setTimeout(() => setToastMessage(null), 5000);
-        return;
-      }
-
-      if (res.success && Array.isArray(res.students) && res.students.length > 0) {
-        setNeedsRosterPermission(false);
-        const syncRes = await api.syncCourseStudentsRoster(activeCourse.id, res.students);
-
-        if (res.realClassroomId && res.realClassroomId !== activeCourse.classroomCourseId) {
-          await api.updateCourse(activeCourse.id, {
-            classroomCourseId: res.realClassroomId,
-            classroomSynced: true,
-            studentsCount: syncRes.count,
-          });
-        }
-
-        onRefreshData();
-        setToastMessage(
-          `¡Listo! Se sincronizaron ${syncRes.count} estudiantes activos en ${activeCourse.name} desde Google Classroom.`
-        );
-        setTimeout(() => setToastMessage(null), 4500);
-      } else if (healedAfterCheck.length > 0) {
-        onRefreshData();
-        setToastMessage(
-          `¡Listo! Se sincronizaron y verificaron ${healedAfterCheck.length} estudiantes en ${activeCourse.name}.`
-        );
-        setTimeout(() => setToastMessage(null), 4500);
-      } else {
-        setToastMessage(res.message || 'No se encontraron estudiantes inscriptos en este curso de Google Classroom.');
-        setTimeout(() => setToastMessage(null), 4500);
-      }
-    } catch (err: any) {
-      console.warn('Error al sincronizar alumnos:', err);
-      setToastMessage(err?.message || 'Error al conectar con Google Classroom.');
-      setTimeout(() => setToastMessage(null), 4500);
-    } finally {
-      setIsSyncingClassroomRoster(false);
-    }
+    setIsSelectiveSyncModalOpen(true);
   };
 
   const handleOpenCalendarSyncModal = async (course: Course, overrideCalId?: string) => {
@@ -651,7 +578,7 @@ export function useCourseRosterAndSchedule({
         time: timeStr,
         term: activeConcreteTerm,
         action: `Mensaje directo enviado: "${subject}"`,
-        category: 'Disposición',
+        category: 'Sistema',
         pointsChange: 0,
         timestamp: Date.now(),
         messageSent: true,
@@ -674,7 +601,8 @@ export function useCourseRosterAndSchedule({
           studentName: newHistoryItem.studentName,
           courseId: activeCourse.id,
           action: newHistoryItem.action,
-          category: 'Disposición',
+          category: 'Sistema',
+          pointsChange: 0,
           term: newHistoryItem.term,
           date: newHistoryItem.date,
           time: newHistoryItem.time,
@@ -710,6 +638,8 @@ export function useCourseRosterAndSchedule({
     setNeedsRosterPermission,
     studentToRemove,
     setStudentToRemove,
+    isSelectiveSyncModalOpen,
+    setIsSelectiveSyncModalOpen,
     isCalendarModalOpen,
     setIsCalendarModalOpen,
     calendarModalCourse,

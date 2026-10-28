@@ -60,7 +60,10 @@ export function buildStudentTrackingDocHtml(
     historyList = extraContext?.historyList || [];
   }
 
-  const observations = studentObservations[student.id] || [];
+  const targetCourseId = activeCourse?.id || student.courseId;
+  const observations = (studentObservations[student.id] || []).filter(
+    (obs) => !obs.courseId || !targetCourseId || obs.courseId === targetCourseId
+  );
   const termLabel =
     attendanceTerm === 'annual'
       ? 'Ciclo Lectivo Anual'

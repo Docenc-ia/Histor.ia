@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, lazy } from 'react';
 import { WorkspaceAuthProvider, useWorkspaceAuth } from './context/WorkspaceAuthContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
@@ -18,6 +18,15 @@ import { subscribeAppEvents } from './utils/appEventBus';
 import { computeQuickStudentAttendanceRate } from './utils/attendanceCalculations';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { findCourseMatch } from './utils/courseFormatting';
+import { useNavigationService } from './services/navigationService';
+import {
+  areCoursesEqual,
+  areCourseListsEqual,
+  reconcileCourseList,
+  areStudentsEqual,
+  areStudentListsEqual,
+  reconcileStudentList,
+} from './utils/entityEquality';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -45,42 +54,38 @@ const AttendanceSettingsModal = lazyWithRetry(() =>
   import('./components/modules/classes/AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
 );
 
+const DEFAULT_FALLBACK_COURSE: Course = {
+  id: 'course-1',
+  name: 'Materia Seleccionada',
+  subject: 'Materia',
+  grade: 'Secundaria',
+  room: 'Aula Principal',
+  schedule: 'Horario Escolar',
+  studentsCount: 28,
+  color: '#1a73e8',
+  schoolYear: '2026',
+};
+
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
 
-  // Read query params from URL (e.g. ?course=ID&view=course_detail)
-  const getInitialUrlState = () => {
-    if (typeof window === 'undefined') return { view: 'courses' as const, courseId: '' };
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const urlCourse = (params.get('course') || '').trim();
-      const urlView = params.get('view');
-      const validView = (urlView === 'course_detail' || urlView === 'calendar' || urlView === 'courses')
-        ? (urlView as 'courses' | 'course_detail' | 'calendar')
-        : (urlCourse ? 'course_detail' : 'courses');
-      return { view: validView, courseId: urlCourse };
-    } catch (_) {
-      return { view: 'courses' as const, courseId: '' };
-    }
-  };
-
-  const initialUrlState = getInitialUrlState();
-
-  // Navigation: 'courses' | 'course_detail' | 'calendar'
-  const [currentView, setCurrentView] = useState<'courses' | 'course_detail' | 'calendar'>(initialUrlState.view);
+  // Unified transactional navigation service (single source of truth for currentView, selectedCourseId, subTab, and browser URL)
+  const {
+    currentView,
+    selectedCourseId,
+    subTab: initialCourseSubTab,
+    navigateTransaction,
+    selectCourse,
+    preloadOptimisticCourseState,
+    reconcileWithCourses,
+    syncUrlWithCurrentState,
+    getLastActiveCourseId,
+    getLastActiveCourseSnapshot,
+    clearLastActiveCourse,
+  } = useNavigationService();
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedCourseId, setSelectedCourseId] = useState<string>(() => {
-    if (initialUrlState.courseId) {
-      const local = api.getLocalCourses();
-      const matched = findCourseMatch(initialUrlState.courseId, local);
-      return matched ? matched.id : initialUrlState.courseId;
-    }
-    const local = api.getLocalCourses();
-    return local.length > 0 ? local[0].id : '';
-  });
-  const [initialCourseSubTab, setInitialCourseSubTab] = useState<'roster' | 'libro_temas' | 'grades' | 'history'>('roster');
 
   // Creation modal & Classroom Import modal
   const [isCreateModalOpen, setIsCreateModalOpen] = useState<boolean>(false);
@@ -90,46 +95,88 @@ function AppContent() {
 
   // Notification toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Core data states - initialize with local cache for instant 0ms first paint
-  const [courses, setCourses] = useState<Course[]>(() => api.getLocalCourses());
-  const [students, setStudents] = useState<Student[]>(() => api.getLocalStudents());
-  const [isLoading, setIsLoading] = useState<boolean>(() => api.getLocalCourses().length === 0);
-
-  // Strictly resolve target course ID against loaded courses list, prioritizing URL
-  const resolveTargetCourseId = (courseList: Course[], currentId: string): string => {
-    let urlCourse = '';
-    if (typeof window !== 'undefined') {
-      try {
-        urlCourse = (new URLSearchParams(window.location.search).get('course') || '').trim();
-      } catch (_) {}
+  const showToast = useCallback((message: string, type: 'success' | 'info' | 'error' = 'success') => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
     }
+    setToast({ message, type });
+    toastTimeoutRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimeoutRef.current = null;
+    }, 4000);
+  }, []);
 
-    // 1. If URL specifies a course, prioritize matching it
-    if (urlCourse) {
-      const matchedFromUrl = findCourseMatch(urlCourse, courseList);
-      if (matchedFromUrl) {
-        return matchedFromUrl.id;
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current);
       }
-      // If courseList is still empty or loading from cloud/storage, preserve urlCourse.
-      // NEVER overwrite urlCourse with a default course (e.g. S3 Soc 2)!
-      return urlCourse;
-    }
+    };
+  }, []);
 
-    // 2. Validate current state ID
-    if (currentId) {
-      const matchedCurrent = findCourseMatch(currentId, courseList);
-      if (matchedCurrent) {
-        return matchedCurrent.id;
+  // Core data states - initialize with local cache + last active course snapshot for instant 0ms first paint
+  const [courses, setCourses] = useState<Course[]>(() => {
+    const localList = api.deduplicateCourses(api.getLocalCourses());
+    const snap = getLastActiveCourseSnapshot();
+    if (
+      snap &&
+      !localList.some(
+        (c) =>
+          c.id === snap.id ||
+          (c.classroomCourseId && c.classroomCourseId === snap.classroomCourseId)
+      )
+    ) {
+      return [snap, ...localList];
+    }
+    return localList;
+  });
+  const [students, setStudents] = useState<Student[]>(() =>
+    api.deduplicateStudents(api.getLocalStudents())
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+    const hasLocalCourses = api.getLocalCourses().length > 0;
+    const hasOptimisticLastCourse = Boolean(
+      getLastActiveCourseSnapshot() || getLastActiveCourseId()
+    );
+    return !hasLocalCourses && !hasOptimisticLastCourse;
+  });
+
+  // Keep latest refs to courses and students so callbacks remain 100% referentially stable across refreshes
+  const coursesRef = useRef<Course[]>(courses);
+  coursesRef.current = courses;
+
+  const studentsRef = useRef<Student[]>(students);
+  studentsRef.current = students;
+
+  // Keep previous selectedCourse ref to preserve referential identity when course data has not changed
+  const prevSelectedCourseRef = useRef<Course | null>(null);
+
+  // Load courses and students data with 2-phase Optimistic UI (Phase 1: 0ms localStorage pre-load, Phase 2: Firebase sync)
+  const loadData = useCallback(async () => {
+    // Phase 1: Immediate optimistic UI pre-load from localStorage before Firebase finishes
+    try {
+      const localC = api.deduplicateCourses(api.getLocalCourses());
+      const localS = api.deduplicateStudents(api.getLocalStudents());
+      const optimistic = preloadOptimisticCourseState(localC);
+
+      if (optimistic.optimisticCoursesList.length > 0) {
+        setCourses((prev) => reconcileCourseList(prev, optimistic.optimisticCoursesList));
       }
-    }
+      if (localS.length > 0) {
+        setStudents((prev) => reconcileStudentList(prev, localS));
+      }
+      // Unblock UI immediately if we have local courses or a persisted last active course ID/snapshot
+      if (
+        optimistic.optimisticCoursesList.length > 0 ||
+        Boolean(optimistic.targetCourseId)
+      ) {
+        setIsLoading((prev) => (prev ? false : prev));
+      }
+    } catch (_) {}
 
-    // 3. Only if no course was requested in the URL and no currentId exists, fallback to first course
-    return courseList.length > 0 ? courseList[0].id : '';
-  };
-
-  // Load courses and students data
-  const loadData = async () => {
+    // Phase 2: Asynchronous Firebase resolution & seamless state reconciliation
     try {
       const [c, s] = await Promise.all([
         api.getCourses(),
@@ -137,130 +184,68 @@ function AppContent() {
       ]);
       const cleanCourses = api.deduplicateCourses(c);
       const cleanStudents = api.deduplicateStudents(s);
-      setCourses(cleanCourses);
-      setStudents(cleanStudents);
+      setCourses((prev) => reconcileCourseList(prev, cleanCourses));
+      setStudents((prev) => reconcileStudentList(prev, cleanStudents));
       if (cleanCourses.length > 0) {
-        setSelectedCourseId((prevId) => resolveTargetCourseId(cleanCourses, prevId));
+        reconcileWithCourses(cleanCourses);
       }
     } catch (err) {
       console.error('Error fetching workspace courses and students:', err);
     } finally {
-      setIsLoading(false);
+      setIsLoading((prev) => (prev ? false : prev));
     }
-  };
-
-  // Strict bidirectional validation between URL parameters and state
-  useEffect(() => {
-    if (typeof window === 'undefined' || !user) return;
-    try {
-      const url = new URL(window.location.href);
-      const urlCourseParam = (url.searchParams.get('course') || '').trim();
-      const urlViewParam = url.searchParams.get('view');
-
-      // Validation 1: If URL has a specific course parameter, state MUST strictly match it
-      if (urlCourseParam) {
-        const pool = courses.length > 0 ? courses : api.getLocalCourses();
-        const matched = findCourseMatch(urlCourseParam, pool);
-        if (matched) {
-          if (selectedCourseId !== matched.id) {
-            setSelectedCourseId(matched.id);
-            if (currentView !== 'course_detail' && (!urlViewParam || urlViewParam === 'course_detail')) {
-              setCurrentView('course_detail');
-            }
-            return;
-          }
-        } else if (isLoading || courses.length === 0) {
-          // Still loading courses from cloud, NEVER overwrite the requested URL parameter!
-          return;
-        }
-      }
-
-      // Validation 2: Ensure URL matches current state
-      if (currentView === 'course_detail' && selectedCourseId) {
-        if (urlCourseParam !== selectedCourseId || urlViewParam !== 'course_detail') {
-          url.searchParams.set('course', selectedCourseId);
-          url.searchParams.set('view', 'course_detail');
-          window.history.replaceState(null, '', url.toString());
-        }
-      } else if (currentView === 'calendar') {
-        if (urlViewParam !== 'calendar' || urlCourseParam) {
-          url.searchParams.set('view', 'calendar');
-          url.searchParams.delete('course');
-          window.history.replaceState(null, '', url.toString());
-        }
-      } else {
-        if (urlViewParam !== 'courses' || urlCourseParam) {
-          url.searchParams.set('view', 'courses');
-          url.searchParams.delete('course');
-          window.history.replaceState(null, '', url.toString());
-        }
-      }
-    } catch (_) {}
-  }, [currentView, selectedCourseId, user, courses, isLoading]);
-
-  // Listen to browser navigation (back/forward or URL state changes)
-  useEffect(() => {
-    const handlePopState = () => {
-      try {
-        const params = new URLSearchParams(window.location.search);
-        const urlCourse = (params.get('course') || '').trim();
-        const urlView = params.get('view');
-
-        if (urlCourse) {
-          const list = courses.length > 0 ? courses : api.getLocalCourses();
-          const matched = findCourseMatch(urlCourse, list);
-          setSelectedCourseId(matched ? matched.id : urlCourse);
-          setCurrentView('course_detail');
-        } else if (urlView === 'calendar') {
-          setCurrentView('calendar');
-        } else {
-          setCurrentView('courses');
-        }
-      } catch (_) {}
-    };
-
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [courses]);
+  }, [preloadOptimisticCourseState, reconcileWithCourses]);
 
   useEffect(() => {
     if (!user) {
-      setCourses([]);
-      setStudents([]);
+      setCourses((prev) => (prev.length === 0 ? prev : []));
+      setStudents((prev) => (prev.length === 0 ? prev : []));
       return;
     }
-    const localC = api.deduplicateCourses(api.getLocalCourses());
-    const localS = api.getLocalStudents();
-    setCourses(localC);
-    setStudents(localS);
-    setSelectedCourseId((prevId) => resolveTargetCourseId(localC, prevId));
     loadData();
-  }, [user?.id, user?.email]);
+    syncUrlWithCurrentState();
+  }, [user?.id, user?.email, loadData, syncUrlWithCurrentState]);
 
   // Listen to open attendance settings triggered globally
   useEffect(() => {
-    const handleOpenGlobal = () => {
-      setIsGlobalScheduleModalOpen(true);
-    };
-    window.addEventListener('docencia_open_attendance_settings', handleOpenGlobal);
-    return () => {
-      window.removeEventListener('docencia_open_attendance_settings', handleOpenGlobal);
-    };
+    return subscribeAppEvents(
+      ['docencia_open_attendance_settings'],
+      () => setIsGlobalScheduleModalOpen(true),
+      0
+    );
   }, []);
 
   // Cascaded synchronization of students status across modules and dashboard view (in-memory, zero network re-fetch)
   useEffect(() => {
     const handleStudentStatusSync = () => {
       try {
-        const localStudents = api.getLocalStudents();
-        const localCourses = api.getLocalCourses();
+        const localStudents = api.deduplicateStudents(api.getLocalStudents());
+        const localCourses = coursesRef.current.length > 0 ? coursesRef.current : api.getLocalCourses();
         const scheduleByCourseId = new Map<string, string>();
+        const perCourseDispMap = new Map<string, Record<string, any>>();
         localCourses.forEach((c) => {
           if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
+          if (c.id) {
+            try {
+              const rawCourseDisp = api.getUserScopedItem(`fds_disposition_data_${c.id}_1c`);
+              if (rawCourseDisp) {
+                const parsed = JSON.parse(rawCourseDisp);
+                if (parsed && typeof parsed === 'object') {
+                  perCourseDispMap.set(c.id, parsed);
+                }
+              }
+            } catch (_) {}
+          }
         });
         const localDisp = api.getAllDispositionStorage().disposition || {};
         const enriched = localStudents.map((st) => {
-          const d = localDisp[st.id];
+          const courseDisp = st.courseId ? perCourseDispMap.get(st.courseId) : undefined;
+          const candidateGlobal = localDisp[`${st.courseId}::${st.id}`] || localDisp[st.id];
+          const d =
+            courseDisp?.[st.id] ||
+            (candidateGlobal && (!candidateGlobal.courseId || candidateGlobal.courseId === st.courseId)
+              ? candidateGlobal
+              : undefined);
           if (d && typeof d.totalAbsences === 'number') {
             const rate = computeQuickStudentAttendanceRate(
               st.id,
@@ -276,16 +261,7 @@ function AppContent() {
           return st;
         });
 
-        setStudents((prev) => {
-          if (prev.length !== enriched.length) return enriched;
-          const hasDiff = prev.some(
-            (p, idx) =>
-              p.id !== enriched[idx]?.id ||
-              p.attendanceRate !== enriched[idx]?.attendanceRate ||
-              p.averageGrade !== enriched[idx]?.averageGrade
-          );
-          return hasDiff ? enriched : prev;
-        });
+        setStudents((prev) => reconcileStudentList(prev, enriched));
       } catch (_) {}
     };
 
@@ -301,133 +277,283 @@ function AppContent() {
     const handleCoursesUpdated = () => {
       try {
         const latestCourses = api.deduplicateCourses(api.getLocalCourses());
-        setCourses((prev) => {
-          if (JSON.stringify(prev) === JSON.stringify(latestCourses)) return prev;
-          return latestCourses;
-        });
-
-        // Revalidate selectedCourseId if URL has a course param
-        const urlParam = typeof window !== 'undefined' ? (new URLSearchParams(window.location.search).get('course') || '').trim() : '';
-        if (urlParam) {
-          const match = findCourseMatch(urlParam, latestCourses);
-          if (match) {
-            setSelectedCourseId(match.id);
-          }
-        }
+        setCourses((prev) => reconcileCourseList(prev, latestCourses));
+        reconcileWithCourses(latestCourses);
       } catch (_) {}
     };
 
     return subscribeAppEvents(['docencia_courses_updated'], handleCoursesUpdated, 40);
+  }, [reconcileWithCourses]);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarOpen((prev) => !prev);
   }, []);
 
-  const handleOpenCreateModal = (type: 'course' | 'plan' | 'task' | 'file' = 'course') => {
+  const handleOpenCreateModal = useCallback((type: 'course' | 'plan' | 'task' | 'file' = 'course') => {
     setCreateModalType(type);
     setIsCreateModalOpen(true);
-  };
+  }, []);
 
-  const handleCreateCourse = async (courseData: Partial<Course>) => {
-    try {
-      setIsLoading(true);
-      const newCourse = await api.createCourse(courseData);
-      await loadData();
-      setSelectedCourseId(newCourse.id);
-      setToast({ message: `Materia "${newCourse.name || courseData.name}" creada con éxito.`, type: 'success' });
-      setTimeout(() => setToast(null), 4000);
-    } catch (err: any) {
-      setToast({ message: err.message || 'Error al crear la materia', type: 'error' });
-      setTimeout(() => setToast(null), 4000);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  const handleCloseCreateModal = useCallback(() => {
+    setIsCreateModalOpen(false);
+  }, []);
 
-  const handleDeleteCourse = async (courseId: string) => {
-    try {
-      const courseToDelete = courses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
-      const courseName = courseToDelete ? courseToDelete.name : 'Materia';
+  const handleOpenNewCourseModal = useCallback(() => {
+    handleOpenCreateModal('course');
+  }, [handleOpenCreateModal]);
 
-      const res = await api.deleteCourse(courseId);
+  const handleOpenImportClassroom = useCallback(() => {
+    setIsImportClassroomOpen(true);
+  }, []);
 
-      // Immediately update local state
-      setCourses((prev) => {
-        const updated = prev.filter((c) => c.id !== courseId && c.classroomCourseId !== courseId);
-        if (updated.length === 0) {
-          setSelectedCourseId('');
-        } else if (selectedCourseId === courseId || (courseToDelete && selectedCourseId === courseToDelete.id)) {
-          setSelectedCourseId(updated[0].id);
-        }
-        return updated;
-      });
+  const handleCloseImportClassroom = useCallback(() => {
+    setIsImportClassroomOpen(false);
+  }, []);
 
-      // Background reload
-      await loadData();
+  const handleCloseGlobalScheduleModal = useCallback(() => {
+    setIsGlobalScheduleModalOpen(false);
+  }, []);
 
-      setToast({ message: res.message || `Materia "${courseName}" eliminada correctamente.`, type: 'success' });
-      setTimeout(() => setToast(null), 4000);
-    } catch (err: any) {
-      setToast({ message: err.message || 'Error al eliminar la materia', type: 'error' });
-      setTimeout(() => setToast(null), 4000);
-    }
-  };
+  const handleCreateCourse = useCallback(
+    async (courseData: Partial<Course>) => {
+      try {
+        setIsLoading(true);
+        const newCourse = await api.createCourse(courseData);
+        await loadData();
+        navigateTransaction({
+          courseId: newCourse.id,
+          historyMode: 'replace',
+          scrollToTop: false,
+        });
+        showToast(`Materia "${newCourse.name || courseData.name}" creada con éxito.`, 'success');
+      } catch (err: any) {
+        showToast(err.message || 'Error al crear la materia', 'error');
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [loadData, navigateTransaction, showToast]
+  );
 
-  const handleClearCourses = async () => {
+  const handleDeleteCourse = useCallback(
+    async (courseId: string) => {
+      try {
+        const courseToDelete = coursesRef.current.find(
+          (c) => c.id === courseId || c.classroomCourseId === courseId
+        );
+        const courseName = courseToDelete ? courseToDelete.name : 'Materia';
+
+        const res = await api.deleteCourse(courseId);
+
+        // Immediately update local state and reconcile navigation transactionally
+        setCourses((prev) => {
+          const updated = prev.filter((c) => c.id !== courseId && c.classroomCourseId !== courseId);
+          reconcileWithCourses(updated, { deletedCourseId: courseToDelete?.id || courseId });
+          return reconcileCourseList(prev, updated);
+        });
+
+        // Background reload
+        await loadData();
+
+        showToast(res.message || `Materia "${courseName}" eliminada correctamente.`, 'success');
+      } catch (err: any) {
+        showToast(err.message || 'Error al eliminar la materia', 'error');
+      }
+    },
+    [loadData, reconcileWithCourses, showToast]
+  );
+
+  const handleClearCourses = useCallback(async () => {
     try {
       setIsLoading(true);
       const res = await api.clearAllCourses();
-      setCourses([]);
-      setStudents([]);
-      setSelectedCourseId('');
-      setToast({ message: res.message || 'Materias de prueba eliminadas. Tu espacio está limpio para tus clases reales.', type: 'success' });
-      setTimeout(() => setToast(null), 4000);
+      clearLastActiveCourse();
+      setCourses((prev) => (prev.length === 0 ? prev : []));
+      setStudents((prev) => (prev.length === 0 ? prev : []));
+      navigateTransaction({
+        view: 'courses',
+        courseId: '',
+        historyMode: 'replace',
+        scrollToTop: false,
+      });
+      showToast(
+        res.message || 'Materias de prueba eliminadas. Tu espacio está limpio para tus clases reales.',
+        'success'
+      );
     } catch (err: any) {
-      setToast({ message: err?.message || 'Error al limpiar materias', type: 'error' });
-      setTimeout(() => setToast(null), 4000);
+      showToast(err?.message || 'Error al limpiar materias', 'error');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [clearLastActiveCourse, navigateTransaction, showToast]);
 
-  const handleRestoreDemoCourses = async () => {
+  const handleRestoreDemoCourses = useCallback(async () => {
     try {
       setIsLoading(true);
       await api.restoreDemoCourses();
       await loadData();
-      setToast({ message: 'Materias de ejemplo restauradas.', type: 'success' });
-      setTimeout(() => setToast(null), 4000);
+      showToast('Materias de ejemplo restauradas.', 'success');
     } catch (err: any) {
-      setToast({ message: err?.message || 'Error al restaurar materias', type: 'error' });
-      setTimeout(() => setToast(null), 4000);
+      showToast(err?.message || 'Error al restaurar materias', 'error');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [loadData, showToast]);
 
-  const handleCreated = (_type: string, message: string) => {
-    loadData();
-    setToast({ message, type: 'success' });
-    setTimeout(() => setToast(null), 4000);
-  };
+  const handleCreated = useCallback(
+    (_type: string, message: string) => {
+      loadData();
+      showToast(message, 'success');
+    },
+    [loadData, showToast]
+  );
 
-  const handleNavigate = (tab: string, filterCourseId?: string) => {
-    if (filterCourseId) {
-      setSelectedCourseId(filterCourseId);
+  const handleImportSuccess = useCallback(
+    (msg: string) => {
+      loadData();
+      showToast(msg, 'success');
+    },
+    [loadData, showToast]
+  );
+
+  const handleImportClassroomSuccess = useCallback(
+    (msg: string) => {
+      loadData();
+      setIsImportClassroomOpen(false);
+      showToast(msg, 'success');
+    },
+    [loadData, showToast]
+  );
+
+  const handleSelectCourse = useCallback(
+    (courseId: string, subTab?: 'roster' | 'libro_temas' | 'grades' | 'history') => {
+      if (!courseId) return;
+      selectCourse(courseId, subTab, coursesRef.current);
+    },
+    [selectCourse]
+  );
+
+  const handleSelectCourseAndTab = useCallback(
+    (courseId: string, tab: string) => {
+      handleSelectCourse(courseId, tab === 'libro_temas' ? 'libro_temas' : 'roster');
+    },
+    [handleSelectCourse]
+  );
+
+  const handleNavigate = useCallback(
+    (tab: string, filterCourseId?: string) => {
+      if (filterCourseId) {
+        selectCourse(filterCourseId, undefined, coursesRef.current);
+        return;
+      }
+
+      if (tab === 'courses' || tab === 'dashboard') {
+        navigateTransaction({
+          view: 'courses',
+          coursesPool: coursesRef.current,
+          historyMode: 'push',
+          scrollToTop: true,
+        });
+      } else if (tab === 'classroom_sync' || tab === 'classroom') {
+        setIsImportClassroomOpen(true);
+      } else if (tab === 'calendar') {
+        navigateTransaction({
+          view: 'calendar',
+          coursesPool: coursesRef.current,
+          historyMode: 'push',
+          scrollToTop: true,
+        });
+      } else if (tab === 'calendar_schedule' || tab === 'settings') {
+        setIsGlobalScheduleModalOpen(true);
+      } else {
+        navigateTransaction({
+          view: 'course_detail',
+          coursesPool: coursesRef.current,
+          historyMode: 'push',
+          scrollToTop: true,
+        });
+      }
+    },
+    [navigateTransaction, selectCourse]
+  );
+
+  const handleBackToCourses = useCallback(() => {
+    handleNavigate('courses');
+  }, [handleNavigate]);
+
+  const handleSidebarSelectTab = useCallback(
+    (tab: string, courseId?: string) => {
+      if (tab === 'classroom_sync') {
+        setIsImportClassroomOpen(true);
+      } else if (tab === 'calendar') {
+        handleNavigate('calendar');
+      } else if (tab === 'calendar_schedule') {
+        setIsGlobalScheduleModalOpen(true);
+      } else if (courseId) {
+        handleSelectCourse(courseId);
+      } else {
+        handleNavigate(tab);
+      }
+    },
+    [handleNavigate, handleSelectCourse]
+  );
+
+  // Selected course instance strictly validated against selectedCourseId (with fallback to URL param and localStorage last active course)
+  // Placed BEFORE conditional `if (!user)` return to strictly respect React Rules of Hooks
+  const selectedCourse = useMemo<Course>(() => {
+    const resolveCourse = (): Course => {
+      // 1. Identify target course ID: prioritize active state -> URL parameter -> persisted last active course ID in localStorage
+      let target = selectedCourseId;
+      if (!target && typeof window !== 'undefined') {
+        try {
+          const urlParam = (new URLSearchParams(window.location.search).get('course') || '').trim();
+          if (urlParam) target = urlParam;
+        } catch (_) {}
+      }
+      if (!target) {
+        target = getLastActiveCourseId();
+      }
+
+      if (target) {
+        // Find in current courses state (in-memory, O(N))
+        const match = findCourseMatch(target, courses);
+        if (match) return match;
+
+        // Only parse localStorage courses cache if in-memory courses list is empty
+        if (courses.length === 0) {
+          const localMatch = findCourseMatch(target, api.getLocalCourses());
+          if (localMatch) return localMatch;
+        }
+
+        // Find in persisted last active course snapshot in localStorage (instant optimistic UI before Firebase finishes)
+        const snapshotMatch = getLastActiveCourseSnapshot(target);
+        if (snapshotMatch) return snapshotMatch;
+
+        // If a specific target was requested, NEVER fallback to courses[0]
+        return {
+          id: target,
+          name: 'Cargando materia...',
+          subject: 'Cargando...',
+          grade: 'Secundaria',
+          room: '',
+          schedule: '',
+          color: '#1a73e8',
+          studentsCount: 0,
+          schoolYear: '2026',
+        };
+      }
+
+      // Only if NO specific course was requested anywhere, default to courses[0]
+      return courses[0] || DEFAULT_FALLBACK_COURSE;
+    };
+
+    const nextCourse = resolveCourse();
+    if (prevSelectedCourseRef.current && areCoursesEqual(prevSelectedCourseRef.current, nextCourse)) {
+      return prevSelectedCourseRef.current;
     }
-
-    if (tab === 'courses' || tab === 'dashboard') {
-      setCurrentView('courses');
-    } else if (tab === 'classroom_sync' || tab === 'classroom') {
-      setIsImportClassroomOpen(true);
-    } else if (tab === 'calendar') {
-      setCurrentView('calendar');
-    } else if (tab === 'calendar_schedule') {
-      setIsGlobalScheduleModalOpen(true);
-    } else {
-      // Any other tab (classes, alumnos, students, etc.) navigates to course_detail
-      setCurrentView('course_detail');
-    }
-
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+    prevSelectedCourseRef.current = nextCourse;
+    return nextCourse;
+  }, [courses, selectedCourseId, getLastActiveCourseId, getLastActiveCourseSnapshot]);
 
   // If user is not authenticated, render the Landing Page of Docenc.IA with Gmail login
   if (!user) {
@@ -437,55 +563,6 @@ function AppContent() {
       </div>
     );
   }
-
-  // Selected course instance strictly validated against selectedCourseId and URL parameter
-  const selectedCourse = React.useMemo<Course>(() => {
-    // 1. Identify target course ID from state or URL
-    let target = selectedCourseId;
-    if (typeof window !== 'undefined') {
-      try {
-        const urlParam = (new URLSearchParams(window.location.search).get('course') || '').trim();
-        if (urlParam) target = urlParam;
-      } catch (_) {}
-    }
-
-    if (target) {
-      // Find in current courses state
-      const match = findCourseMatch(target, courses);
-      if (match) return match;
-
-      // Find in local storage cache
-      const localMatch = findCourseMatch(target, api.getLocalCourses());
-      if (localMatch) return localMatch;
-
-      // If a specific target was requested, NEVER fallback to courses[0] (which may be S3 Soc 2)!
-      // Provide an instance with the requested target ID so the view maintains the correct identity while loading
-      return {
-        id: target,
-        name: 'Cargando materia...',
-        subject: 'Cargando...',
-        grade: 'Secundaria',
-        room: '',
-        schedule: '',
-        color: '#1a73e8',
-        studentsCount: 0,
-        schoolYear: '2026',
-      };
-    }
-
-    // Only if NO specific course was requested anywhere, default to courses[0]
-    return courses[0] || {
-      id: 'course-1',
-      name: 'Materia Seleccionada',
-      subject: 'Materia',
-      grade: 'Secundaria',
-      room: 'Aula Principal',
-      schedule: 'Horario Escolar',
-      studentsCount: 28,
-      color: '#1a73e8',
-      schoolYear: '2026',
-    };
-  }, [courses, selectedCourseId]);
 
   const currentActiveSidebarTab =
     currentView === 'courses' ? 'courses' : currentView === 'calendar' ? 'calendar' : 'course_detail';
@@ -498,7 +575,7 @@ function AppContent() {
     >
       {/* Header with Docenc.ia branding and quick navigation */}
       <Header
-        onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
+        onToggleSidebar={handleToggleSidebar}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onNavigate={handleNavigate}
@@ -509,31 +586,12 @@ function AppContent() {
         {/* Google Workspace Sidebar */}
         <Sidebar
           currentTab={currentActiveSidebarTab}
-          onSelectTab={(tab, courseId) => {
-            if (tab === 'classroom_sync') {
-              setIsImportClassroomOpen(true);
-            } else if (tab === 'calendar') {
-              setCurrentView('calendar');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            } else if (tab === 'calendar_schedule') {
-              setIsGlobalScheduleModalOpen(true);
-            } else if (courseId) {
-              setSelectedCourseId(courseId);
-              setCurrentView('course_detail');
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            } else {
-              handleNavigate(tab);
-            }
-          }}
+          onSelectTab={handleSidebarSelectTab}
           isOpen={sidebarOpen}
-          onNewAction={() => handleOpenCreateModal('course')}
+          onNewAction={handleOpenNewCourseModal}
           courses={courses}
           selectedCourseId={selectedCourseId}
-          onSelectCourse={(courseId) => {
-            setSelectedCourseId(courseId);
-            setCurrentView('course_detail');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-          }}
+          onSelectCourse={handleSelectCourse}
         />
 
         {/* Dynamic Content View */}
@@ -555,22 +613,16 @@ function AppContent() {
                 <TeacherCoursesPanel
                   courses={courses}
                   students={students}
-                  onSelectCourseAndTab={(courseId, tab) => {
-                    setSelectedCourseId(courseId);
-                    setInitialCourseSubTab(tab === 'libro_temas' ? 'libro_temas' : 'roster');
-                    setCurrentView('course_detail');
-                  }}
+                  externalSearchQuery={searchQuery}
+                  onExternalSearchChange={setSearchQuery}
+                  onSelectCourseAndTab={handleSelectCourseAndTab}
                   onCreateCourse={handleCreateCourse}
                   onDeleteCourse={handleDeleteCourse}
                   onClearCourses={handleClearCourses}
                   onRestoreDemoCourses={handleRestoreDemoCourses}
                   onRefreshData={loadData}
-                  onImportSuccess={(msg) => {
-                    loadData();
-                    setToast({ message: msg, type: 'success' });
-                    setTimeout(() => setToast(null), 4000);
-                  }}
-                  onOpenImportClassroom={() => setIsImportClassroomOpen(true)}
+                  onImportSuccess={handleImportSuccess}
+                  onOpenImportClassroom={handleOpenImportClassroom}
                 />
               )}
 
@@ -593,8 +645,10 @@ function AppContent() {
                       courses={courses}
                       students={students}
                       initialSubTab={initialCourseSubTab}
-                      onBackToCourses={() => setCurrentView('courses')}
-                      onSelectCourse={(id) => setSelectedCourseId(id)}
+                      externalSearchQuery={searchQuery}
+                      onExternalSearchChange={setSearchQuery}
+                      onBackToCourses={handleBackToCourses}
+                      onSelectCourse={handleSelectCourse}
                       onDeleteCourse={handleDeleteCourse}
                       onRefreshData={loadData}
                       onNavigate={handleNavigate}
@@ -621,14 +675,8 @@ function AppContent() {
                       <CalendarModule
                         courses={courses}
                         selectedCourseId={selectedCourseId}
-                        onSelectCourse={(id) => {
-                          setSelectedCourseId(id);
-                          setCurrentView('course_detail');
-                        }}
-                        onNavigateToCourseDetail={(id) => {
-                          setSelectedCourseId(id);
-                          setCurrentView('course_detail');
-                        }}
+                        onSelectCourse={handleSelectCourse}
+                        onNavigateToCourseDetail={handleSelectCourse}
                       />
                     </div>
                   </Suspense>
@@ -646,9 +694,9 @@ function AppContent() {
             isOpen={isCreateModalOpen}
             type={createModalType}
             courses={courses}
-            onClose={() => setIsCreateModalOpen(false)}
+            onClose={handleCloseCreateModal}
             onCreated={handleCreated}
-            onOpenImportClassroom={() => setIsImportClassroomOpen(true)}
+            onOpenImportClassroom={handleOpenImportClassroom}
           />
         </Suspense>
       )}
@@ -659,13 +707,8 @@ function AppContent() {
           <ImportClassroomModal
             isOpen={isImportClassroomOpen}
             existingCourses={courses}
-            onClose={() => setIsImportClassroomOpen(false)}
-            onSuccess={(msg) => {
-              loadData();
-              setIsImportClassroomOpen(false);
-              setToast({ message: msg, type: 'success' });
-              setTimeout(() => setToast(null), 4000);
-            }}
+            onClose={handleCloseImportClassroom}
+            onSuccess={handleImportClassroomSuccess}
           />
         </Suspense>
       )}
@@ -675,7 +718,7 @@ function AppContent() {
         <Suspense fallback={null}>
           <AttendanceSettingsModal
             isOpen={isGlobalScheduleModalOpen}
-            onClose={() => setIsGlobalScheduleModalOpen(false)}
+            onClose={handleCloseGlobalScheduleModal}
             isDarkMode={isDarkMode}
           />
         </Suspense>

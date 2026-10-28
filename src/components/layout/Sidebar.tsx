@@ -16,6 +16,7 @@ import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { Course } from '../../types';
 import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 import { subscribeAppEvents } from '../../utils/appEventBus';
+import { areCourseListsEqual } from '../../utils/entityEquality';
 
 interface SidebarProps {
   currentTab: string;
@@ -40,12 +41,36 @@ interface NavGroup {
   items: NavItem[];
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
+const EMPTY_COURSES: Course[] = [];
+
+const NAV_ITEMS: NavGroup[] = [
+  {
+    group: 'PANEL DOCENTE',
+    items: [
+      { id: 'courses', label: 'Mis materias', icon: LayoutDashboard, color: 'text-blue-600' },
+    ],
+  },
+  {
+    group: 'VINCULACIÓN CALENDAR',
+    items: [
+      { id: 'calendar', label: 'Google Calendar Oficial', icon: Calendar, color: 'text-blue-500' },
+      { id: 'calendar_schedule', label: 'Horarios y Semanas de Clase', icon: Clock, color: 'text-amber-500' },
+    ],
+  },
+  {
+    group: 'VINCULACIÓN CLASSROOM',
+    items: [
+      { id: 'classroom_sync', label: 'Sincronizar con Classroom', icon: GraduationCap, color: 'text-emerald-500' },
+    ],
+  },
+];
+
+const SidebarComponent: React.FC<SidebarProps> = ({
   currentTab,
   onSelectTab,
   isOpen,
   onNewAction,
-  courses = [],
+  courses = EMPTY_COURSES,
   selectedCourseId,
   onSelectCourse,
 }) => {
@@ -72,28 +97,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     [courses, nowTick, scheduleSyncTick]
   );
 
-  const navItems: NavGroup[] = [
-    {
-      group: 'PANEL DOCENTE',
-      items: [
-        { id: 'courses', label: 'Mis materias', icon: LayoutDashboard, color: 'text-blue-600' },
-      ],
-    },
-    {
-      group: 'VINCULACIÓN CALENDAR',
-      items: [
-        { id: 'calendar', label: 'Google Calendar Oficial', icon: Calendar, color: 'text-blue-500' },
-        { id: 'calendar_schedule', label: 'Horarios y Semanas de Clase', icon: Clock, color: 'text-amber-500' },
-      ],
-    },
-    {
-      group: 'VINCULACIÓN CLASSROOM',
-      items: [
-        { id: 'classroom_sync', label: 'Sincronizar con Classroom', icon: GraduationCap, color: 'text-emerald-500' },
-      ],
-    },
-  ];
-
   if (!isOpen) {
     return (
       <aside
@@ -103,7 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             : 'bg-white border-neutral-200 text-neutral-600'
         }`}
       >
-        {navItems.flatMap((g) => g.items).map((item) => {
+        {NAV_ITEMS.flatMap((g) => g.items).map((item) => {
           const Icon = item.icon;
           const isActive = currentTab === item.id;
           return (
@@ -139,7 +142,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       {/* Navigation groups without internal scrollbar, extending down to bottom */}
       <div className="flex-1 px-3 py-5 space-y-6">
-        {navItems.map((group) => (
+        {NAV_ITEMS.map((group) => (
           <div key={group.group}>
             <div
               className={`px-3 pb-2 text-[11px] font-bold tracking-wider uppercase ${
@@ -307,3 +310,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </aside>
   );
 };
+
+function areSidebarPropsEqual(prev: SidebarProps, next: SidebarProps): boolean {
+  if (
+    prev.selectedCourseId !== next.selectedCourseId ||
+    prev.currentTab !== next.currentTab ||
+    prev.isOpen !== next.isOpen ||
+    prev.onSelectTab !== next.onSelectTab ||
+    prev.onNewAction !== next.onNewAction ||
+    prev.onSelectCourse !== next.onSelectCourse
+  ) {
+    return false;
+  }
+
+  return areCourseListsEqual(
+    prev.courses ?? EMPTY_COURSES,
+    next.courses ?? EMPTY_COURSES
+  );
+}
+
+export const Sidebar = React.memo(SidebarComponent, areSidebarPropsEqual);
+Sidebar.displayName = 'Sidebar';

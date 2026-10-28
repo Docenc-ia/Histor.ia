@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Course,
   Student,
@@ -152,6 +152,13 @@ export function useCourseAttendanceAndDispositionActions({
   // Batch selection of students for notification at the end of class
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [selectedPendingHistoryIds, setSelectedPendingHistoryIds] = useState<string[]>([]);
+
+  // Reset selections and open student modals when switching courses so state never leaks across subjects
+  useEffect(() => {
+    setSelectedStudentIds([]);
+    setSelectedPendingHistoryIds([]);
+    studentObservationsProps.setSelectedStudentForProfile(null);
+  }, [activeCourse?.id]);
 
   // Pending absence items for current course (without sent notification)
   const pendingAbsenceItems = useMemo(() => {
@@ -410,11 +417,18 @@ export function useCourseAttendanceAndDispositionActions({
 
     if (todayLatesToRemove.length > 0) {
       for (const item of todayLatesToRemove) {
-        api.deleteDispositionHistory(item.id).catch(() => {});
+        api
+          .deleteDispositionHistory(item.id, {
+            studentId: student.id,
+            courseId: activeCourse.id,
+            term: targetTerm,
+            isLate: true,
+          })
+          .catch(() => {});
       }
       const userId = getActiveUserId();
       if (userId) {
-        firestoreSync.deleteTodayLatesForStudent(userId, student.id, now).catch(() => {});
+        firestoreSync.deleteTodayLatesForStudent(userId, student.id, now, activeCourse.id).catch(() => {});
       }
     }
 
@@ -574,17 +588,22 @@ export function useCourseAttendanceAndDispositionActions({
   const handleOpenBatchFromSelectedStudents = () => {
     if (!activeCourse || selectedStudentIds.length === 0) return;
 
+    const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const items: { historyItem: StudentHistoryItem; student: Student }[] = [];
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
     const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
-    const updatedMap = { ...dispositionMap };
+    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
+    const updatedMap = { ...baseMap };
     const newHistoryEntries: StudentHistoryItem[] = [];
 
     selectedStudentIds.forEach((studentId) => {
-      const student = students.find((s) => s.id === studentId);
+      const student =
+        courseStudents.find((s) => s.id === studentId) ||
+        students.find((s) => s.id === studentId && s.courseId === activeCourse.id) ||
+        students.find((s) => s.id === studentId);
       if (!student) return;
 
       const existingPending = historyList.find(
@@ -592,17 +611,20 @@ export function useCourseAttendanceAndDispositionActions({
           h.courseId === activeCourse.id &&
           h.studentId === student.id &&
           h.category === 'Ausencia' &&
-          !h.messageSent
+          !h.messageSent &&
+          !h.omitNotification
       );
 
       if (existingPending) {
         items.push({ historyItem: existingPending, student });
       } else {
-        const current = updatedMap[student.id] || { totalAbsences: 0, totalDisposition: 10 };
-        const newDisposition = current.totalDisposition;
+        const current = updatedMap[student.id] || getStudentMetrics(student.id, targetTerm);
+        const newAbsences = (current.totalAbsences || 0) + 1;
+        const newDisposition = current.totalDisposition ?? 10;
         updatedMap[student.id] = {
           ...current,
-          totalAbsences: current.totalAbsences + 1,
+          courseId: activeCourse.id,
+          totalAbsences: newAbsences,
           totalDisposition: newDisposition,
         };
 
@@ -612,6 +634,7 @@ export function useCourseAttendanceAndDispositionActions({
           studentId: student.id,
           studentName: `${student.lastName}, ${student.firstName}`,
           courseId: activeCourse.id,
+          term: targetTerm,
           date,
           time,
           action: 'Ausencia',
@@ -625,15 +648,28 @@ export function useCourseAttendanceAndDispositionActions({
         newHistoryEntries.push(newHistory);
         items.push({ historyItem: newHistory, student });
 
-        api.recordDisposition(newHistory).catch(() => {});
+        api
+          .recordDisposition({
+            ...newHistory,
+            expectedSummary: {
+              totalAbsences: newAbsences,
+              totalLates: current.totalLates || 0,
+              totalDisposition: newDisposition,
+            },
+          })
+          .catch(() => {});
       }
     });
 
     if (newHistoryEntries.length > 0) {
       const mergedHistory = deduplicateHistory([...newHistoryEntries, ...historyList]);
       setHistoryList(mergedHistory);
-      setDispositionMap(updatedMap);
-      triggerSheetsSync(updatedMap, mergedHistory);
+      saveTermDisposition(targetTerm, updatedMap, mergedHistory);
+      triggerSheetsSync(
+        targetTerm === '1c' ? updatedMap : dispositionMap,
+        mergedHistory,
+        targetTerm === '2c' ? updatedMap : dispositionMap2c
+      );
     }
 
     const defaultPreset =
@@ -845,6 +881,8 @@ export function useCourseAttendanceAndDispositionActions({
 
   // Marcar aviso como "No mandar" (sale de los pendientes pero queda en el historial docente)
   const handleMarkOmitNotification = (item: StudentHistoryItem) => {
+    const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : activeConcreteTerm;
+    const currentMetrics = getStudentMetrics(item.studentId, itemTerm);
     const updatedHistory = historyList.map((h) => {
       if (h.id === item.id) {
         return {
@@ -859,7 +897,7 @@ export function useCourseAttendanceAndDispositionActions({
     });
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
     setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
 
     triggerSheetsSync(dispositionMap, updatedHistory, dispositionMap2c);
@@ -869,9 +907,11 @@ export function useCourseAttendanceAndDispositionActions({
         id: item.id,
         studentId: item.studentId,
         studentName: item.studentName,
-        courseId: activeCourse.id,
+        courseId: item.courseId || activeCourse.id,
         action: item.action,
         category: item.category,
+        term: itemTerm,
+        pointsChange: item.pointsChange,
         date: item.date,
         time: item.time,
         timestamp: item.timestamp,
@@ -879,6 +919,11 @@ export function useCourseAttendanceAndDispositionActions({
         notificationMethod: 'omitted',
         omitNotification: true,
         notifiedAt: 'No enviar',
+        expectedSummary: {
+          totalAbsences: currentMetrics.totalAbsences || 0,
+          totalLates: currentMetrics.totalLates || 0,
+          totalDisposition: currentMetrics.totalDisposition ?? 10,
+        },
       })
       .catch(() => {});
 
@@ -892,21 +937,28 @@ export function useCourseAttendanceAndDispositionActions({
   const handleBatchMarkOmitNotification = () => {
     if (selectedPendingHistoryIds.length === 0) return;
     const idsSet = new Set(selectedPendingHistoryIds);
+    const omittedBatch: StudentHistoryItem[] = [];
     const updatedHistory = historyList.map((h) => {
       if (idsSet.has(h.id)) {
-        return {
+        const nextItem: StudentHistoryItem = {
           ...h,
           omitNotification: true,
           notificationMethod: 'omitted' as const,
           messageSent: false,
           notifiedAt: 'Omitido',
         };
+        omittedBatch.push(nextItem);
+        return nextItem;
       }
       return h;
     });
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
+    const userId = getActiveUserId();
+    if (userId && omittedBatch.length > 0) {
+      firestoreSync.saveDispositionBatch(userId, omittedBatch).catch(() => {});
+    }
     const count = selectedPendingHistoryIds.length;
     setSelectedPendingHistoryIds([]);
 
@@ -920,21 +972,28 @@ export function useCourseAttendanceAndDispositionActions({
   const handleMarkAllPendingAsOmitted = () => {
     if (pendingAllItems.length === 0) return;
     const pendingIdsSet = new Set(pendingAllItems.map((p) => p.id));
+    const omittedBatch: StudentHistoryItem[] = [];
     const updatedHistory = historyList.map((h) => {
       if (pendingIdsSet.has(h.id)) {
-        return {
+        const nextItem: StudentHistoryItem = {
           ...h,
           omitNotification: true,
           notificationMethod: 'omitted' as const,
           messageSent: false,
           notifiedAt: 'Omitido',
         };
+        omittedBatch.push(nextItem);
+        return nextItem;
       }
       return h;
     });
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
+    const userId = getActiveUserId();
+    if (userId && omittedBatch.length > 0) {
+      firestoreSync.saveDispositionBatch(userId, omittedBatch).catch(() => {});
+    }
     setSelectedPendingHistoryIds([]);
     const count = pendingAllItems.length;
 
@@ -1045,6 +1104,8 @@ export function useCourseAttendanceAndDispositionActions({
         courseId: activeCourse.id,
         action: finalAction,
         category: 'Disposición',
+        term: targetTerm,
+        pointsChange: delta,
         detail: detailText,
         date,
         time,
@@ -1258,6 +1319,8 @@ export function useCourseAttendanceAndDispositionActions({
     api
       .deleteDispositionHistory(item.id, {
         studentId: item.studentId,
+        courseId: targetCourseId,
+        term: itemTerm,
         isAbsence,
         isLate,
         pointsToReturn,
@@ -1490,7 +1553,7 @@ export function useCourseAttendanceAndDispositionActions({
 
     const userId = getActiveUserId();
     if (userId) {
-      firestoreSync.deleteTodayAbsencesForStudent(userId, student.id, now).catch(() => {});
+      firestoreSync.deleteTodayAbsencesForStudent(userId, student.id, now, activeCourse.id).catch(() => {});
     }
 
     api

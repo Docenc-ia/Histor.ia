@@ -10,6 +10,8 @@ import {
   getDocFromServer,
   Firestore,
   disableNetwork,
+  writeBatch,
+  DocumentReference,
 } from 'firebase/firestore';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { auth } from '../workspace/googleAuth';
@@ -636,3 +638,64 @@ export function clearFingerprints(): void {
     } catch (_) {}
   }
 }
+
+export type BatchOperation =
+  | {
+      type: 'set';
+      ref: DocumentReference;
+      data: Record<string, any>;
+      merge?: boolean;
+      fingerprintKey?: string;
+      fingerprint?: string;
+    }
+  | {
+      type: 'delete';
+      ref: DocumentReference;
+    };
+
+export const MAX_FIRESTORE_BATCH_OPS = 450;
+
+/**
+ * Splits a list of Firestore batch operations into chunks of up to 450 operations
+ * so large rosters (>500 students/records) never exceed Firestore's 500-write batch limit.
+ */
+export async function commitBatchOperationsInChunks(
+  targetDb: Firestore,
+  operations: BatchOperation[],
+  timeoutMs: number = FIRESTORE_TIMEOUT_MS,
+  trackSyncStatus: boolean = true
+): Promise<boolean> {
+  if (!operations || operations.length === 0) return true;
+  let allSucceeded = true;
+
+  for (let i = 0; i < operations.length; i += MAX_FIRESTORE_BATCH_OPS) {
+    const chunk = operations.slice(i, i + MAX_FIRESTORE_BATCH_OPS);
+    const batch = writeBatch(targetDb);
+    const chunkMarks: Array<{ key: string; fp: string }> = [];
+
+    for (const op of chunk) {
+      if (op.type === 'set') {
+        if (op.merge !== false) {
+          batch.set(op.ref, op.data, { merge: true });
+        } else {
+          batch.set(op.ref, op.data);
+        }
+        if (op.fingerprintKey && op.fingerprint) {
+          chunkMarks.push({ key: op.fingerprintKey, fp: op.fingerprint });
+        }
+      } else if (op.type === 'delete') {
+        batch.delete(op.ref);
+      }
+    }
+
+    const res = await executeWithTimeout(batch.commit(), timeoutMs, trackSyncStatus);
+    if (res !== null) {
+      chunkMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
+    } else {
+      allSucceeded = false;
+    }
+  }
+
+  return allSucceeded;
+}
+

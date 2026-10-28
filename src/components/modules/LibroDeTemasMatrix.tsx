@@ -41,6 +41,7 @@ import { LibroDeTemasHeaderToolbar } from './classes/LibroDeTemasHeaderToolbar';
 import { LibroDeTemasTodayCard } from './classes/LibroDeTemasTodayCard';
 import { useLibroDeTemasSync } from '../../hooks/useLibroDeTemasSync';
 import { isValidCourseSchedule } from '../../utils/courseFormatting';
+import { getCourseCachedItem, setCourseCachedItem } from '../../utils/lruCourseCache';
 
 export type NoClassCategory =
   | 'feriado'
@@ -376,7 +377,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     const globalCharOpts = loadGlobalCharacterOptions();
 
     try {
-      const raw = localStorage.getItem(getStorageKey(courseId));
+      const raw = getCourseCachedItem(courseId, getStorageKey(courseId));
       if (raw) {
         const parsed = JSON.parse(raw) as Partial<LibroDeTemasStorageData>;
         if (parsed.metadata) {
@@ -484,7 +485,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                       : latestStateRef.current.sheetInfo,
                   updatedAt: isCloudNewer && cloudUpdatedAt ? cloudUpdatedAt : localUpdatedAt || new Date().toISOString(),
                 };
-                localStorage.setItem(getStorageKey(courseId), JSON.stringify(updatedPayload));
+                setCourseCachedItem(courseId, getStorageKey(courseId), JSON.stringify(updatedPayload));
               } catch (_) {}
               return mergedEntries;
             });
@@ -611,7 +612,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       updatedAt: new Date().toISOString(),
     };
     try {
-      localStorage.setItem(getStorageKey(courseId), JSON.stringify(payload));
+      setCourseCachedItem(courseId, getStorageKey(courseId), JSON.stringify(payload));
       localStorage.setItem(GLOBAL_CHARACTER_OPTIONS_KEY, JSON.stringify(nextCharacterOptions));
     } catch (_) {}
 

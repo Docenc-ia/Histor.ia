@@ -220,10 +220,10 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
                     ? 'bg-emerald-950/50 hover:bg-emerald-900/60 text-emerald-300 border-emerald-800/60'
                     : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200 shadow-2xs'
                 }`}
-                title={`Sincronizar y reponer los alumnos de "${activeCourse.name}" desde Google Classroom`}
+                title={`Sincronización Selectiva de Estudiantes: elegir qué alumnos de Google Classroom importar exclusivamente a "${activeCourse.name}"`}
               >
                 <RefreshCw className={`w-3.5 h-3.5 text-emerald-500 ${isSyncingRoster ? 'animate-spin' : ''}`} />
-                <span>{isSyncingRoster ? 'Sincronizando alumnos...' : 'Sincronizar Alumnos'}</span>
+                <span>{isSyncingRoster ? 'Cargando alumnos...' : 'Sincronización Selectiva de Alumnos'}</span>
               </button>
             )}
 

@@ -25,7 +25,7 @@ import {
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
 import { firestoreSync } from '../services/firestoreSync';
-import { sheetsSyncQueue } from '../services/workspace/sheetsSyncQueue';
+import { syncCoordinator } from '../services/syncCoordinator';
 
 export interface ServiceStatus {
   id: string;
@@ -558,7 +558,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const logout = useCallback(async () => {
     const currentEmail = user?.email;
     try {
-      sheetsSyncQueue.flushAllPending();
+      syncCoordinator.flushAll();
     } catch (_) {}
     firestoreSync.clearCaches();
     if (typeof window !== 'undefined') {

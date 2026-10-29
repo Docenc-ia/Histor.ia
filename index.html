@@ -83,11 +83,33 @@
     <meta name="apple-mobile-web-app-title" content="Docenc.IA" />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script>
-      // Register Service Worker for PWA and offline resilience
+      // Register Service Worker for PWA and warm static assets (CSS, JS, icons)
       if ('serviceWorker' in navigator && !window.location.hostname.includes('localhost') && window.location.protocol === 'https:') {
         window.addEventListener('load', function() {
+          function warmStaticAssets(worker) {
+            if (!worker) return;
+            try {
+              var elements = document.querySelectorAll('script[src], link[rel="stylesheet"][href], link[rel*="icon"][href]');
+              var urls = [];
+              for (var i = 0; i < elements.length; i++) {
+                var el = elements[i];
+                var rawUrl = el.getAttribute('src') || el.getAttribute('href');
+                if (rawUrl && rawUrl.indexOf('/') === 0 && rawUrl.indexOf('//') !== 0 && rawUrl.indexOf('/src/') !== 0) {
+                  urls.push(rawUrl);
+                }
+              }
+              if (urls.length > 0) {
+                worker.postMessage({ type: 'WARM_STATIC_ASSETS', urls: urls });
+              }
+            } catch (_) {}
+          }
+
           navigator.serviceWorker.register('/sw.js').then(function(reg) {
             console.log('Docenc.IA PWA ServiceWorker registrado con éxito en scope:', reg.scope);
+            warmStaticAssets(reg.active || navigator.serviceWorker.controller);
+            navigator.serviceWorker.ready.then(function(readyReg) {
+              warmStaticAssets(readyReg.active);
+            });
           }).catch(function(err) {
             console.warn('Docenc.IA PWA ServiceWorker no se pudo registrar:', err);
           });

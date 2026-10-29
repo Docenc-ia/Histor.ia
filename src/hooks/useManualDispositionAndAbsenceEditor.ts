@@ -23,6 +23,7 @@ import { sheetsService } from '../services/workspace/sheetsService';
 import { classroomService } from '../services/workspace/classroomService';
 import { gmailService } from '../services/workspace/gmailService';
 import { formatLocalDateDMY } from '../utils/dateUtils';
+import { getTerminologySettings } from '../utils/terminologySettings';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { DEFAULT_ABSENCE_PRESETS } from './useCourseNotifications';
 
@@ -740,19 +741,31 @@ export function useManualDispositionAndAbsenceEditor({
             }));
     }
 
+    const { dispositionLabel } = getTerminologySettings();
+    const customDispLower = dispositionLabel.toLowerCase();
+    const desiredSubName = `Nota de ${dispositionLabel}`;
+
     let targetSubId: string | null = null;
+    let categoriesModified = false;
 
     for (const cat of categories) {
       const foundSub = cat.subcategories?.find((s) => {
         const lower = s.name.toLowerCase();
         return (
+          s.id.startsWith('sub-disp-') ||
           lower.includes('disposición') ||
           lower.includes('disposicion') ||
-          lower.includes('conducta')
+          lower.includes('conducta') ||
+          lower.includes('concepto') ||
+          lower.includes(customDispLower)
         );
       });
       if (foundSub) {
         targetSubId = foundSub.id;
+        if (foundSub.name !== desiredSubName && (foundSub.id.startsWith('sub-disp-') || foundSub.name === 'Nota de Disposición')) {
+          foundSub.name = desiredSubName;
+          categoriesModified = true;
+        }
         break;
       }
     }
@@ -765,6 +778,7 @@ export function useManualDispositionAndAbsenceEditor({
           lower.includes('desempeno') ||
           lower.includes('participación') ||
           lower.includes('participacion') ||
+          lower.includes('concepto') ||
           lower.includes('tareas')
         );
       });
@@ -776,7 +790,7 @@ export function useManualDispositionAndAbsenceEditor({
       const newSubId = `sub-disp-${term}-${Date.now()}`;
       const newSub: GradeSubcategory = {
         id: newSubId,
-        name: 'Nota de Disposición',
+        name: desiredSubName,
         maxScore: 10,
         date: new Date().toLocaleDateString('es-AR'),
       };
@@ -787,19 +801,20 @@ export function useManualDispositionAndAbsenceEditor({
       } else {
         const newCat: GradeCategory = {
           id: `cat-disp-${term}-${Date.now()}`,
-          name: 'Desempeño y Conducta',
+          name: `Desempeño y ${dispositionLabel}`,
           color: 'bg-purple-500',
           subcategories: [newSub],
         };
         categories.push(newCat);
       }
       targetSubId = newSubId;
+      categoriesModified = true;
+    }
 
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(catKey, JSON.stringify(categories));
-        if (term === '1c') {
-          localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(categories));
-        }
+    if (categoriesModified && typeof window !== 'undefined') {
+      localStorage.setItem(catKey, JSON.stringify(categories));
+      if (term === '1c') {
+        localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(categories));
       }
     }
 

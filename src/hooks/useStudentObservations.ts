@@ -8,12 +8,14 @@ interface UseStudentObservationsParams {
   userEmail?: string;
   userId?: string;
   activeCourseId?: string;
+  enabled?: boolean;
 }
 
 export function useStudentObservations({
   userEmail,
   userId,
   activeCourseId,
+  enabled = true,
 }: UseStudentObservationsParams) {
   const [isEditingStudentEmail, setIsEditingStudentEmail] = useState(false);
   const [editedStudentEmail, setEditedStudentEmail] = useState('');
@@ -44,7 +46,10 @@ export function useStudentObservations({
   } | null>(null);
   const [profileDocError, setProfileDocError] = useState<string | null>(null);
 
+  const shouldHydrateCloud = enabled || Boolean(selectedStudentForProfile);
+
   useEffect(() => {
+    if (!shouldHydrateCloud) return;
     let isMounted = true;
 
     const loadCloudObservations = async () => {
@@ -106,7 +111,7 @@ export function useStudentObservations({
       window.removeEventListener('docencia_network_restored', handleNetworkRestored);
       window.removeEventListener('docencia_trigger_queue_flush', handleNetworkRestored);
     };
-  }, [userEmail, userId, activeCourseId]);
+  }, [userEmail, userId, activeCourseId, shouldHydrateCloud]);
 
   return {
     isEditingStudentEmail,

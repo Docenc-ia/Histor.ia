@@ -13,6 +13,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { useGlobalData } from '../../context/GlobalDataContext';
 import { Course } from '../../types';
 import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 import { subscribeAppEvents } from '../../utils/appEventBus';
@@ -329,5 +330,12 @@ function areSidebarPropsEqual(prev: SidebarProps, next: SidebarProps): boolean {
   );
 }
 
-export const Sidebar = React.memo(SidebarComponent, areSidebarPropsEqual);
+const MemoizedSidebar = React.memo(SidebarComponent, areSidebarPropsEqual);
+MemoizedSidebar.displayName = 'MemoizedSidebar';
+
+export const Sidebar: React.FC<SidebarProps> = React.memo((props) => {
+  const { courses: globalCourses } = useGlobalData();
+  return <MemoizedSidebar {...props} courses={props.courses ?? globalCourses} />;
+}, areSidebarPropsEqual);
 Sidebar.displayName = 'Sidebar';
+

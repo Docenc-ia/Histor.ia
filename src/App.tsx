@@ -5,28 +5,21 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, lazy } from 'react';
 import { WorkspaceAuthProvider, useWorkspaceAuth } from './context/WorkspaceAuthContext';
+import { GlobalDataContextProvider, useGlobalData } from './context/GlobalDataContext';
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { LandingPage } from './components/landing/LandingPage';
 import { TeacherCoursesPanel } from './components/dashboard/TeacherCoursesPanel';
-import { Course, Student } from './types';
+import { Course } from './types';
 import { api } from './services/api';
 import { CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 import { subscribeAppEvents } from './utils/appEventBus';
-import { computeQuickStudentAttendanceRate } from './utils/attendanceCalculations';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { findCourseMatch } from './utils/courseFormatting';
 import { useNavigationService } from './services/navigationService';
-import {
-  areCoursesEqual,
-  areCourseListsEqual,
-  reconcileCourseList,
-  areStudentsEqual,
-  areStudentListsEqual,
-  reconcileStudentList,
-} from './utils/entityEquality';
+import { areCoursesEqual } from './utils/entityEquality';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -68,6 +61,16 @@ const DEFAULT_FALLBACK_COURSE: Course = {
 
 function AppContent() {
   const { user, isDarkMode } = useWorkspaceAuth();
+  const {
+    courses,
+    isLoading,
+    coursesRef,
+    loadData,
+    createCourse,
+    deleteCourse,
+    clearAllCourses,
+    restoreDemoCourses,
+  } = useGlobalData();
 
   // Unified transactional navigation service (single source of truth for currentView, selectedCourseId, subTab, and browser URL)
   const {
@@ -76,12 +79,8 @@ function AppContent() {
     subTab: initialCourseSubTab,
     navigateTransaction,
     selectCourse,
-    preloadOptimisticCourseState,
-    reconcileWithCourses,
-    syncUrlWithCurrentState,
     getLastActiveCourseId,
     getLastActiveCourseSnapshot,
-    clearLastActiveCourse,
   } = useNavigationService();
 
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
@@ -116,95 +115,8 @@ function AppContent() {
     };
   }, []);
 
-  // Core data states - initialize with local cache + last active course snapshot for instant 0ms first paint
-  const [courses, setCourses] = useState<Course[]>(() => {
-    const localList = api.deduplicateCourses(api.getLocalCourses());
-    const snap = getLastActiveCourseSnapshot();
-    if (
-      snap &&
-      !localList.some(
-        (c) =>
-          c.id === snap.id ||
-          (c.classroomCourseId && c.classroomCourseId === snap.classroomCourseId)
-      )
-    ) {
-      return [snap, ...localList];
-    }
-    return localList;
-  });
-  const [students, setStudents] = useState<Student[]>(() =>
-    api.deduplicateStudents(api.getLocalStudents())
-  );
-  const [isLoading, setIsLoading] = useState<boolean>(() => {
-    const hasLocalCourses = api.getLocalCourses().length > 0;
-    const hasOptimisticLastCourse = Boolean(
-      getLastActiveCourseSnapshot() || getLastActiveCourseId()
-    );
-    return !hasLocalCourses && !hasOptimisticLastCourse;
-  });
-
-  // Keep latest refs to courses and students so callbacks remain 100% referentially stable across refreshes
-  const coursesRef = useRef<Course[]>(courses);
-  coursesRef.current = courses;
-
-  const studentsRef = useRef<Student[]>(students);
-  studentsRef.current = students;
-
   // Keep previous selectedCourse ref to preserve referential identity when course data has not changed
   const prevSelectedCourseRef = useRef<Course | null>(null);
-
-  // Load courses and students data with 2-phase Optimistic UI (Phase 1: 0ms localStorage pre-load, Phase 2: Firebase sync)
-  const loadData = useCallback(async () => {
-    // Phase 1: Immediate optimistic UI pre-load from localStorage before Firebase finishes
-    try {
-      const localC = api.deduplicateCourses(api.getLocalCourses());
-      const localS = api.deduplicateStudents(api.getLocalStudents());
-      const optimistic = preloadOptimisticCourseState(localC);
-
-      if (optimistic.optimisticCoursesList.length > 0) {
-        setCourses((prev) => reconcileCourseList(prev, optimistic.optimisticCoursesList));
-      }
-      if (localS.length > 0) {
-        setStudents((prev) => reconcileStudentList(prev, localS));
-      }
-      // Unblock UI immediately if we have local courses or a persisted last active course ID/snapshot
-      if (
-        optimistic.optimisticCoursesList.length > 0 ||
-        Boolean(optimistic.targetCourseId)
-      ) {
-        setIsLoading((prev) => (prev ? false : prev));
-      }
-    } catch (_) {}
-
-    // Phase 2: Asynchronous Firebase resolution & seamless state reconciliation
-    try {
-      const [c, s] = await Promise.all([
-        api.getCourses(),
-        api.getStudents(),
-      ]);
-      const cleanCourses = api.deduplicateCourses(c);
-      const cleanStudents = api.deduplicateStudents(s);
-      setCourses((prev) => reconcileCourseList(prev, cleanCourses));
-      setStudents((prev) => reconcileStudentList(prev, cleanStudents));
-      if (cleanCourses.length > 0) {
-        reconcileWithCourses(cleanCourses);
-      }
-    } catch (err) {
-      console.error('Error fetching workspace courses and students:', err);
-    } finally {
-      setIsLoading((prev) => (prev ? false : prev));
-    }
-  }, [preloadOptimisticCourseState, reconcileWithCourses]);
-
-  useEffect(() => {
-    if (!user) {
-      setCourses((prev) => (prev.length === 0 ? prev : []));
-      setStudents((prev) => (prev.length === 0 ? prev : []));
-      return;
-    }
-    loadData();
-    syncUrlWithCurrentState();
-  }, [user?.id, user?.email, loadData, syncUrlWithCurrentState]);
 
   // Listen to open attendance settings triggered globally
   useEffect(() => {
@@ -214,76 +126,6 @@ function AppContent() {
       0
     );
   }, []);
-
-  // Cascaded synchronization of students status across modules and dashboard view (in-memory, zero network re-fetch)
-  useEffect(() => {
-    const handleStudentStatusSync = () => {
-      try {
-        const localStudents = api.deduplicateStudents(api.getLocalStudents());
-        const localCourses = coursesRef.current.length > 0 ? coursesRef.current : api.getLocalCourses();
-        const scheduleByCourseId = new Map<string, string>();
-        const perCourseDispMap = new Map<string, Record<string, any>>();
-        localCourses.forEach((c) => {
-          if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
-          if (c.id) {
-            try {
-              const rawCourseDisp = api.getUserScopedItem(`fds_disposition_data_${c.id}_1c`);
-              if (rawCourseDisp) {
-                const parsed = JSON.parse(rawCourseDisp);
-                if (parsed && typeof parsed === 'object') {
-                  perCourseDispMap.set(c.id, parsed);
-                }
-              }
-            } catch (_) {}
-          }
-        });
-        const localDisp = api.getAllDispositionStorage().disposition || {};
-        const enriched = localStudents.map((st) => {
-          const courseDisp = st.courseId ? perCourseDispMap.get(st.courseId) : undefined;
-          const candidateGlobal = localDisp[`${st.courseId}::${st.id}`] || localDisp[st.id];
-          const d =
-            courseDisp?.[st.id] ||
-            (candidateGlobal && (!candidateGlobal.courseId || candidateGlobal.courseId === st.courseId)
-              ? candidateGlobal
-              : undefined);
-          if (d && typeof d.totalAbsences === 'number') {
-            const rate = computeQuickStudentAttendanceRate(
-              st.id,
-              st.courseId,
-              d.totalAbsences,
-              d.totalLates || 0,
-              st.courseId ? scheduleByCourseId.get(st.courseId) : undefined
-            );
-            if (rate !== st.attendanceRate) {
-              return { ...st, attendanceRate: rate };
-            }
-          }
-          return st;
-        });
-
-        setStudents((prev) => reconcileStudentList(prev, enriched));
-      } catch (_) {}
-    };
-
-    return subscribeAppEvents(
-      ['docencia_disposition_storage_change', 'docencia_student_status_updated'],
-      handleStudentStatusSync,
-      60
-    );
-  }, []);
-
-  // Immediately reflect course schedule/details updates across Sidebar, Mis Materias, and Workspace
-  useEffect(() => {
-    const handleCoursesUpdated = () => {
-      try {
-        const latestCourses = api.deduplicateCourses(api.getLocalCourses());
-        setCourses((prev) => reconcileCourseList(prev, latestCourses));
-        reconcileWithCourses(latestCourses);
-      } catch (_) {}
-    };
-
-    return subscribeAppEvents(['docencia_courses_updated'], handleCoursesUpdated, 40);
-  }, [reconcileWithCourses]);
 
   const handleToggleSidebar = useCallback(() => {
     setSidebarOpen((prev) => !prev);
@@ -317,88 +159,47 @@ function AppContent() {
   const handleCreateCourse = useCallback(
     async (courseData: Partial<Course>) => {
       try {
-        setIsLoading(true);
-        const newCourse = await api.createCourse(courseData);
-        await loadData();
-        navigateTransaction({
-          courseId: newCourse.id,
-          historyMode: 'replace',
-          scrollToTop: false,
-        });
+        const newCourse = await createCourse(courseData);
         showToast(`Materia "${newCourse.name || courseData.name}" creada con éxito.`, 'success');
       } catch (err: any) {
         showToast(err.message || 'Error al crear la materia', 'error');
-      } finally {
-        setIsLoading(false);
       }
     },
-    [loadData, navigateTransaction, showToast]
+    [createCourse, showToast]
   );
 
   const handleDeleteCourse = useCallback(
     async (courseId: string) => {
       try {
-        const courseToDelete = coursesRef.current.find(
-          (c) => c.id === courseId || c.classroomCourseId === courseId
-        );
-        const courseName = courseToDelete ? courseToDelete.name : 'Materia';
-
-        const res = await api.deleteCourse(courseId);
-
-        // Immediately update local state and reconcile navigation transactionally
-        setCourses((prev) => {
-          const updated = prev.filter((c) => c.id !== courseId && c.classroomCourseId !== courseId);
-          reconcileWithCourses(updated, { deletedCourseId: courseToDelete?.id || courseId });
-          return reconcileCourseList(prev, updated);
-        });
-
-        // Background reload
-        await loadData();
-
-        showToast(res.message || `Materia "${courseName}" eliminada correctamente.`, 'success');
+        const { message, courseName } = await deleteCourse(courseId);
+        showToast(message || `Materia "${courseName}" eliminada correctamente.`, 'success');
       } catch (err: any) {
         showToast(err.message || 'Error al eliminar la materia', 'error');
       }
     },
-    [loadData, reconcileWithCourses, showToast]
+    [deleteCourse, showToast]
   );
 
   const handleClearCourses = useCallback(async () => {
     try {
-      setIsLoading(true);
-      const res = await api.clearAllCourses();
-      clearLastActiveCourse();
-      setCourses((prev) => (prev.length === 0 ? prev : []));
-      setStudents((prev) => (prev.length === 0 ? prev : []));
-      navigateTransaction({
-        view: 'courses',
-        courseId: '',
-        historyMode: 'replace',
-        scrollToTop: false,
-      });
+      const res = await clearAllCourses();
       showToast(
         res.message || 'Materias de prueba eliminadas. Tu espacio está limpio para tus clases reales.',
         'success'
       );
     } catch (err: any) {
       showToast(err?.message || 'Error al limpiar materias', 'error');
-    } finally {
-      setIsLoading(false);
     }
-  }, [clearLastActiveCourse, navigateTransaction, showToast]);
+  }, [clearAllCourses, showToast]);
 
   const handleRestoreDemoCourses = useCallback(async () => {
     try {
-      setIsLoading(true);
-      await api.restoreDemoCourses();
-      await loadData();
+      await restoreDemoCourses();
       showToast('Materias de ejemplo restauradas.', 'success');
     } catch (err: any) {
       showToast(err?.message || 'Error al restaurar materias', 'error');
-    } finally {
-      setIsLoading(false);
     }
-  }, [loadData, showToast]);
+  }, [restoreDemoCourses, showToast]);
 
   const handleCreated = useCallback(
     (_type: string, message: string) => {
@@ -430,7 +231,7 @@ function AppContent() {
       if (!courseId) return;
       selectCourse(courseId, subTab, coursesRef.current);
     },
-    [selectCourse]
+    [selectCourse, coursesRef]
   );
 
   const handleSelectCourseAndTab = useCallback(
@@ -474,7 +275,7 @@ function AppContent() {
         });
       }
     },
-    [navigateTransaction, selectCourse]
+    [navigateTransaction, selectCourse, coursesRef]
   );
 
   const handleBackToCourses = useCallback(() => {
@@ -583,13 +384,12 @@ function AppContent() {
 
       {/* Main Body */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Google Workspace Sidebar */}
+        {/* Google Workspace Sidebar (courses read from GlobalDataContextProvider) */}
         <Sidebar
           currentTab={currentActiveSidebarTab}
           onSelectTab={handleSidebarSelectTab}
           isOpen={sidebarOpen}
           onNewAction={handleOpenNewCourseModal}
-          courses={courses}
           selectedCourseId={selectedCourseId}
           onSelectCourse={handleSelectCourse}
         />
@@ -611,8 +411,6 @@ function AppContent() {
               {/* 1. Panel Principal de Materias del Profesor */}
               {currentView === 'courses' && (
                 <TeacherCoursesPanel
-                  courses={courses}
-                  students={students}
                   externalSearchQuery={searchQuery}
                   onExternalSearchChange={setSearchQuery}
                   onSelectCourseAndTab={handleSelectCourseAndTab}
@@ -620,7 +418,6 @@ function AppContent() {
                   onDeleteCourse={handleDeleteCourse}
                   onClearCourses={handleClearCourses}
                   onRestoreDemoCourses={handleRestoreDemoCourses}
-                  onRefreshData={loadData}
                   onImportSuccess={handleImportSuccess}
                   onOpenImportClassroom={handleOpenImportClassroom}
                 />
@@ -642,15 +439,12 @@ function AppContent() {
                   >
                     <CourseWorkspaceView
                       course={selectedCourse}
-                      courses={courses}
-                      students={students}
                       initialSubTab={initialCourseSubTab}
                       externalSearchQuery={searchQuery}
                       onExternalSearchChange={setSearchQuery}
                       onBackToCourses={handleBackToCourses}
                       onSelectCourse={handleSelectCourse}
                       onDeleteCourse={handleDeleteCourse}
-                      onRefreshData={loadData}
                       onNavigate={handleNavigate}
                       onOpenNewModal={handleOpenCreateModal}
                     />
@@ -673,7 +467,6 @@ function AppContent() {
                   >
                     <div className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 space-y-6">
                       <CalendarModule
-                        courses={courses}
                         selectedCourseId={selectedCourseId}
                         onSelectCourse={handleSelectCourse}
                         onNavigateToCourseDetail={handleSelectCourse}
@@ -693,7 +486,6 @@ function AppContent() {
           <CreateModal
             isOpen={isCreateModalOpen}
             type={createModalType}
-            courses={courses}
             onClose={handleCloseCreateModal}
             onCreated={handleCreated}
             onOpenImportClassroom={handleOpenImportClassroom}
@@ -706,7 +498,6 @@ function AppContent() {
         <Suspense fallback={null}>
           <ImportClassroomModal
             isOpen={isImportClassroomOpen}
-            existingCourses={courses}
             onClose={handleCloseImportClassroom}
             onSuccess={handleImportClassroomSuccess}
           />
@@ -739,7 +530,9 @@ export default function App() {
   return (
     <ErrorBoundary fallbackTitle="Ocurrió un inconveniente inesperado en la aplicación">
       <WorkspaceAuthProvider>
-        <AppContent />
+        <GlobalDataContextProvider>
+          <AppContent />
+        </GlobalDataContextProvider>
       </WorkspaceAuthProvider>
     </ErrorBoundary>
   );

@@ -399,7 +399,7 @@ const DEFAULT_LINKED_OWNER_EMAILS = ['jorge.cano@fds-esc.edu.ar', 'canomorenojj@
 
 export function isPrimaryOwnerAccount(email?: string): boolean {
   const e = (email ?? getActiveUserEmail()).trim().toLowerCase();
-  if (!e) return true;
+  if (!e) return false;
   const envEmailsRaw = (import.meta as any).env?.VITE_OWNER_EMAILS as string | undefined;
   const linkedList = envEmailsRaw
     ? envEmailsRaw
@@ -419,29 +419,34 @@ export function getActiveUserId(): string {
   if (email && !isPrimaryOwnerAccount(email)) {
     return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
   }
+  if (email && isPrimaryOwnerAccount(email)) {
+    return auth.currentUser?.uid || GLOBAL_WORKSPACE_ID;
+  }
   if (auth.currentUser?.uid) return auth.currentUser.uid;
   if (typeof window !== 'undefined') {
     try {
       const parsed = getCachedStoredProfile();
-      if (parsed) {
-        if (parsed.id && !String(parsed.id).startsWith('user-')) {
-          return String(parsed.id);
+      if (parsed?.email) {
+        const cleanEmail = String(parsed.email).trim().toLowerCase();
+        if (isPrimaryOwnerAccount(cleanEmail)) {
+          return GLOBAL_WORKSPACE_ID;
         }
-        if (parsed.email) {
-          return 'teacher_' + String(parsed.email).trim().toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
-        }
+        return 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
       }
-      if (email) return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
+      if (parsed?.id && !String(parsed.id).startsWith('user-')) {
+        return String(parsed.id);
+      }
     } catch (_) {}
   }
-  return GLOBAL_WORKSPACE_ID;
+  return '';
 }
 
 export function getDeletedHistoryIdsSet(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
     const uid = getActiveUserId();
-    const scopedKey = uid ? `docencia_deleted_history_ids_${uid}` : 'docencia_deleted_history_ids';
+    if (!uid) return new Set();
+    const scopedKey = `docencia_deleted_history_ids_${uid}`;
     const raw =
       localStorage.getItem(scopedKey) ||
       (isPrimaryOwnerAccount() ? localStorage.getItem('docencia_deleted_history_ids') : null);
@@ -454,22 +459,15 @@ export function getCandidateUserIds(primaryId?: string): string[] {
   const email = getActiveUserEmail();
   const isOwner = isPrimaryOwnerAccount(email);
 
-  if (!isOwner && email) {
-    const colleagueIds = new Set<string>([
-      'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_'),
-    ]);
-    if (primaryId) colleagueIds.add(primaryId);
-    if (auth.currentUser?.uid) colleagueIds.add(auth.currentUser.uid);
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = sessionStorage.getItem('docencia_user_profile') || localStorage.getItem('docencia_user_profile');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed?.id) colleagueIds.add(String(parsed.id));
-        }
-      } catch (_) {}
+  // For non-owner teachers: use a single canonical deterministic ID (75% fewer Firestore reads)
+  if (!isOwner) {
+    if (email) {
+      return ['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')];
     }
-    return Array.from(colleagueIds).filter(Boolean);
+    if (primaryId && primaryId !== GLOBAL_WORKSPACE_ID) {
+      return [primaryId];
+    }
+    return [];
   }
 
   const ids = new Set<string>([
@@ -502,8 +500,11 @@ export function getCandidateUserIds(primaryId?: string): string[] {
 
 export function getTargetWriteUserIds(userId: string): string[] {
   const email = getActiveUserEmail();
-  if (email && !isPrimaryOwnerAccount(email)) {
-    return ['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')];
+  if (!isPrimaryOwnerAccount(email)) {
+    if (email) {
+      return ['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')];
+    }
+    return userId && userId !== GLOBAL_WORKSPACE_ID ? [userId] : [];
   }
   return [userId || GLOBAL_WORKSPACE_ID];
 }

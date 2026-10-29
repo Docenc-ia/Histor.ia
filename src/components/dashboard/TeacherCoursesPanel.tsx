@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { useGlobalData } from '../../context/GlobalDataContext';
 import {
   formatCourseSidebarLabel,
   sortCoursesByUpcomingSchedule,
@@ -42,11 +43,13 @@ import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 import { ImportClassroomModal } from './ImportClassroomModal';
 import { SelectiveStudentSyncModal } from '../modules/classes/SelectiveStudentSyncModal';
 import { areCourseListsEqual, areStudentListsEqual } from '../../utils/entityEquality';
+import { useTerminologySettings } from '../../utils/terminologySettings';
 
+const EMPTY_COURSES: Course[] = [];
 const EMPTY_STUDENTS: Student[] = [];
 
 interface TeacherCoursesPanelProps {
-  courses: Course[];
+  courses?: Course[];
   students?: Student[];
   externalSearchQuery?: string;
   onExternalSearchChange?: (query: string) => void;
@@ -79,7 +82,12 @@ function areTeacherCoursesPanelPropsEqual(
     return false;
   }
 
-  if (!areCourseListsEqual(prev.courses, next.courses)) {
+  if (
+    !areCourseListsEqual(
+      prev.courses ?? EMPTY_COURSES,
+      next.courses ?? EMPTY_COURSES
+    )
+  ) {
     return false;
   }
 
@@ -96,7 +104,7 @@ function areTeacherCoursesPanelPropsEqual(
 }
 
 const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
-  courses,
+  courses = EMPTY_COURSES,
   students = EMPTY_STUDENTS,
   externalSearchQuery,
   onExternalSearchChange,
@@ -110,6 +118,7 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
   onImportSuccess,
 }) => {
   const { user, isDarkMode, token, loginWithGoogle } = useWorkspaceAuth();
+  const { attendanceLabel, dispositionLabel } = useTerminologySettings();
   const [localSearchQuery, setLocalSearchQuery] = useState(externalSearchQuery || '');
 
   useEffect(() => {
@@ -1101,11 +1110,11 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
                     >
                       <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                       <span className={`font-semibold text-xs truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                        Asistencia
+                        {attendanceLabel}
                       </span>
                     </button>
 
-                    {/* Disposición */}
+                    {/* Disposición / Concepto / Participación */}
                     <button
                       onClick={() => onSelectCourseAndTab(course.id, 'alumnos')}
                       className={`px-3 py-2.5 border rounded-lg text-left transition-all flex items-center gap-2 cursor-pointer min-w-0 ${
@@ -1116,7 +1125,7 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
                     >
                       <Users className="w-4 h-4 text-blue-500 shrink-0" />
                       <span className={`font-semibold text-xs truncate ${isDarkMode ? 'text-slate-200' : 'text-neutral-800'}`}>
-                        Disposición
+                        {dispositionLabel}
                       </span>
                     </button>
 
@@ -1509,9 +1518,30 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
   );
 };
 
-export const TeacherCoursesPanel = React.memo(
+const MemoizedTeacherCoursesPanel = React.memo(
   TeacherCoursesPanelComponent,
   areTeacherCoursesPanelPropsEqual
 );
+MemoizedTeacherCoursesPanel.displayName = 'MemoizedTeacherCoursesPanel';
+
+export const TeacherCoursesPanel: React.FC<TeacherCoursesPanelProps> = React.memo(
+  (props) => {
+    const {
+      courses: globalCourses,
+      students: globalStudents,
+      refreshData,
+    } = useGlobalData();
+    return (
+      <MemoizedTeacherCoursesPanel
+        {...props}
+        courses={props.courses ?? globalCourses}
+        students={props.students ?? globalStudents}
+        onRefreshData={props.onRefreshData ?? refreshData}
+      />
+    );
+  },
+  areTeacherCoursesPanelPropsEqual
+);
 TeacherCoursesPanel.displayName = 'TeacherCoursesPanel';
+
 

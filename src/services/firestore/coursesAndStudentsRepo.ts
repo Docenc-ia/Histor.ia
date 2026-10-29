@@ -34,6 +34,8 @@ import {
   commitBatchOperationsInChunks,
 } from './firestoreClient';
 
+import { deriveSchoolFromEmail } from '../workspace/googleAuth';
+
 let coursesReadCache: { userId: string; timestamp: number; data: Course[] } | null = null;
 let studentsReadCache: { userId: string; timestamp: number; data: Student[] } | null = null;
 
@@ -50,13 +52,14 @@ export const coursesAndStudentsRepo = {
     if (!profile?.email && !profile?.id) return;
     if (!isFirestoreAvailable()) return;
     const userId = profile.id || getActiveUserId();
+    if (!userId) return;
     const coreProfile = {
       uid: String(userId).slice(0, 128),
       email: String(profile.email || '').slice(0, 256),
       name: String(profile.name || 'Docente Titular').slice(0, 256),
       avatar: String(profile.avatar || '').slice(0, 1024),
       role: String(profile.role || 'Docente Titular').slice(0, 128),
-      school: String(profile.school || 'FDS - Educación Secundaria').slice(0, 256),
+      school: String(profile.school || deriveSchoolFromEmail(profile.email) || 'Institución Educativa').slice(0, 256),
     };
     const payload = {
       ...coreProfile,
@@ -137,18 +140,19 @@ export const coursesAndStudentsRepo = {
    * Load courses from Firestore using Compact v2 Document (1 read instead of N reads)
    */
   async loadCourses(userId: string): Promise<Course[]> {
-    if (!isFirestoreAvailable()) return [];
+    if (!userId || !isFirestoreAvailable()) return [];
     if (
       coursesReadCache &&
       coursesReadCache.userId === userId &&
-      Date.now() - coursesReadCache.timestamp < READ_CACHE_TTL_MS &&
-      coursesReadCache.data.length > 0
+      Date.now() - coursesReadCache.timestamp < READ_CACHE_TTL_MS
     ) {
       return coursesReadCache.data;
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    if (candidateIds.length === 0) return [];
     const writeIds = getTargetWriteUserIds(userId);
+    const isOwner = isPrimaryOwnerAccount();
     const coursesMap = new Map<string, Course>();
 
     try {
@@ -179,7 +183,8 @@ export const coursesAndStudentsRepo = {
         }
       }
 
-      if (!hasMigratedDoc) {
+      // Only query legacy v1 subcollection for the primary owner if compact doc was not found
+      if (!hasMigratedDoc && isOwner) {
         const queries: Promise<any>[] = [];
         for (const targetDb of ALL_DBS) {
           for (const uid of candidateIds) {
@@ -200,8 +205,8 @@ export const coursesAndStudentsRepo = {
       }
 
       const courses = Array.from(coursesMap.values());
+      coursesReadCache = { userId, timestamp: Date.now(), data: courses };
       if (courses.length > 0) {
-        coursesReadCache = { userId, timestamp: Date.now(), data: courses };
         for (const uid of writeIds) {
           for (const c of courses) {
             markPayloadSynced(`course_doc:${uid}:${c.id}`, computePayloadFingerprint(c));
@@ -498,27 +503,6 @@ export const coursesAndStudentsRepo = {
               fingerprint: compactCheck.fingerprint,
             });
           }
-
-          // 3. Individual dirty student documents (chunked automatically in 450-op batches)
-          for (const normalizedStudent of normalizedCourseStudents) {
-            const itemKey = `student_doc:${uid}:${courseId}:${normalizedStudent.id}`;
-            const itemCheck = isPayloadDirty(itemKey, normalizedStudent);
-            if (!itemCheck.dirty) continue;
-
-            const safeDocId = `${courseId}_${normalizedStudent.id}`.replace(/[/\\]/g, '_');
-            const ref = doc(targetDb, 'users', uid, 'students', safeDocId);
-            operations.push({
-              type: 'set',
-              ref,
-              data: sanitizeForFirestore({
-                ...normalizedStudent,
-                updatedAt: nowIso,
-              }),
-              merge: true,
-              fingerprintKey: itemKey,
-              fingerprint: itemCheck.fingerprint,
-            });
-          }
         }
 
         if (operations.length > 0) {
@@ -534,12 +518,11 @@ export const coursesAndStudentsRepo = {
    * Load students from Firestore using Compact v2 Document (1 read instead of N reads)
    */
   async loadStudents(userId: string, courseId?: string): Promise<Student[]> {
-    if (!isFirestoreAvailable()) return [];
+    if (!userId || !isFirestoreAvailable()) return [];
     if (
       studentsReadCache &&
       studentsReadCache.userId === userId &&
-      Date.now() - studentsReadCache.timestamp < READ_CACHE_TTL_MS &&
-      studentsReadCache.data.length > 0
+      Date.now() - studentsReadCache.timestamp < READ_CACHE_TTL_MS
     ) {
       return courseId
         ? studentsReadCache.data.filter((s) => s.courseId === courseId)
@@ -547,7 +530,9 @@ export const coursesAndStudentsRepo = {
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    if (candidateIds.length === 0) return [];
     const writeIds = getTargetWriteUserIds(userId);
+    const isOwner = isPrimaryOwnerAccount();
     const studentsMap = new Map<string, Student>();
     const makeCompositeKey = (cId: string | undefined, sId: string) => `${cId || 'global'}::${sId}`;
 
@@ -579,7 +564,7 @@ export const coursesAndStudentsRepo = {
         }
       }
 
-      if (!hasMigratedDoc) {
+      if (!hasMigratedDoc && isOwner) {
         const queries: Promise<any>[] = [];
         for (const targetDb of ALL_DBS) {
           for (const uid of candidateIds) {
@@ -600,12 +585,9 @@ export const coursesAndStudentsRepo = {
       }
 
       const allStudents = Array.from(studentsMap.values());
+      studentsReadCache = { userId, timestamp: Date.now(), data: allStudents };
       if (allStudents.length > 0) {
-        studentsReadCache = { userId, timestamp: Date.now(), data: allStudents };
         for (const uid of writeIds) {
-          for (const st of allStudents) {
-            markPayloadSynced(`student_doc:${uid}:${st.courseId || 'global'}:${st.id}`, computePayloadFingerprint(st));
-          }
           if (hasMigratedDoc) {
             markPayloadSynced(
               `students_compact:${uid}`,

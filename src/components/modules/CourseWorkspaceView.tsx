@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { useGlobalData } from '../../context/GlobalDataContext';
 import { formatCourseSidebarLabel, sortCoursesByUpcomingSchedule } from '../../utils/courseFormatting';
 import { ClassesModule } from './ClassesModule';
 import {
@@ -18,12 +19,13 @@ import {
 
 export type CourseTabType = 'alumnos';
 
+const EMPTY_COURSES: Course[] = [];
 const EMPTY_STUDENTS: Student[] = [];
 const NOOP = () => {};
 
 interface CourseWorkspaceViewProps {
   course: Course;
-  courses: Course[];
+  courses?: Course[];
   students?: Student[];
   activeTab?: string;
   initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
@@ -62,7 +64,12 @@ function areCourseWorkspaceViewPropsEqual(
     return false;
   }
 
-  if (!areCourseListsEqual(prev.courses, next.courses)) {
+  if (
+    !areCourseListsEqual(
+      prev.courses ?? EMPTY_COURSES,
+      next.courses ?? EMPTY_COURSES
+    )
+  ) {
     return false;
   }
 
@@ -78,28 +85,29 @@ function areCourseWorkspaceViewPropsEqual(
   return true;
 }
 
-const CourseWorkspaceViewComponent: React.FC<CourseWorkspaceViewProps> = ({
-  course,
-  courses,
-  students = EMPTY_STUDENTS,
-  initialSubTab,
-  externalSearchQuery,
-  onExternalSearchChange,
-  onBackToCourses,
-  onSelectCourse,
-  onDeleteCourse,
-  onRefreshData = NOOP,
-  onNavigate = NOOP,
-  onOpenNewModal,
-}) => {
-  const { user, isDarkMode } = useWorkspaceAuth();
-  const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+const CourseWorkspaceViewInner: React.FC<CourseWorkspaceViewProps> = React.memo(
+  ({
+    course,
+    courses = EMPTY_COURSES,
+    students = EMPTY_STUDENTS,
+    initialSubTab,
+    externalSearchQuery,
+    onExternalSearchChange,
+    onBackToCourses,
+    onSelectCourse,
+    onDeleteCourse,
+    onRefreshData = NOOP,
+    onNavigate = NOOP,
+    onOpenNewModal,
+  }) => {
+    const { user, isDarkMode } = useWorkspaceAuth();
+    const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
 
-  const sortedCourses = React.useMemo(
-    () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
-    [courses]
-  );
+    const sortedCourses = React.useMemo(
+      () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
+      [courses]
+    );
 
   const schoolName = user?.school || 'Institución Educativa';
   const schoolCycle = course.schoolYear || '2026';
@@ -294,11 +302,29 @@ const CourseWorkspaceViewComponent: React.FC<CourseWorkspaceViewProps> = ({
       )}
     </div>
   );
-};
+  },
+  areCourseWorkspaceViewPropsEqual
+);
+CourseWorkspaceViewInner.displayName = 'CourseWorkspaceViewInner';
 
-export const CourseWorkspaceView = React.memo(
-  CourseWorkspaceViewComponent,
+export const CourseWorkspaceView: React.FC<CourseWorkspaceViewProps> = React.memo(
+  (props) => {
+    const {
+      courses: globalCourses,
+      students: globalStudents,
+      refreshData,
+    } = useGlobalData();
+    return (
+      <CourseWorkspaceViewInner
+        {...props}
+        courses={props.courses ?? globalCourses}
+        students={props.students ?? globalStudents}
+        onRefreshData={props.onRefreshData ?? refreshData}
+      />
+    );
+  },
   areCourseWorkspaceViewPropsEqual
 );
 CourseWorkspaceView.displayName = 'CourseWorkspaceView';
+
 

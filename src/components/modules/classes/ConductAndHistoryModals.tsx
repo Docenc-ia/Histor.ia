@@ -18,6 +18,11 @@ import {
 } from 'lucide-react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../../utils/attendanceCalculations';
+import {
+  useTerminologySettings,
+  DISPOSITION_LABEL_PRESETS,
+  ATTENDANCE_LABEL_PRESETS,
+} from '../../../utils/terminologySettings';
 
 export interface ConductRecordModalState {
   isOpen: boolean;
@@ -395,19 +400,25 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
   handleSaveTemplateForReason,
   isDarkMode,
 }) => {
+  const {
+    attendanceLabel,
+    dispositionLabel,
+    updateTerminology,
+  } = useTerminologySettings();
+
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className={`w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden flex flex-col ${
+        className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
           isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
         }`}
       >
         <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-blue-500" />
-            <h3 className="text-sm font-bold">Mis opciones de conducta</h3>
+            <h3 className="text-sm font-bold">Configurar nombres y opciones de {dispositionLabel}</h3>
           </div>
           <button
             type="button"
@@ -418,9 +429,107 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 overflow-y-auto">
+          {/* Bloque para cambiar el nombre de Asistencia y Disposición (ej. Concepto, Participación en clase) */}
+          <div
+            className={`p-3.5 rounded-xl border space-y-3 ${
+              isDarkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-blue-50/50 border-blue-200/80'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
+                <Pencil className="w-3.5 h-3.5" />
+                Personalizar nombres de columnas y pestañas
+              </span>
+              {(attendanceLabel !== 'Asistencia' || dispositionLabel !== 'Disposición') && (
+                <button
+                  type="button"
+                  onClick={() => updateTerminology({ attendanceLabel: 'Asistencia', dispositionLabel: 'Disposición' })}
+                  className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                >
+                  Restaurar originales
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
+                  ¿Cómo llamás a la nota de Disposición / Concepto en tu colegio?
+                </label>
+                <input
+                  type="text"
+                  value={dispositionLabel}
+                  onChange={(e) => updateTerminology({ dispositionLabel: e.target.value })}
+                  placeholder="Ej: Disposición, Concepto, Participación en clase..."
+                  className={`w-full px-3 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
+                    isDarkMode
+                      ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
+                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                  }`}
+                />
+                <div className="flex flex-wrap items-center gap-1 mt-1.5">
+                  <span className="text-[10px] text-neutral-500 dark:text-slate-400 mr-0.5">Sugerencias:</span>
+                  {DISPOSITION_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => updateTerminology({ dispositionLabel: preset })}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all cursor-pointer ${
+                        dispositionLabel === preset
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                          : isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="pt-1 border-t border-neutral-200/70 dark:border-slate-700/70">
+                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
+                  ¿Cómo llamás a la columna de Asistencia?
+                </label>
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                  <input
+                    type="text"
+                    value={attendanceLabel}
+                    onChange={(e) => updateTerminology({ attendanceLabel: e.target.value })}
+                    placeholder="Ej: Asistencia, Presentismo..."
+                    className={`flex-1 px-3 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
+                      isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
+                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                    }`}
+                  />
+                  <div className="flex flex-wrap items-center gap-1">
+                    {ATTENDANCE_LABEL_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => updateTerminology({ attendanceLabel: preset })}
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all cursor-pointer ${
+                          attendanceLabel === preset
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                            : isDarkMode
+                            ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                            : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-            Cada profesor puede definir sus propios motivos habituales de conducta para asignarlos con un solo clic a cualquier alumno.
+            Definí tus propios motivos habituales de <strong>{dispositionLabel.toLowerCase()}</strong> para asignarlos con un solo clic a cualquier alumno.
           </p>
 
           <form
@@ -754,6 +863,8 @@ export const StudentIndividualHistoryModal: React.FC<StudentIndividualHistoryMod
   handleDeleteHistoryEntry,
   isDarkMode,
 }) => {
+  const { dispositionLabel } = useTerminologySettings();
+
   if (!selectedStudentForHistory) return null;
 
   return (
@@ -840,7 +951,7 @@ export const StudentIndividualHistoryModal: React.FC<StudentIndividualHistoryMod
 
           <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 flex flex-col items-center justify-between">
             <div>
-              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">Puntaje Disposición</span>
+              <span className="text-[11px] text-emerald-600 dark:text-emerald-400 block font-medium">Puntaje {dispositionLabel}</span>
               <span className="text-base font-bold text-emerald-700 dark:text-emerald-300">
                 {getStudentMetrics(selectedStudentForHistory.id).totalDisposition} / 10
               </span>
@@ -850,16 +961,16 @@ export const StudentIndividualHistoryModal: React.FC<StudentIndividualHistoryMod
                 type="button"
                 onClick={() => handleOpenEditDisposition(selectedStudentForHistory)}
                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 cursor-pointer shadow-2xs transition-all active:scale-95"
-                title="Editar o fijar manualmente la nota de disposición de este alumno"
+                title="Editar o fijar manualmente la nota de este alumno"
               >
                 <Pencil className="w-3 h-3" />
-                <span>Editar nota de disposición</span>
+                <span>Editar nota</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleResetSingleStudentDisposition(selectedStudentForHistory, true)}
                 className="px-2.5 py-1 rounded-lg text-[11px] font-semibold text-rose-700 hover:bg-rose-100 dark:text-rose-300 dark:hover:bg-rose-900/50 border border-rose-200 dark:border-rose-800 cursor-pointer shadow-2xs transition-colors"
-                title="Borra la disposición y elimina las anotaciones de conducta de este alumno"
+                title="Borra el puntaje y elimina las anotaciones de este alumno"
               >
                 Borrar historial
               </button>
@@ -1007,6 +1118,8 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
   handleSendDispositionToGrades,
   isDarkMode,
 }) => {
+  const { dispositionLabel, attendanceLabel } = useTerminologySettings();
+
   if (!isOpen || !activeCourse) return null;
 
   const activeTargetTerm: '1c' | '2c' =
@@ -1028,7 +1141,7 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
               <Award className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
             <div>
-              <h3 className="text-sm font-bold">Mandar Notas de Disposición a Calificaciones</h3>
+              <h3 className="text-sm font-bold">Mandar Notas de {dispositionLabel} a Calificaciones</h3>
               <p className="text-xs text-neutral-500 dark:text-slate-400">
                 Materia: <strong className="text-neutral-700 dark:text-slate-200">{activeCourse.name}</strong> • Destino:{' '}
                 <strong className="text-blue-600 dark:text-blue-400">{activeTermLabel}</strong>
@@ -1045,8 +1158,8 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
         </div>
 
         <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-          Esta función transfiere la nota de conducta y disposición (escala 1 a 10) de todos los estudiantes directamente a la pestaña de{' '}
-          <strong>Calificaciones</strong> del <strong>{activeTermLabel}</strong> (según el cuatrimestre seleccionado en la planilla de asistencia).
+          Esta función transfiere la nota de {dispositionLabel.toLowerCase()} (escala 1 a 10) de todos los estudiantes directamente a la pestaña de{' '}
+          <strong>Calificaciones</strong> del <strong>{activeTermLabel}</strong> (según el cuatrimestre seleccionado en la planilla de {attendanceLabel.toLowerCase()}).
         </p>
 
         <div
@@ -1062,7 +1175,7 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
         >
           <Info className="w-4 h-4 shrink-0" />
           <span className="text-[11px] leading-relaxed">
-            Se actualizará o creará automáticamente la columna <strong>"Nota de Disposición"</strong> dentro de{' '}
+            Se actualizará o creará automáticamente la columna <strong>"Nota de {dispositionLabel}"</strong> dentro de{' '}
             <strong>Calificaciones</strong> para el <strong>{activeTermLabel}</strong>.
           </span>
         </div>

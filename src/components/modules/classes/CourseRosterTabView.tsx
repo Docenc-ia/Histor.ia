@@ -15,6 +15,7 @@ import {
   CheckSquare,
   Square,
   CheckCheck,
+  Pencil,
 } from 'lucide-react';
 import {
   Course,
@@ -29,6 +30,7 @@ import {
   computeStudentAttendanceTrafficLight,
 } from '../../../utils/attendanceCalculations';
 import { copyTableToClipboard } from '../../../utils/sheetsUtils';
+import { useTerminologySettings } from '../../../utils/terminologySettings';
 import { StudentAttendanceRow } from './StudentAttendanceRow';
 import { PendingNotificationsInbox } from './PendingNotificationsInbox';
 
@@ -170,6 +172,8 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   setActiveTab,
   setToastMessage,
 }) => {
+  const { attendanceLabel, dispositionLabel, combinedTabLabel } = useTerminologySettings();
+
   return (
     <div className="space-y-4">
       {attendanceTerm === 'annual' ? (
@@ -194,7 +198,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                 <>
                   <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
                     <div className="flex items-center justify-between text-xs text-neutral-500 dark:text-slate-400 font-medium">
-                      <span>Promedio Disposición Anual</span>
+                      <span>Promedio {dispositionLabel} Anual</span>
                       <Award className="w-4 h-4 text-purple-500" />
                     </div>
                     <div className="text-2xl font-black mt-1 text-purple-600 dark:text-purple-400">
@@ -253,7 +257,15 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
             <div className="p-3 border-b flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Users className="w-4 h-4 text-purple-500" />
-                <span className="font-bold text-xs">Planilla Anual de Asistencia y Disposición ({courseStudents.length} estudiantes)</span>
+                <span className="font-bold text-xs">Planilla Anual de {combinedTabLabel} ({courseStudents.length} estudiantes)</span>
+                <button
+                  type="button"
+                  onClick={() => setIsManageConductModalOpen(true)}
+                  className="p-1 rounded-md text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                  title="Cambiar el nombre de Asistencia o Disposición (ej: Concepto, Participación en clase)"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
               </div>
 
               <div className="flex items-center gap-2">
@@ -265,14 +277,14 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                       'Email',
                       'Ausencias 1C',
                       'Tardanzas 1C',
-                      'Disposición 1C',
+                      `${dispositionLabel} 1C`,
                       'Ausencias 2C',
                       'Tardanzas 2C',
-                      'Disposición 2C',
+                      `${dispositionLabel} 2C`,
                       'Total Ausencias',
                       'Total Tardanzas',
-                      'Promedio Disposición',
-                      '% Asistencia',
+                      `Promedio ${dispositionLabel}`,
+                      `% ${attendanceLabel}`,
                       'Condición',
                     ];
                     const rows = filteredStudents.map((s) => {
@@ -355,7 +367,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     </th>
                     <th className="py-3 px-3 text-center">
                       <div className="flex flex-col items-center">
-                        <span>Promedio Disposición</span>
+                        <span>Promedio {dispositionLabel}</span>
                         <span className="text-[10px] font-normal lowercase opacity-70">escala 10</span>
                       </div>
                     </th>
@@ -698,19 +710,39 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     </th>
                     <th className="py-3 px-4">Estudiante</th>
                     <th className="py-3 px-3 text-center">
-                      <span>Asistencia</span>
+                      <div className="inline-flex items-center gap-1">
+                        <span>{attendanceLabel}</span>
+                        <button
+                          type="button"
+                          onClick={() => setIsManageConductModalOpen(true)}
+                          className="p-0.5 rounded text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                          title="Cambiar el nombre de esta columna (ej: Presentismo, Asistencia)"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      </div>
                     </th>
                     <th className="py-3 px-4 text-center">
-                      <span>Registrar asistencia</span>
+                      <span>Registrar {attendanceLabel.toLowerCase()}</span>
                     </th>
                     <th className="py-3 px-4 text-center">
                       <div className="inline-flex flex-col items-center gap-1">
-                        <span>Disposición</span>
+                        <div className="inline-flex items-center gap-1">
+                          <span>{dispositionLabel}</span>
+                          <button
+                            type="button"
+                            onClick={() => setIsManageConductModalOpen(true)}
+                            className="p-0.5 rounded text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                            title="Cambiar el nombre (ej: Concepto, Participación en clase, Disposición)"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        </div>
                         <button
                           type="button"
                           onClick={() => setIsSendDispositionModalOpen(true)}
                           className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-950/80 dark:hover:bg-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 transition-all cursor-pointer shadow-2xs"
-                          title={`Mandar notas de disposición a Calificaciones (${activeConcreteTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+                          title={`Mandar notas de ${dispositionLabel.toLowerCase()} a Calificaciones (${activeConcreteTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
                         >
                           <Award className="w-3 h-3 text-amber-500" />
                           <span>Mandar a Calificaciones</span>
@@ -719,7 +751,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     </th>
                     <th className="py-3 px-4">
                       <div className="flex items-center justify-between gap-2">
-                        <span>Registrar conducta</span>
+                        <span>Registrar {dispositionLabel.toLowerCase()}</span>
                         <button
                           type="button"
                           onClick={() => setIsManageConductModalOpen(true)}
@@ -728,10 +760,10 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                               ? 'bg-slate-800 border-slate-700 text-slate-200 hover:text-white hover:bg-slate-700'
                               : 'bg-white border-neutral-300 text-neutral-700 hover:text-blue-700 hover:border-blue-400 hover:bg-blue-50/50 shadow-2xs'
                           }`}
-                          title="Configurar motivos de conducta personalizados"
+                          title="Personalizar el nombre (Concepto, Participación, etc.) y tus motivos rápidos"
                         >
                           <Settings className="w-3.5 h-3.5 text-blue-500" />
-                          <span>Mis opciones ({teacherConductOptions.length})</span>
+                          <span>Nombre y opciones ({teacherConductOptions.length})</span>
                         </button>
                       </div>
                     </th>

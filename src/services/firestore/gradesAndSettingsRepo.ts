@@ -178,7 +178,7 @@ export const gradesAndSettingsRepo = {
       pendingSnapshotWrites.delete(queueKey);
       notifyDebouncedSyncPending(`snap_${queueKey}`, false);
       flushSingleSnapshotWrite({ userId, courseId, term, snapshotData }).catch(() => {});
-    }, 550);
+    }, 2200);
     pendingSnapshotWrites.set(queueKey, { timer, userId, courseId, term, snapshotData });
   },
 
@@ -260,7 +260,7 @@ export const gradesAndSettingsRepo = {
       pendingSettingWrites.delete(queueKey);
       notifyDebouncedSyncPending(`set_${queueKey}`, false);
       flushSingleSettingWrite({ userId, settingKey, payload }).catch(() => {});
-    }, 450);
+    }, 1800);
     pendingSettingWrites.set(queueKey, { timer, userId, settingKey, payload });
   },
 

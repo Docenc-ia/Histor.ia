@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { X, BookOpen, FileText, GraduationCap, FolderClosed, Check } from 'lucide-react';
 import { Course } from '../../types';
 import { api } from '../../services/api';
+import { useGlobalData } from '../../context/GlobalDataContext';
 
 interface CreateModalProps {
   isOpen: boolean;
   type: 'course' | 'plan' | 'task' | 'file';
-  courses: Course[];
+  courses?: Course[];
   onClose: () => void;
   onCreated: (type: string, message: string) => void;
   onOpenImportClassroom?: () => void;
@@ -15,11 +16,13 @@ interface CreateModalProps {
 export const CreateModal: React.FC<CreateModalProps> = ({
   isOpen,
   type: initialType,
-  courses,
+  courses: coursesProp,
   onClose,
   onCreated,
   onOpenImportClassroom,
 }) => {
+  const { courses: globalCourses } = useGlobalData();
+  const courses = coursesProp ?? globalCourses;
   const [activeTab, setActiveTab] = useState<'course' | 'plan' | 'task' | 'file'>(initialType);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

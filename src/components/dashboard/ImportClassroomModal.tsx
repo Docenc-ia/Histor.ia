@@ -16,6 +16,7 @@ import { Course } from '../../types';
 import { classroomService } from '../../services/workspace/classroomService';
 import { api } from '../../services/api';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
+import { useGlobalData } from '../../context/GlobalDataContext';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
 
 interface ImportClassroomModalProps {
@@ -29,9 +30,11 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
-  existingCourses = [],
+  existingCourses: existingCoursesProp,
 }) => {
   const { user, isDarkMode, token, loginWithGoogle } = useWorkspaceAuth();
+  const { courses: globalCourses } = useGlobalData();
+  const existingCourses = existingCoursesProp ?? globalCourses;
   const [activeTab, setActiveTab] = useState<'classroom' | 'quick'>('classroom');
 
   // Classroom scan state

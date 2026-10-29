@@ -221,8 +221,25 @@ async function flushCompactDispositionToCloud(
   const computed = computeTotalsFromHistoryList(localBundle.history);
   const mergedDisp1c = { ...computed.disposition1c, ...localBundle.disposition };
   const mergedDisp2c = { ...computed.disposition2c, ...localBundle.disposition2c };
-  const cleanHistory = localBundle.history.slice(0, 2500);
-  const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1500);
+  // Keep up to 1500 compacted items in the single Firestore doc to stay safely below the 1 MB limit
+  const cleanHistory = localBundle.history.slice(0, 1500).map((item) => {
+    const compact: Record<string, any> = {
+      id: item.id,
+      studentId: item.studentId,
+      courseId: item.courseId,
+      date: item.date,
+      timestamp: item.timestamp,
+      action: item.action,
+      category: item.category,
+      term: item.term || '1c',
+    };
+    if (item.studentName) compact.studentName = item.studentName;
+    if (item.courseName) compact.courseName = item.courseName;
+    if (typeof item.pointsChange === 'number') compact.pointsChange = item.pointsChange;
+    if (item.notes) compact.notes = String(item.notes).slice(0, 300);
+    return compact;
+  });
+  const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1200);
 
   dispositionReadCache = {
     userId,
@@ -230,7 +247,7 @@ async function flushCompactDispositionToCloud(
     data: {
       disposition: mergedDisp1c,
       disposition2c: mergedDisp2c,
-      history: cleanHistory,
+      history: localBundle.history.slice(0, 2500),
     },
   };
 
@@ -333,7 +350,7 @@ function scheduleCompactDispositionSync(userId: string, immediate = false): void
   }
   compactSyncTimer = setTimeout(() => {
     flushCompactDispositionToCloud(userId).catch(() => {});
-  }, 1200);
+  }, 2200);
 }
 
 async function flushSingleAttendanceWrite(entry: {
@@ -411,7 +428,7 @@ export const attendanceAndHistoryRepo = {
       pendingAttendanceWrites.delete(queueKey);
       notifyDebouncedSyncPending(`att_${queueKey}`, false);
       flushSingleAttendanceWrite({ userId, courseId, date, records }).catch(() => {});
-    }, 650);
+    }, 1800);
     pendingAttendanceWrites.set(queueKey, { timer, userId, courseId, date, records });
   },
 
@@ -591,21 +608,22 @@ export const attendanceAndHistoryRepo = {
   async loadDisposition(
     userId: string
   ): Promise<{ disposition: Record<string, any>; disposition2c?: Record<string, any>; history: any[] }> {
-    if (!isFirestoreAvailable()) {
+    if (!userId || !isFirestoreAvailable()) {
       return { disposition: {}, disposition2c: {}, history: [] };
     }
     if (
       dispositionReadCache &&
       dispositionReadCache.userId === userId &&
-      Date.now() - dispositionReadCache.timestamp < READ_CACHE_TTL_MS &&
-      (dispositionReadCache.data.history.length > 0 ||
-        Object.keys(dispositionReadCache.data.disposition).length > 0 ||
-        Object.keys(dispositionReadCache.data.disposition2c || {}).length > 0)
+      Date.now() - dispositionReadCache.timestamp < READ_CACHE_TTL_MS
     ) {
       return dispositionReadCache.data;
     }
 
     const candidateIds = getCandidateUserIds(userId);
+    if (candidateIds.length === 0) {
+      return { disposition: {}, disposition2c: {}, history: [] };
+    }
+    const isOwner = isPrimaryOwnerAccount();
     const deleted = getDeletedHistoryIdsSet();
     inMemoryDeletedIds.forEach((id) => deleted.add(id));
 
@@ -673,7 +691,7 @@ export const attendanceAndHistoryRepo = {
         }
       }
 
-      if (!hasMigratedCompactDoc) {
+      if (!hasMigratedCompactDoc && isOwner) {
         const legacyQueries: Promise<any>[] = [];
         for (const targetDb of ALL_DBS) {
           for (const uid of candidateIds) {

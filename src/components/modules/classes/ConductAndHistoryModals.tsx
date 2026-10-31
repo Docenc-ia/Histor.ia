@@ -18,11 +18,7 @@ import {
 } from 'lucide-react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../../utils/attendanceCalculations';
-import {
-  useTerminologySettings,
-  DISPOSITION_LABEL_PRESETS,
-  ATTENDANCE_LABEL_PRESETS,
-} from '../../../utils/terminologySettings';
+import { useTerminologySettings } from '../../../utils/terminologySettings';
 
 export interface ConductRecordModalState {
   isOpen: boolean;
@@ -401,9 +397,7 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
   isDarkMode,
 }) => {
   const {
-    attendanceLabel,
     dispositionLabel,
-    updateTerminology,
   } = useTerminologySettings();
 
   if (!isOpen) return null;
@@ -418,7 +412,7 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
         <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-blue-500" />
-            <h3 className="text-sm font-bold">Configurar nombres y opciones de {dispositionLabel}</h3>
+            <h3 className="text-sm font-bold">Configurar opciones de {dispositionLabel}</h3>
           </div>
           <button
             type="button"
@@ -430,104 +424,6 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">
-          {/* Bloque para cambiar el nombre de Asistencia y Disposición (ej. Concepto, Participación en clase) */}
-          <div
-            className={`p-3.5 rounded-xl border space-y-3 ${
-              isDarkMode ? 'bg-slate-800/70 border-slate-700' : 'bg-blue-50/50 border-blue-200/80'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-bold text-blue-700 dark:text-blue-300 flex items-center gap-1.5">
-                <Pencil className="w-3.5 h-3.5" />
-                Personalizar nombres de columnas y pestañas
-              </span>
-              {(attendanceLabel !== 'Asistencia' || dispositionLabel !== 'Disposición') && (
-                <button
-                  type="button"
-                  onClick={() => updateTerminology({ attendanceLabel: 'Asistencia', dispositionLabel: 'Disposición' })}
-                  className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
-                >
-                  Restaurar originales
-                </button>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <div>
-                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
-                  ¿Cómo llamás a la nota de Disposición / Concepto en tu colegio?
-                </label>
-                <input
-                  type="text"
-                  value={dispositionLabel}
-                  onChange={(e) => updateTerminology({ dispositionLabel: e.target.value })}
-                  placeholder="Ej: Disposición, Concepto, Participación en clase..."
-                  className={`w-full px-3 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
-                    isDarkMode
-                      ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
-                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
-                  }`}
-                />
-                <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                  <span className="text-[10px] text-neutral-500 dark:text-slate-400 mr-0.5">Sugerencias:</span>
-                  {DISPOSITION_LABEL_PRESETS.map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      onClick={() => updateTerminology({ dispositionLabel: preset })}
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all cursor-pointer ${
-                        dispositionLabel === preset
-                          ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
-                          : isDarkMode
-                          ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                      }`}
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="pt-1 border-t border-neutral-200/70 dark:border-slate-700/70">
-                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
-                  ¿Cómo llamás a la columna de Asistencia?
-                </label>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                  <input
-                    type="text"
-                    value={attendanceLabel}
-                    onChange={(e) => updateTerminology({ attendanceLabel: e.target.value })}
-                    placeholder="Ej: Asistencia, Presentismo..."
-                    className={`flex-1 px-3 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500 ${
-                      isDarkMode
-                        ? 'bg-slate-900 border-slate-700 text-white placeholder-slate-500'
-                        : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
-                    }`}
-                  />
-                  <div className="flex flex-wrap items-center gap-1">
-                    {ATTENDANCE_LABEL_PRESETS.map((preset) => (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => updateTerminology({ attendanceLabel: preset })}
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all cursor-pointer ${
-                          attendanceLabel === preset
-                            ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
-                            : isDarkMode
-                            ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                            : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-100'
-                        }`}
-                      >
-                        {preset}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
             Definí tus propios motivos habituales de <strong>{dispositionLabel.toLowerCase()}</strong> para asignarlos con un solo clic a cualquier alumno.
           </p>
@@ -1118,7 +1014,7 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
   handleSendDispositionToGrades,
   isDarkMode,
 }) => {
-  const { dispositionLabel, attendanceLabel } = useTerminologySettings();
+  const { dispositionLabel, attendanceLabel, term1FullLabel, term2FullLabel } = useTerminologySettings();
 
   if (!isOpen || !activeCourse) return null;
 
@@ -1126,7 +1022,7 @@ export const SendDispositionToGradesModal: React.FC<SendDispositionToGradesModal
     attendanceTerm === '1c' || attendanceTerm === '2c'
       ? attendanceTerm
       : getCurrentCalendarTerm(getGlobalAttendanceSettings());
-  const activeTermLabel = activeTargetTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
+  const activeTermLabel = activeTargetTerm === '1c' ? term1FullLabel : term2FullLabel;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">

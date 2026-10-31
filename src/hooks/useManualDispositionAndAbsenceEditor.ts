@@ -539,6 +539,8 @@ export function useManualDispositionAndAbsenceEditor({
     clearHistory: boolean = false
   ) => {
     if (!activeCourse || !student) return;
+    const { initialDispositionScore, dispositionLabel } = getTerminologySettings();
+    const baseScore = initialDispositionScore ?? 10;
     const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const current = baseMap[student.id] || getStudentMetrics(student.id, targetTerm);
@@ -547,7 +549,7 @@ export function useManualDispositionAndAbsenceEditor({
       [student.id]: {
         ...current,
         courseId: activeCourse.id,
-        totalDisposition: 10,
+        totalDisposition: baseScore,
       },
     };
 
@@ -585,8 +587,8 @@ export function useManualDispositionAndAbsenceEditor({
       time,
       term: targetTerm,
       action: clearHistory
-        ? `Disposición borrada y restablecida a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
-        : `Puntaje de disposición restablecido a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
+        ? `${dispositionLabel} borrada y restablecida a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
+        : `Puntaje de ${dispositionLabel.toLowerCase()} restablecido a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
       category: 'Sistema',
       pointsChange: 0,
       timestamp,
@@ -617,8 +619,8 @@ export function useManualDispositionAndAbsenceEditor({
 
     setToastMessage(
       clearHistory
-        ? `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}). Anotaciones de conducta limpiadas.`
-        : `Disposición restablecida a 10 para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
+        ? `${dispositionLabel} restablecida a ${baseScore} para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}). Anotaciones limpiadas.`
+        : `${dispositionLabel} restablecida a ${baseScore} para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
     );
     setTimeout(() => setToastMessage(null), 3500);
   };
@@ -626,6 +628,8 @@ export function useManualDispositionAndAbsenceEditor({
   // Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
   const handleResetCourseDisposition = (clearHistory: boolean = false) => {
     if (!activeCourse) return;
+    const { initialDispositionScore, dispositionLabel } = getTerminologySettings();
+    const baseScore = initialDispositionScore ?? 10;
     const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
     const updated: Record<string, StudentDispositionData> = { ...baseMap };
@@ -634,7 +638,7 @@ export function useManualDispositionAndAbsenceEditor({
       updated[st.id] = {
         ...current,
         courseId: activeCourse.id,
-        totalDisposition: 10,
+        totalDisposition: baseScore,
       };
     });
 
@@ -670,8 +674,8 @@ export function useManualDispositionAndAbsenceEditor({
       time,
       term: targetTerm,
       action: clearHistory
-        ? `Reinicio general de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
-        : `Reinicio general de puntaje de disposición a 10 puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
+        ? `Reinicio general de ${dispositionLabel.toLowerCase()} a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
+        : `Reinicio general de puntaje de ${dispositionLabel.toLowerCase()} a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
       category: 'Sistema',
       pointsChange: 0,
       timestamp,
@@ -685,8 +689,8 @@ export function useManualDispositionAndAbsenceEditor({
 
     setToastMessage(
       clearHistory
-        ? `Disposición restablecida a 10 para todos los estudiantes en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
-        : `Puntaje de disposición reiniciado a 10 en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
+        ? `${dispositionLabel} restablecida a ${baseScore} para todos los estudiantes en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
+        : `Puntaje de ${dispositionLabel.toLowerCase()} reiniciado a ${baseScore} en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
     );
     setTimeout(() => setToastMessage(null), 3500);
 

@@ -14,8 +14,8 @@ export interface LibroDeTemasTodayCardProps {
   isDarkMode: boolean;
   activeWeekdays: number[];
   characterOptions: string[];
-  termFilter: 'all' | '1c' | '2c' | 'until_today';
-  setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c' | 'until_today'>>;
+  termFilter: 'all' | '1c' | '2c';
+  setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c'>>;
   statusFilter: 'all' | 'completed' | 'pending' | 'holidays';
   setStatusFilter: React.Dispatch<
     React.SetStateAction<'all' | 'completed' | 'pending' | 'holidays'>

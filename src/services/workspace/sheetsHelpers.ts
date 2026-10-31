@@ -9,6 +9,7 @@ import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import { getUserStorageKey } from '../storageHelpers';
 import { api } from '../api';
+import { getTerminologySettings } from '../../utils/terminologySettings';
 
 /**
  * Generates a downloadable CSV directly formatted for Google Sheets import (Gradebook)
@@ -79,19 +80,22 @@ export function exportDispositionToCsv(
     });
   });
 
+  const { attendanceLabel, dispositionLabel, initialDispositionScore } = getTerminologySettings();
+  const baseScore = initialDispositionScore ?? 10;
+
   const summaryHeaders = [
     'Apellido y Nombre',
     'Email',
     'Total Ausencias',
     'Llegadas Tarde',
-    'Disposición (1-10)',
+    `${dispositionLabel} (1-10)`,
     'Última Incidencia',
     'Estado',
   ];
   const summaryRows = sortedStudents.map((student) => {
     const absences = dispositionMap[student.id]?.totalAbsences ?? 0;
     const lates = dispositionMap[student.id]?.totalLates ?? 0;
-    const score = dispositionMap[student.id]?.totalDisposition ?? 10;
+    const score = dispositionMap[student.id]?.totalDisposition ?? baseScore;
     const studentHistory = historyList
       .filter((h) => h.studentId === student.id)
       .sort((a, b) => b.timestamp - a.timestamp);
@@ -117,12 +121,12 @@ export function exportDispositionToCsv(
     'Categoría',
     'Motivo de Conducta',
     'Impacto',
-    'Disposición Resultante',
+    `${dispositionLabel} Resultante`,
     'Mensaje enviado',
     'Mensaje',
   ];
   const historyRows = historyList.map((h) => {
-    const score = dispositionMap[h.studentId]?.totalDisposition ?? 10;
+    const score = dispositionMap[h.studentId]?.totalDisposition ?? baseScore;
     const isOmittedOrNone =
       h.omitNotification ||
       h.notificationMethod === 'omitted' ||
@@ -179,7 +183,7 @@ export function exportDispositionToCsv(
   });
 
   const csvContent = [
-    '# HOJA 1: RESUMEN Y DISPOSICIÓN DE ALUMNOS',
+    `# HOJA 1: RESUMEN Y ${dispositionLabel.toUpperCase()} DE ALUMNOS`,
     summaryHeaders.join(','),
     ...summaryRows,
     '',
@@ -192,7 +196,9 @@ export function exportDispositionToCsv(
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Registro_Asistencia_Disposicion_${courseName.replace(/\s+/g, '_')}.csv`;
+  const safeAtt = attendanceLabel.replace(/\s+/g, '_');
+  const safeDisp = dispositionLabel.replace(/\s+/g, '_');
+  a.download = `Registro_${safeAtt}_${safeDisp}_${courseName.replace(/\s+/g, '_')}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }

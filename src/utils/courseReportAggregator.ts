@@ -14,6 +14,7 @@ import {
   computeStudentAttendanceTrafficLight,
 } from './attendanceCalculations';
 import type { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
+import { getTerminologySettings } from './terminologySettings';
 
 export interface ConsolidatedReportStudent {
   student: Student;
@@ -218,8 +219,9 @@ export function buildConsolidatedReportStudents(params: {
     const lat2 = disp2cMap[st.id]?.totalLates ?? 0;
     const totalLat = lat1 + lat2;
 
-    const disp1 = disp1cMap[st.id]?.totalDisposition ?? 10;
-    const disp2 = disp2cMap[st.id]?.totalDisposition ?? 10;
+    const baseScore = getTerminologySettings().initialDispositionScore ?? 10;
+    const disp1 = disp1cMap[st.id]?.totalDisposition ?? baseScore;
+    const disp2 = disp2cMap[st.id]?.totalDisposition ?? baseScore;
     const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
 
     const trafficLight = computeStudentAttendanceTrafficLight(

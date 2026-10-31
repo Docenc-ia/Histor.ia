@@ -1,5 +1,6 @@
 import { Student } from '../types';
 import { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
+import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 
 export interface ConsolidatedStudentReportRow {
   student: Student;
@@ -76,6 +77,11 @@ export function generateCourseReportHtml({
 }: GenerateCourseReportHtmlParams): string {
   const isCourse = type === 'course';
   const title = `Informe — ${courseName}`;
+  const termSettings = getTerminologySettings();
+  const { attendanceLabel, dispositionLabel, initialDispositionScore } = termSettings;
+  const { term1FullLabel, term2FullLabel, term1ShortLabel, term2ShortLabel } = getDerivedPeriodLabels(
+    termSettings.periodNameSingular
+  );
 
   let bodyContent = '';
 
@@ -100,7 +106,7 @@ export function generateCourseReportHtml({
     if (includeAttendance) {
       kpiBoxes += `
           <div class="stat-box">
-            <div class="stat-label">Asistencia Promedio</div>
+            <div class="stat-label">${attendanceLabel} Promedio</div>
             <div class="stat-val">${stats.avgAttendance}%</div>
           </div>
           <div class="stat-box">
@@ -116,10 +122,10 @@ export function generateCourseReportHtml({
               consolidatedStudents.reduce((acc, s) => acc + s.avgDisp, 0) /
               consolidatedStudents.length
             ).toFixed(1)
-          : '10';
+          : String(initialDispositionScore ?? 10);
       kpiBoxes += `
           <div class="stat-box">
-            <div class="stat-label">Disposición Promedio</div>
+            <div class="stat-label">${dispositionLabel} Promedio</div>
             <div class="stat-val text-purple">${avgDispTotal} / 10</div>
           </div>
         `;
@@ -150,8 +156,8 @@ export function generateCourseReportHtml({
                 ${
                   includeGrades
                     ? `
-                  <th style="text-align: center;">1° Cuatr.</th>
-                  <th style="text-align: center;">2° Cuatr.</th>
+                  <th style="text-align: center;">${term1FullLabel}</th>
+                  <th style="text-align: center;">${term2FullLabel}</th>
                   <th style="text-align: center;">Promedio</th>
                   <th style="text-align: center;">Nota Definitiva</th>
                 `
@@ -160,13 +166,13 @@ export function generateCourseReportHtml({
                 ${
                   includeAttendance
                     ? `
-                  <th style="text-align: center;">Faltas 1°C</th>
-                  <th style="text-align: center;">Faltas 2°C</th>
+                  <th style="text-align: center;">Faltas ${term1ShortLabel}</th>
+                  <th style="text-align: center;">Faltas ${term2ShortLabel}</th>
                   <th style="text-align: center;">Faltas Anuales</th>
                 `
                     : ''
                 }
-                ${includeDisposition ? `<th style="text-align: center;">Disposición</th>` : ''}
+                ${includeDisposition ? `<th style="text-align: center;">${dispositionLabel}</th>` : ''}
                 ${includeGrades ? `<th style="text-align: center;">Condición Final</th>` : ''}
               </tr>
             </thead>
@@ -284,8 +290,8 @@ export function generateCourseReportHtml({
             <table class="data-table" style="margin-bottom: 12px;">
               <thead>
                 <tr>
-                  <th style="text-align: center;">1° Cuatrimestre</th>
-                  <th style="text-align: center;">2° Cuatrimestre</th>
+                  <th style="text-align: center;">${term1FullLabel}</th>
+                  <th style="text-align: center;">${term2FullLabel}</th>
                   <th style="text-align: center;">Promedio Ponderado</th>
                   <th style="text-align: center; background: #e0e7ff;">Calificación Final Definitiva</th>
                   <th style="text-align: center;">Condición de Acreditación</th>
@@ -327,7 +333,7 @@ export function generateCourseReportHtml({
                     .map(
                       (item) => `
                     <tr>
-                      <td><strong>1° Cuatrimestre</strong></td>
+                      <td><strong>${term1FullLabel}</strong></td>
                       <td>${item.categoryName}</td>
                       <td>${item.itemName}</td>
                       <td style="text-align: center; font-weight: bold; color: #1e3a8a;">${item.score}</td>
@@ -339,7 +345,7 @@ export function generateCourseReportHtml({
                     .map(
                       (item) => `
                     <tr>
-                      <td><strong>2° Cuatrimestre</strong></td>
+                      <td><strong>${term2FullLabel}</strong></td>
                       <td>${item.categoryName}</td>
                       <td>${item.itemName}</td>
                       <td style="text-align: center; font-weight: bold; color: #4338ca;">${item.score}</td>
@@ -359,16 +365,16 @@ export function generateCourseReportHtml({
           ${
             includeAttendance && includeDisposition
               ? `
-            <div class="section-title">${includeGrades ? '2' : '1'}. Asistencia, Puntualidad y Convivencia Escolar</div>
+            <div class="section-title">${includeGrades ? '2' : '1'}. ${attendanceLabel}, Puntualidad y ${dispositionLabel}</div>
             <table class="data-table" style="margin-bottom: 16px;">
               <thead>
                 <tr>
-                  <th style="text-align: center;">Faltas 1° Cuatr.</th>
-                  <th style="text-align: center;">Faltas 2° Cuatr.</th>
+                  <th style="text-align: center;">Faltas ${term1ShortLabel}</th>
+                  <th style="text-align: center;">Faltas ${term2ShortLabel}</th>
                   <th style="text-align: center;">Total Inasistencias</th>
                   <th style="text-align: center;">Tardanzas</th>
-                  <th style="text-align: center;">% Asistencia Estimada</th>
-                  <th style="text-align: center;">Nota de Disposición y Trabajo</th>
+                  <th style="text-align: center;">% ${attendanceLabel} Estimada</th>
+                  <th style="text-align: center;">Nota de ${dispositionLabel}</th>
                 </tr>
               </thead>
               <tbody>
@@ -389,15 +395,15 @@ export function generateCourseReportHtml({
           `
               : includeAttendance && !includeDisposition
                 ? `
-            <div class="section-title">${includeGrades ? '2' : '1'}. Registro de Asistencia y Puntualidad Escolar</div>
+            <div class="section-title">${includeGrades ? '2' : '1'}. Registro de ${attendanceLabel} y Puntualidad Escolar</div>
             <table class="data-table" style="margin-bottom: 16px;">
               <thead>
                 <tr>
-                  <th style="text-align: center;">Faltas 1° Cuatrimestre</th>
-                  <th style="text-align: center;">Faltas 2° Cuatrimestre</th>
+                  <th style="text-align: center;">Faltas ${term1FullLabel}</th>
+                  <th style="text-align: center;">Faltas ${term2FullLabel}</th>
                   <th style="text-align: center; background: #fee2e2;">Total Inasistencias Acumuladas</th>
                   <th style="text-align: center;">Tardanzas Registradas</th>
-                  <th style="text-align: center;">% Asistencia Presencial</th>
+                  <th style="text-align: center;">% ${attendanceLabel} Presencial</th>
                 </tr>
               </thead>
               <tbody>
@@ -417,13 +423,13 @@ export function generateCourseReportHtml({
           `
                 : !includeAttendance && includeDisposition
                   ? `
-            <div class="section-title">${includeGrades ? '2' : '1'}. Disposición para el Trabajo y Convivencia Áulica</div>
+            <div class="section-title">${includeGrades ? '2' : '1'}. ${dispositionLabel} y Compromiso Áulico</div>
             <table class="data-table" style="margin-bottom: 16px;">
               <thead>
                 <tr>
-                  <th style="text-align: center;">Disposición 1° Cuatrimestre</th>
-                  <th style="text-align: center;">Disposición 2° Cuatrimestre</th>
-                  <th style="text-align: center; background: #ede9fe;">Puntaje Promedio de Disposición</th>
+                  <th style="text-align: center;">${dispositionLabel} ${term1FullLabel}</th>
+                  <th style="text-align: center;">${dispositionLabel} ${term2FullLabel}</th>
+                  <th style="text-align: center; background: #ede9fe;">Promedio de ${dispositionLabel}</th>
                   <th style="text-align: center;">Valoración de Compromiso y Tareas</th>
                 </tr>
               </thead>

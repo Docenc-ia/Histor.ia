@@ -6,11 +6,15 @@ import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 export interface TerminologySettings {
   attendanceLabel: string;
   dispositionLabel: string;
+  periodNameSingular: string;
+  initialDispositionScore: number;
 }
 
 export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
   attendanceLabel: 'Asistencia',
   dispositionLabel: 'Disposición',
+  periodNameSingular: 'Cuatrimestre',
+  initialDispositionScore: 10,
 };
 
 export const DISPOSITION_LABEL_PRESETS: string[] = [
@@ -27,6 +31,16 @@ export const ATTENDANCE_LABEL_PRESETS: string[] = [
   'Asistencia a clase',
 ];
 
+export const PERIOD_NAME_PRESETS: string[] = [
+  'Cuatrimestre',
+  'Etapa',
+  'Trimestre',
+  'Bimestre',
+  'Período',
+];
+
+export const INITIAL_DISPOSITION_SCORE_PRESETS: number[] = [10, 9, 8, 7, 6, 5];
+
 const STORAGE_BASE_KEY = 'docencia_terminology_settings';
 const TERMINOLOGY_UPDATED_EVENT = 'docencia_terminology_updated';
 
@@ -34,6 +48,26 @@ function sanitizeLabel(value: unknown, fallback: string): string {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed.slice(0, 42) : fallback;
+}
+
+function sanitizeInitialScore(value: unknown, fallback = 10): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  const rounded = Math.round(num);
+  if (rounded < 1 || rounded > 10) return fallback;
+  return rounded;
+}
+
+export function getDerivedPeriodLabels(periodNameSingular: string) {
+  const clean = sanitizeLabel(periodNameSingular, DEFAULT_TERMINOLOGY_SETTINGS.periodNameSingular);
+  const firstChar = clean.charAt(0).toUpperCase() || 'C';
+  return {
+    periodNameSingular: clean,
+    term1FullLabel: `1° ${clean}`,
+    term2FullLabel: `2° ${clean}`,
+    term1ShortLabel: `1°${firstChar}`,
+    term2ShortLabel: `2°${firstChar}`,
+  };
 }
 
 export function getTerminologySettings(): TerminologySettings {
@@ -44,6 +78,11 @@ export function getTerminologySettings(): TerminologySettings {
       return {
         attendanceLabel: sanitizeLabel(saved.attendanceLabel, DEFAULT_TERMINOLOGY_SETTINGS.attendanceLabel),
         dispositionLabel: sanitizeLabel(saved.dispositionLabel, DEFAULT_TERMINOLOGY_SETTINGS.dispositionLabel),
+        periodNameSingular: sanitizeLabel(saved.periodNameSingular, DEFAULT_TERMINOLOGY_SETTINGS.periodNameSingular),
+        initialDispositionScore: sanitizeInitialScore(
+          saved.initialDispositionScore,
+          DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore
+        ),
       };
     }
   } catch (_) {}
@@ -61,6 +100,14 @@ export function saveTerminologySettings(next: Partial<TerminologySettings>): Ter
       next.dispositionLabel !== undefined
         ? sanitizeLabel(next.dispositionLabel, DEFAULT_TERMINOLOGY_SETTINGS.dispositionLabel)
         : current.dispositionLabel,
+    periodNameSingular:
+      next.periodNameSingular !== undefined
+        ? sanitizeLabel(next.periodNameSingular, DEFAULT_TERMINOLOGY_SETTINGS.periodNameSingular)
+        : current.periodNameSingular,
+    initialDispositionScore:
+      next.initialDispositionScore !== undefined
+        ? sanitizeInitialScore(next.initialDispositionScore, DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore)
+        : current.initialDispositionScore,
   };
 
   try {
@@ -99,6 +146,14 @@ export async function hydrateTerminologySettingsFromCloud(uid: string): Promise<
           dispositionLabel: sanitizeLabel(
             (cloudVal as any).dispositionLabel,
             DEFAULT_TERMINOLOGY_SETTINGS.dispositionLabel
+          ),
+          periodNameSingular: sanitizeLabel(
+            (cloudVal as any).periodNameSingular,
+            DEFAULT_TERMINOLOGY_SETTINGS.periodNameSingular
+          ),
+          initialDispositionScore: sanitizeInitialScore(
+            (cloudVal as any).initialDispositionScore,
+            DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore
           ),
         };
         const key = getUserStorageKey(STORAGE_BASE_KEY);
@@ -162,9 +217,17 @@ export function useTerminologySettings() {
     return updated;
   }, []);
 
+  const periodLabels = getDerivedPeriodLabels(settings.periodNameSingular);
+
   return {
     attendanceLabel: settings.attendanceLabel,
     dispositionLabel: settings.dispositionLabel,
+    periodNameSingular: periodLabels.periodNameSingular,
+    term1FullLabel: periodLabels.term1FullLabel,
+    term2FullLabel: periodLabels.term2FullLabel,
+    term1ShortLabel: periodLabels.term1ShortLabel,
+    term2ShortLabel: periodLabels.term2ShortLabel,
+    initialDispositionScore: settings.initialDispositionScore,
     combinedTabLabel: `${settings.attendanceLabel} y ${settings.dispositionLabel}`,
     updateTerminology,
     resetTerminology,

@@ -19,6 +19,7 @@ import {
   Search,
   Settings,
   X,
+  ArrowUpDown,
 } from 'lucide-react';
 import {
   AttendanceSettings,
@@ -56,8 +57,6 @@ export interface LibroDeTemasHeaderToolbarProps {
     holidaysCount: number;
     effectiveClasses: number;
     completedClasses: number;
-    classesUpToToday: number;
-    pendingUpToToday: number;
   };
   cloudStatus: CloudSyncStatusInfo;
   metadata: LibroDeTemasMetadata;
@@ -83,8 +82,10 @@ export interface LibroDeTemasHeaderToolbarProps {
   setShowDriveConfirm: React.Dispatch<React.SetStateAction<boolean>>;
   driveDocTitle: string;
   setDriveDocTitle: React.Dispatch<React.SetStateAction<string>>;
-  termFilter: 'all' | '1c' | '2c' | 'until_today';
-  setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c' | 'until_today'>>;
+  termFilter: 'all' | '1c' | '2c';
+  setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c'>>;
+  sortOrder: 'asc' | 'desc';
+  setSortOrder: React.Dispatch<React.SetStateAction<'asc' | 'desc'>>;
   statusFilter: 'all' | 'completed' | 'pending' | 'holidays';
   setStatusFilter: React.Dispatch<
     React.SetStateAction<'all' | 'completed' | 'pending' | 'holidays'>
@@ -146,6 +147,8 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
   setDriveDocTitle,
   termFilter,
   setTermFilter,
+  sortOrder,
+  setSortOrder,
   statusFilter,
   setStatusFilter,
   searchQuery,
@@ -203,18 +206,6 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                 }`}
               >
                 {stats.holidaysCount} sin dictado (feriados / eventos)
-              </span>
-            )}
-            {stats.pendingUpToToday > 0 && (
-              <span
-                className={`px-2 py-0.5 rounded-md text-[11px] font-bold border max-w-full truncate ${
-                  isDarkMode
-                    ? 'bg-amber-950/60 border-amber-800 text-amber-300'
-                    : 'bg-amber-50 border-amber-200 text-amber-700'
-                }`}
-              >
-                {stats.pendingUpToToday} pendiente{stats.pendingUpToToday === 1 ? '' : 's'}{' '}
-                hasta hoy
               </span>
             )}
             <span
@@ -738,14 +729,18 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
               { id: 'all', label: 'Todo el año' },
               { id: '1c', label: '1° Cuatr.' },
               { id: '2c', label: '2° Cuatr.' },
-              { id: 'until_today', label: 'Hasta hoy' },
             ].map((tab) => (
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setTermFilter(tab.id as any)}
+                onClick={() => {
+                  setTermFilter(tab.id as 'all' | '1c' | '2c');
+                  if (tab.id === 'all' && sortOrder === 'desc') {
+                    setSortOrder('asc');
+                  }
+                }}
                 className={`flex-1 sm:flex-initial px-2.5 py-1 rounded-md transition-colors cursor-pointer text-center whitespace-nowrap ${
-                  termFilter === tab.id
+                  termFilter === tab.id && !(tab.id === 'all' && sortOrder === 'desc')
                     ? 'bg-blue-600 text-white'
                     : isDarkMode
                     ? 'text-slate-400 hover:text-white'
@@ -755,6 +750,29 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                 {tab.label}
               </button>
             ))}
+
+            {/* Botón para ordenar desde la última clase dada hacia atrás */}
+            <button
+              type="button"
+              onClick={() => setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'))}
+              className={`flex-1 sm:flex-initial px-2.5 py-1 rounded-md transition-colors cursor-pointer text-center whitespace-nowrap inline-flex items-center justify-center gap-1 border-l ${
+                isDarkMode ? 'border-slate-700' : 'border-neutral-200'
+              } ${
+                sortOrder === 'desc'
+                  ? 'bg-blue-600 text-white'
+                  : isDarkMode
+                  ? 'text-slate-400 hover:text-white'
+                  : 'text-neutral-600 hover:text-neutral-900'
+              }`}
+              title={
+                sortOrder === 'desc'
+                  ? 'Mostrando desde la última clase dada hacia atrás (clic para volver al orden cronológico)'
+                  : 'Ordenar desde la última clase dada hacia atrás cronológicamente'
+              }
+            >
+              <ArrowUpDown className="w-3 h-3 shrink-0" />
+              <span>Más recientes</span>
+            </button>
           </div>
 
           <select

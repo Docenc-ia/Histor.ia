@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 
 import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
+import { useTerminologySettings } from '../../../utils/terminologySettings';
 
 interface AttendanceHeaderProps {
   searchQuery: string;
@@ -71,6 +72,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   isDarkMode,
 }) => {
   const isSyncActive = isSyncingSheet || isPullingFromSheet;
+  const { combinedTabLabel, dispositionLabel, term1FullLabel, term2FullLabel } = useTerminologySettings();
 
   return (
     <div className="space-y-3">
@@ -198,7 +200,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               type="button"
               onClick={onOpenSendDispositionModal}
               className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
-              title={`Mandar notas de disposición a Calificaciones (${attendanceTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+              title={`Mandar notas de ${dispositionLabel.toLowerCase()} a Calificaciones (${attendanceTerm === '2c' ? term2FullLabel : term1FullLabel})`}
             >
               <Award className="w-3.5 h-3.5 text-amber-300 shrink-0" />
               <span className="truncate">Mandar a Calificaciones</span>
@@ -271,7 +273,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className={`font-semibold text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                Período de Asistencia y Disposición:
+                Período de {combinedTabLabel}:
               </span>
               <span
                 className={`text-xs px-2.5 py-0.5 rounded-full font-bold border ${
@@ -283,9 +285,9 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 }`}
               >
                 {attendanceTerm === '1c'
-                  ? '📘 1° Cuatrimestre Activo'
+                  ? `📘 ${term1FullLabel} Activo`
                   : attendanceTerm === '2c'
-                  ? '📗 2° Cuatrimestre Activo'
+                  ? `📗 ${term2FullLabel} Activo`
                   : '💜 Resumen Anual Activo'}
               </span>
             </div>
@@ -316,7 +318,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
             }`}
           >
-            1° Cuatrimestre
+            {term1FullLabel}
           </button>
           <button
             type="button"
@@ -329,7 +331,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
             }`}
           >
-            2° Cuatrimestre
+            {term2FullLabel}
           </button>
           <button
             type="button"

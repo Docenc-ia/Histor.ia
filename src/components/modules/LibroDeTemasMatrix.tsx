@@ -8,6 +8,7 @@ import {
   Trash2,
   X,
   AlertCircle,
+  ArrowUpDown,
 } from 'lucide-react';
 import {
   AttendanceSettings,
@@ -300,8 +301,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     applyToAllDaySlots?: boolean;
   } | null>(null);
 
-  // Filtros de vista
-  const [termFilter, setTermFilter] = useState<'all' | '1c' | '2c' | 'until_today'>('all');
+  // Filtros de vista y ordenamiento
+  const [termFilter, setTermFilter] = useState<'all' | '1c' | '2c'>('all');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'pending' | 'holidays'>(
     'all'
   );
@@ -1207,12 +1209,39 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     setTimeout(() => setToastMsg(null), 3500);
   };
 
-  // Filtrado de filas para la tabla
+  // Filtrado y ordenamiento de filas para la tabla
   const filteredRows = useMemo(() => {
-    return scheduledRows.filter((row) => {
+    // Encontrar la última clase dada (con contenido, observación o firma del profesor)
+    let lastGivenIndex = -1;
+    for (let i = scheduledRows.length - 1; i >= 0; i--) {
+      const r = scheduledRows[i];
+      const isGiven =
+        !r.entry.isHoliday &&
+        (r.entry.contents.trim().length > 0 ||
+          r.entry.teacherSignature.trim().length > 0 ||
+          r.entry.observations.trim().length > 0);
+      if (isGiven) {
+        lastGivenIndex = i;
+        break;
+      }
+    }
+
+    const cutoffRow =
+      lastGivenIndex !== -1
+        ? scheduledRows[lastGivenIndex]
+        : [...scheduledRows].reverse().find((r) => r.dateStr <= todayStr) || null;
+
+    const matching = scheduledRows.filter((row) => {
       if (termFilter === '1c' && row.term !== '1c') return false;
       if (termFilter === '2c' && row.term !== '2c') return false;
-      if (termFilter === 'until_today' && row.dateStr > todayStr) return false;
+
+      // Cuando se ordena de más recientes a más antiguas, ir desde la última clase dada hacia atrás
+      if (sortOrder === 'desc' && cutoffRow) {
+        if (row.dateStr > cutoffRow.dateStr) return false;
+        if (row.dateStr === cutoffRow.dateStr && row.slotIndex > cutoffRow.slotIndex) {
+          return false;
+        }
+      }
 
       const hasTopics = !row.entry.isHoliday && row.entry.contents.trim().length > 0;
       if (statusFilter === 'completed' && !hasTopics) return false;
@@ -1236,7 +1265,17 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
       return true;
     });
-  }, [scheduledRows, termFilter, statusFilter, searchQuery, todayStr]);
+
+    if (sortOrder === 'desc') {
+      return [...matching].sort((a, b) => {
+        const dateCmp = b.dateStr.localeCompare(a.dateStr);
+        if (dateCmp !== 0) return dateCmp;
+        return b.slotIndex - a.slotIndex;
+      });
+    }
+
+    return matching;
+  }, [scheduledRows, termFilter, statusFilter, searchQuery, sortOrder, todayStr]);
 
   // "Clase de Hoy": avanza automáticamente según pasan los días del calendario,
   // independientemente de si el docente completó o no las clases anteriores.
@@ -1267,25 +1306,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     const completedClasses = scheduledRows.filter(
       (r) => !r.entry.isHoliday && r.entry.contents.trim().length > 0
     ).length;
-    const classesUpToToday = scheduledRows.filter(
-      (r) => !r.entry.isHoliday && r.dateStr <= todayStr
-    ).length;
-    const pendingUpToToday = scheduledRows.filter(
-      (r) =>
-        !r.entry.isHoliday &&
-        r.dateStr <= todayStr &&
-        r.entry.contents.trim().length === 0
-    ).length;
 
     return {
       totalScheduled,
       holidaysCount,
       effectiveClasses,
       completedClasses,
-      classesUpToToday,
-      pendingUpToToday,
     };
-  }, [scheduledRows, todayStr]);
+  }, [scheduledRows]);
 
   const activeWeekdaysLabel = useMemo(() => {
     return activeWeekdays.map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]).join(', ');
@@ -1422,6 +1450,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         setDriveDocTitle={setDriveDocTitle}
         termFilter={termFilter}
         setTermFilter={setTermFilter}
+        sortOrder={sortOrder}
+        setSortOrder={setSortOrder}
         statusFilter={statusFilter}
         setStatusFilter={setStatusFilter}
         searchQuery={searchQuery}
@@ -1517,7 +1547,19 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     isDarkMode ? 'border-slate-700' : 'border-neutral-300'
                   }`}
                 >
-                  FECHA
+                  <button
+                    type="button"
+                    onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+                    className="inline-flex items-center justify-center gap-1.5 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-extrabold"
+                    title={
+                      sortOrder === 'desc'
+                        ? 'Ordenado de más recientes a más antiguas (clic para ordenar cronológicamente)'
+                        : 'Ordenado de más antiguas a más recientes (clic para ver más recientes primero)'
+                    }
+                  >
+                    <span>FECHA</span>
+                    <ArrowUpDown className="w-3.5 h-3.5 text-blue-500" />
+                  </button>
                 </th>
                 <th
                   rowSpan={2}

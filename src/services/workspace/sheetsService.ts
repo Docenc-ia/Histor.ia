@@ -27,6 +27,7 @@ import {
   fetchArbitrarySpreadsheetDataHelper,
   convert2DArrayToTableObjectsHelper,
 } from './sheetsHelpers';
+import { getTerminologySettings, getDerivedPeriodLabels } from '../../utils/terminologySettings';
 
 export interface DispositionSheetResult {
   spreadsheetId: string;
@@ -470,7 +471,22 @@ export const sheetsService = {
     dispositionMap2c?: Record<string, StudentDispositionData>
   ): Promise<DispositionSheetResult> {
     let token = providedToken && isValidGoogleAccessToken(providedToken) ? providedToken : getCachedAccessToken();
-    const sheetTitle = `📋 Registro de Asistencia y Disposición - ${course.name}`;
+    const termSettings = getTerminologySettings();
+    const {
+      attendanceLabel,
+      dispositionLabel,
+      periodNameSingular,
+      initialDispositionScore,
+    } = termSettings;
+    const baseScore = initialDispositionScore ?? 10;
+    const {
+      term1FullLabel,
+      term2FullLabel,
+      term1ShortLabel,
+      term2ShortLabel,
+    } = getDerivedPeriodLabels(periodNameSingular);
+
+    const sheetTitle = `📋 Registro de ${attendanceLabel} y ${dispositionLabel} - ${course.name}`;
 
     // Sort students alphabetically by last name, then first name
     const sortedStudents = [...students].sort((a, b) => {
@@ -488,11 +504,11 @@ export const sheetsService = {
     const summaryHeaders1c = [
       'Apellido y Nombre',
       'Email Institucional',
-      'Ausencias 1C',
-      'Llegadas Tarde 1C',
-      'Disposición 1C (Escala 10)',
-      'Última Incidencia 1C',
-      'Estado 1C',
+      `Ausencias ${term1ShortLabel}`,
+      `Llegadas Tarde ${term1ShortLabel}`,
+      `${dispositionLabel} ${term1ShortLabel} (Escala 10)`,
+      `Última Incidencia ${term1ShortLabel}`,
+      `Estado ${term1ShortLabel}`,
     ];
 
     const summaryRows1c = sortedStudents.map((student) => {
@@ -530,11 +546,11 @@ export const sheetsService = {
         ? Number(map1c[student.id].totalLates)
         : historyLates1c;
 
-      const score = map1c[student.id]?.totalDisposition ?? 10;
+      const score = map1c[student.id]?.totalDisposition ?? baseScore;
 
       const lastIncident = studentHistory1c.length > 0
         ? `${studentHistory1c[0].action} (${studentHistory1c[0].date} ${studentHistory1c[0].time})`
-        : 'Sin incidencias en 1C';
+        : `Sin incidencias en ${term1ShortLabel}`;
 
       const condition = score >= 8
         ? 'Excelente (>=8)'
@@ -557,11 +573,11 @@ export const sheetsService = {
     const summaryHeaders2c = [
       'Apellido y Nombre',
       'Email Institucional',
-      'Ausencias 2C',
-      'Llegadas Tarde 2C',
-      'Disposición 2C (Escala 10)',
-      'Última Incidencia 2C',
-      'Estado 2C',
+      `Ausencias ${term2ShortLabel}`,
+      `Llegadas Tarde ${term2ShortLabel}`,
+      `${dispositionLabel} ${term2ShortLabel} (Escala 10)`,
+      `Última Incidencia ${term2ShortLabel}`,
+      `Estado ${term2ShortLabel}`,
     ];
 
     const summaryRows2c = sortedStudents.map((student) => {
@@ -599,11 +615,11 @@ export const sheetsService = {
         ? Number(map2c[student.id].totalLates)
         : historyLates2c;
 
-      const score = map2c[student.id]?.totalDisposition ?? 10;
+      const score = map2c[student.id]?.totalDisposition ?? baseScore;
 
       const lastIncident = studentHistory2c.length > 0
         ? `${studentHistory2c[0].action} (${studentHistory2c[0].date} ${studentHistory2c[0].time})`
-        : 'Sin incidencias en 2C';
+        : `Sin incidencias en ${term2ShortLabel}`;
 
       const condition = score >= 8
         ? 'Excelente (>=8)'
@@ -628,10 +644,10 @@ export const sheetsService = {
       'Email Institucional',
       'Total Ausencias Anual',
       'Total Tardanzas Anual',
-      'Promedio Disposición Anual',
-      'Disposición 1C',
-      'Disposición 2C',
-      '% Asistencia Estimada',
+      `Promedio ${dispositionLabel} Anual`,
+      `${dispositionLabel} ${term1ShortLabel}`,
+      `${dispositionLabel} ${term2ShortLabel}`,
+      `% ${attendanceLabel} Estimada`,
       'Condición Anual',
     ];
 
@@ -644,8 +660,8 @@ export const sheetsService = {
       const lat2 = map2c[student.id]?.totalLates ?? 0;
       const totalLat = lat1 + lat2;
 
-      const disp1 = map1c[student.id]?.totalDisposition ?? 10;
-      const disp2 = map2c[student.id]?.totalDisposition ?? 10;
+      const disp1 = map1c[student.id]?.totalDisposition ?? baseScore;
+      const disp2 = map2c[student.id]?.totalDisposition ?? baseScore;
       const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
 
       // Asistencia estimada sobre base típica de clases
@@ -673,12 +689,12 @@ export const sheetsService = {
     const historyHeaders = [
       'Fecha',
       'Hora',
-      'Cuatrimestre',
+      periodNameSingular,
       'Estudiante',
       'Categoría',
       'Motivo de Conducta',
       'Impacto',
-      'Disposición Resultante',
+      `${dispositionLabel} Resultante`,
       'Mensaje enviado',
       'Mensaje',
       'ID Registro',
@@ -688,9 +704,9 @@ export const sheetsService = {
       .filter((h) => !h.courseId || h.courseId === course.id)
       .map((item) => {
       const is2c = item.term === '2c';
-      const termLabel = is2c ? '2° Cuatrimestre' : '1° Cuatrimestre';
+      const termLabel = is2c ? term2FullLabel : term1FullLabel;
       const studentMap = is2c ? map2c : map1c;
-      const studentScore = studentMap[item.studentId]?.totalDisposition ?? 10;
+      const studentScore = studentMap[item.studentId]?.totalDisposition ?? baseScore;
       const isItemAbsence =
         item.category === 'Ausencia' ||
         item.action === 'Ausencia' ||

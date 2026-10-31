@@ -1,5 +1,6 @@
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
+import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 
 export interface GradeHistoryEntry {
   id: string;
@@ -267,21 +268,34 @@ export async function exportCourseDispositionToExcel(
 ) {
   const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
+  const termSettings = getTerminologySettings();
+  const {
+    attendanceLabel,
+    dispositionLabel,
+    initialDispositionScore,
+  } = termSettings;
+  const baseScore = initialDispositionScore ?? 10;
+  const {
+    term1FullLabel,
+    term2FullLabel,
+    term1ShortLabel,
+    term2ShortLabel,
+  } = getDerivedPeriodLabels(termSettings.periodNameSingular);
 
   // Hoja 1: 1° Cuatrimestre
   const rows1c = students.map((s, idx) => {
     const d = map1c[s.id] || {};
     const absences = d.totalAbsences ?? 0;
     const lates = d.totalLates ?? 0;
-    const score = d.totalDisposition ?? 10;
+    const score = d.totalDisposition ?? baseScore;
     return {
       'N°': idx + 1,
       'Apellido': s.lastName,
       'Nombre': s.firstName,
       'Email': s.email || '-',
-      'Ausencias 1C': absences,
-      'Llegadas Tarde 1C': lates,
-      'Disposición 1C (Escala 10)': score,
+      [`Ausencias ${term1ShortLabel}`]: absences,
+      [`Llegadas Tarde ${term1ShortLabel}`]: lates,
+      [`${dispositionLabel} ${term1ShortLabel} (Escala 10)`]: score,
       'Condición':
         score >= 8
           ? 'Excelente (>=8)'
@@ -298,25 +312,25 @@ export async function exportCourseDispositionToExcel(
     { wch: 28 },
     { wch: 15 },
     { wch: 18 },
-    { wch: 25 },
+    { wch: 28 },
     { wch: 22 },
   ];
-  XLSX.utils.book_append_sheet(wb, ws1, '1° Cuatrimestre');
+  XLSX.utils.book_append_sheet(wb, ws1, term1FullLabel.slice(0, 31));
 
   // Hoja 2: 2° Cuatrimestre
   const rows2c = students.map((s, idx) => {
     const d = map2c[s.id] || {};
     const absences = d.totalAbsences ?? 0;
     const lates = d.totalLates ?? 0;
-    const score = d.totalDisposition ?? 10;
+    const score = d.totalDisposition ?? baseScore;
     return {
       'N°': idx + 1,
       'Apellido': s.lastName,
       'Nombre': s.firstName,
       'Email': s.email || '-',
-      'Ausencias 2C': absences,
-      'Llegadas Tarde 2C': lates,
-      'Disposición 2C (Escala 10)': score,
+      [`Ausencias ${term2ShortLabel}`]: absences,
+      [`Llegadas Tarde ${term2ShortLabel}`]: lates,
+      [`${dispositionLabel} ${term2ShortLabel} (Escala 10)`]: score,
       'Condición':
         score >= 8
           ? 'Excelente (>=8)'
@@ -333,10 +347,10 @@ export async function exportCourseDispositionToExcel(
     { wch: 28 },
     { wch: 15 },
     { wch: 18 },
-    { wch: 25 },
+    { wch: 28 },
     { wch: 22 },
   ];
-  XLSX.utils.book_append_sheet(wb, ws2, '2° Cuatrimestre');
+  XLSX.utils.book_append_sheet(wb, ws2, term2FullLabel.slice(0, 31));
 
   // Hoja 3: Resumen Anual
   const rowsAnnual = students.map((s, idx) => {
@@ -344,8 +358,8 @@ export async function exportCourseDispositionToExcel(
     const d2 = map2c[s.id] || {};
     const absTotal = (d1.totalAbsences ?? 0) + (d2.totalAbsences ?? 0);
     const latesTotal = (d1.totalLates ?? 0) + (d2.totalLates ?? 0);
-    const disp1 = d1.totalDisposition ?? 10;
-    const disp2 = d2.totalDisposition ?? 10;
+    const disp1 = d1.totalDisposition ?? baseScore;
+    const disp2 = d2.totalDisposition ?? baseScore;
     const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
     return {
       'N°': idx + 1,
@@ -354,9 +368,9 @@ export async function exportCourseDispositionToExcel(
       'Email': s.email || '-',
       'Total Ausencias Anual': absTotal,
       'Total Tardanzas Anual': latesTotal,
-      'Disposición 1C': disp1,
-      'Disposición 2C': disp2,
-      'Promedio Disposición': avgDisp,
+      [`${dispositionLabel} ${term1ShortLabel}`]: disp1,
+      [`${dispositionLabel} ${term2ShortLabel}`]: disp2,
+      [`Promedio ${dispositionLabel}`]: avgDisp,
     };
   });
   const wsAnnual = XLSX.utils.json_to_sheet(rowsAnnual);
@@ -367,13 +381,16 @@ export async function exportCourseDispositionToExcel(
     { wch: 28 },
     { wch: 20 },
     { wch: 20 },
-    { wch: 16 },
-    { wch: 16 },
-    { wch: 20 },
+    { wch: 18 },
+    { wch: 18 },
+    { wch: 22 },
   ];
   XLSX.utils.book_append_sheet(wb, wsAnnual, 'Resumen Anual');
 
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-  const filename = `Asistencia_Disposicion_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const safeAtt = attendanceLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
+  const safeDisp = dispositionLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
+  const filename = `${safeAtt}_${safeDisp}_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, filename);
 }
+

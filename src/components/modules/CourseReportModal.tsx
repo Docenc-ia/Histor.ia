@@ -44,6 +44,7 @@ import {
   buildConsolidatedReportStudents,
   computeCourseReportStats,
 } from '../../utils/courseReportAggregator';
+import { useTerminologySettings } from '../../utils/terminologySettings';
 
 export interface ExamGradeDetailItem {
   id: string;
@@ -86,6 +87,14 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   initialPreset = 'all',
 }) => {
   const { user } = useWorkspaceAuth();
+  const {
+    attendanceLabel,
+    dispositionLabel,
+    term1FullLabel,
+    term2FullLabel,
+    term1ShortLabel,
+    term2ShortLabel,
+  } = useTerminologySettings();
   const [activeTab, setActiveTab] = useState<'course' | 'individual'>(initialTab);
   const [selectedStudentId, setSelectedStudentId] = useState<string>(initialStudentId || 'all');
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
@@ -769,7 +778,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               )}
               <span>Calificaciones</span>
-              <span className="text-[10px] opacity-75 font-normal">(1°C, 2°C, Final)</span>
+              <span className="text-[10px] opacity-75 font-normal">({term1ShortLabel}, {term2ShortLabel}, Final)</span>
             </button>
 
             {/* 1b. Notas de Exámenes y TPs (solo en ficha individual cuando Calificaciones está activo) */}
@@ -813,7 +822,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               ) : (
                 <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               )}
-              <span>Asistencia</span>
+              <span>{attendanceLabel}</span>
               <span className="text-[10px] opacity-75 font-normal">(Faltas y %)</span>
             </button>
 
@@ -834,7 +843,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               ) : (
                 <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
               )}
-              <span>Disposición</span>
+              <span>{dispositionLabel}</span>
               <span className="text-[10px] opacity-75 font-normal">(Puntaje y actitud)</span>
             </button>
 
@@ -954,7 +963,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>
-                      Has desmarcado todos los elementos. Marcá al menos <strong>Calificaciones</strong>, <strong>Asistencia</strong> o <strong>Disposición</strong> en la barra superior para generar el reporte.
+                      Has desmarcado todos los elementos. Marcá al menos <strong>Calificaciones</strong>, <strong>{attendanceLabel}</strong> o <strong>{dispositionLabel}</strong> en la barra superior para generar el reporte.
                     </span>
                   </div>
                 )}
@@ -997,7 +1006,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                       <>
                         <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
                           <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            Asistencia Promedio
+                            {attendanceLabel} Promedio
                           </span>
                           <span className="text-lg font-bold text-blue-600">
                             {stats.avgAttendance}%
@@ -1016,7 +1025,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     {includeDisposition && (
                       <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
                         <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                          Disposición Promedio
+                          {dispositionLabel} Promedio
                         </span>
                         <span className="text-lg font-bold text-purple-600">
                           {(
@@ -1039,8 +1048,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                         <th className="py-2.5 px-3 border-r border-neutral-300">Estudiante</th>
                         {includeGrades && (
                           <>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">1° Cuatr.</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">2° Cuatr.</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term1ShortLabel}</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term2ShortLabel}</th>
                             <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
                             <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
                               Nota Definitiva
@@ -1049,13 +1058,13 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                         )}
                         {includeAttendance && (
                           <>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas 1°C</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas 2°C</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas {term1ShortLabel}</th>
+                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas {term2ShortLabel}</th>
                             <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas Totales</th>
                           </>
                         )}
                         {includeDisposition && (
-                          <th className="py-2.5 px-2 text-center border-r border-neutral-300">Disposición</th>
+                          <th className="py-2.5 px-2 text-center border-r border-neutral-300">{dispositionLabel}</th>
                         )}
                         {includeGrades && (
                           <th className="py-2.5 px-3 text-center">Condición Final</th>
@@ -1166,7 +1175,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>
-                      Has desmarcado todos los bloques. Activá al menos <strong>Calificaciones</strong>, <strong>Asistencia</strong> o <strong>Disposición</strong> en la barra superior para ver la ficha del alumno.
+                      Has desmarcado todos los bloques. Activá al menos <strong>Calificaciones</strong>, <strong>{attendanceLabel}</strong> o <strong>{dispositionLabel}</strong> en la barra superior para ver la ficha del alumno.
                     </span>
                   </div>
                 )}
@@ -1239,10 +1248,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                             <tr>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                1° Cuatrimestre
+                                {term1FullLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                2° Cuatrimestre
+                                {term2FullLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
                                 Promedio Ponderado
@@ -1285,8 +1294,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                               {/* 1° Cuatrimestre */}
                               <div className="border border-neutral-300 rounded-lg overflow-hidden">
                                 <div className="bg-blue-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-blue-900 flex items-center justify-between">
-                                  <span>1° Cuatrimestre</span>
-                                  <span>Nota 1°C: {row.score1c || '—'}</span>
+                                  <span>{term1FullLabel}</span>
+                                  <span>Nota {term1ShortLabel}: {row.score1c || '—'}</span>
                                 </div>
                                 <table className="w-full text-[11px]">
                                   <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
@@ -1313,8 +1322,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                               {/* 2° Cuatrimestre */}
                               <div className="border border-neutral-300 rounded-lg overflow-hidden">
                                 <div className="bg-indigo-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-indigo-900 flex items-center justify-between">
-                                  <span>2° Cuatrimestre</span>
-                                  <span>Nota 2°C: {row.score2c || '—'}</span>
+                                  <span>{term2FullLabel}</span>
+                                  <span>Nota {term2ShortLabel}: {row.score2c || '—'}</span>
                                 </div>
                                 <table className="w-full text-[11px]">
                                   <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
@@ -1347,16 +1356,16 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     {includeAttendance && includeDisposition ? (
                       <div className="mb-4">
                         <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. Asistencia, Puntualidad y Convivencia Escolar
+                          {includeGrades ? '2' : '1'}. {attendanceLabel}, Puntualidad y {dispositionLabel}
                         </h4>
                         <table className="w-full text-xs border border-neutral-300">
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                             <tr>
                               <th className="py-2 px-2 text-center border-r border-neutral-300">
-                                Faltas 1°C
+                                Faltas {term1ShortLabel}
                               </th>
                               <th className="py-2 px-2 text-center border-r border-neutral-300">
-                                Faltas 2°C
+                                Faltas {term2ShortLabel}
                               </th>
                               <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
                                 Total Inasistencias
@@ -1365,10 +1374,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                                 Tardanzas
                               </th>
                               <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
-                                % Asistencia Estimada
+                                % {attendanceLabel} Estimada
                               </th>
                               <th className="py-2 px-2 text-center font-bold text-purple-700">
-                                Disposición y Trabajo
+                                {dispositionLabel}
                               </th>
                             </tr>
                           </thead>
@@ -1403,16 +1412,16 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     ) : includeAttendance && !includeDisposition ? (
                       <div className="mb-4">
                         <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. Registro de Asistencia y Puntualidad Escolar
+                          {includeGrades ? '2' : '1'}. Registro de {attendanceLabel} y Puntualidad Escolar
                         </h4>
                         <table className="w-full text-xs border border-neutral-300">
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                             <tr>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Faltas 1° Cuatrimestre
+                                Faltas {term1FullLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Faltas 2° Cuatrimestre
+                                Faltas {term2FullLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300 bg-rose-50 font-bold text-rose-900">
                                 Total Inasistencias Acumuladas
@@ -1421,7 +1430,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                                 Tardanzas Registradas
                               </th>
                               <th className="py-2 px-3 text-center font-bold">
-                                % Asistencia Presencial
+                                % {attendanceLabel} Presencial
                               </th>
                             </tr>
                           </thead>
@@ -1453,19 +1462,19 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     ) : !includeAttendance && includeDisposition ? (
                       <div className="mb-4">
                         <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. Disposición para el Trabajo y Convivencia Áulica
+                          {includeGrades ? '2' : '1'}. {dispositionLabel} y Compromiso Áulico
                         </h4>
                         <table className="w-full text-xs border border-neutral-300">
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
                             <tr>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Disposición 1° Cuatr.
+                                {dispositionLabel} {term1ShortLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Disposición 2° Cuatr.
+                                {dispositionLabel} {term2ShortLabel}
                               </th>
                               <th className="py-2 px-3 text-center border-r border-neutral-300 bg-purple-50 font-bold text-purple-900">
-                                Puntaje Promedio de Disposición
+                                Puntaje Promedio de {dispositionLabel}
                               </th>
                               <th className="py-2 px-3 text-center font-bold">
                                 Valoración de Compromiso Áulico

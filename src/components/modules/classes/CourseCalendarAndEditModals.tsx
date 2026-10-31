@@ -1,6 +1,13 @@
 import React from 'react';
-import { Calendar, XCircle, RefreshCw, Pencil } from 'lucide-react';
+import { Calendar, XCircle, RefreshCw, Pencil, SlidersHorizontal } from 'lucide-react';
 import { Course } from '../../../types';
+import {
+  useTerminologySettings,
+  DISPOSITION_LABEL_PRESETS,
+  ATTENDANCE_LABEL_PRESETS,
+  PERIOD_NAME_PRESETS,
+  INITIAL_DISPOSITION_SCORE_PRESETS,
+} from '../../../utils/terminologySettings';
 
 interface CalendarSyncModalProps {
   isOpen: boolean;
@@ -334,12 +341,21 @@ export const EditCourseDetailsModal: React.FC<EditCourseDetailsModalProps> = ({
   handleSaveCourseDetails,
   isSavingCourseDetails,
 }) => {
+  const {
+    attendanceLabel,
+    dispositionLabel,
+    periodNameSingular,
+    initialDispositionScore,
+    updateTerminology,
+    resetTerminology,
+  } = useTerminologySettings();
+
   if (!isOpen || !editCourseData) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden ${
+        className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
           isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
         }`}
       >
@@ -370,7 +386,7 @@ export const EditCourseDetailsModal: React.FC<EditCourseDetailsModalProps> = ({
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSaveCourseDetails} className="p-5 space-y-4">
+        <form onSubmit={handleSaveCourseDetails} className="p-5 space-y-4 overflow-y-auto">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
               <label className="block text-xs font-semibold mb-1 text-neutral-700 dark:text-slate-300">
@@ -472,6 +488,148 @@ export const EditCourseDetailsModal: React.FC<EditCourseDetailsModalProps> = ({
                     : 'bg-white border-neutral-300 text-neutral-900'
                 }`}
               />
+            </div>
+          </div>
+
+          {/* Sección de Nombres personalizados, Escala Inicial y Período */}
+          <div
+            className={`p-3.5 rounded-xl border space-y-3 ${
+              isDarkMode ? 'bg-slate-800/60 border-slate-700' : 'bg-indigo-50/40 border-indigo-200/80'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                Nombres de columnas, escala inicial y períodos
+              </span>
+              {(attendanceLabel !== 'Asistencia' ||
+                dispositionLabel !== 'Disposición' ||
+                periodNameSingular !== 'Cuatrimestre' ||
+                initialDispositionScore !== 10) && (
+                <button
+                  type="button"
+                  onClick={resetTerminology}
+                  className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                >
+                  Restaurar originales
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
+                  Nombre de Disposición / Concepto:
+                </label>
+                <input
+                  type="text"
+                  value={dispositionLabel}
+                  onChange={(e) => updateTerminology({ dispositionLabel: e.target.value })}
+                  placeholder="Ej: Disposición, Concepto..."
+                  className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-semibold outline-none ${
+                    isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+                  }`}
+                />
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {DISPOSITION_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => updateTerminology({ dispositionLabel: preset })}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer ${
+                        dispositionLabel === preset
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-300'
+                          : 'bg-white border-neutral-200 text-neutral-700'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300 block mb-1">
+                  Nombre de Asistencia:
+                </label>
+                <input
+                  type="text"
+                  value={attendanceLabel}
+                  onChange={(e) => updateTerminology({ attendanceLabel: e.target.value })}
+                  placeholder="Ej: Asistencia, Presentismo..."
+                  className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-semibold outline-none ${
+                    isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+                  }`}
+                />
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {ATTENDANCE_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => updateTerminology({ attendanceLabel: preset })}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer ${
+                        attendanceLabel === preset
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-300'
+                          : 'bg-white border-neutral-200 text-neutral-700'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-neutral-200/70 dark:border-slate-700/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300">
+                Nota inicial de {dispositionLabel}:
+              </span>
+              <div className="flex flex-wrap items-center gap-1">
+                {INITIAL_DISPOSITION_SCORE_PRESETS.map((score) => (
+                  <button
+                    key={score}
+                    type="button"
+                    onClick={() => updateTerminology({ initialDispositionScore: score })}
+                    className={`px-2 py-0.5 rounded-lg text-xs font-bold border cursor-pointer ${
+                      initialDispositionScore === score
+                        ? 'bg-emerald-600 text-white border-emerald-600'
+                        : isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-slate-300'
+                        : 'bg-white border-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    {score}/10
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-neutral-200/70 dark:border-slate-700/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-neutral-600 dark:text-slate-300">
+                Nombre del período:
+              </span>
+              <div className="flex flex-wrap items-center gap-1">
+                {PERIOD_NAME_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => updateTerminology({ periodNameSingular: preset })}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer ${
+                      periodNameSingular === preset
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-slate-300'
+                        : 'bg-white border-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    1° y 2° {preset}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 

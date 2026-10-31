@@ -172,7 +172,15 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   setActiveTab,
   setToastMessage,
 }) => {
-  const { attendanceLabel, dispositionLabel, combinedTabLabel } = useTerminologySettings();
+  const {
+    attendanceLabel,
+    dispositionLabel,
+    combinedTabLabel,
+    term1FullLabel,
+    term2FullLabel,
+    term1ShortLabel,
+    term2ShortLabel,
+  } = useTerminologySettings();
 
   return (
     <div className="space-y-4">
@@ -215,7 +223,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     <div className="text-2xl font-black mt-1 text-red-600 dark:text-red-400">
                       {totalAbs}
                     </div>
-                    <span className="text-[11px] text-neutral-400">Acumulado 1°C + 2°C</span>
+                    <span className="text-[11px] text-neutral-400">Acumulado {term1ShortLabel} + {term2ShortLabel}</span>
                   </div>
 
                   <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
@@ -226,7 +234,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     <div className="text-2xl font-black mt-1 text-amber-600 dark:text-amber-400">
                       {totalLats}
                     </div>
-                    <span className="text-[11px] text-neutral-400">Acumulado 1°C + 2°C</span>
+                    <span className="text-[11px] text-neutral-400">Acumulado {term1ShortLabel} + {term2ShortLabel}</span>
                   </div>
 
                   <div className={`p-3.5 rounded-xl border ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'}`}>
@@ -349,14 +357,14 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     <th className="py-3 px-4">Estudiante</th>
                     <th className="py-3 px-3 text-center bg-blue-500/5 text-blue-700 dark:text-blue-300">
                       <div className="flex flex-col items-center">
-                        <span>1° Cuatrimestre</span>
-                        <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / disp.</span>
+                        <span>{term1FullLabel}</span>
+                        <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / {dispositionLabel.slice(0, 5).toLowerCase()}.</span>
                       </div>
                     </th>
                     <th className="py-3 px-3 text-center bg-emerald-500/5 text-emerald-700 dark:text-emerald-300">
                       <div className="flex flex-col items-center">
-                        <span>2° Cuatrimestre</span>
-                        <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / disp.</span>
+                        <span>{term2FullLabel}</span>
+                        <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / {dispositionLabel.slice(0, 5).toLowerCase()}.</span>
                       </div>
                     </th>
                     <th className="py-3 px-3 text-center bg-purple-500/5 text-purple-700 dark:text-purple-300">

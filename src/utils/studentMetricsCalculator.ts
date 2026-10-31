@@ -1,5 +1,6 @@
 import { Student, StudentDispositionData, StudentHistoryItem } from '../types';
 import { getDeletedHistoryIds } from '../services/api';
+import { getTerminologySettings } from './terminologySettings';
 
 // Helper function to deduplicate history entries (only filters identical IDs or deleted tombstones)
 export function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
@@ -219,7 +220,8 @@ export function calculateStudentMetrics(params: {
     }
   }
 
-  let calculatedDisp = 10;
+  const baseInitialScore = getTerminologySettings().initialDispositionScore ?? 10;
+  let calculatedDisp = baseInitialScore;
   if (studentHistory.length > 0) {
     const sortedStudentEvents =
       studentHistory.length > 1
@@ -232,7 +234,7 @@ export function calculateStudentMetrics(params: {
         actLower.includes('restablecid') ||
         actLower.includes('reinicio');
       if (isReset) {
-        calculatedDisp = 10;
+        calculatedDisp = baseInitialScore;
         continue;
       }
       if (ev.pointsChange !== undefined) {

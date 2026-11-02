@@ -297,7 +297,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                               <span className="text-neutral-300 dark:text-slate-600 text-[10px]">—</span>
                             )}
                           </td>
-                          <td className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
+                          <td data-pii="student" className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
                             {item.studentName}
                           </td>
                           <td className="py-3 px-4 font-mono text-neutral-600 dark:text-slate-300">
@@ -306,7 +306,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                           <td className="py-3 px-4 font-mono text-neutral-600 dark:text-slate-300">
                             {item.time}
                           </td>
-                          <td className="py-3 px-4">
+                          <td data-pii="student" className="py-3 px-4">
                             {(() => {
                               const isItemAbsence =
                                 item.category === 'Ausencia' ||
@@ -417,7 +417,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                           </td>
 
                           {/* Columna Mensaje */}
-                          <td className="py-3 px-4 max-w-xs">
+                          <td data-pii="student" className="py-3 px-4 max-w-xs">
                             {item.messageText ? (
                               <p
                                 className="text-[11px] text-neutral-700 dark:text-slate-300 line-clamp-2"
@@ -591,10 +591,10 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                           isDarkMode ? 'hover:bg-slate-800/50' : 'hover:bg-neutral-50/70'
                         }`}
                       >
-                        <td className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
+                        <td data-pii="student" className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
                           {st.lastName}, {st.firstName}
                         </td>
-                        <td className="py-3 px-4 text-center font-mono font-bold">
+                        <td data-pii="student" className="py-3 px-4 text-center font-mono font-bold">
                           <span
                             className={`inline-block px-2.5 py-0.5 rounded-full text-xs ${
                               metrics.totalAbsences > 0
@@ -605,7 +605,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                             {metrics.totalAbsences}
                           </span>
                         </td>
-                        <td className="py-3 px-4 text-center font-mono font-bold">
+                        <td data-pii="student" className="py-3 px-4 text-center font-mono font-bold">
                           <span
                             className={`inline-block px-2.5 py-0.5 rounded-full text-xs ${
                               metrics.totalDisposition >= 8
@@ -618,10 +618,10 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                             {metrics.totalDisposition} / 10
                           </span>
                         </td>
-                        <td className="py-3 px-4 text-neutral-600 dark:text-slate-300">
+                        <td data-pii="student" className="py-3 px-4 text-neutral-600 dark:text-slate-300">
                           {lastIncident}
                         </td>
-                        <td className="py-3 px-4 text-center">
+                        <td data-pii="student" className="py-3 px-4 text-center">
                           {metrics.totalDisposition >= 8 ? (
                             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
                               <CheckCircle2 className="w-3.5 h-3.5" /> Óptimo

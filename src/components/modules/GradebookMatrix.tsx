@@ -121,7 +121,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
         >
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
-            <div className="min-w-0">
+            <div data-pii="student" className="min-w-0">
               <p className="font-semibold text-xs truncate">
                 {student.lastName}, {student.firstName}
               </p>
@@ -149,7 +149,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
             const val = studentGrades[cat.id] || '';
             const thisColIdx = runningColIdx++;
             return (
-              <td key={cat.id} className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
+              <td key={cat.id} data-pii="student" className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
                 <input
                   type="text"
                   data-grade-row={idx}
@@ -177,6 +177,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                 return (
                   <td
                     key={sub.id}
+                    data-pii="student"
                     className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800"
                   >
                     <input
@@ -204,6 +205,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
         {/* Preliminary Valuation Cell (TEA / TEP) if enabled */}
         {preliminaryValuation && preliminaryValuation.showInMatrix && (
           <td
+            data-pii="student"
             className={`p-2 border-l text-center font-bold text-xs ${
               isDarkMode ? 'bg-amber-950/20 border-slate-800' : 'bg-amber-50/30 border-neutral-200'
             }`}
@@ -275,6 +277,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
 
         {/* Final Grade Cell */}
         <td
+          data-pii="student"
           className={`p-2 border-l text-center font-extrabold text-sm ${
             isDarkMode ? 'bg-blue-950/20 border-slate-800' : 'bg-blue-50/40 border-neutral-200'
           }`}

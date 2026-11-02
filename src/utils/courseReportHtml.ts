@@ -1,6 +1,7 @@
 import { Student } from '../types';
 import { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
+import { escapeHtml } from './htmlEscape';
 
 export interface ConsolidatedStudentReportRow {
   student: Student;
@@ -76,12 +77,22 @@ export function generateCourseReportHtml({
   includeFamilySignature,
 }: GenerateCourseReportHtmlParams): string {
   const isCourse = type === 'course';
-  const title = `Informe — ${courseName}`;
+  const safeCourseName = escapeHtml(courseName);
+  const safeSchoolName = escapeHtml(schoolName);
+  const safeTeacherName = escapeHtml(teacherName);
+  const safeCurrentDate = escapeHtml(currentDate);
+  const safeEffectiveReason = escapeHtml(effectiveReason.toUpperCase());
+  const safeCourseObservation = escapeHtml(courseObservation);
+  const title = `Informe — ${safeCourseName}`;
   const termSettings = getTerminologySettings();
-  const { attendanceLabel, dispositionLabel, initialDispositionScore } = termSettings;
-  const { term1FullLabel, term2FullLabel, term1ShortLabel, term2ShortLabel } = getDerivedPeriodLabels(
-    termSettings.periodNameSingular
-  );
+  const attendanceLabel = escapeHtml(termSettings.attendanceLabel);
+  const dispositionLabel = escapeHtml(termSettings.dispositionLabel);
+  const { initialDispositionScore } = termSettings;
+  const rawPeriodLabels = getDerivedPeriodLabels(termSettings.periodNameSingular);
+  const term1FullLabel = escapeHtml(rawPeriodLabels.term1FullLabel);
+  const term2FullLabel = escapeHtml(rawPeriodLabels.term2FullLabel);
+  const term1ShortLabel = escapeHtml(rawPeriodLabels.term1ShortLabel);
+  const term2ShortLabel = escapeHtml(rawPeriodLabels.term2ShortLabel);
 
   let bodyContent = '';
 
@@ -91,15 +102,15 @@ export function generateCourseReportHtml({
       kpiBoxes += `
           <div class="stat-box">
             <div class="stat-label">Aprobados</div>
-            <div class="stat-val text-green">${stats.approvedCount} (${stats.approvedPercent}%)</div>
+            <div class="stat-val text-green">${escapeHtml(stats.approvedCount)} (${escapeHtml(stats.approvedPercent)}%)</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">En Compensación</div>
-            <div class="stat-val text-red">${stats.compCount}</div>
+            <div class="stat-val text-red">${escapeHtml(stats.compCount)}</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">Promedio General</div>
-            <div class="stat-val text-purple">${stats.avgScore}</div>
+            <div class="stat-val text-purple">${escapeHtml(stats.avgScore)}</div>
           </div>
         `;
     }
@@ -107,11 +118,11 @@ export function generateCourseReportHtml({
       kpiBoxes += `
           <div class="stat-box">
             <div class="stat-label">${attendanceLabel} Promedio</div>
-            <div class="stat-val">${stats.avgAttendance}%</div>
+            <div class="stat-val">${escapeHtml(stats.avgAttendance)}%</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">Total Inasistencias</div>
-            <div class="stat-val text-red">${stats.totalCourseAbsences}</div>
+            <div class="stat-val text-red">${escapeHtml(stats.totalCourseAbsences)}</div>
           </div>
         `;
     }
@@ -126,7 +137,7 @@ export function generateCourseReportHtml({
       kpiBoxes += `
           <div class="stat-box">
             <div class="stat-label">${dispositionLabel} Promedio</div>
-            <div class="stat-val text-purple">${avgDispTotal} / 10</div>
+            <div class="stat-val text-purple">${escapeHtml(avgDispTotal)} / 10</div>
           </div>
         `;
     }
@@ -135,14 +146,14 @@ export function generateCourseReportHtml({
         <div class="report-page">
           <div class="header">
             <div class="school-brand">
-              <h2>${schoolName}</h2>
-              <p class="subtitle">${effectiveReason.toUpperCase()} — CICLO LECTIVO 2026</p>
+              <h2>${safeSchoolName}</h2>
+              <p class="subtitle">${safeEffectiveReason} — CICLO LECTIVO 2026</p>
             </div>
             <div class="meta-box">
-              <div><strong>Materia:</strong> ${courseName}</div>
-              <div><strong>Docente:</strong> ${teacherName}</div>
-              <div><strong>Fecha de emisión:</strong> ${currentDate}</div>
-              <div><strong>Matrícula Total:</strong> ${stats.total} estudiantes</div>
+              <div><strong>Materia:</strong> ${safeCourseName}</div>
+              <div><strong>Docente:</strong> ${safeTeacherName}</div>
+              <div><strong>Fecha de emisión:</strong> ${safeCurrentDate}</div>
+              <div><strong>Matrícula Total:</strong> ${escapeHtml(stats.total)} estudiantes</div>
             </div>
           </div>
 
@@ -182,27 +193,27 @@ export function generateCourseReportHtml({
                   (row, idx) => `
                 <tr>
                   <td style="text-align: center; color: #666;">${idx + 1}</td>
-                  <td><strong>${row.student.lastName}, ${row.student.firstName}</strong></td>
+                  <td><strong>${escapeHtml(row.student.lastName)}, ${escapeHtml(row.student.firstName)}</strong></td>
                   ${
                     includeGrades
                       ? `
-                    <td style="text-align: center;">${row.score1c || '—'}</td>
-                    <td style="text-align: center;">${row.score2c || '—'}</td>
-                    <td style="text-align: center; font-weight: bold;">${row.calcAvgStr || '—'}</td>
-                    <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${row.finalVal || '—'}</td>
+                    <td style="text-align: center;">${escapeHtml(row.score1c || '—')}</td>
+                    <td style="text-align: center;">${escapeHtml(row.score2c || '—')}</td>
+                    <td style="text-align: center; font-weight: bold;">${escapeHtml(row.calcAvgStr || '—')}</td>
+                    <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${escapeHtml(row.finalVal || '—')}</td>
                   `
                       : ''
                   }
                   ${
                     includeAttendance
                       ? `
-                    <td style="text-align: center;">${row.abs1}</td>
-                    <td style="text-align: center;">${row.abs2}</td>
-                    <td style="text-align: center; font-weight: bold;">${row.totalAbs}</td>
+                    <td style="text-align: center;">${escapeHtml(row.abs1)}</td>
+                    <td style="text-align: center;">${escapeHtml(row.abs2)}</td>
+                    <td style="text-align: center; font-weight: bold;">${escapeHtml(row.totalAbs)}</td>
                   `
                       : ''
                   }
-                  ${includeDisposition ? `<td style="text-align: center;">${row.avgDisp}/10</td>` : ''}
+                  ${includeDisposition ? `<td style="text-align: center;">${escapeHtml(row.avgDisp)}/10</td>` : ''}
                   ${
                     includeGrades
                       ? `
@@ -210,7 +221,7 @@ export function generateCourseReportHtml({
                       <span class="badge ${
                         row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
                       }">
-                        ${row.condition}
+                        ${escapeHtml(row.condition)}
                       </span>
                     </td>
                   `
@@ -228,7 +239,7 @@ export function generateCourseReportHtml({
               ? `
             <div class="observations-box">
               <h4>Observaciones Pedagógicas y Síntesis del Curso:</h4>
-              <p>${courseObservation}</p>
+              <p>${safeCourseObservation}</p>
             </div>
           `
               : ''
@@ -236,7 +247,7 @@ export function generateCourseReportHtml({
 
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
             <div><strong>Documento Oficial Institucional</strong> — Ciclo Lectivo 2026</div>
-            <div>Docente responsable: <strong>${teacherName}</strong> — ${schoolName}</div>
+            <div>Docente responsable: <strong>${safeTeacherName}</strong> — ${safeSchoolName}</div>
           </div>
         </div>
       `;
@@ -247,13 +258,13 @@ export function generateCourseReportHtml({
         <div class="student-page">
           <div class="header">
             <div class="school-brand">
-              <h2>${schoolName}</h2>
-              <p class="subtitle">${effectiveReason.toUpperCase()} — CICLO 2026</p>
+              <h2>${safeSchoolName}</h2>
+              <p class="subtitle">${safeEffectiveReason} — CICLO 2026</p>
             </div>
             <div class="meta-box">
-              <div><strong>Materia:</strong> ${courseName}</div>
-              <div><strong>Docente:</strong> ${teacherName}</div>
-              <div><strong>Fecha:</strong> ${currentDate}</div>
+              <div><strong>Materia:</strong> ${safeCourseName}</div>
+              <div><strong>Docente:</strong> ${safeTeacherName}</div>
+              <div><strong>Fecha:</strong> ${safeCurrentDate}</div>
             </div>
           </div>
 
@@ -261,10 +272,10 @@ export function generateCourseReportHtml({
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <div>
                 <div style="font-size: 16px; font-weight: bold; color: #1e293b;">
-                  Estudiante: ${row.student.lastName}, ${row.student.firstName}
+                  Estudiante: ${escapeHtml(row.student.lastName)}, ${escapeHtml(row.student.firstName)}
                 </div>
                 <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
-                  Email institucional: ${row.student.email || '—'}
+                  Email institucional: ${escapeHtml(row.student.email || '—')}
                 </div>
               </div>
               ${
@@ -274,7 +285,7 @@ export function generateCourseReportHtml({
                   <span class="badge ${
                     row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
                   }" style="font-size: 12px; padding: 4px 10px;">
-                    ${row.condition}
+                    ${escapeHtml(row.condition)}
                   </span>
                 </div>
               `
@@ -299,15 +310,15 @@ export function generateCourseReportHtml({
               </thead>
               <tbody>
                 <tr>
-                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score1c || '—'}</td>
-                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.score2c || '—'}</td>
-                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${row.calcAvgStr || '—'}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${escapeHtml(row.score1c || '—')}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${escapeHtml(row.score2c || '—')}</td>
+                  <td style="text-align: center; font-size: 14px; font-weight: bold;">${escapeHtml(row.calcAvgStr || '—')}</td>
                   <td style="text-align: center; font-size: 18px; font-weight: bold; color: #1e40af; background: #eef2ff;">
-                    ${row.finalVal || '—'}
+                    ${escapeHtml(row.finalVal || '—')}
                   </td>
                   <td style="text-align: center;">
                     <span class="badge ${row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'}" style="font-size: 12px; padding: 4px 10px;">
-                      ${row.condition}
+                      ${escapeHtml(row.condition)}
                     </span>
                   </td>
                 </tr>
@@ -334,9 +345,9 @@ export function generateCourseReportHtml({
                       (item) => `
                     <tr>
                       <td><strong>${term1FullLabel}</strong></td>
-                      <td>${item.categoryName}</td>
-                      <td>${item.itemName}</td>
-                      <td style="text-align: center; font-weight: bold; color: #1e3a8a;">${item.score}</td>
+                      <td>${escapeHtml(item.categoryName)}</td>
+                      <td>${escapeHtml(item.itemName)}</td>
+                      <td style="text-align: center; font-weight: bold; color: #1e3a8a;">${escapeHtml(item.score)}</td>
                     </tr>
                   `
                     )
@@ -346,9 +357,9 @@ export function generateCourseReportHtml({
                       (item) => `
                     <tr>
                       <td><strong>${term2FullLabel}</strong></td>
-                      <td>${item.categoryName}</td>
-                      <td>${item.itemName}</td>
-                      <td style="text-align: center; font-weight: bold; color: #4338ca;">${item.score}</td>
+                      <td>${escapeHtml(item.categoryName)}</td>
+                      <td>${escapeHtml(item.itemName)}</td>
+                      <td style="text-align: center; font-weight: bold; color: #4338ca;">${escapeHtml(item.score)}</td>
                     </tr>
                   `
                     )
@@ -379,15 +390,15 @@ export function generateCourseReportHtml({
               </thead>
               <tbody>
                 <tr>
-                  <td style="text-align: center;">${row.abs1}</td>
-                  <td style="text-align: center;">${row.abs2}</td>
-                  <td style="text-align: center; font-weight: bold;">${row.totalAbs}</td>
-                  <td style="text-align: center;">${row.totalLat}</td>
+                  <td style="text-align: center;">${escapeHtml(row.abs1)}</td>
+                  <td style="text-align: center;">${escapeHtml(row.abs2)}</td>
+                  <td style="text-align: center; font-weight: bold;">${escapeHtml(row.totalAbs)}</td>
+                  <td style="text-align: center;">${escapeHtml(row.totalLat)}</td>
                   <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
-                    ${row.estimatedAttendance}%
+                    ${escapeHtml(row.estimatedAttendance)}%
                   </td>
                   <td style="text-align: center; font-weight: bold; color: #7c3aed;">
-                    ${row.avgDisp} / 10
+                    ${escapeHtml(row.avgDisp)} / 10
                   </td>
                 </tr>
               </tbody>
@@ -408,14 +419,14 @@ export function generateCourseReportHtml({
               </thead>
               <tbody>
                 <tr>
-                  <td style="text-align: center;">${row.abs1}</td>
-                  <td style="text-align: center;">${row.abs2}</td>
+                  <td style="text-align: center;">${escapeHtml(row.abs1)}</td>
+                  <td style="text-align: center;">${escapeHtml(row.abs2)}</td>
                   <td style="text-align: center; font-weight: bold; font-size: 15px; color: #b91c1c; background: #fff1f2;">
-                    ${row.totalAbs} inasistencias
+                    ${escapeHtml(row.totalAbs)} inasistencias
                   </td>
-                  <td style="text-align: center;">${row.totalLat}</td>
+                  <td style="text-align: center;">${escapeHtml(row.totalLat)}</td>
                   <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
-                    ${row.estimatedAttendance}%
+                    ${escapeHtml(row.estimatedAttendance)}%
                   </td>
                 </tr>
               </tbody>
@@ -435,10 +446,10 @@ export function generateCourseReportHtml({
               </thead>
               <tbody>
                 <tr>
-                  <td style="text-align: center;">${row.disp1} / 10</td>
-                  <td style="text-align: center;">${row.disp2} / 10</td>
+                  <td style="text-align: center;">${escapeHtml(row.disp1)} / 10</td>
+                  <td style="text-align: center;">${escapeHtml(row.disp2)} / 10</td>
                   <td style="text-align: center; font-weight: bold; font-size: 16px; color: #6d28d9; background: #f5f3ff;">
-                    ${row.avgDisp} / 10
+                    ${escapeHtml(row.avgDisp)} / 10
                   </td>
                   <td style="text-align: center; font-weight: 600; color: ${row.avgDisp >= 8 ? '#15803d' : row.avgDisp >= 6 ? '#d97706' : '#b91c1c'};">
                     ${row.avgDisp >= 8 ? 'Favorable y participativo' : row.avgDisp >= 6 ? 'Regular / Ajustar entrega de tareas' : 'Requiere mayor compromiso en clase'}
@@ -455,7 +466,7 @@ export function generateCourseReportHtml({
               ? `
             <div class="observations-box" style="margin-top: 14px;">
               <h4>${includeGrades && (includeAttendance || includeDisposition) ? '3' : includeGrades || includeAttendance || includeDisposition ? '2' : '1'}. Observaciones Pedagógicas y Síntesis:</h4>
-              <p style="white-space: pre-wrap;">${row.observation || '—'}</p>
+              <p style="white-space: pre-wrap;">${escapeHtml(row.observation || '—')}</p>
             </div>
           `
               : ''
@@ -471,7 +482,7 @@ export function generateCourseReportHtml({
               <div style="display: flex; justify-content: space-between; gap: 30px; font-size: 11px;">
                 <div style="flex: 1; padding-top: 28px; border-top: 1px solid #475569; text-align: center;">
                   <div><strong>Firma del Docente</strong></div>
-                  <div style="color: #64748b; margin-top: 2px;">${teacherName} — ${schoolName}</div>
+                  <div style="color: #64748b; margin-top: 2px;">${safeTeacherName} — ${safeSchoolName}</div>
                 </div>
                 <div style="flex: 1; padding-top: 28px; border-top: 1px solid #475569; text-align: center;">
                   <div><strong>Firma del Adulto Responsable / Tutor</strong></div>
@@ -484,8 +495,8 @@ export function generateCourseReportHtml({
           }
 
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
-            <div><strong>Constancia Oficial de Trayectoria</strong> — ${courseName}</div>
-            <div>Docente a cargo: <strong>${teacherName}</strong> — Ciclo Lectivo 2026</div>
+            <div><strong>Constancia Oficial de Trayectoria</strong> — ${safeCourseName}</div>
+            <div>Docente a cargo: <strong>${safeTeacherName}</strong> — Ciclo Lectivo 2026</div>
           </div>
         </div>
       `

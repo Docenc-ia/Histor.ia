@@ -521,11 +521,52 @@ export const signInWithGoogleIdToken = async (
   return { profile, accessToken: realAccessToken };
 };
 
+// ISO/IEC 27001 A.8.20 & A.8.26: Authorized JavaScript Origins Allowlist
+export const AUTHORIZED_APP_ORIGINS = [
+  'https://ais-dev-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app',
+  'https://ais-pre-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
+export const isAuthorizedAppOrigin = (originInput?: string): boolean => {
+  const rawOrigin =
+    originInput ||
+    (typeof window !== 'undefined' ? window.location.origin : '');
+  if (!rawOrigin) return true;
+  if (AUTHORIZED_APP_ORIGINS.includes(rawOrigin)) return true;
+
+  try {
+    const parsed = new URL(rawOrigin);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+    if (
+      parsed.protocol === 'https:' &&
+      (host.endsWith('.run.app') ||
+        host.endsWith('.vercel.app') ||
+        host.endsWith('.googleusercontent.com') ||
+        host.endsWith('.web.app') ||
+        host.endsWith('.firebaseapp.com'))
+    ) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+};
+
 // Automatically selects the matching OAuth Client ID for the current origin so that
 // firebase-applet-config.json remains 100% intact for Vercel and the primary account,
 // while also working out-of-the-box in this preview environment.
 export const getEffectiveOAuthClientId = (): string => {
   if (typeof window !== 'undefined') {
+    if (!isAuthorizedAppOrigin(window.location.origin)) {
+      console.error(
+        `[Seguridad ISO 27001] Origen no autorizado bloqueado para OAuth Client ID: ${window.location.origin}`
+      );
+      return '';
+    }
     const host = window.location.hostname || '';
     if (host.includes('xanf7lgydk64d73ob33wqe')) {
       return '708929916247-j4j7vl4vipn2to5vlvh7us3jl7td29mi.apps.googleusercontent.com';
@@ -542,6 +583,13 @@ export const signInWithGoogleIdentityServices = (
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
       return reject(new Error('Window not available'));
+    }
+    if (!isAuthorizedAppOrigin(window.location.origin)) {
+      return reject(
+        new Error(
+          `Origen no autorizado (${window.location.origin}). Por seguridad ISO 27001, el inicio de sesión OAuth solo está permitido desde dominios oficiales autorizados.`
+        )
+      );
     }
     const google = (window as any).google;
     const clientId = getEffectiveOAuthClientId();

@@ -468,7 +468,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       {idx + 1}
                     </td>
 
-                    <td className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
+                    <td data-pii="student" className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
                       <div>
                         <span>{row.student.lastName}, {row.student.firstName}</span>
                         {row.student.email && (
@@ -479,7 +479,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 text-center">
+                    <td data-pii="student" className="py-3 px-4 text-center">
                       <div className="inline-flex items-center gap-1.5">
                         {getScoreBadge(row.score1c)}
                         <button
@@ -493,7 +493,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 text-center">
+                    <td data-pii="student" className="py-3 px-4 text-center">
                       <div className="inline-flex items-center gap-1.5">
                         {getScoreBadge(row.score2c)}
                         <button
@@ -507,7 +507,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 text-center font-mono font-bold text-xs">
+                    <td data-pii="student" className="py-3 px-4 text-center font-mono font-bold text-xs">
                       {row.calcAvgStr ? (
                         <span className="text-neutral-800 dark:text-slate-200">
                           {row.calcAvgStr}
@@ -517,7 +517,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       )}
                     </td>
 
-                    <td className="py-2.5 px-4 text-center">
+                    <td data-pii="student" className="py-2.5 px-4 text-center">
                       <div className="inline-flex items-center justify-center gap-1">
                         <input
                           type="text"
@@ -546,7 +546,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-4 text-center">
+                    <td data-pii="student" className="py-3 px-4 text-center">
                       <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold border ${row.conditionBadgeClass}`}>
                         {row.condition}
                       </span>

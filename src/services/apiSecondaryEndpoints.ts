@@ -6,9 +6,20 @@ import {
   TeacherTask,
   StudentSubmission,
 } from '../types';
-import { firestoreSync, getActiveUserId } from './firestoreSync';
+import { firestoreSync, getActiveUserId, getActiveUserEmail } from './firestoreSync';
 import { getUserStorageKey } from './storageHelpers';
 import { safeSetLocalStorageItem } from '../utils/storageGuard';
+
+function authFetch(url: string, init?: RequestInit): Promise<Response> {
+  const activeUserId = getActiveUserId() || '';
+  const activeEmail = getActiveUserEmail() || '';
+  const headers: Record<string, string> = {
+    ...(init?.headers ? (init.headers as Record<string, string>) : {}),
+  };
+  if (activeUserId && !headers['X-User-Id']) headers['X-User-Id'] = activeUserId;
+  if (activeEmail && !headers['X-User-Email']) headers['X-User-Email'] = activeEmail;
+  return fetch(url, { ...init, headers });
+}
 
 /**
  * Secondary API endpoints for Tasks, Conduct Options/Templates, Lesson Plans,
@@ -19,14 +30,14 @@ export const apiSecondaryEndpoints = {
   // Teacher Tasks & Assignment Management (Module 1)
   async getTasks(courseId?: string): Promise<TeacherTask[]> {
     const url = courseId ? `/api/tasks?courseId=${encodeURIComponent(courseId)}` : '/api/tasks';
-    const res = await fetch(url);
+    const res = await authFetch(url);
     if (!res.ok) throw new Error('Error al cargar tareas');
     const data = await res.json();
     return data.tasks;
   },
 
   async getTask(id: string): Promise<TeacherTask> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(id)}`);
+    const res = await authFetch(`/api/tasks/${encodeURIComponent(id)}`);
     if (!res.ok) throw new Error('Error al cargar detalle de tarea');
     const data = await res.json();
     return data.task;
@@ -41,7 +52,7 @@ export const apiSecondaryEndpoints = {
     maxPoints: number;
     driveAttachments?: Array<{ id: string; name: string; type: 'doc' | 'sheet' | 'slide' | 'pdf'; url: string; size?: string }>;
   }): Promise<TeacherTask> {
-    const res = await fetch('/api/tasks', {
+    const res = await authFetch('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(taskData),
@@ -57,7 +68,7 @@ export const apiSecondaryEndpoints = {
     grade: number,
     feedback?: string
   ): Promise<{ submission: StudentSubmission; task: TeacherTask }> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/grade`, {
+    const res = await authFetch(`/api/tasks/${encodeURIComponent(taskId)}/grade`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ studentId, grade, feedback }),
@@ -67,7 +78,7 @@ export const apiSecondaryEndpoints = {
   },
 
   async updateTaskStatus(taskId: string, status: 'Publicada' | 'Borrador' | 'Cerrada'): Promise<TeacherTask> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/status`, {
+    const res = await authFetch(`/api/tasks/${encodeURIComponent(taskId)}/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status }),
@@ -78,7 +89,7 @@ export const apiSecondaryEndpoints = {
   },
 
   async deleteTask(taskId: string): Promise<void> {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+    const res = await authFetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Error al eliminar tarea');

@@ -1,6 +1,7 @@
 import { Course, Student, StudentDispositionData, StudentHistoryItem, StudentObservation } from '../types';
 import { GradeCategory, DEFAULT_CATEGORIES } from '../types/grades';
 import { getUserStorageKey } from '../services/api';
+import { escapeHtml, sanitizeSafeUrl } from './htmlEscape';
 
 export function buildStudentTrackingDocHtml(
   firstArg:
@@ -181,11 +182,19 @@ export function buildStudentTrackingDocHtml(
     .filter((h) => h.studentId === student.id && (!activeCourse || h.courseId === activeCourse.id))
     .slice(0, 25);
 
+  const safeLastName = escapeHtml(student.lastName);
+  const safeFirstName = escapeHtml(student.firstName);
+  const safeStudentEmail = escapeHtml(student.email || 'Sin correo registrado');
+  const safeCourseName = escapeHtml(activeCourse?.name || 'Materia');
+  const safeCourseGrade = escapeHtml(activeCourse?.grade || '');
+  const safeCourseDivision = escapeHtml(activeCourse?.division || '');
+  const safeCourseRoom = escapeHtml(activeCourse?.room || activeCourse?.schedule || 'Turno Regular');
+
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title>Ficha de Seguimiento - ${student.lastName}, ${student.firstName}</title>
+  <title>Ficha de Seguimiento - ${safeLastName}, ${safeFirstName}</title>
   <style>
     body {
       font-family: Arial, Helvetica, sans-serif;
@@ -236,8 +245,8 @@ export function buildStudentTrackingDocHtml(
         <div style="font-size: 10pt; color: #64748b;">Documento editable de seguimiento individual • Ciclo Lectivo ${new Date().getFullYear()}</div>
       </td>
       <td style="border: none; padding: 0 0 10px 0; text-align: right; font-size: 10pt; color: #475569;">
-        <div><strong>Fecha de emisión:</strong> ${currentDateStr}</div>
-        <div><strong>Período evaluado:</strong> ${termLabel}</div>
+        <div><strong>Fecha de emisión:</strong> ${escapeHtml(currentDateStr)}</div>
+        <div><strong>Período evaluado:</strong> ${escapeHtml(termLabel)}</div>
       </td>
     </tr>
   </table>
@@ -249,9 +258,9 @@ export function buildStudentTrackingDocHtml(
       <th style="width: 30%;">Curso / Aula / Contacto</th>
     </tr>
     <tr>
-      <td><strong>${student.lastName}, ${student.firstName}</strong></td>
-      <td><strong>${activeCourse?.name || 'Materia'}</strong> (${activeCourse?.grade || ''} ${activeCourse?.division || ''})</td>
-      <td>${activeCourse?.room || activeCourse?.schedule || 'Turno Regular'}<br/><span style="font-size: 9pt; color: #64748b;">${student.email || 'Sin correo registrado'}</span></td>
+      <td><strong>${safeLastName}, ${safeFirstName}</strong></td>
+      <td><strong>${safeCourseName}</strong> (${safeCourseGrade} ${safeCourseDivision})</td>
+      <td>${safeCourseRoom}<br/><span style="font-size: 9pt; color: #64748b;">${safeStudentEmail}</span></td>
     </tr>
   </table>
 
@@ -259,13 +268,13 @@ export function buildStudentTrackingDocHtml(
   <table>
     <tr>
       <td colspan="4" style="background-color: ${statusBg}; border-color: ${statusBadgeColor};">
-        <strong style="color: ${statusBadgeColor}; font-size: 11pt;">● Estado de Regularidad: ${tl.statusLabel} (${tl.percentage}% de asistencia)</strong><br/>
+        <strong style="color: ${statusBadgeColor}; font-size: 11pt;">● Estado de Regularidad: ${escapeHtml(tl.statusLabel)} (${escapeHtml(tl.percentage)}% de asistencia)</strong><br/>
         <span style="font-size: 9.5pt; color: #334155;">
-          Límite permitido: <strong>${tl.maxAllowedAbsences} inasistencias</strong> • 
+          Límite permitido: <strong>${escapeHtml(tl.maxAllowedAbsences)} inasistencias</strong> • 
           ${
             tl.remainingAbsences >= 0
-              ? `Margen disponible: <strong>${tl.remainingAbsences} faltas</strong>`
-              : `<strong style="color: #dc2626;">Excedido por ${Math.abs(tl.remainingAbsences)} faltas</strong>`
+              ? `Margen disponible: <strong>${escapeHtml(tl.remainingAbsences)} faltas</strong>`
+              : `<strong style="color: #dc2626;">Excedido por ${escapeHtml(Math.abs(tl.remainingAbsences))} faltas</strong>`
           }
         </span>
       </td>
@@ -278,20 +287,20 @@ export function buildStudentTrackingDocHtml(
     </tr>
     <tr>
       <td style="text-align: center;">
-        <strong style="font-size: 13pt;">${tl.totalClasses}</strong><br/>
-        <span style="font-size: 9pt; color: #64748b;">${tl.attendedClasses} asistidas</span>
+        <strong style="font-size: 13pt;">${escapeHtml(tl.totalClasses)}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">${escapeHtml(tl.attendedClasses)} asistidas</span>
       </td>
       <td style="text-align: center;">
-        <strong style="font-size: 13pt; color: ${tl.totalAbsences > 0 ? '#dc2626' : '#059669'};">${m1.totalAbsences + m2.totalAbsences}</strong><br/>
-        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalAbsences} | 2°C: ${m2.totalAbsences}</span>
+        <strong style="font-size: 13pt; color: ${tl.totalAbsences > 0 ? '#dc2626' : '#059669'};">${escapeHtml(m1.totalAbsences + m2.totalAbsences)}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${escapeHtml(m1.totalAbsences)} | 2°C: ${escapeHtml(m2.totalAbsences)}</span>
       </td>
       <td style="text-align: center;">
-        <strong style="font-size: 13pt; color: #d97706;">${(m1.totalLates || 0) + (m2.totalLates || 0)}</strong><br/>
-        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalLates || 0} | 2°C: ${m2.totalLates || 0}</span>
+        <strong style="font-size: 13pt; color: #d97706;">${escapeHtml((m1.totalLates || 0) + (m2.totalLates || 0))}</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${escapeHtml(m1.totalLates || 0)} | 2°C: ${escapeHtml(m2.totalLates || 0)}</span>
       </td>
       <td style="text-align: center;">
-        <strong style="font-size: 13pt; color: ${disp >= 8 ? '#059669' : disp >= 6 ? '#d97706' : '#dc2626'};">${disp} / 10</strong><br/>
-        <span style="font-size: 9pt; color: #64748b;">1°C: ${m1.totalDisposition}/10 | 2°C: ${m2.totalDisposition}/10</span>
+        <strong style="font-size: 13pt; color: ${disp >= 8 ? '#059669' : disp >= 6 ? '#d97706' : '#dc2626'};">${escapeHtml(disp)} / 10</strong><br/>
+        <span style="font-size: 9pt; color: #64748b;">1°C: ${escapeHtml(m1.totalDisposition)}/10 | 2°C: ${escapeHtml(m2.totalDisposition)}/10</span>
       </td>
     </tr>
   </table>
@@ -305,13 +314,13 @@ export function buildStudentTrackingDocHtml(
     </tr>
     <tr>
       <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg1c !== null ? (avg1c >= 7 ? '#059669' : avg1c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
-        ${avg1c !== null ? avg1c : 'Sin calificar'}
+        ${avg1c !== null ? escapeHtml(avg1c) : 'Sin calificar'}
       </td>
       <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg2c !== null ? (avg2c >= 7 ? '#059669' : avg2c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
-        ${avg2c !== null ? avg2c : 'Sin calificar'}
+        ${avg2c !== null ? escapeHtml(avg2c) : 'Sin calificar'}
       </td>
       <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${finalAvg !== null ? (finalAvg >= 7 ? '#059669' : finalAvg >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
-        ${finalAvg !== null ? finalAvg : 'En curso'}
+        ${finalAvg !== null ? escapeHtml(finalAvg) : 'En curso'}
       </td>
     </tr>
   </table>
@@ -337,10 +346,10 @@ export function buildStudentTrackingDocHtml(
         const c2Color = e2 && e2.score !== null ? (e2.score >= 7 ? '#059669' : e2.score >= 4 ? '#d97706' : '#dc2626') : '#94a3b8';
         rowsHtml += `
           <tr>
-            <td>${e1 ? `${e1.name} <span style="color:#64748b;font-size:9pt;">(${e1.weight}%)</span>` : '-'}</td>
-            <td style="text-align: center; font-weight: bold; color: ${c1Color};">${e1 ? (e1.score !== null ? e1.score : 'S/C') : '-'}</td>
-            <td>${e2 ? `${e2.name} <span style="color:#64748b;font-size:9pt;">(${e2.weight}%)</span>` : '-'}</td>
-            <td style="text-align: center; font-weight: bold; color: ${c2Color};">${e2 ? (e2.score !== null ? e2.score : 'S/C') : '-'}</td>
+            <td>${e1 ? `${escapeHtml(e1.name)} <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e1.weight)}%)</span>` : '-'}</td>
+            <td style="text-align: center; font-weight: bold; color: ${c1Color};">${e1 ? (e1.score !== null ? escapeHtml(e1.score) : 'S/C') : '-'}</td>
+            <td>${e2 ? `${escapeHtml(e2.name)} <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e2.weight)}%)</span>` : '-'}</td>
+            <td style="text-align: center; font-weight: bold; color: ${c2Color};">${e2 ? (e2.score !== null ? escapeHtml(e2.score) : 'S/C') : '-'}</td>
           </tr>
         `;
       }
@@ -358,17 +367,18 @@ export function buildStudentTrackingDocHtml(
             <th style="width: 82%;">Detalle de la Observación / Informe</th>
           </tr>
           ${observations
-            .map(
-              (obs: any) => `
+            .map((obs: any) => {
+              const safeReportUrl = sanitizeSafeUrl(obs.reportUrl);
+              return `
             <tr>
-              <td><strong>${obs.date}</strong></td>
+              <td><strong>${escapeHtml(obs.date)}</strong></td>
               <td>
-                ${obs.text || 'Sin detalle de texto'}
-                ${obs.reportUrl ? `<br/><a href="${obs.reportUrl}" style="color: #2563eb; font-size: 9pt;">Enlace adjunto: ${obs.reportUrl}</a>` : ''}
+                ${escapeHtml(obs.text || 'Sin detalle de texto')}
+                ${safeReportUrl ? `<br/><a href="${safeReportUrl}" style="color: #2563eb; font-size: 9pt;">Enlace adjunto: ${safeReportUrl}</a>` : ''}
               </td>
             </tr>
-          `
-            )
+          `;
+            })
             .join('')}
         </table>`
   }
@@ -387,9 +397,9 @@ export function buildStudentTrackingDocHtml(
             .map(
               (ev) => `
             <tr>
-              <td>${ev.date}</td>
-              <td><strong>${ev.category}</strong> (${ev.term === '2c' ? '2°C' : '1°C'})</td>
-              <td>${ev.action}${ev.pointsChange ? ` (${ev.pointsChange > 0 ? `+${ev.pointsChange}` : ev.pointsChange} pts)` : ''}</td>
+              <td>${escapeHtml(ev.date)}</td>
+              <td><strong>${escapeHtml(ev.category)}</strong> (${ev.term === '2c' ? '2°C' : '1°C'})</td>
+              <td>${escapeHtml(ev.action)}${ev.pointsChange ? ` (${ev.pointsChange > 0 ? `+${escapeHtml(ev.pointsChange)}` : escapeHtml(ev.pointsChange)} pts)` : ''}</td>
             </tr>
           `
             )

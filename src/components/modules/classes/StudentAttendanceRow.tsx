@@ -154,12 +154,14 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
             <img
               src={student.avatar}
               alt={student.firstName}
+              data-pii="student"
               className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full object-cover border shrink-0 transition-transform group-hover/avatar:scale-105 group-hover/avatar:ring-2 group-hover/avatar:ring-indigo-400 ${
                 isDarkMode ? 'border-slate-700' : 'border-neutral-200'
               }`}
             />
             {observationsCount > 0 && (
               <span
+                data-pii="student"
                 className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-indigo-600 text-white rounded-full flex items-center justify-center text-[8px] font-bold border-2 border-white dark:border-slate-900 shadow-xs"
                 title={`${observationsCount} observación(es) registrada(s)`}
               >
@@ -179,7 +181,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
                 }`}
                 title={`Ver ficha y observaciones de ${student.lastName}, ${student.firstName}`}
               >
-                <span>{student.lastName}, {student.firstName}</span>
+                <span data-pii="student">{student.lastName}, {student.firstName}</span>
               </button>
 
               <a
@@ -219,6 +221,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
                 <button
                   type="button"
                   onClick={() => onOpenProfile(student)}
+                  data-pii="student"
                   className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded-md text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors cursor-pointer shadow-2xs"
                   title={`${observationsCount} observación(es) registrada(s). Clic para abrir ficha.`}
                 >
@@ -229,6 +232,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
 
               {hasPendingAbsence && (
                 <span
+                  data-pii="student"
                   className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800"
                   title="Tiene una ausencia registrada pendiente de enviar notificación"
                 >
@@ -245,7 +249,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
         className="py-2 px-3 text-center whitespace-nowrap cursor-pointer hover:bg-neutral-50 dark:hover:bg-slate-800/40 transition-colors"
         onClick={() => onOpenEditAbsences(student)}
       >
-        <div className="inline-flex items-center justify-center gap-1.5 flex-wrap">
+        <div data-pii="student" className="inline-flex items-center justify-center gap-1.5 flex-wrap">
           {(() => {
             const status = trafficLight?.status || (metrics.totalAbsences === 0 ? 'regular' : 'regular');
             
@@ -365,7 +369,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
         className="py-2 px-3 text-center cursor-pointer hover:bg-blue-50/40 dark:hover:bg-slate-800/40 transition-colors"
         onClick={() => onOpenEditDisposition(student)}
       >
-        <div className="inline-flex items-center justify-center">
+        <div data-pii="student" className="inline-flex items-center justify-center">
           <button
             type="button"
             onClick={(e) => {

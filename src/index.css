@@ -100,4 +100,17 @@
   .no-print {
     display: none !important;
   }
+  [data-pii="student"] {
+    filter: none !important;
+    -webkit-filter: none !important;
+  }
 }
+
+/* ISO/IEC 27001 A.7.7 & A.8.11: Zero-overhead GPU-accelerated PII Data Masking */
+html[data-pii-masked="true"] [data-pii="student"] {
+  filter: blur(6px);
+  -webkit-filter: blur(6px);
+  user-select: none;
+  transition: filter 120ms ease-out;
+}
+

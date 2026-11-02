@@ -165,12 +165,20 @@ interface AuthUser {
 // Active user sessions isolated by email so multiple teachers do not share or leak sessions
 const activeUsersByEmail = new Map<string, AuthUser>();
 
-// Initial Datasets (persisted to disk so classes and students survive app closures)
+// Primary owner accounts that use the root data/*.json files for backward compatibility
+const PRIMARY_OWNER_IDENTIFIERS = new Set([
+  "jorge.cano@fds-esc.edu.ar",
+  "canomorenojj@gmail.com",
+  "global_shared_workspace_v1",
+  "docente-titular",
+]);
+
+// Initial Datasets (persisted to disk so classes and students survive app closures, isolated per teacher workspace)
 let courses: Course[] = [];
 let students: Student[] = [];
 
-const COURSES_DATA_FILE = path.join(process.cwd(), "data", "courses.json");
-const STUDENTS_DATA_FILE = path.join(process.cwd(), "data", "students.json");
+let COURSES_DATA_FILE = path.join(process.cwd(), "data", "courses.json");
+let STUDENTS_DATA_FILE = path.join(process.cwd(), "data", "students.json");
 
 function normalizeCourseKey(c: Partial<Course>): string {
   if (!c) return "";
@@ -305,34 +313,144 @@ let driveResources: DriveResource[] = [];
 let classroomTasks: ClassroomTask[] = [];
 let teacherTasks: TeacherTask[] = [];
 
+// In-memory rate limiter per IP & route category (ISO/IEC 27001 A.8.6 / A.8.20)
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+const apiRateLimitBuckets = new Map<string, RateLimitBucket>();
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_GENERAL = 300; // 300 req/min per IP for normal classroom operations
+const RATE_LIMIT_MAX_HEAVY = 25; // 25 req/min for heavy file/reset operations
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of apiRateLimitBuckets.entries()) {
+    if (now >= bucket.resetAt) {
+      apiRateLimitBuckets.delete(key);
+    }
+  }
+}, RATE_LIMIT_WINDOW_MS).unref?.();
+
 async function startServer() {
   const app = express();
+
+  // ISO/IEC 27001 A.8.9 & A.8.26: Remove server fingerprinting & apply safe HTTP security headers
+  app.disable("x-powered-by");
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.setHeader("X-XSS-Protection", "0");
+    res.setHeader("Permissions-Policy", "geolocation=(), payment=(), usb=()");
+    next();
+  });
+
   app.use(express.json({ limit: "15mb" }));
   app.use(express.static(path.join(process.cwd(), "public")));
 
-  // Same-origin / anti-CSRF verification for state-mutating /api/* requests
+  // ISO/IEC 27001 A.8.6 / A.8.20: Rate limiting on /api/*
+  app.use("/api", (req, res, next) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    const clientIp =
+      (typeof forwarded === "string" ? forwarded.split(",")[0].trim() : "") ||
+      req.socket.remoteAddress ||
+      "unknown";
+    const isHeavyEndpoint =
+      req.path === "/save-logo" ||
+      req.path === "/courses/clear" ||
+      req.path === "/courses/restore-demo";
+    const bucketKey = `${clientIp}:${isHeavyEndpoint ? "heavy" : "general"}`;
+    const maxAllowed = isHeavyEndpoint ? RATE_LIMIT_MAX_HEAVY : RATE_LIMIT_MAX_GENERAL;
+    const now = Date.now();
+
+    let bucket = apiRateLimitBuckets.get(bucketKey);
+    if (!bucket || now >= bucket.resetAt) {
+      bucket = { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS };
+      apiRateLimitBuckets.set(bucketKey, bucket);
+    } else {
+      bucket.count += 1;
+      if (bucket.count > maxAllowed) {
+        const retryAfterSec = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+        res.setHeader("Retry-After", String(retryAfterSec));
+        return res.status(429).json({
+          error: "Demasiadas solicitudes en poco tiempo. Por favor, aguarde unos segundos e intente nuevamente.",
+        });
+      }
+    }
+    return next();
+  });
+
+  // ISO/IEC 27001 A.8.20 & A.8.26: Authorized Origins & anti-CSRF verification for /api/* requests
+  const AUTHORIZED_SERVER_ORIGINS = new Set([
+    "https://ais-dev-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app",
+    "https://ais-pre-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+  ]);
+
+  const isAuthorizedOriginUrl = (rawOrigin: string, currentHost?: string): boolean => {
+    if (AUTHORIZED_SERVER_ORIGINS.has(rawOrigin)) return true;
+    try {
+      const parsed = new URL(rawOrigin);
+      if (currentHost && parsed.host === currentHost) return true;
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+      if (
+        parsed.protocol === "https:" &&
+        (hostname.endsWith(".run.app") ||
+          hostname.endsWith(".vercel.app") ||
+          hostname.endsWith(".googleusercontent.com") ||
+          hostname.endsWith(".web.app") ||
+          hostname.endsWith(".firebaseapp.com"))
+      ) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  };
+
   app.use("/api", (req, res, next) => {
     if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
       return next();
     }
     const origin = req.headers.origin;
     const host = req.headers.host;
-    if (origin && host) {
-      try {
-        const originHost = new URL(origin).host;
-        if (originHost !== host) {
-          return res.status(403).json({ error: "Solicitud bloqueada por política de seguridad de origen." });
-        }
-      } catch {
-        return res.status(403).json({ error: "Origen inválido." });
+    if (origin) {
+      if (!isAuthorizedOriginUrl(origin, host)) {
+        return res.status(403).json({
+          error: "Solicitud bloqueada por política de seguridad de origen (ISO/IEC 27001 Authorized Origins).",
+        });
       }
     }
     return next();
   });
 
-  // Save uploaded dynamic logo directly to public/ (hardened against path traversal & arbitrary file writes)
+  // ISO/IEC 27001 A.5.15 & A.8.3: Per-teacher workspace isolation middleware hook
+  // Registered before all /api/* routes so every route runs in the isolated workspace of the requesting teacher.
+  let workspaceMiddlewareHook: ((req: express.Request, res: express.Response) => void) | null = null;
+  app.use("/api", (req, res, next) => {
+    if (workspaceMiddlewareHook) {
+      workspaceMiddlewareHook(req, res);
+    }
+    next();
+  });
+
+  // Save uploaded dynamic logo directly to public/ (hardened against path traversal, arbitrary file writes & unauthorized users)
   app.post("/api/save-logo", async (req, res) => {
     try {
+      const reqEmail = String(req.headers["x-user-email"] || req.body?.email || "").trim().toLowerCase();
+      const reqUserId = String(req.headers["x-user-id"] || "").trim().toLowerCase();
+      if (
+        (reqEmail && !PRIMARY_OWNER_IDENTIFIERS.has(reqEmail)) ||
+        (!reqEmail && reqUserId && !PRIMARY_OWNER_IDENTIFIERS.has(reqUserId))
+      ) {
+        return res.status(403).json({
+          error: "Solo la cuenta administradora titular tiene permiso para modificar el logo institucional global.",
+        });
+      }
+
       const { data, filename } = req.body;
       if (!data || typeof data !== "string") {
         return res.status(400).json({ error: "No data provided" });
@@ -1045,7 +1163,7 @@ async function startServer() {
   let studentDispositionMap: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }> = {};
   let studentHistoryList: DispositionRecord[] = [];
 
-  const DISPOSITION_DATA_FILE = path.join(process.cwd(), "data", "disposition-records.json");
+  let DISPOSITION_DATA_FILE = path.join(process.cwd(), "data", "disposition-records.json");
 
   // Reconcile and calculate student metrics from history so points drops and absences never reset or get lost
   function recomputeDispositionMapFromHistory() {
@@ -1512,11 +1630,14 @@ async function startServer() {
     );
   }
 
-  const courseDispositionSheets: Record<string, { spreadsheetId: string; url: string; lastSyncedAt: string }> = {};
-  const SHEETS_CONFIG_FILE = path.join(process.cwd(), "data", "sheets-config.json");
+  let courseDispositionSheets: Record<string, { spreadsheetId: string; url: string; lastSyncedAt: string }> = {};
+  let SHEETS_CONFIG_FILE = path.join(process.cwd(), "data", "sheets-config.json");
 
   function loadSheetsConfigFromDisk() {
     try {
+      for (const k of Object.keys(courseDispositionSheets)) {
+        delete courseDispositionSheets[k];
+      }
       if (fs.existsSync(SHEETS_CONFIG_FILE)) {
         const raw = fs.readFileSync(SHEETS_CONFIG_FILE, "utf-8");
         const parsed = JSON.parse(raw);
@@ -1548,6 +1669,137 @@ async function startServer() {
   }
 
   loadSheetsConfigFromDisk();
+
+  // ISO/IEC 27001 A.5.15 & A.8.3: Per-teacher workspace isolation on Express backend
+  // Ensures no secondary teacher can overwrite or clear the primary owner's or another teacher's fallback files.
+  interface TeacherWorkspaceSlice {
+    courses: Course[];
+    students: Student[];
+    coursesLoadedFromDisk: boolean;
+    studentDispositionMap: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
+    studentHistoryList: DispositionRecord[];
+    courseDispositionSheets: Record<string, { spreadsheetId: string; url: string; lastSyncedAt: string }>;
+    lessonPlans: LessonPlan[];
+    grades: GradeEntry[];
+    driveResources: DriveResource[];
+    classroomTasks: ClassroomTask[];
+    teacherTasks: TeacherTask[];
+    initialized: boolean;
+  }
+
+  const teacherWorkspaces = new Map<string, TeacherWorkspaceSlice>();
+  let currentWorkspaceKey = "owner";
+
+  function resolveWorkspaceKeyFromRequest(req: express.Request): string {
+    const rawEmail = String(req.headers["x-user-email"] || req.query.email || req.body?.email || "")
+      .trim()
+      .toLowerCase();
+    const rawUserId = String(req.headers["x-user-id"] || "")
+      .trim()
+      .toLowerCase();
+
+    if (rawEmail && PRIMARY_OWNER_IDENTIFIERS.has(rawEmail)) return "owner";
+    if (rawUserId && PRIMARY_OWNER_IDENTIFIERS.has(rawUserId)) return "owner";
+    if (!rawEmail && !rawUserId) return "owner";
+
+    const candidate = rawEmail || rawUserId;
+    if (PRIMARY_OWNER_IDENTIFIERS.has(candidate)) return "owner";
+
+    const safeKey = candidate.replace(/[^a-z0-9._-]/g, "_").slice(0, 64);
+    return safeKey ? `user_${safeKey}` : "owner";
+  }
+
+  function getWorkspaceDataFiles(workspaceKey: string) {
+    if (workspaceKey === "owner") {
+      return {
+        coursesFile: path.join(process.cwd(), "data", "courses.json"),
+        studentsFile: path.join(process.cwd(), "data", "students.json"),
+        dispositionFile: path.join(process.cwd(), "data", "disposition-records.json"),
+        sheetsFile: path.join(process.cwd(), "data", "sheets-config.json"),
+      };
+    }
+    const userDir = path.join(process.cwd(), "data", "users", workspaceKey);
+    return {
+      coursesFile: path.join(userDir, "courses.json"),
+      studentsFile: path.join(userDir, "students.json"),
+      dispositionFile: path.join(userDir, "disposition-records.json"),
+      sheetsFile: path.join(userDir, "sheets-config.json"),
+    };
+  }
+
+  function saveCurrentSliceToMap() {
+    teacherWorkspaces.set(currentWorkspaceKey, {
+      courses,
+      students,
+      coursesLoadedFromDisk,
+      studentDispositionMap,
+      studentHistoryList,
+      courseDispositionSheets,
+      lessonPlans,
+      grades,
+      driveResources,
+      classroomTasks,
+      teacherTasks,
+      initialized: true,
+    });
+  }
+
+  // Initialize owner slice with startup data
+  saveCurrentSliceToMap();
+
+  function activateTeacherWorkspace(targetKey: string) {
+    if (targetKey === currentWorkspaceKey) return;
+    // Save outgoing workspace state
+    saveCurrentSliceToMap();
+
+    currentWorkspaceKey = targetKey;
+    const files = getWorkspaceDataFiles(targetKey);
+    COURSES_DATA_FILE = files.coursesFile;
+    STUDENTS_DATA_FILE = files.studentsFile;
+    DISPOSITION_DATA_FILE = files.dispositionFile;
+    SHEETS_CONFIG_FILE = files.sheetsFile;
+
+    const existing = teacherWorkspaces.get(targetKey);
+    if (existing && existing.initialized) {
+      courses = existing.courses;
+      students = existing.students;
+      coursesLoadedFromDisk = existing.coursesLoadedFromDisk;
+      studentDispositionMap = existing.studentDispositionMap;
+      studentHistoryList = existing.studentHistoryList;
+      courseDispositionSheets = existing.courseDispositionSheets;
+      lessonPlans = existing.lessonPlans;
+      grades = existing.grades;
+      driveResources = existing.driveResources;
+      classroomTasks = existing.classroomTasks;
+      teacherTasks = existing.teacherTasks;
+    } else {
+      courses = [];
+      students = [];
+      coursesLoadedFromDisk = false;
+      studentDispositionMap = {};
+      studentHistoryList = [];
+      courseDispositionSheets = {};
+      lessonPlans = [];
+      grades = [];
+      driveResources = [];
+      classroomTasks = [];
+      teacherTasks = [];
+      loadCoursesFromDisk();
+      loadStudentsFromDisk();
+      loadDispositionDataFromDisk();
+      loadSheetsConfigFromDisk();
+      saveCurrentSliceToMap();
+    }
+  }
+
+  // Bind workspace isolation middleware hook for all data routes
+  workspaceMiddlewareHook = (req, res) => {
+    const wsKey = resolveWorkspaceKeyFromRequest(req);
+    activateTeacherWorkspace(wsKey);
+    res.on("finish", () => {
+      saveCurrentSliceToMap();
+    });
+  };
 
   app.get("/api/courses/:courseId/disposition-sheet", (req, res) => {
     const { courseId } = req.params;

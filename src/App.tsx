@@ -20,6 +20,7 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { findCourseMatch } from './utils/courseFormatting';
 import { useNavigationService } from './services/navigationService';
 import { areCoursesEqual } from './utils/entityEquality';
+import { PiiPrivacyShield } from './components/common/PiiPrivacyShield';
 
 // Safe lazy loading with retry for secondary modals and views
 const lazyWithRetry = (componentImport: () => Promise<any>) =>
@@ -522,6 +523,9 @@ function AppContent() {
           <span>{toast.message}</span>
         </div>
       )}
+
+      {/* ISO/IEC 27001 A.7.7 & A.8.11: Automatic & Manual PII Privacy Shield */}
+      <PiiPrivacyShield isDarkMode={isDarkMode} />
     </div>
   );
 }

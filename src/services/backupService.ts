@@ -105,9 +105,20 @@ export const backupService = {
 
   /**
    * Restores a complete JSON backup file into localStorage and syncs it to Firebase Firestore.
+   * Hardened against Prototype Pollution (__proto__, constructor, prototype) and oversized payloads (ISO 27001 A.8.28 / A.8.6).
    */
   async restoreFullBackupFromJsonString(content: string): Promise<void> {
-    const data = JSON.parse(content);
+    const MAX_BACKUP_CHARS = 18 * 1024 * 1024; // 18 MB upper bound
+    if (!content || typeof content !== 'string' || content.length > MAX_BACKUP_CHARS) {
+      throw new Error('El archivo de respaldo excede el tamaño máximo permitido (18 MB) o está vacío.');
+    }
+
+    const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+    const data = JSON.parse(content, (key, value) => {
+      if (FORBIDDEN_KEYS.has(key)) return undefined;
+      return value;
+    });
+
     if (
       !data ||
       typeof data !== 'object' ||
@@ -122,6 +133,7 @@ export const backupService = {
 
     if (data.settingsAndGradesSnapshot && typeof data.settingsAndGradesSnapshot === 'object') {
       for (const [k, v] of Object.entries(data.settingsAndGradesSnapshot)) {
+        if (FORBIDDEN_KEYS.has(k)) continue;
         if (k.startsWith('fds_') || k.startsWith('docencia_')) {
           let targetKey = k;
           if (uid) {

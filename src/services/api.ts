@@ -3,7 +3,7 @@ import {
   Student,
   TeacherProfile,
 } from '../types';
-import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firestoreSync';
+import { firestoreSync, getActiveUserId, getActiveUserEmail, isPrimaryOwnerAccount } from './firestoreSync';
 import { isSameCalendarDay } from '../utils/dateUtils';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 import { computeQuickStudentAttendanceRate } from '../utils/attendanceCalculations';
@@ -89,7 +89,21 @@ function canUseExpressBackend(requireOwner = true): boolean {
 async function fetchExpressJson<T = any>(url: string, init?: RequestInit): Promise<T | null> {
   if (!expressBackendAvailable) return null;
   try {
-    const res = await fetch(url, init);
+    const activeUserId = getActiveUserId() || '';
+    const activeEmail = getActiveUserEmail() || '';
+    const mergedHeaders: Record<string, string> = {
+      ...(init?.headers ? (init.headers as Record<string, string>) : {}),
+    };
+    if (activeUserId && !mergedHeaders['X-User-Id']) {
+      mergedHeaders['X-User-Id'] = activeUserId;
+    }
+    if (activeEmail && !mergedHeaders['X-User-Email']) {
+      mergedHeaders['X-User-Email'] = activeEmail;
+    }
+    const res = await fetch(url, {
+      ...init,
+      headers: mergedHeaders,
+    });
     const contentType = res.headers.get('content-type') || '';
     if (res.status === 404 || !contentType.includes('application/json')) {
       expressBackendAvailable = false;

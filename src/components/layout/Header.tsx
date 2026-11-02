@@ -14,12 +14,15 @@ import {
   Download,
   Database,
   Smartphone,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { useGlobalData } from '../../context/GlobalDataContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
 import { CloudSyncStatusInfo } from '../../services/firestoreSync';
 import { syncCoordinator } from '../../services/syncCoordinator';
+import { subscribePiiMaskState, toggleManualPiiMask } from '../common/PiiPrivacyShield';
 
 const HeaderSystemModals = lazy(() =>
   import('./HeaderSystemModals').then((m) => ({ default: m.HeaderSystemModals }))
@@ -96,6 +99,13 @@ export const Header: React.FC<HeaderProps> = ({
     pendingCount: 0,
   });
   const [isManualSyncingCloud, setIsManualSyncingCloud] = useState(false);
+  const [isPiiMasked, setIsPiiMasked] = useState(false);
+
+  useEffect(() => {
+    return subscribePiiMaskState((masked) => {
+      setIsPiiMasked(masked);
+    });
+  }, []);
 
   useEffect(() => {
     return syncCoordinator.subscribeStatus((status) => {
@@ -341,6 +351,34 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <Database className="w-4 h-4" />
           <span className="hidden xl:inline text-[11px]">Respaldo</span>
+        </button>
+
+        {/* ISO/IEC 27001 A.7.7 & A.8.11: Classroom Privacy / Projector Mode Toggle */}
+        <button
+          type="button"
+          onClick={() => toggleManualPiiMask()}
+          className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
+            isPiiMasked
+              ? 'bg-indigo-600 hover:bg-indigo-700 border-indigo-500 text-white shadow-xs'
+              : isDarkMode
+              ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+              : 'bg-neutral-100 hover:bg-neutral-200 border-neutral-200 text-slate-700'
+          }`}
+          title={
+            isPiiMasked
+              ? 'Modo Privacidad / Proyector activo: Datos de estudiantes ocultos. Clic para mostrar (Atajo: Alt + P)'
+              : 'Activar Modo Privacidad / Proyector: oculta nombres, correos y calificaciones de los alumnos (Atajo: Alt + P)'
+          }
+          aria-label="Alternar modo privacidad de estudiantes"
+        >
+          {isPiiMasked ? (
+            <EyeOff className="w-4 h-4" />
+          ) : (
+            <Eye className="w-4 h-4" />
+          )}
+          <span className="hidden xl:inline text-[11px]">
+            {isPiiMasked ? 'Datos Ocultos' : 'Privacidad'}
+          </span>
         </button>
 
         {/* Dark / Light Mode Toggle Button */}

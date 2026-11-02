@@ -38,6 +38,21 @@ function loadXlsxModule(): Promise<typeof import('xlsx')> {
 }
 
 /**
+ * Neutralizes Excel / CSV Formula Injection (ISO/IEC 27001 A.8.28)
+ * Prefixes a leading space if a free-text string starts with '=', '+', '-', '@', '\t', or '\r'
+ * (unless it is a pure numeric value or standard '-' placeholder).
+ */
+function sanitizeExcelText(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  if (str === '-' || str === '') return str;
+  if (/^[=+\-@\t\r]/.test(str) && isNaN(Number(str.replace(',', '.')))) {
+    return ` ${str}`;
+  }
+  return str;
+}
+
+/**
  * Exporta el historial de calificaciones / importaciones a un archivo Excel (.xlsx)
  */
 export async function exportGradeHistoryToExcel(
@@ -50,11 +65,11 @@ export async function exportGradeHistoryToExcel(
   // Hoja 1: Resumen del Historial
   const summaryRows = history.map((h, idx) => ({
     'N°': idx + 1,
-    'Fecha': h.date,
-    'Hora': h.time,
-    'Cuatrimestre': h.termLabel,
-    'Evaluación': h.evaluationName,
-    'Categoría': h.categoryName,
+    'Fecha': sanitizeExcelText(h.date),
+    'Hora': sanitizeExcelText(h.time),
+    'Cuatrimestre': sanitizeExcelText(h.termLabel),
+    'Evaluación': sanitizeExcelText(h.evaluationName),
+    'Categoría': sanitizeExcelText(h.categoryName),
     'Tipo de Registro':
       h.action === 'import_excel'
         ? 'Importación Excel'
@@ -65,8 +80,8 @@ export async function exportGradeHistoryToExcel(
         : 'Sincronización Sheets',
     'Alumnos Registrados': h.updatedStudentsCount,
     'Promedio': h.averageScore ? h.averageScore.toFixed(2) : '-',
-    'Archivo Origen': h.sourceFile || 'Carga Directa',
-    'Detalle': h.description,
+    'Archivo Origen': sanitizeExcelText(h.sourceFile || 'Carga Directa'),
+    'Detalle': sanitizeExcelText(h.description),
   }));
 
   const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
@@ -93,14 +108,14 @@ export async function exportGradeHistoryToExcel(
   history.forEach((h) => {
     (h.changesSummary || []).forEach((c) => {
       detailRows.push({
-        'Fecha': h.date,
-        'Hora': h.time,
-        'Evaluación': h.evaluationName,
-        'Cuatrimestre': h.termLabel,
-        'Alumno': c.studentName,
-        'Email': c.studentEmail || '-',
-        'Nota Anterior': c.previousScore || '(sin nota)',
-        'Nota Asignada': c.newScore,
+        'Fecha': sanitizeExcelText(h.date),
+        'Hora': sanitizeExcelText(h.time),
+        'Evaluación': sanitizeExcelText(h.evaluationName),
+        'Cuatrimestre': sanitizeExcelText(h.termLabel),
+        'Alumno': sanitizeExcelText(c.studentName),
+        'Email': sanitizeExcelText(c.studentEmail || '-'),
+        'Nota Anterior': sanitizeExcelText(c.previousScore || '(sin nota)'),
+        'Nota Asignada': sanitizeExcelText(c.newScore),
         'Estado':
           c.status === 'new'
             ? 'Nota Nueva'
@@ -155,11 +170,11 @@ export async function exportCourseClassHistoryToExcel(
 
   const rows = sorted.map((item, idx) => ({
     'N°': idx + 1,
-    'Alumno': item.studentName,
-    'Fecha': item.date,
-    'Hora': item.time,
-    'Acción / Registro': item.action,
-    'Categoría': item.category,
+    'Alumno': sanitizeExcelText(item.studentName),
+    'Fecha': sanitizeExcelText(item.date),
+    'Hora': sanitizeExcelText(item.time),
+    'Acción / Registro': sanitizeExcelText(item.action),
+    'Categoría': sanitizeExcelText(item.category),
   }));
 
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -199,9 +214,9 @@ export async function exportGradebookMatrixToExcel(
     const studentGrades = gradesMap[s.id] || {};
     const rowObj: any = {
       'N°': idx + 1,
-      'Apellido': s.lastName,
-      'Nombre': s.firstName,
-      'Email': s.email || '-',
+      'Apellido': sanitizeExcelText(s.lastName),
+      'Nombre': sanitizeExcelText(s.firstName),
+      'Email': sanitizeExcelText(s.email || '-'),
     };
 
     let totalScore = 0;
@@ -210,8 +225,8 @@ export async function exportGradebookMatrixToExcel(
     categories.forEach((cat) => {
       cat.subcategories.forEach((sub) => {
         const val = studentGrades[sub.id];
-        const colHeader = `${cat.name} - ${sub.name}`;
-        rowObj[colHeader] = val !== undefined && val !== '' ? val : '-';
+        const colHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(sub.name)}`;
+        rowObj[colHeader] = val !== undefined && val !== '' ? sanitizeExcelText(val) : '-';
 
         const num = parseFloat(String(val).replace(',', '.'));
         if (!isNaN(num)) {
@@ -225,7 +240,7 @@ export async function exportGradebookMatrixToExcel(
     const finalVal = studentGrades['__final__'] || average;
 
     rowObj['Promedio Parcial'] = average;
-    rowObj['Calificación Final'] = finalVal;
+    rowObj['Calificación Final'] = sanitizeExcelText(finalVal);
 
     rows.push(rowObj);
   });
@@ -290,9 +305,9 @@ export async function exportCourseDispositionToExcel(
     const score = d.totalDisposition ?? baseScore;
     return {
       'N°': idx + 1,
-      'Apellido': s.lastName,
-      'Nombre': s.firstName,
-      'Email': s.email || '-',
+      'Apellido': sanitizeExcelText(s.lastName),
+      'Nombre': sanitizeExcelText(s.firstName),
+      'Email': sanitizeExcelText(s.email || '-'),
       [`Ausencias ${term1ShortLabel}`]: absences,
       [`Llegadas Tarde ${term1ShortLabel}`]: lates,
       [`${dispositionLabel} ${term1ShortLabel} (Escala 10)`]: score,
@@ -325,9 +340,9 @@ export async function exportCourseDispositionToExcel(
     const score = d.totalDisposition ?? baseScore;
     return {
       'N°': idx + 1,
-      'Apellido': s.lastName,
-      'Nombre': s.firstName,
-      'Email': s.email || '-',
+      'Apellido': sanitizeExcelText(s.lastName),
+      'Nombre': sanitizeExcelText(s.firstName),
+      'Email': sanitizeExcelText(s.email || '-'),
       [`Ausencias ${term2ShortLabel}`]: absences,
       [`Llegadas Tarde ${term2ShortLabel}`]: lates,
       [`${dispositionLabel} ${term2ShortLabel} (Escala 10)`]: score,
@@ -363,9 +378,9 @@ export async function exportCourseDispositionToExcel(
     const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
     return {
       'N°': idx + 1,
-      'Apellido': s.lastName,
-      'Nombre': s.firstName,
-      'Email': s.email || '-',
+      'Apellido': sanitizeExcelText(s.lastName),
+      'Nombre': sanitizeExcelText(s.firstName),
+      'Email': sanitizeExcelText(s.email || '-',),
       'Total Ausencias Anual': absTotal,
       'Total Tardanzas Anual': latesTotal,
       [`${dispositionLabel} ${term1ShortLabel}`]: disp1,

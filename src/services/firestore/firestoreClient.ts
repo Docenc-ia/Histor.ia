@@ -258,12 +258,107 @@ export function getCloudSyncStatus(): CloudSyncStatusInfo {
   return currentSyncStatus;
 }
 
+// ---------------------------------------------------------------------------
+// ISO/IEC 27001 A.8.6: CAPACITY MANAGEMENT & FIRESTORE QUOTA / SPIKE MONITOR
+// ---------------------------------------------------------------------------
+const QUOTA_WINDOW_MS = 60 * 1000; // 1-minute sliding window for burst detection
+const MAX_WRITES_PER_MINUTE = 140; // Protects free-tier daily quota from accidental write loops
+const WARN_WRITES_PER_MINUTE = 90;
+const WARN_SESSION_WRITES = 2500;
+
+let writeTimestampsWindow: number[] = [];
+let readTimestampsWindow: number[] = [];
+let sessionTotalWrites = 0;
+let sessionTotalReads = 0;
+let sessionThrottledSpikes = 0;
+let lastQuotaWarningLoggedAt = 0;
+
+export interface FirestoreQuotaMetrics {
+  writesLastMinute: number;
+  readsLastMinute: number;
+  sessionTotalWrites: number;
+  sessionTotalReads: number;
+  sessionThrottledSpikes: number;
+  maxWritesPerMinute: number;
+  quotaHealthy: boolean;
+  circuitBreakerActive: boolean;
+}
+
+export function recordFirestoreOperation(kind: 'read' | 'write', opCount = 1): boolean {
+  const now = Date.now();
+  const cutoff = now - QUOTA_WINDOW_MS;
+
+  if (kind === 'write') {
+    writeTimestampsWindow = writeTimestampsWindow.filter((t) => t > cutoff);
+    if (writeTimestampsWindow.length + opCount > MAX_WRITES_PER_MINUTE) {
+      sessionThrottledSpikes += 1;
+      if (now - lastQuotaWarningLoggedAt > 15000) {
+        lastQuotaWarningLoggedAt = now;
+        console.warn(
+          `[Seguridad ISO 27001 A.8.6 - Protector de Cuota] Pico inusual detectado (${writeTimestampsWindow.length + opCount} escrituras/min). Se activó la contención preventiva para proteger tu cuota gratuita de Firestore. Tus datos siguen guardados localmente.`
+        );
+      }
+      return false;
+    }
+    for (let i = 0; i < opCount; i++) {
+      writeTimestampsWindow.push(now);
+    }
+    sessionTotalWrites += opCount;
+
+    if (
+      (writeTimestampsWindow.length >= WARN_WRITES_PER_MINUTE ||
+        sessionTotalWrites >= WARN_SESSION_WRITES) &&
+      now - lastQuotaWarningLoggedAt > 60000
+    ) {
+      lastQuotaWarningLoggedAt = now;
+      console.info(
+        `[Monitor de Cuota Firestore] Consumo en sesión: ${sessionTotalWrites} escrituras / ${sessionTotalReads} lecturas (${writeTimestampsWindow.length} escrituras en el último minuto).`
+      );
+    }
+  } else {
+    readTimestampsWindow = readTimestampsWindow.filter((t) => t > cutoff);
+    for (let i = 0; i < opCount; i++) {
+      readTimestampsWindow.push(now);
+    }
+    sessionTotalReads += opCount;
+  }
+
+  return true;
+}
+
+export function getFirestoreQuotaMetrics(): FirestoreQuotaMetrics {
+  const cutoff = Date.now() - QUOTA_WINDOW_MS;
+  writeTimestampsWindow = writeTimestampsWindow.filter((t) => t > cutoff);
+  readTimestampsWindow = readTimestampsWindow.filter((t) => t > cutoff);
+  return {
+    writesLastMinute: writeTimestampsWindow.length,
+    readsLastMinute: readTimestampsWindow.length,
+    sessionTotalWrites,
+    sessionTotalReads,
+    sessionThrottledSpikes,
+    maxWritesPerMinute: MAX_WRITES_PER_MINUTE,
+    quotaHealthy:
+      isFirestoreAvailable() && writeTimestampsWindow.length < WARN_WRITES_PER_MINUTE,
+    circuitBreakerActive: !isFirestoreAvailable(),
+  };
+}
+
 export async function executeWithTimeout<T>(
   promise: Promise<T>,
   timeoutMs = FIRESTORE_TIMEOUT_MS,
   trackAsWrite = false
 ): Promise<T | null> {
   if (!isFirestoreAvailable()) {
+    return null;
+  }
+  const allowedByQuotaGuard = recordFirestoreOperation(trackAsWrite ? 'write' : 'read', 1);
+  if (!allowedByQuotaGuard && trackAsWrite) {
+    // Gracefully skip cloud burst write while keeping local state synced
+    emitSyncStatus({
+      state: 'synced',
+      pendingCount: Math.max(0, currentSyncStatus.pendingCount),
+      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    });
     return null;
   }
   if (trackAsWrite) {

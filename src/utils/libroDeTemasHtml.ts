@@ -1,4 +1,5 @@
 import { LibroDeTemasMetadata, ScheduledRow } from '../components/modules/LibroDeTemasMatrix';
+import { escapeHtml } from './htmlEscape';
 
 export function buildOfficialLibroDeTemasHtml(params: {
   filteredRows: ScheduledRow[];
@@ -13,51 +14,59 @@ export function buildOfficialLibroDeTemasHtml(params: {
       const isHol = row.entry.isHoliday;
       const bgRow = isHol ? '#f8fafc' : '#ffffff';
       const textStyle = isHol ? 'color:#475569;font-style:italic;' : 'color:#0f172a;';
+      const safeTimeLabel = escapeHtml(
+        row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-')
+      );
       return `<tr style="background-color:${bgRow};${textStyle}">
-          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${row.day}</td>
-          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${row.month}</td>
-          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-family:monospace;font-size:8.5pt;width:80px;">${row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-')}</td>
-          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:54px;">${row.computedClassNumber}</td>
+          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${escapeHtml(row.day)}</td>
+          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:36px;">${escapeHtml(row.month)}</td>
+          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-family:monospace;font-size:8.5pt;width:80px;">${safeTimeLabel}</td>
+          <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;font-weight:bold;width:54px;">${escapeHtml(row.computedClassNumber)}</td>
           <td style="border:1px solid #1e293b;padding:6px 4px;text-align:center;width:58px;">${
-            isHol ? '-' : row.entry.unitNumber || ''
+            isHol ? '-' : escapeHtml(row.entry.unitNumber || '')
           }</td>
           <td style="border:1px solid #1e293b;padding:6px 8px;text-align:left;width:340px;">${
-            (row.entry.contents || '').replace(/\n/g, '<br/>')
+            escapeHtml(row.entry.contents || '').replace(/\n/g, '<br/>')
           }</td>
           <td style="border:1px solid #1e293b;padding:6px 6px;text-align:center;width:120px;">${
-            isHol ? '-' : row.entry.classCharacter || ''
+            isHol ? '-' : escapeHtml(row.entry.classCharacter || '')
           }</td>
           <td style="border:1px solid #1e293b;padding:6px 8px;text-align:left;width:160px;">${
-            (row.entry.observations || '').replace(/\n/g, '<br/>')
+            escapeHtml(row.entry.observations || '').replace(/\n/g, '<br/>')
           }</td>
           <td style="border:1px solid #1e293b;padding:6px 6px;text-align:center;font-style:italic;width:95px;">${
-            row.entry.teacherSignature || ''
+            escapeHtml(row.entry.teacherSignature || '')
           }</td>
           <td style="border:1px solid #1e293b;padding:6px 6px;text-align:center;width:95px;">${
-            row.entry.authoritySignature || ''
+            escapeHtml(row.entry.authoritySignature || '')
           }</td>
         </tr>`;
     })
     .join('');
 
+  const safeAsignatura = escapeHtml(metadata.asignatura);
+  const safeProfTitular = escapeHtml(metadata.profTitular);
+  const safeWeekdays = escapeHtml(activeWeekdaysLabel);
+  const safeSummary = scheduleSummaryText ? ` (${escapeHtml(scheduleSummaryText)})` : '';
+
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Libro de Temas - ${metadata.asignatura}</title>
+  <title>Libro de Temas - ${safeAsignatura}</title>
 </head>
 <body style="font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:20px;font-size:10pt;">
   <!-- ENCABEZADO OFICIAL DEL LIBRO DE TEMAS -->
   <table style="width:100%;border-collapse:collapse;margin-bottom:12px;border:2px solid #0f172a;">
     <tr>
       <td style="padding:8px 12px;border:1px solid #0f172a;width:40%;font-size:10.5pt;">
-        <strong>ASIGNATURA:</strong> ${metadata.asignatura}
+        <strong>ASIGNATURA:</strong> ${safeAsignatura}
       </td>
       <td style="padding:8px 12px;border:1px solid #0f172a;width:30%;font-size:10.5pt;">
-        <strong>PROF. TITULAR:</strong> ${metadata.profTitular}
+        <strong>PROF. TITULAR:</strong> ${safeProfTitular}
       </td>
       <td style="padding:8px 12px;border:1px solid #0f172a;width:30%;font-size:10.5pt;">
-        <strong>DÍAS DE CLASE:</strong> ${activeWeekdaysLabel}${scheduleSummaryText ? ` (${scheduleSummaryText})` : ''}
+        <strong>DÍAS DE CLASE:</strong> ${safeWeekdays}${safeSummary}
       </td>
     </tr>
   </table>

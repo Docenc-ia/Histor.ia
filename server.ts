@@ -2507,8 +2507,12 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     console.log(`[Portal Docente Workspace] Servidor full-stack ejecutándose en http://0.0.0.0:${PORT}`);
+  });
+
+  httpServer.on("error", (err: NodeJS.ErrnoException) => {
+    console.error(`[Portal Docente Workspace] Error en el servidor HTTP (puerto ${PORT}):`, err.message);
   });
 }
 

@@ -280,6 +280,15 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         description: 'Envío de notificaciones por correo electrónico institucional.',
       },
       {
+        id: 'forms',
+        name: 'Google Forms',
+        scope: 'https://www.googleapis.com/auth/forms.responses.readonly',
+        active: mode !== 'disconnected',
+        color: '#673ab7',
+        iconName: 'FileCheck',
+        description: 'Lectura directa de evaluaciones de Google Forms y extracción de notas finales.',
+      },
+      {
         id: 'user_profile',
         name: 'Google Identity',
         scope: 'https://www.googleapis.com/auth/userinfo.profile',

@@ -653,8 +653,17 @@ export const attendanceAndHistoryRepo = {
       const seenRecordIds = new Set<string>();
       const history: any[] = [];
 
-      for (const snap of summarySnaps) {
-        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+      const validSummarySnaps = summarySnaps
+        .filter((snap) => snap && typeof snap.exists === 'function' && snap.exists())
+        .sort((a, b) => {
+          const da = a.data();
+          const db = b.data();
+          const ta = String(da?.updatedAt || da?.value?.updatedAt || '');
+          const tb = String(db?.updatedAt || db?.value?.updatedAt || '');
+          return ta.localeCompare(tb);
+        });
+
+      for (const snap of validSummarySnaps) {
         const rawData = snap.data();
         const val = rawData?.value || rawData;
         if (!val || typeof val !== 'object') continue;

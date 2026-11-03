@@ -232,8 +232,8 @@ export const api = {
 
     const [serverCourses, cloudCourses] = await Promise.all([serverPromise, cloudPromise]);
 
-    // Merge server, cloud (Firestore), and local courses so local edits always take precedence
-    const mergedList = deduplicateCourses([...serverCourses, ...cloudCourses, ...local]);
+    // Merge server, local, and cloud (Firestore) courses so fresh cloud syncs across devices update stale local entries
+    const mergedList = deduplicateCourses([...serverCourses, ...local, ...cloudCourses]);
 
     if (mergedList.length > 0) {
       saveLocalCourses(mergedList);
@@ -601,7 +601,7 @@ export const api = {
       (st) => !st?.courseId || !coursesWithExplicitLocalBucket.has(st.courseId)
     );
 
-    const rawCombined = deduplicateStudents([...allLocal, ...cloudStudents, ...filteredServerStudents]);
+    const rawCombined = deduplicateStudents([...filteredServerStudents, ...allLocal, ...cloudStudents]);
     const { students: healedCombined, healedCourseIds } = healSiblingCourseRosters(rawCombined);
     const mergedStudents = enrichStudents(healedCombined);
 

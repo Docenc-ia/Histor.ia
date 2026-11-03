@@ -42,7 +42,7 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export const READ_CACHE_TTL_MS = 60000;
+export const READ_CACHE_TTL_MS = 12000;
 export const FIRESTORE_TIMEOUT_MS = 2200;
 
 // Circuit breaker state to prevent hanging the UI or flooding backend when quota is exhausted
@@ -91,8 +91,8 @@ if (!isFirestoreAvailable()) {
   } catch (_) {}
 }
 
-// Default database instance of gen-lang-client-0511455975 (ensures cross-environment & Vercel compatibility)
-export const defaultDb: Firestore = getFirestore(app);
+// Alias for cross-environment compatibility pointing to the provisioned Firestore database
+export const defaultDb: Firestore = db;
 
 // Active database instance to use: targets the provisioned database only to prevent duplicate writes
 export const ALL_DBS: Firestore[] = [db];
@@ -515,9 +515,8 @@ export function getActiveUserId(): string {
     return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
   }
   if (email && isPrimaryOwnerAccount(email)) {
-    return auth.currentUser?.uid || GLOBAL_WORKSPACE_ID;
+    return GLOBAL_WORKSPACE_ID;
   }
-  if (auth.currentUser?.uid) return auth.currentUser.uid;
   if (typeof window !== 'undefined') {
     try {
       const parsed = getCachedStoredProfile();
@@ -533,6 +532,10 @@ export function getActiveUserId(): string {
       }
     } catch (_) {}
   }
+  if (auth.currentUser?.email && isPrimaryOwnerAccount(auth.currentUser.email)) {
+    return GLOBAL_WORKSPACE_ID;
+  }
+  if (auth.currentUser?.uid) return auth.currentUser.uid;
   return '';
 }
 
@@ -601,7 +604,7 @@ export function getTargetWriteUserIds(userId: string): string[] {
     }
     return userId && userId !== GLOBAL_WORKSPACE_ID ? [userId] : [];
   }
-  return [userId || GLOBAL_WORKSPACE_ID];
+  return [GLOBAL_WORKSPACE_ID];
 }
 
 export function sanitizeForFirestore<T>(input: T): T {

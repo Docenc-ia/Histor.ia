@@ -144,6 +144,24 @@ export function parseFlexibleCellNumber(
     }
   }
 
+  // Support Google Forms "X / Y" score format (e.g. "8 / 10", "8,50 / 10", "75 / 100")
+  if (kind === 'grade') {
+    const fractionMatch = rawStr.match(
+      /^(-?\d+(?:[.,]\d+)?)\s*(?:\/|de|sobre)\s*(\d+(?:[.,]\d+)?)$/i
+    );
+    if (fractionMatch) {
+      const earned = parseFloat(fractionMatch[1].replace(',', '.'));
+      const max = parseFloat(fractionMatch[2].replace(',', '.'));
+      if (!isNaN(earned) && !isNaN(max) && max > 0) {
+        const scaled = max === 10 ? earned : (earned / max) * 10;
+        return {
+          numVal: Number(scaled.toFixed(2)),
+          isValid: scaled >= 0 && scaled <= 10,
+        };
+      }
+    }
+  }
+
   // Extract first number (supporting comma or dot decimals and optional negative sign)
   const normalizedDecimals = rawStr.replace(',', '.');
   const numMatch = normalizedDecimals.match(/-?\d+(?:\.\d+)?/);
@@ -212,7 +230,7 @@ export function autoDetectColumnsConfiguration(
 
     // Ignore obvious non-data or calculated summary columns by default (teacher can still enable them)
     const isSummaryOrMeta =
-      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora/i.test(
+      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|marca temporal|timestamp|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora/i.test(
         lower
       );
 

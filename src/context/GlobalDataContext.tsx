@@ -23,7 +23,7 @@ import {
   reconcileStudentList,
 } from '../utils/entityEquality';
 import { hydrateTerminologySettingsFromCloud } from '../utils/terminologySettings';
-import { getActiveUserId } from '../services/firestoreSync';
+import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 
 export interface GlobalDataContextValue {
   courses: Course[];
@@ -128,7 +128,7 @@ export const GlobalDataContextProvider: React.FC<{ children: React.ReactNode }> 
     }
   }, []);
 
-  // Sync courses & students when the authenticated user changes
+  // Sync courses & students when the authenticated user changes and keep live cross-device listener active
   useEffect(() => {
     if (!user) {
       setCourses((prev) => (prev.length === 0 ? prev : []));
@@ -141,6 +141,20 @@ export const GlobalDataContextProvider: React.FC<{ children: React.ReactNode }> 
       hydrateTerminologySettingsFromCloud(activeUid).catch(() => {});
     }
     navigationService.syncUrlWithCurrentState();
+
+    const stopLiveSync = firestoreSync.startLiveCloudWorkspaceSync(({ scope }) => {
+      if (scope === 'settings' || scope === 'focus') {
+        loadData();
+        const uid = getActiveUserId();
+        if (uid) {
+          hydrateTerminologySettingsFromCloud(uid).catch(() => {});
+        }
+      }
+    });
+
+    return () => {
+      stopLiveSync();
+    };
   }, [user?.id, user?.email, loadData]);
 
   // Cascaded synchronization of student attendance/disposition status across modules (in-memory, zero network re-fetch)

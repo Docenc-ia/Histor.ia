@@ -23,6 +23,7 @@ import {
   History,
   RefreshCw,
   Cloud,
+  FileCheck,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
@@ -36,6 +37,9 @@ const PreliminaryValuationModal = lazy(() =>
 );
 const ImportGradesModal = lazy(() =>
   import('./ImportGradesModal').then((m) => ({ default: m.ImportGradesModal }))
+);
+const ImportGoogleFormsModal = lazy(() =>
+  import('./ImportGoogleFormsModal').then((m) => ({ default: m.ImportGoogleFormsModal }))
 );
 import {
   exportGradeHistoryToExcel,
@@ -376,6 +380,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   const [isPreliminaryModalOpen, setIsPreliminaryModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isFormsModalOpen, setIsFormsModalOpen] = useState(false);
   const [importSourceType, setImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
 
   const handleExportFullExcel = () => {
@@ -1018,37 +1023,50 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 </div>
               </div>
 
-              {/* Columna 4 (al final): Importar desde Excel e Importar desde Sheets */}
+              {/* Columna 4 (al final): Subir Forms, Importar desde Excel e Importar desde Sheets */}
               <div className="flex flex-col gap-1.5">
                 <button
                   type="button"
-                  onClick={() => {
-                    setImportSourceType('file');
-                    setIsImportModalOpen(true);
-                  }}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                  title="Subir archivo Excel (.xlsx, .xls, .csv) para que la app detecte las notas y categorías con comprobación previa"
+                  id="btn-subir-forms-calificaciones"
+                  onClick={() => setIsFormsModalOpen(true)}
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer ring-2 ring-purple-500/20"
+                  title="Subir una evaluación de Google Forms (.csv, .xlsx o Hoja de respuestas) para detectar alumnos y puntajes, revisar bajo qué columna va y aceptar"
                 >
-                  <Upload className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Importar desde Excel</span>
+                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Subir Evaluación de Forms</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setImportSourceType('sheets');
-                    setIsImportModalOpen(true);
-                  }}
-                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs ${
-                    isDarkMode
-                      ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
-                      : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                  }`}
-                  title="Importar documento existente de Google Sheets para que la app detecte las notas y categorías con comprobación previa"
-                >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                  <span className="truncate">Importar desde Sheets</span>
-                </button>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportSourceType('file');
+                      setIsImportModalOpen(true);
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                    title="Subir archivo Excel (.xlsx, .xls, .csv) para que la app detecte las notas y categorías con comprobación previa"
+                  >
+                    <Upload className="w-3 h-3 shrink-0" />
+                    <span className="truncate">Excel</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportSourceType('sheets');
+                      setIsImportModalOpen(true);
+                    }}
+                    className={`w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 border rounded-xl text-[11px] font-bold transition-all cursor-pointer shadow-2xs ${
+                      isDarkMode
+                        ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                    }`}
+                    title="Importar documento existente de Google Sheets para que la app detecte las notas y categorías con comprobación previa"
+                  >
+                    <FileSpreadsheet className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span className="truncate">Sheets</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1530,6 +1548,26 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             onApplyGrades={handleApplyImportedGrades}
             onApplyMultiImport={handleApplyMultiImport}
             historyEntries={gradeHistory}
+          />
+        </Suspense>
+      )}
+
+      {/* Modal: Subir Evaluación de Google Forms con Detección de Alumnos, Puntaje y Columna Destino */}
+      {isFormsModalOpen && (
+        <Suspense fallback={null}>
+          <ImportGoogleFormsModal
+            isOpen={isFormsModalOpen}
+            onClose={() => setIsFormsModalOpen(false)}
+            courseId={courseId}
+            courseName={courseName}
+            students={students}
+            categories1c={categories1c}
+            categories2c={categories2c}
+            gradesMap1c={gradesMap1c}
+            gradesMap2c={gradesMap2c}
+            currentTerm={is2c ? '2c' : '1c'}
+            isDarkMode={isDarkMode}
+            onApplyMultiImport={handleApplyMultiImport}
           />
         </Suspense>
       )}

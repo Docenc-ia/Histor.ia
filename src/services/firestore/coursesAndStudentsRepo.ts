@@ -168,8 +168,17 @@ export const coursesAndStudentsRepo = {
       const compactSnaps = await Promise.all(compactQueries);
       let hasMigratedDoc = false;
 
-      for (const snap of compactSnaps) {
-        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+      const validCompactSnaps = compactSnaps
+        .filter((snap) => snap && typeof snap.exists === 'function' && snap.exists())
+        .sort((a, b) => {
+          const da = a.data();
+          const db = b.data();
+          const ta = String(da?.updatedAt || da?.value?.updatedAt || '');
+          const tb = String(db?.updatedAt || db?.value?.updatedAt || '');
+          return ta.localeCompare(tb);
+        });
+
+      for (const snap of validCompactSnaps) {
         const raw = snap.data();
         const val = raw?.value || raw;
         const items = Array.isArray(val?.items) ? val.items : [];
@@ -549,8 +558,17 @@ export const coursesAndStudentsRepo = {
       const compactSnaps = await Promise.all(compactQueries);
       let hasMigratedDoc = false;
 
-      for (const snap of compactSnaps) {
-        if (!snap || typeof snap.exists !== 'function' || !snap.exists()) continue;
+      const validCompactSnaps = compactSnaps
+        .filter((snap) => snap && typeof snap.exists === 'function' && snap.exists())
+        .sort((a, b) => {
+          const da = a.data();
+          const db = b.data();
+          const ta = String(da?.updatedAt || da?.value?.updatedAt || '');
+          const tb = String(db?.updatedAt || db?.value?.updatedAt || '');
+          return ta.localeCompare(tb);
+        });
+
+      for (const snap of validCompactSnaps) {
         const raw = snap.data();
         const val = raw?.value || raw;
         const items = Array.isArray(val?.items) ? val.items : [];

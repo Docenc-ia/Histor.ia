@@ -66,6 +66,18 @@ service cloud.firestore {
         allow delete: if canAccessUserWorkspace(userId);
       }
 
+      match /attendance/{attendanceId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
+      match /snapshots/{snapshotId} {
+        allow read: if canAccessUserWorkspace(userId);
+        allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();
+        allow delete: if canAccessUserWorkspace(userId);
+      }
+
       match /courseSnapshots/{courseId} {
         allow read: if canAccessUserWorkspace(userId);
         allow create, update: if canAccessUserWorkspace(userId) && isValidPayloadSize();

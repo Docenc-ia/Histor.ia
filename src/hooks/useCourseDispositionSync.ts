@@ -383,10 +383,11 @@ export function useCourseDispositionSync({
     };
   }, [activeCourse?.id]);
 
-  // Load from Compact v2 Cloud Engine / backend API
+  // Load from Compact v2 Cloud Engine / backend API and re-sync on live cross-device updates
   useEffect(() => {
     let isMounted = true;
-    if (activeCourse?.id) {
+    const syncDispositionFromCloud = () => {
+      if (!activeCourse?.id) return;
       api
         .getDisposition(activeCourse.id)
         .then((res) => {
@@ -397,7 +398,7 @@ export function useCourseDispositionSync({
               const next = { ...prev };
               let hasChanged = false;
               for (const [k, val] of Object.entries(incoming)) {
-                if ((val as any)?.courseId !== activeCourse.id) continue;
+                if ((val as any)?.courseId && (val as any)?.courseId !== activeCourse.id) continue;
                 if (
                   !prev[k] ||
                   prev[k].totalAbsences !== val?.totalAbsences ||
@@ -417,7 +418,7 @@ export function useCourseDispositionSync({
               const next = { ...prev };
               let hasChanged = false;
               for (const [k, val] of Object.entries(incoming2c)) {
-                if ((val as any)?.courseId !== activeCourse.id) continue;
+                if ((val as any)?.courseId && (val as any)?.courseId !== activeCourse.id) continue;
                 if (
                   !prev[k] ||
                   prev[k].totalAbsences !== val?.totalAbsences ||
@@ -449,9 +450,23 @@ export function useCourseDispositionSync({
           }
         })
         .catch(() => {});
-    }
+    };
+
+    syncDispositionFromCloud();
+    const unsubLive = subscribeAppEvents(
+      ['docencia_cloud_live_sync'],
+      (e: any) => {
+        const scope = e?.detail?.scope;
+        if (!scope || scope === 'settings' || scope === 'focus') {
+          syncDispositionFromCloud();
+        }
+      },
+      60
+    );
+
     return () => {
       isMounted = false;
+      unsubLive();
     };
   }, [activeCourse?.id]);
 

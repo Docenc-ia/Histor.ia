@@ -437,8 +437,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     // Cargar desde Firestore en segundo plano y fusionar inteligentemente para no perder ningún registro entre dispositivos
     let mounted = true;
-    const uid = getActiveUserId();
-    if (uid) {
+    const syncLibroFromCloud = () => {
+      const uid = getActiveUserId();
+      if (!uid) return;
       firestoreSync
         .loadUserSetting<LibroDeTemasStorageData>(uid, `libro_temas_${courseId}`)
         .then((cloudData) => {
@@ -525,7 +526,17 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           }
         })
         .catch(() => {});
-    }
+    };
+
+    syncLibroFromCloud();
+
+    const handleLiveCloudSync = (e: any) => {
+      const scope = e?.detail?.scope;
+      if (!scope || scope === 'settings' || scope === 'focus') {
+        syncLibroFromCloud();
+      }
+    };
+    window.addEventListener('docencia_cloud_live_sync', handleLiveCloudSync);
 
     const handleBackupRestored = (e: any) => {
       if (e?.detail?.courseId && e.detail.courseId !== courseId) return;
@@ -572,6 +583,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     return () => {
       mounted = false;
+      window.removeEventListener('docencia_cloud_live_sync', handleLiveCloudSync);
       window.removeEventListener('docencia_libro_temas_restored', handleBackupRestored);
       unregFlush();
       // Si había un guardado en la nube pendiente al cambiar de curso o pestaña, ejecutarlo inmediatamente

@@ -731,120 +731,133 @@ export function useGradebookSync({
     );
   };
 
-  // Auto-load & recover saved gradebook snapshots from Firestore on mount or course switch
+  // Auto-load & recover saved gradebook snapshots from Firestore on mount, course switch, or live cross-device update
   useEffect(() => {
     let isMounted = true;
-    const userId = getActiveUserId();
-    if (!userId || !courseId) return;
+    const syncSnapshotsFromCloud = () => {
+      const userId = getActiveUserId();
+      if (!userId || !courseId) return;
 
-    firestoreSync
-      .loadTermSnapshots(userId, courseId)
-      .then((snapshots) => {
-        if (!isMounted || !snapshots) return;
+      firestoreSync
+        .loadTermSnapshots(userId, courseId)
+        .then((snapshots) => {
+          if (!isMounted || !snapshots) return;
 
-        const snap1c = snapshots['1c'];
-        if (snap1c) {
-          const local1cUpdated =
-            typeof window !== 'undefined'
-              ? getCourseCachedItem(courseId, getTermUpdatedAtKey('1c')) || ''
-              : '';
-          const isCloud1cNewer = !local1cUpdated || !snap1c.updatedAt || snap1c.updatedAt >= local1cUpdated;
+          const snap1c = snapshots['1c'];
+          if (snap1c) {
+            const local1cUpdated =
+              typeof window !== 'undefined'
+                ? getCourseCachedItem(courseId, getTermUpdatedAtKey('1c')) || ''
+                : '';
+            const isCloud1cNewer = !local1cUpdated || !snap1c.updatedAt || snap1c.updatedAt >= local1cUpdated;
 
-          if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
-            setCategories1c((prev) => {
-              const hasLocal =
-                typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('1c'));
-              if (!hasLocal || prev === DEFAULT_CATEGORIES || isCloud1cNewer) {
-                if (typeof window !== 'undefined') {
-                  setCourseCachedItem(courseId, getCatKey('1c'), JSON.stringify(snap1c.categories));
+            if (Array.isArray(snap1c.categories) && snap1c.categories.length > 0) {
+              setCategories1c((prev) => {
+                const hasLocal =
+                  typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('1c'));
+                if (!hasLocal || prev === DEFAULT_CATEGORIES || isCloud1cNewer) {
+                  if (typeof window !== 'undefined') {
+                    setCourseCachedItem(courseId, getCatKey('1c'), JSON.stringify(snap1c.categories));
+                  }
+                  return snap1c.categories;
                 }
-                return snap1c.categories;
-              }
-              return prev;
-            });
-          }
-          if (snap1c.gradesMap && typeof snap1c.gradesMap === 'object' && Object.keys(snap1c.gradesMap).length > 0) {
-            setGradesMap1c((prev) => {
-              const merged = isCloud1cNewer ? { ...prev, ...snap1c.gradesMap } : { ...snap1c.gradesMap, ...prev };
-              if (typeof window !== 'undefined') {
-                setCourseCachedItem(courseId, getGradesKey('1c'), JSON.stringify(merged));
-              }
-              return merged;
-            });
-          }
-          if (snap1c.preliminaryValuation) {
-            setPreliminaryValuation1c((prev) => {
-              const val = isCloud1cNewer ? snap1c.preliminaryValuation : prev || snap1c.preliminaryValuation;
-              if (typeof window !== 'undefined' && val) {
-                setCourseCachedItem(courseId, getPreliminaryValuationKey('1c'), JSON.stringify(val));
-              }
-              return val;
-            });
-          }
-          if (snap1c.annualOverrides && typeof snap1c.annualOverrides === 'object') {
-            setAnnualOverrides((prev) => {
-              const merged = isCloud1cNewer
-                ? { ...prev, ...snap1c.annualOverrides }
-                : { ...snap1c.annualOverrides, ...prev };
-              if (typeof window !== 'undefined') {
-                setCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
-              }
-              return merged;
-            });
-          }
-          if (snap1c.updatedAt && isCloud1cNewer && typeof window !== 'undefined') {
-            setCourseCachedItem(courseId, getTermUpdatedAtKey('1c'), snap1c.updatedAt);
-          }
-        }
-
-        const snap2c = snapshots['2c'];
-        if (snap2c) {
-          const local2cUpdated =
-            typeof window !== 'undefined'
-              ? getCourseCachedItem(courseId, getTermUpdatedAtKey('2c')) || ''
-              : '';
-          const isCloud2cNewer = !local2cUpdated || !snap2c.updatedAt || snap2c.updatedAt >= local2cUpdated;
-
-          if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
-            setCategories2c((prev) => {
-              const hasLocal =
-                typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('2c'));
-              if (!hasLocal || isCloud2cNewer) {
+                return prev;
+              });
+            }
+            if (snap1c.gradesMap && typeof snap1c.gradesMap === 'object' && Object.keys(snap1c.gradesMap).length > 0) {
+              setGradesMap1c((prev) => {
+                const merged = isCloud1cNewer ? { ...prev, ...snap1c.gradesMap } : { ...snap1c.gradesMap, ...prev };
                 if (typeof window !== 'undefined') {
-                  setCourseCachedItem(courseId, getCatKey('2c'), JSON.stringify(snap2c.categories));
+                  setCourseCachedItem(courseId, getGradesKey('1c'), JSON.stringify(merged));
                 }
-                return snap2c.categories;
-              }
-              return prev;
-            });
+                return merged;
+              });
+            }
+            if (snap1c.preliminaryValuation) {
+              setPreliminaryValuation1c((prev) => {
+                const val = isCloud1cNewer ? snap1c.preliminaryValuation : prev || snap1c.preliminaryValuation;
+                if (typeof window !== 'undefined' && val) {
+                  setCourseCachedItem(courseId, getPreliminaryValuationKey('1c'), JSON.stringify(val));
+                }
+                return val;
+              });
+            }
+            if (snap1c.annualOverrides && typeof snap1c.annualOverrides === 'object') {
+              setAnnualOverrides((prev) => {
+                const merged = isCloud1cNewer
+                  ? { ...prev, ...snap1c.annualOverrides }
+                  : { ...snap1c.annualOverrides, ...prev };
+                if (typeof window !== 'undefined') {
+                  setCourseCachedItem(courseId, STORAGE_KEY_ANNUAL_OVERRIDES, JSON.stringify(merged));
+                }
+                return merged;
+              });
+            }
+            if (snap1c.updatedAt && isCloud1cNewer && typeof window !== 'undefined') {
+              setCourseCachedItem(courseId, getTermUpdatedAtKey('1c'), snap1c.updatedAt);
+            }
           }
-          if (snap2c.gradesMap && typeof snap2c.gradesMap === 'object' && Object.keys(snap2c.gradesMap).length > 0) {
-            setGradesMap2c((prev) => {
-              const merged = isCloud2cNewer ? { ...prev, ...snap2c.gradesMap } : { ...snap2c.gradesMap, ...prev };
-              if (typeof window !== 'undefined') {
-                setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(merged));
-              }
-              return merged;
-            });
+
+          const snap2c = snapshots['2c'];
+          if (snap2c) {
+            const local2cUpdated =
+              typeof window !== 'undefined'
+                ? getCourseCachedItem(courseId, getTermUpdatedAtKey('2c')) || ''
+                : '';
+            const isCloud2cNewer = !local2cUpdated || !snap2c.updatedAt || snap2c.updatedAt >= local2cUpdated;
+
+            if (Array.isArray(snap2c.categories) && snap2c.categories.length > 0) {
+              setCategories2c((prev) => {
+                const hasLocal =
+                  typeof window !== 'undefined' && !!getCourseCachedItem(courseId, getCatKey('2c'));
+                if (!hasLocal || isCloud2cNewer) {
+                  if (typeof window !== 'undefined') {
+                    setCourseCachedItem(courseId, getCatKey('2c'), JSON.stringify(snap2c.categories));
+                  }
+                  return snap2c.categories;
+                }
+                return prev;
+              });
+            }
+            if (snap2c.gradesMap && typeof snap2c.gradesMap === 'object' && Object.keys(snap2c.gradesMap).length > 0) {
+              setGradesMap2c((prev) => {
+                const merged = isCloud2cNewer ? { ...prev, ...snap2c.gradesMap } : { ...snap2c.gradesMap, ...prev };
+                if (typeof window !== 'undefined') {
+                  setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(merged));
+                }
+                return merged;
+              });
+            }
+            if (snap2c.preliminaryValuation) {
+              setPreliminaryValuation2c((prev) => {
+                const val = isCloud2cNewer ? snap2c.preliminaryValuation : prev || snap2c.preliminaryValuation;
+                if (typeof window !== 'undefined' && val) {
+                  setCourseCachedItem(courseId, getPreliminaryValuationKey('2c'), JSON.stringify(val));
+                }
+                return val;
+              });
+            }
+            if (snap2c.updatedAt && isCloud2cNewer && typeof window !== 'undefined') {
+              setCourseCachedItem(courseId, getTermUpdatedAtKey('2c'), snap2c.updatedAt);
+            }
           }
-          if (snap2c.preliminaryValuation) {
-            setPreliminaryValuation2c((prev) => {
-              const val = isCloud2cNewer ? snap2c.preliminaryValuation : prev || snap2c.preliminaryValuation;
-              if (typeof window !== 'undefined' && val) {
-                setCourseCachedItem(courseId, getPreliminaryValuationKey('2c'), JSON.stringify(val));
-              }
-              return val;
-            });
-          }
-          if (snap2c.updatedAt && isCloud2cNewer && typeof window !== 'undefined') {
-            setCourseCachedItem(courseId, getTermUpdatedAtKey('2c'), snap2c.updatedAt);
-          }
-        }
-      })
-      .catch(() => {});
+        })
+        .catch(() => {});
+    };
+
+    syncSnapshotsFromCloud();
+
+    const handleLiveCloudEvent = (e: any) => {
+      const scope = e?.detail?.scope;
+      if (!scope || scope === 'snapshots' || scope === 'focus') {
+        syncSnapshotsFromCloud();
+      }
+    };
+    window.addEventListener('docencia_cloud_live_sync', handleLiveCloudEvent);
 
     return () => {
       isMounted = false;
+      window.removeEventListener('docencia_cloud_live_sync', handleLiveCloudEvent);
     };
   }, [courseId]);
 

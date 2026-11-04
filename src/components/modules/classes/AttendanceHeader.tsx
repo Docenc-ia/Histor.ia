@@ -9,7 +9,6 @@ import {
   RefreshCw,
   FileSpreadsheet,
   Calendar,
-  Loader2,
   Database,
   Smartphone,
   Upload,
@@ -32,8 +31,8 @@ interface AttendanceHeaderProps {
   isPullingFromSheet?: boolean;
   lastSyncedAt?: string;
   onManualSheetsSync: () => void;
-  isOpeningSheet: boolean;
-  onOpenGoogleSheet: () => void;
+  isOpeningSheet?: boolean;
+  onOpenGoogleSheet?: () => void;
   onOpenImportExcel?: () => void;
   onOpenImportSheets?: () => void;
   attendanceTerm: '1c' | '2c' | 'annual';
@@ -58,16 +57,11 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   onOpenNotifConfigModal,
   isSyncingSheet,
   isPullingFromSheet = false,
-  lastSyncedAt,
   onManualSheetsSync,
-  isOpeningSheet,
-  onOpenGoogleSheet,
   onOpenImportExcel,
   onOpenImportSheets,
   attendanceTerm,
   onSelectTerm,
-  attendanceSummary,
-  onOpenAttendanceSettings,
   onOpenBackupModal,
   onOpenQuickRollCall,
   saveToDriveControl,
@@ -159,8 +153,8 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
             )}
           </div>
 
-          {/* COLUMNA 3: Sincronizar con Sheets, Abrir en Sheets y Guardar en Drive (Elegir formato) */}
-          <div className="flex flex-col gap-1.5 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
+          {/* COLUMNA 3: Sincronizar con Sheets y Guardar en Drive */}
+          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
             <button
               type="button"
               onClick={onManualSheetsSync}
@@ -174,25 +168,6 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
             >
               <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncActive ? 'animate-spin' : ''}`} />
               <span className="truncate">{isSyncActive ? 'Subiendo a Sheets...' : 'Sincronizar con Sheets'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={onOpenGoogleSheet}
-              disabled={isOpeningSheet}
-              className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                  : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-              }`}
-              title="Abrir el documento de Asistencia y Disposición en Google Sheets"
-            >
-              {isOpeningSheet ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-              ) : (
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              )}
-              <span className="truncate">Abrir en Sheets</span>
             </button>
 
             {saveToDriveControl && (

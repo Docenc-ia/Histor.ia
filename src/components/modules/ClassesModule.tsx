@@ -68,6 +68,7 @@ import {
   buildCourseHistoryHtml,
   buildCourseHistoryCsv,
   DriveSaveFormat,
+  AttendanceDispositionSaveScope,
   SavedDriveFileResult,
 } from '../../utils/driveFormatExporters';
 
@@ -125,7 +126,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   onOpenNewModal,
 }) => {
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
-  const { combinedTabLabel } = useTerminologySettings();
+  const { attendanceLabel, dispositionLabel, combinedTabLabel } = useTerminologySettings();
   const activeCourse =
     courses.find((c) => c.id === selectedCourseId) ||
     courses.find((c) => selectedCourseId && c.classroomCourseId === selectedCourseId) ||
@@ -800,26 +801,37 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
 
   const handleSaveAttendanceDispositionInFormat = async (
     format: DriveSaveFormat,
-    customTitle: string
+    customTitle: string,
+    scopeId?: string
   ): Promise<SavedDriveFileResult | null> => {
     if (!activeCourse) return null;
+    const scope: AttendanceDispositionSaveScope =
+      scopeId === 'attendance' || scopeId === 'disposition' || scopeId === 'both'
+        ? scopeId
+        : 'both';
+    const targetCategory = scope === 'disposition' ? 'Disposición' : 'Asistencia';
+    const shortcuts = scope === 'both' ? (['Disposición'] as const) : undefined;
+
     if (format === 'sheets') {
       const csv = buildAttendanceDispositionCsv({
         students: courseStudents,
         map1c: dispositionMap,
         map2c: dispositionMap2c,
+        scope,
       });
       const uploaded = await driveService.uploadFileToCourseCategory({
         courseName: activeCourse.name,
-        category: 'Asistencia',
+        category: targetCategory,
         fileName: customTitle,
         content: csv,
         mimeType: 'text/csv',
         existingMainFolderId: activeCourse.driveFolderId,
         convertToGoogleFormat: 'sheet',
-        alsoShortcutInCategories: ['Disposición'],
+        alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
       });
-      handleManualSheetsSync();
+      if (scope === 'both') {
+        handleManualSheetsSync();
+      }
       if (!uploaded) return null;
       return {
         id: uploaded.id,
@@ -828,7 +840,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         folderUrl: uploaded.folderUrl,
         format: 'sheets',
         formatLabel: 'Google Sheets (.gsheet)',
-        category: 'Asistencia',
+        category: targetCategory,
       };
     }
 
@@ -839,16 +851,17 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         students: courseStudents,
         map1c: dispositionMap,
         map2c: dispositionMap2c,
+        scope,
       });
       const uploaded = await driveService.uploadFileToCourseCategory({
         courseName: activeCourse.name,
-        category: 'Asistencia',
+        category: targetCategory,
         fileName: customTitle,
         content: html,
         mimeType: 'text/html',
         existingMainFolderId: activeCourse.driveFolderId,
         convertToGoogleFormat: 'doc',
-        alsoShortcutInCategories: ['Disposición'],
+        alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
       });
       if (!uploaded) return null;
       return {
@@ -858,7 +871,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         folderUrl: uploaded.folderUrl,
         format: 'gdoc',
         formatLabel: 'Google Docs (.gdoc editable)',
-        category: 'Asistencia',
+        category: targetCategory,
       };
     }
 
@@ -871,6 +884,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         {
           customFileName: customTitle,
           existingMainFolderId: activeCourse.driveFolderId,
+          scope,
         }
       );
       if (!uploaded) return null;
@@ -881,7 +895,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         folderUrl: uploaded.folderUrl,
         format: 'xlsx',
         formatLabel: 'Microsoft Excel (.xlsx)',
-        category: 'Asistencia',
+        category: targetCategory,
       };
     }
 
@@ -892,19 +906,20 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
       students: courseStudents,
       map1c: dispositionMap,
       map2c: dispositionMap2c,
+      scope,
     });
     const fileNameHtml = customTitle.toLowerCase().endsWith('.html')
       ? customTitle
       : `${customTitle}.html`;
     const uploaded = await driveService.uploadFileToCourseCategory({
       courseName: activeCourse.name,
-      category: 'Asistencia',
+      category: targetCategory,
       fileName: fileNameHtml,
       content: html,
       mimeType: 'text/html',
       existingMainFolderId: activeCourse.driveFolderId,
       convertToGoogleFormat: false,
-      alsoShortcutInCategories: ['Disposición'],
+      alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
     });
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
@@ -933,7 +948,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
       folderUrl: uploaded.folderUrl,
       format: 'html',
       formatLabel: 'Reporte Imprimible HTML / PDF',
-      category: 'Asistencia',
+      category: targetCategory,
     };
   };
 
@@ -1061,14 +1076,40 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     };
   };
 
+  const todayIsoDate = new Date().toISOString().slice(0, 10);
   const attendanceDriveSaveSelector = activeCourse ? (
     <DriveSaveFormatSelector
       courseName={activeCourse.name}
       category="Asistencia"
       alsoShortcutInCategories={['Disposición']}
-      defaultTitle={`${combinedTabLabel} - ${activeCourse.name} (${new Date().toISOString().slice(0, 10)})`}
+      defaultTitle={`${combinedTabLabel} - ${activeCourse.name} (${todayIsoDate})`}
       buttonLabel="Guardar en Drive"
       compact
+      defaultScopeId="both"
+      scopeOptions={[
+        {
+          id: 'attendance',
+          label: `Solo ${attendanceLabel}`,
+          shortDesc: 'Subcarpeta Asistencia',
+          category: 'Asistencia',
+          defaultTitle: `${attendanceLabel} - ${activeCourse.name} (${todayIsoDate})`,
+        },
+        {
+          id: 'disposition',
+          label: `Solo ${dispositionLabel}`,
+          shortDesc: 'Subcarpeta Disposición',
+          category: 'Disposición',
+          defaultTitle: `${dispositionLabel} - ${activeCourse.name} (${todayIsoDate})`,
+        },
+        {
+          id: 'both',
+          label: `${attendanceLabel} y ${dispositionLabel}`,
+          shortDesc: 'Ambas subcarpetas',
+          category: 'Asistencia',
+          alsoShortcutInCategories: ['Disposición'],
+          defaultTitle: `${combinedTabLabel} - ${activeCourse.name} (${todayIsoDate})`,
+        },
+      ]}
       onSaveFormat={handleSaveAttendanceDispositionInFormat}
     />
   ) : null;
@@ -1444,7 +1485,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                       courseName={activeCourse.name}
                       category="Historial de Incidencias"
                       defaultTitle={`Historial de Incidencias - ${activeCourse.name} (${new Date().toISOString().slice(0, 10)})`}
-                      buttonLabel="Guardar en Drive (Elegir formato)"
+                      buttonLabel="Guardar en Drive"
                       compact
                       onSaveFormat={handleSaveHistoryInFormat}
                     />

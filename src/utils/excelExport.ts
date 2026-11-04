@@ -340,8 +340,14 @@ export async function exportCourseDispositionToExcel(
   students: Student[],
   map1c: Record<string, any>,
   map2c: Record<string, any>,
-  options?: { customFileName?: string; existingMainFolderId?: string; skipLocalDownload?: boolean }
+  options?: {
+    customFileName?: string;
+    existingMainFolderId?: string;
+    skipLocalDownload?: boolean;
+    scope?: 'attendance' | 'disposition' | 'both';
+  }
 ) {
+  const scope = options?.scope || 'both';
   const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
   const termSettings = getTerminologySettings();
@@ -364,6 +370,35 @@ export async function exportCourseDispositionToExcel(
     const absences = d.totalAbsences ?? 0;
     const lates = d.totalLates ?? 0;
     const score = d.totalDisposition ?? baseScore;
+    const cond =
+      score >= 8
+        ? 'Excelente (>=8)'
+        : score >= 6
+        ? 'Regular (6-7)'
+        : 'Requiere atención (<6)';
+
+    if (scope === 'attendance') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`Ausencias ${term1ShortLabel}`]: absences,
+        [`Llegadas Tarde ${term1ShortLabel}`]: lates,
+      };
+    }
+
+    if (scope === 'disposition') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`${dispositionLabel} ${term1ShortLabel} (Escala 10)`]: score,
+        'Condición': cond,
+      };
+    }
+
     return {
       'N°': idx + 1,
       'Apellido': sanitizeExcelText(s.lastName),
@@ -372,12 +407,7 @@ export async function exportCourseDispositionToExcel(
       [`Ausencias ${term1ShortLabel}`]: absences,
       [`Llegadas Tarde ${term1ShortLabel}`]: lates,
       [`${dispositionLabel} ${term1ShortLabel} (Escala 10)`]: score,
-      'Condición':
-        score >= 8
-          ? 'Excelente (>=8)'
-          : score >= 6
-          ? 'Regular (6-7)'
-          : 'Requiere atención (<6)',
+      'Condición': cond,
     };
   });
   const ws1 = XLSX.utils.json_to_sheet(rows1c);
@@ -399,6 +429,35 @@ export async function exportCourseDispositionToExcel(
     const absences = d.totalAbsences ?? 0;
     const lates = d.totalLates ?? 0;
     const score = d.totalDisposition ?? baseScore;
+    const cond =
+      score >= 8
+        ? 'Excelente (>=8)'
+        : score >= 6
+        ? 'Regular (6-7)'
+        : 'Requiere atención (<6)';
+
+    if (scope === 'attendance') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`Ausencias ${term2ShortLabel}`]: absences,
+        [`Llegadas Tarde ${term2ShortLabel}`]: lates,
+      };
+    }
+
+    if (scope === 'disposition') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`${dispositionLabel} ${term2ShortLabel} (Escala 10)`]: score,
+        'Condición': cond,
+      };
+    }
+
     return {
       'N°': idx + 1,
       'Apellido': sanitizeExcelText(s.lastName),
@@ -407,12 +466,7 @@ export async function exportCourseDispositionToExcel(
       [`Ausencias ${term2ShortLabel}`]: absences,
       [`Llegadas Tarde ${term2ShortLabel}`]: lates,
       [`${dispositionLabel} ${term2ShortLabel} (Escala 10)`]: score,
-      'Condición':
-        score >= 8
-          ? 'Excelente (>=8)'
-          : score >= 6
-          ? 'Regular (6-7)'
-          : 'Requiere atención (<6)',
+      'Condición': cond,
     };
   });
   const ws2 = XLSX.utils.json_to_sheet(rows2c);
@@ -432,11 +486,50 @@ export async function exportCourseDispositionToExcel(
   const rowsAnnual = students.map((s, idx) => {
     const d1 = map1c[s.id] || {};
     const d2 = map2c[s.id] || {};
-    const absTotal = (d1.totalAbsences ?? 0) + (d2.totalAbsences ?? 0);
-    const latesTotal = (d1.totalLates ?? 0) + (d2.totalLates ?? 0);
+    const abs1 = d1.totalAbsences ?? 0;
+    const lat1 = d1.totalLates ?? 0;
+    const abs2 = d2.totalAbsences ?? 0;
+    const lat2 = d2.totalLates ?? 0;
+    const absTotal = abs1 + abs2;
+    const latesTotal = lat1 + lat2;
     const disp1 = d1.totalDisposition ?? baseScore;
     const disp2 = d2.totalDisposition ?? baseScore;
     const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
+    const condAnnual =
+      avgDisp >= 8
+        ? 'Excelente (>=8)'
+        : avgDisp >= 6
+        ? 'Regular (6-7)'
+        : 'Requiere atención (<6)';
+
+    if (scope === 'attendance') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`Ausencias ${term1ShortLabel}`]: abs1,
+        [`Tardanzas ${term1ShortLabel}`]: lat1,
+        [`Ausencias ${term2ShortLabel}`]: abs2,
+        [`Tardanzas ${term2ShortLabel}`]: lat2,
+        'Total Ausencias Anual': absTotal,
+        'Total Tardanzas Anual': latesTotal,
+      };
+    }
+
+    if (scope === 'disposition') {
+      return {
+        'N°': idx + 1,
+        'Apellido': sanitizeExcelText(s.lastName),
+        'Nombre': sanitizeExcelText(s.firstName),
+        'Email': sanitizeExcelText(s.email || '-'),
+        [`${dispositionLabel} ${term1ShortLabel}`]: disp1,
+        [`${dispositionLabel} ${term2ShortLabel}`]: disp2,
+        [`Promedio ${dispositionLabel}`]: avgDisp,
+        'Condición Anual': condAnnual,
+      };
+    }
+
     return {
       'N°': idx + 1,
       'Apellido': sanitizeExcelText(s.lastName),
@@ -466,24 +559,33 @@ export async function exportCourseDispositionToExcel(
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
   const safeAtt = attendanceLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
   const safeDisp = dispositionLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
+  const prefix =
+    scope === 'attendance'
+      ? safeAtt
+      : scope === 'disposition'
+      ? safeDisp
+      : `${safeAtt}_${safeDisp}`;
   const rawName =
     options?.customFileName?.trim() ||
-    `${safeAtt}_${safeDisp}_${safeName}_${new Date().toISOString().slice(0, 10)}`;
+    `${prefix}_${safeName}_${new Date().toISOString().slice(0, 10)}`;
   const filename = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
   if (!options?.skipLocalDownload) {
     XLSX.writeFile(wb, filename);
   }
+
+  const targetCategory = scope === 'disposition' ? 'Disposición' : 'Asistencia';
+  const shortcuts = scope === 'both' ? (['Disposición'] as const) : undefined;
 
   try {
     const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
     return await driveService
       .uploadFileToCourseCategory({
         courseName,
-        category: 'Asistencia',
+        category: targetCategory,
         fileName: filename,
         content: buffer,
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        alsoShortcutInCategories: ['Disposición'],
+        alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
         existingMainFolderId: options?.existingMainFolderId,
       })
       .catch(() => null);

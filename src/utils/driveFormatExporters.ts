@@ -8,6 +8,7 @@ import {
 } from '../services/workspace/driveService';
 
 export type DriveSaveFormat = 'sheets' | 'gdoc' | 'xlsx' | 'csv' | 'html';
+export type AttendanceDispositionSaveScope = 'attendance' | 'disposition' | 'both';
 
 export interface SavedDriveFileResult {
   id?: string;
@@ -38,7 +39,7 @@ function escapeCsvCell(val: unknown): string {
 }
 
 /**
- * Generates a rich, editable HTML document for Asistencia y Disposición (1°C, 2°C, and Resumen Anual)
+ * Generates a rich, editable HTML document for Asistencia, Disposición, or both (1°C, 2°C, and Resumen Anual)
  * suitable both for native Google Docs (.gdoc) conversion and HTML/PDF printing.
  */
 export function buildAttendanceDispositionHtml(params: {
@@ -47,17 +48,25 @@ export function buildAttendanceDispositionHtml(params: {
   students: Student[];
   map1c: Record<string, any>;
   map2c: Record<string, any>;
+  scope?: AttendanceDispositionSaveScope;
 }): string {
-  const { courseName, title, students, map1c, map2c } = params;
+  const { courseName, title, students, map1c, map2c, scope = 'both' } = params;
   const termSettings = getTerminologySettings();
   const { attendanceLabel, dispositionLabel, initialDispositionScore } = termSettings;
   const baseScore = initialDispositionScore ?? 10;
   const { term1FullLabel, term2FullLabel, term1ShortLabel, term2ShortLabel } =
     getDerivedPeriodLabels(termSettings.periodNameSingular);
 
+  const scopeTitlePrefix =
+    scope === 'attendance'
+      ? attendanceLabel
+      : scope === 'disposition'
+      ? dispositionLabel
+      : `${attendanceLabel} y ${dispositionLabel}`;
+
   const docTitle =
     title?.trim() ||
-    `${attendanceLabel} y ${dispositionLabel} - ${courseName} (${new Date().toLocaleDateString('es-AR')})`;
+    `${scopeTitlePrefix} - ${courseName} (${new Date().toLocaleDateString('es-AR')})`;
 
   const buildTermRows = (map: Record<string, any>) =>
     students
@@ -72,6 +81,27 @@ export function buildAttendanceDispositionHtml(params: {
             : score >= 6
             ? 'Regular (6-7)'
             : 'Requiere atención (<6)';
+
+        if (scope === 'attendance') {
+          return `
+          <tr>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;font-weight:bold;">${escapeHtml(s.lastName)}, ${escapeHtml(s.firstName)}</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${absences}</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${lates}</td>
+          </tr>`;
+        }
+
+        if (scope === 'disposition') {
+          return `
+          <tr>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;font-weight:bold;">${escapeHtml(s.lastName)}, ${escapeHtml(s.firstName)}</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;">${score}/10</td>
+            <td style="border:1px solid #cbd5e1;padding:6px 8px;">${escapeHtml(cond)}</td>
+          </tr>`;
+        }
+
         return `
           <tr>
             <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
@@ -84,15 +114,102 @@ export function buildAttendanceDispositionHtml(params: {
       })
       .join('');
 
+  const termHeadersHtml =
+    scope === 'attendance'
+      ? `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Llegadas Tarde</th>`
+      : scope === 'disposition'
+      ? `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Condición</th>`
+      : `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Llegadas Tarde</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Condición</th>`;
+
+  const annualHeadersHtml =
+    scope === 'attendance'
+      ? `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias ${escapeHtml(term1ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Tardanzas ${escapeHtml(term1ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias ${escapeHtml(term2ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Tardanzas ${escapeHtml(term2ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias Anual</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Tardanzas Anual</th>`
+      : scope === 'disposition'
+      ? `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term1ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term2ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Promedio ${escapeHtml(dispositionLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Condición Anual</th>`
+      : `
+        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias Anual</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Tardanzas Anual</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term1ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term2ShortLabel)}</th>
+        <th style="border:1px solid #cbd5e1;padding:8px;">Promedio ${escapeHtml(dispositionLabel)}</th>`;
+
   const annualRows = students
     .map((s, idx) => {
       const d1 = map1c[s.id] || {};
       const d2 = map2c[s.id] || {};
-      const absTotal = (d1.totalAbsences ?? 0) + (d2.totalAbsences ?? 0);
-      const latesTotal = (d1.totalLates ?? 0) + (d2.totalLates ?? 0);
+      const abs1 = d1.totalAbsences ?? 0;
+      const lat1 = d1.totalLates ?? 0;
+      const abs2 = d2.totalAbsences ?? 0;
+      const lat2 = d2.totalLates ?? 0;
+      const absTotal = abs1 + abs2;
+      const latesTotal = lat1 + lat2;
       const disp1 = d1.totalDisposition ?? baseScore;
       const disp2 = d2.totalDisposition ?? baseScore;
-      const avgDisp = ((disp1 + disp2) / 2).toFixed(1);
+      const avgNum = (disp1 + disp2) / 2;
+      const avgDisp = avgNum.toFixed(1);
+      const condAnnual =
+        avgNum >= 8
+          ? 'Excelente (>=8)'
+          : avgNum >= 6
+          ? 'Regular (6-7)'
+          : 'Requiere atención (<6)';
+
+      if (scope === 'attendance') {
+        return `
+        <tr>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;font-weight:bold;">${escapeHtml(s.lastName)}, ${escapeHtml(s.firstName)}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${abs1}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${lat1}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${abs2}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${lat2}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;">${absTotal}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;">${latesTotal}</td>
+        </tr>`;
+      }
+
+      if (scope === 'disposition') {
+        return `
+        <tr>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;font-weight:bold;">${escapeHtml(s.lastName)}, ${escapeHtml(s.firstName)}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${disp1}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${disp2}</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;">${avgDisp}/10</td>
+          <td style="border:1px solid #cbd5e1;padding:6px 8px;">${escapeHtml(condAnnual)}</td>
+        </tr>`;
+      }
+
       return `
         <tr>
           <td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${idx + 1}</td>
@@ -118,17 +235,11 @@ export function buildAttendanceDispositionHtml(params: {
     Curso: <strong>${escapeHtml(courseName)}</strong> &bull; Carpeta Drive: <strong>${escapeHtml(formatCourseDriveFolderName(courseName))}</strong> &bull; Fecha de emisión: ${new Date().toLocaleString('es-AR')}
   </p>
 
-  <h2 style="font-size:15px;color:#334155;margin-top:20px;margin-bottom:8px;">1. Resumen Anual (${escapeHtml(attendanceLabel)} y ${escapeHtml(dispositionLabel)})</h2>
+  <h2 style="font-size:15px;color:#334155;margin-top:20px;margin-bottom:8px;">1. Resumen Anual (${escapeHtml(scopeTitlePrefix)})</h2>
   <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px;">
     <thead>
       <tr style="background-color:#f1f5f9;">
-        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias Anual</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Tardanzas Anual</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term1ShortLabel)}</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)} ${escapeHtml(term2ShortLabel)}</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Promedio ${escapeHtml(dispositionLabel)}</th>
+        ${annualHeadersHtml}
       </tr>
     </thead>
     <tbody>
@@ -140,12 +251,7 @@ export function buildAttendanceDispositionHtml(params: {
   <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px;">
     <thead>
       <tr style="background-color:#f1f5f9;">
-        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Llegadas Tarde</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)}</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Condición</th>
+        ${termHeadersHtml}
       </tr>
     </thead>
     <tbody>
@@ -157,12 +263,7 @@ export function buildAttendanceDispositionHtml(params: {
   <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:24px;">
     <thead>
       <tr style="background-color:#f1f5f9;">
-        <th style="border:1px solid #cbd5e1;padding:8px;">N°</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Alumno</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Ausencias</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">Llegadas Tarde</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;">${escapeHtml(dispositionLabel)}</th>
-        <th style="border:1px solid #cbd5e1;padding:8px;text-align:left;">Condición</th>
+        ${termHeadersHtml}
       </tr>
     </thead>
     <tbody>
@@ -177,14 +278,92 @@ export function buildAttendanceDispositionCsv(params: {
   students: Student[];
   map1c: Record<string, any>;
   map2c: Record<string, any>;
+  scope?: AttendanceDispositionSaveScope;
 }): string {
-  const { students, map1c, map2c } = params;
+  const { students, map1c, map2c, scope = 'both' } = params;
   const termSettings = getTerminologySettings();
   const { dispositionLabel, initialDispositionScore } = termSettings;
   const baseScore = initialDispositionScore ?? 10;
   const { term1ShortLabel, term2ShortLabel } = getDerivedPeriodLabels(
     termSettings.periodNameSingular
   );
+
+  if (scope === 'attendance') {
+    const headers = [
+      'N°',
+      'Apellido',
+      'Nombre',
+      'Email',
+      `Ausencias ${term1ShortLabel}`,
+      `Tardanzas ${term1ShortLabel}`,
+      `Ausencias ${term2ShortLabel}`,
+      `Tardanzas ${term2ShortLabel}`,
+      'Total Ausencias Anual',
+      'Total Tardanzas Anual',
+    ];
+    const rows = students.map((s, idx) => {
+      const d1 = map1c[s.id] || {};
+      const d2 = map2c[s.id] || {};
+      const abs1 = d1.totalAbsences ?? 0;
+      const lat1 = d1.totalLates ?? 0;
+      const abs2 = d2.totalAbsences ?? 0;
+      const lat2 = d2.totalLates ?? 0;
+      return [
+        idx + 1,
+        s.lastName,
+        s.firstName,
+        s.email || '-',
+        abs1,
+        lat1,
+        abs2,
+        lat2,
+        abs1 + abs2,
+        lat1 + lat2,
+      ]
+        .map(escapeCsvCell)
+        .join(',');
+    });
+    return '\uFEFF' + [headers.map(escapeCsvCell).join(','), ...rows].join('\n');
+  }
+
+  if (scope === 'disposition') {
+    const headers = [
+      'N°',
+      'Apellido',
+      'Nombre',
+      'Email',
+      `${dispositionLabel} ${term1ShortLabel}`,
+      `Condición ${term1ShortLabel}`,
+      `${dispositionLabel} ${term2ShortLabel}`,
+      `Condición ${term2ShortLabel}`,
+      `Promedio ${dispositionLabel}`,
+    ];
+    const rows = students.map((s, idx) => {
+      const d1 = map1c[s.id] || {};
+      const d2 = map2c[s.id] || {};
+      const disp1 = d1.totalDisposition ?? baseScore;
+      const disp2 = d2.totalDisposition ?? baseScore;
+      const cond1 =
+        disp1 >= 8 ? 'Excelente (>=8)' : disp1 >= 6 ? 'Regular (6-7)' : 'Requiere atención (<6)';
+      const cond2 =
+        disp2 >= 8 ? 'Excelente (>=8)' : disp2 >= 6 ? 'Regular (6-7)' : 'Requiere atención (<6)';
+      const avg = ((disp1 + disp2) / 2).toFixed(1);
+      return [
+        idx + 1,
+        s.lastName,
+        s.firstName,
+        s.email || '-',
+        disp1,
+        cond1,
+        disp2,
+        cond2,
+        avg,
+      ]
+        .map(escapeCsvCell)
+        .join(',');
+    });
+    return '\uFEFF' + [headers.map(escapeCsvCell).join(','), ...rows].join('\n');
+  }
 
   const headers = [
     'N°',

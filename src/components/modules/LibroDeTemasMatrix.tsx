@@ -1336,6 +1336,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     handleSyncWithSheets,
     handleOpenGoogleSheet,
     handleExportToGoogleDoc,
+    handleSaveLibroInFormat,
     handlePrintLibro,
     handleDownloadLibro,
     handleOpenOrDownloadBackup,
@@ -1478,6 +1479,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         handleDownloadLibro={handleDownloadLibro}
         handleOpenOrDownloadBackup={handleOpenOrDownloadBackup}
         handleExportToGoogleDoc={handleExportToGoogleDoc}
+        handleSaveLibroInFormat={handleSaveLibroInFormat}
         handleMetadataChange={handleMetadataChange}
         handleToggleCourseWeekday={handleToggleCourseWeekday}
         persistLibroData={persistLibroData}

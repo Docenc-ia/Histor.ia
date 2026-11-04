@@ -17,6 +17,7 @@ import {
   LibroDeTemasSheetInfo,
   ScheduledRow,
 } from '../components/modules/LibroDeTemasMatrix';
+import { DriveSaveFormat, SavedDriveFileResult } from '../utils/driveFormatExporters';
 
 export interface UseLibroDeTemasSyncProps {
   courseId: string;
@@ -738,11 +739,251 @@ export function useLibroDeTemasSync({
     }
   };
 
+  const handleSaveLibroInFormat = async (
+    format: DriveSaveFormat,
+    customTitle: string
+  ): Promise<SavedDriveFileResult | null> => {
+    const cleanTitle =
+      customTitle.trim() || `Libro de Temas - ${courseName} (${todayStr})`;
+
+    if (format === 'gdoc') {
+      const htmlContent = buildOfficialLibroDeTemasHtml();
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Libro de Temas',
+        fileName: cleanTitle,
+        content: htmlContent,
+        mimeType: 'text/html',
+        existingMainFolderId: driveFolderId,
+        convertToGoogleFormat: 'doc',
+      });
+      if (!uploaded) return null;
+      setExportedDocLink({ url: uploaded.url, name: uploaded.name });
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'gdoc',
+        formatLabel: 'Google Docs (.gdoc editable)',
+        category: 'Libro de Temas',
+      };
+    }
+
+    if (format === 'sheets') {
+      const escapeCsv = (val: unknown) => {
+        const s = val === null || val === undefined ? '' : String(val);
+        if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+      const metaLine = [
+        'ASIGNATURA:',
+        metadata.asignatura,
+        'PROF. TITULAR:',
+        metadata.profTitular,
+        'DÍAS DE CLASE:',
+        activeWeekdaysLabel,
+      ]
+        .map(escapeCsv)
+        .join(',');
+      const headers = [
+        'Fecha (ISO)',
+        'Día / Mes',
+        'Horario / Módulo',
+        'Clase N°',
+        'Unidad N°',
+        'CONTENIDOS',
+        'Carácter de la clase',
+        'OBSERVACIONES',
+        'Firma del Profesor',
+        'Firma de la Autoridad',
+      ]
+        .map(escapeCsv)
+        .join(',');
+      const rows = filteredRows.map((row) => {
+        const isHol = Boolean(row.entry.isHoliday);
+        return [
+          row.dateStr,
+          `${row.day}/${row.month}`,
+          row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-'),
+          row.computedClassNumber,
+          isHol ? '-' : row.entry.unitNumber || '',
+          row.entry.contents || '',
+          isHol ? '-' : row.entry.classCharacter || '',
+          row.entry.observations || '',
+          row.entry.teacherSignature || '',
+          row.entry.authoritySignature || '',
+        ]
+          .map(escapeCsv)
+          .join(',');
+      });
+      const csvContent = '\uFEFF' + [metaLine, '', headers, ...rows].join('\n');
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Libro de Temas',
+        fileName: cleanTitle,
+        content: csvContent,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+        convertToGoogleFormat: 'sheet',
+      });
+      handleSyncWithSheets(false);
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'sheets',
+        formatLabel: 'Google Sheets (.gsheet)',
+        category: 'Libro de Temas',
+      };
+    }
+
+    if (format === 'xlsx') {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+      const aoa: any[][] = [
+        [
+          'ASIGNATURA:',
+          metadata.asignatura,
+          '',
+          'PROF. TITULAR:',
+          metadata.profTitular,
+          '',
+          'DÍAS DE CLASE:',
+          activeWeekdaysLabel,
+          '',
+        ],
+        [],
+        [
+          'Día',
+          'Mes',
+          'Horario / Módulo',
+          'Clase N°',
+          'Unidad N°',
+          'CONTENIDOS',
+          'Carácter de la clase',
+          'OBSERVACIONES',
+          'Firma del Profesor',
+          'Firma de la Autoridad',
+        ],
+        ...filteredRows.map((row) => {
+          const isHol = Boolean(row.entry.isHoliday);
+          return [
+            row.day,
+            row.month,
+            row.timeLabel || (row.totalSlotsForDay > 1 ? `${row.slotIndex + 1}° Hora` : '-'),
+            row.computedClassNumber,
+            isHol ? '-' : row.entry.unitNumber || '',
+            row.entry.contents || '',
+            isHol ? '-' : row.entry.classCharacter || '',
+            row.entry.observations || '',
+            row.entry.teacherSignature || '',
+            row.entry.authoritySignature || '',
+          ];
+        }),
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!cols'] = [
+        { wch: 6 },
+        { wch: 6 },
+        { wch: 16 },
+        { wch: 10 },
+        { wch: 10 },
+        { wch: 48 },
+        { wch: 22 },
+        { wch: 28 },
+        { wch: 20 },
+        { wch: 20 },
+      ];
+      XLSX.utils.book_append_sheet(wb, ws, 'Libro de Temas');
+      const fileName = cleanTitle.toLowerCase().endsWith('.xlsx')
+        ? cleanTitle
+        : `${cleanTitle}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+
+      const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Libro de Temas',
+        fileName,
+        content: buffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        existingMainFolderId: driveFolderId,
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'xlsx',
+        formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Libro de Temas',
+      };
+    }
+
+    // format === 'html'
+    const html = buildOfficialLibroDeTemasHtml();
+    const fileNameHtml = cleanTitle.toLowerCase().endsWith('.html')
+      ? cleanTitle
+      : `${cleanTitle}.html`;
+    const uploaded = await driveService.uploadFileToCourseCategory({
+      courseName,
+      category: 'Libro de Temas',
+      fileName: fileNameHtml,
+      content: html,
+      mimeType: 'text/html',
+      existingMainFolderId: driveFolderId,
+      convertToGoogleFormat: false,
+    });
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(
+        html.replace(
+          '</head>',
+          `<style>@page { size: A4 landscape; margin: 10mm; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }</style></head>`
+        )
+      );
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 1500);
+      }, 300);
+    }
+
+    if (!uploaded) return null;
+    return {
+      id: uploaded.id,
+      name: uploaded.name,
+      url: uploaded.url,
+      folderUrl: uploaded.folderUrl,
+      format: 'html',
+      formatLabel: 'Reporte Imprimible HTML / PDF',
+      category: 'Libro de Temas',
+    };
+  };
+
   return {
     pushLibroSnapshotToSheets,
     handleSyncWithSheets,
     handleOpenGoogleSheet,
     handleExportToGoogleDoc,
+    handleSaveLibroInFormat,
     handlePrintLibro,
     handleDownloadLibro,
     handleOpenOrDownloadBackup,

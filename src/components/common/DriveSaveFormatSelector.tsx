@@ -17,6 +17,15 @@ import {
 } from '../../services/workspace/driveService';
 import { DriveSaveFormat, SavedDriveFileResult } from '../../utils/driveFormatExporters';
 
+export interface DriveSaveScopeOption {
+  id: string;
+  label: string;
+  shortDesc?: string;
+  category: CourseDriveCategory;
+  alsoShortcutInCategories?: CourseDriveCategory[];
+  defaultTitle: string;
+}
+
 export interface DriveSaveFormatSelectorProps {
   courseName: string;
   category: CourseDriveCategory;
@@ -24,9 +33,12 @@ export interface DriveSaveFormatSelectorProps {
   defaultTitle: string;
   buttonLabel?: string;
   compact?: boolean;
+  scopeOptions?: DriveSaveScopeOption[];
+  defaultScopeId?: string;
   onSaveFormat: (
     format: DriveSaveFormat,
-    customTitle: string
+    customTitle: string,
+    scopeId?: string
   ) => Promise<SavedDriveFileResult | null>;
 }
 
@@ -37,34 +49,64 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
   defaultTitle,
   buttonLabel = 'Guardar en Drive',
   compact = false,
+  scopeOptions,
+  defaultScopeId,
   onSaveFormat,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [selectedFormat, setSelectedFormat] = useState<DriveSaveFormat>('gdoc');
-  const [customTitle, setCustomTitle] = useState(defaultTitle);
+  const initialScopeId = defaultScopeId || scopeOptions?.[0]?.id;
+  const [selectedScopeId, setSelectedScopeId] = useState<string | undefined>(initialScopeId);
+  const activeScope = scopeOptions?.find((s) => s.id === selectedScopeId) || scopeOptions?.[0];
+
+  const effectiveDefaultTitle = activeScope ? activeScope.defaultTitle : defaultTitle;
+  const effectiveCategory = activeScope ? activeScope.category : category;
+  const effectiveShortcuts = activeScope
+    ? activeScope.alsoShortcutInCategories
+    : alsoShortcutInCategories;
+
+  const [customTitle, setCustomTitle] = useState(effectiveDefaultTitle);
   const [isSaving, setIsSaving] = useState(false);
   const [savedResult, setSavedResult] = useState<SavedDriveFileResult | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const mainFolderLabel = formatCourseDriveFolderName(courseName);
   const targetSubfolderText =
-    alsoShortcutInCategories && alsoShortcutInCategories.length > 0
-      ? `${category} (y acceso en ${alsoShortcutInCategories.join(', ')})`
-      : category;
+    effectiveShortcuts && effectiveShortcuts.length > 0
+      ? `${effectiveCategory} (y acceso en ${effectiveShortcuts.join(', ')})`
+      : effectiveCategory;
 
   const handleToggle = () => {
     if (!isOpen) {
-      setCustomTitle(defaultTitle);
+      const resetScope =
+        scopeOptions?.find((s) => s.id === (selectedScopeId || initialScopeId)) ||
+        scopeOptions?.[0];
+      setCustomTitle(resetScope ? resetScope.defaultTitle : defaultTitle);
       setErrorMsg(null);
     }
     setIsOpen((prev) => !prev);
+  };
+
+  const handleSelectScope = (scopeOpt: DriveSaveScopeOption) => {
+    const allDefaults = new Set([
+      defaultTitle,
+      ...(scopeOptions?.map((s) => s.defaultTitle) || []),
+    ]);
+    setSelectedScopeId(scopeOpt.id);
+    if (!customTitle.trim() || allDefaults.has(customTitle.trim())) {
+      setCustomTitle(scopeOpt.defaultTitle);
+    }
   };
 
   const handleExecuteSave = async () => {
     setIsSaving(true);
     setErrorMsg(null);
     try {
-      const res = await onSaveFormat(selectedFormat, customTitle.trim() || defaultTitle);
+      const res = await onSaveFormat(
+        selectedFormat,
+        customTitle.trim() || effectiveDefaultTitle,
+        selectedScopeId
+      );
       if (res) {
         setSavedResult(res);
         setIsOpen(false);
@@ -128,7 +170,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
         type="button"
         onClick={handleToggle}
         disabled={isSaving}
-        title={`Elegir formato para guardar en Google Drive (${mainFolderLabel} / ${category})`}
+        title={`Guardar en Google Drive (${mainFolderLabel} / ${effectiveCategory})`}
         className={`flex items-center gap-1.5 rounded-xl font-bold transition-all border shadow-xs cursor-pointer disabled:opacity-50 ${
           compact ? 'px-2.5 py-1.5 text-xs' : 'px-3 py-2 text-xs'
         } ${
@@ -148,9 +190,12 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
         />
       </button>
 
-      {/* Panel desplegable para elegir el formato de guardado */}
+      {/* Menú desplegable / panel para elegir qué guardar y en qué formato */}
       {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+          onClick={() => setIsOpen(false)}
+        >
           <div
             className="w-full max-w-lg rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden text-left"
             onClick={(e) => e.stopPropagation()}
@@ -160,7 +205,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                 <FolderOpen className="w-5 h-5 text-blue-100 shrink-0" />
                 <div>
                   <h4 className="text-sm font-bold leading-tight">
-                    Guardar en Google Drive — Elegí el formato
+                    Guardar en Google Drive
                   </h4>
                   <p className="text-[11px] text-blue-100 font-medium mt-0.5">
                     Destino: {mainFolderLabel} &rarr; <strong>{targetSubfolderText}</strong>
@@ -177,6 +222,40 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
             </div>
 
             <div className="p-5 space-y-4">
+              {scopeOptions && scopeOptions.length > 0 && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                    ¿Qué querés guardar en Google Drive?
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {scopeOptions.map((scopeOpt) => {
+                      const isScopeActive = activeScope?.id === scopeOpt.id;
+                      return (
+                        <button
+                          key={scopeOpt.id}
+                          type="button"
+                          onClick={() => handleSelectScope(scopeOpt)}
+                          className={`flex flex-col items-start p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                            isScopeActive
+                              ? 'border-blue-600 bg-blue-50/90 text-blue-950 ring-1 ring-blue-600'
+                              : 'border-slate-200 bg-slate-50/60 hover:bg-slate-100 text-slate-700'
+                          }`}
+                        >
+                          <span className="text-xs font-bold leading-tight">
+                            {scopeOpt.label}
+                          </span>
+                          {scopeOpt.shortDesc && (
+                            <span className="text-[10px] opacity-75 mt-0.5 leading-snug">
+                              {scopeOpt.shortDesc}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">
                   Nombre del archivo en Google Drive:
@@ -185,7 +264,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                   type="text"
                   value={customTitle}
                   onChange={(e) => setCustomTitle(e.target.value)}
-                  placeholder={defaultTitle}
+                  placeholder={effectiveDefaultTitle}
                   className="w-full px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
                 />
               </div>
@@ -250,13 +329,13 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                   {isSaving ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Guardando en {category}...</span>
+                      <span>Guardando en {effectiveCategory}...</span>
                     </>
                   ) : (
                     <>
                       <FolderOpen className="w-3.5 h-3.5" />
                       <span>
-                        Guardar como{' '}
+                        Guardar{activeScope ? ` ${activeScope.label}` : ''} como{' '}
                         {formatOptions.find((f) => f.id === selectedFormat)?.label}
                       </span>
                     </>

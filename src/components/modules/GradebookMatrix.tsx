@@ -1105,7 +1105,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     courseName={courseName}
                     category="Calificaciones"
                     defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
-                    buttonLabel="Guardar en Drive (Elegir formato)"
+                    buttonLabel="Guardar en Drive"
                     compact
                     onSaveFormat={handleSaveGradesInFormat}
                   />

@@ -104,6 +104,7 @@ interface CourseRosterTabViewProps {
   handleOpenBatchFromPending: (filterType?: 'all' | 'absences' | 'conduct') => void;
   setActiveTab: (tab: 'roster' | 'libro_temas' | 'grades' | 'history') => void;
   setToastMessage: (msg: string | null) => void;
+  saveToDriveControl?: React.ReactNode;
 }
 
 export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
@@ -171,6 +172,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   handleOpenBatchFromPending,
   setActiveTab,
   setToastMessage,
+  saveToDriveControl,
 }) => {
   const {
     attendanceLabel,
@@ -343,6 +345,8 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
                   <span>Sincronizar Sheets</span>
                 </button>
+
+                {saveToDriveControl}
               </div>
             </div>
 

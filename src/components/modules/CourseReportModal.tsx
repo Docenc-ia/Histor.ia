@@ -32,7 +32,11 @@ import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { deriveSchoolFromEmail } from '../../services/workspace/googleAuth';
-import { driveService } from '../../services/workspace/driveService';
+import {
+  driveService,
+  formatCourseDriveFolderName,
+  getDirectDriveFolderUrl,
+} from '../../services/workspace/driveService';
 import { getStorageItemForUser, setStorageItemForUser } from '../../services/storageHelpers';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import {
@@ -493,9 +497,33 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       includeFamilySignature,
     });
 
-  // Robust Print Handler using native browser print and download fallback
+  // Robust Print Handler using native browser print and auto-upload to Informes subfolder in Drive
   const handlePrint = () => {
     setIsPrinting(true);
+    try {
+      const html = generateHtmlDocument(activeTab);
+      const singleStudent =
+        activeTab === 'individual' && selectedStudentId !== 'all'
+          ? consolidatedStudents.find((s) => s.student.id === selectedStudentId)
+          : null;
+      const fileName =
+        activeTab === 'course'
+          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_2026.html`
+          : singleStudent
+          ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
+          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_2026.html`;
+      driveService
+        .uploadFileToCourseCategory({
+          courseName,
+          category: 'Informes',
+          fileName,
+          content: html,
+          mimeType: 'text/html',
+          existingMainFolderId: driveFolderId,
+        })
+        .catch(() => {});
+    } catch (_) {}
+
     setTimeout(() => {
       try {
         window.print();
@@ -508,7 +536,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }, 100);
   };
 
-  // Download locally (.html printable file)
+  // Download locally (.html printable file) and host in Informes subfolder in Google Drive
   const handleDownloadHtml = () => {
     const html = generateHtmlDocument(activeTab);
     const singleStudent =
@@ -531,6 +559,17 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
+    driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Informes',
+        fileName,
+        content: html,
+        mimeType: 'text/html',
+        existingMainFolderId: driveFolderId,
+      })
+      .catch(() => {});
   };
 
   // Compute the target Google Doc title
@@ -1609,12 +1648,12 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <span>
               Carpeta de Drive vinculada:{' '}
               <strong className="text-neutral-800 dark:text-slate-200">
-                📚 {courseName}
+                📁 {formatCourseDriveFolderName(courseName)} / Informes
               </strong>
             </span>
-            {driveFolderUrl && (
+            {(driveFolderId || driveFolderUrl) && (
               <a
-                href={driveFolderUrl}
+                href={getDirectDriveFolderUrl(driveFolderId, driveFolderUrl)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-blue-500 hover:underline flex items-center gap-0.5 font-medium ml-1"
@@ -1670,7 +1709,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     ¿Crear archivo Google Doc editable en Google Drive?
                   </h3>
                   <p className="text-xs text-neutral-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Se creará un documento editable de <strong>Google Docs (.gdoc)</strong> en la carpeta de la materia <strong>"{courseName}"</strong> con el siguiente nombre:
+                    Se creará un documento editable de <strong>Google Docs (.gdoc)</strong> en la subcarpeta <strong>"{formatCourseDriveFolderName(courseName)} / Informes"</strong> con el siguiente nombre:
                   </p>
                   <div
                     className={`mt-2 p-2.5 rounded-xl border text-xs font-semibold ${

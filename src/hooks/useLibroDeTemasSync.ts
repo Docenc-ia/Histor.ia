@@ -95,7 +95,7 @@ export function useLibroDeTemasSync({
       scheduleSummaryText,
     });
 
-  // Exportar a Google Drive como Google Doc nativo (.gdoc)
+  // Exportar a Google Drive como Google Doc nativo (.gdoc) dentro de la subcarpeta "Libro de Temas"
   const handleExportToGoogleDoc = async () => {
     setIsExportingDoc(true);
     try {
@@ -104,11 +104,12 @@ export function useLibroDeTemasSync({
         driveDocTitle.trim() ||
         `Libro de Temas - ${courseName} (${todayStr})`;
 
-      let targetFolderId = driveFolderId;
-      if (!targetFolderId) {
-        const structure = await driveService.ensureCourseFolderStructure(courseName);
-        targetFolderId = structure.mainFolder.id;
-      }
+      const structure = await driveService.setupCourseFolderStructure(
+        courseName,
+        driveFolderId
+      );
+      const targetFolderId =
+        structure.libroDeTemasFolder?.id || structure.mainFolder.id;
 
       const uploaded = await driveService.uploadReportFile(
         docName,
@@ -124,7 +125,7 @@ export function useLibroDeTemasSync({
         setExportedDocLink({ url: editUrl, name: uploaded.name });
         setShowDriveConfirm(false);
         setToastMsg(
-          'Libro de Temas exportado a Google Drive como documento editable (.gdoc).'
+          'Libro de Temas guardado en la subcarpeta "Libro de Temas" de Google Drive (.gdoc editable).'
         );
         setTimeout(() => setToastMsg(null), 4000);
       }
@@ -136,9 +137,21 @@ export function useLibroDeTemasSync({
     }
   };
 
-  // Imprimir folio oficial en formato horizontal
+  // Imprimir folio oficial en formato horizontal y alojar copia en subcarpeta "Libro de Temas"
   const handlePrintLibro = () => {
     const html = buildOfficialLibroDeTemasHtml();
+    const safeCourse = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
+    driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Libro de Temas',
+        fileName: `Folio_Impreso_Libro_de_Temas_${safeCourse}_${todayStr}.html`,
+        content: html,
+        mimeType: 'text/html',
+        existingMainFolderId: driveFolderId,
+      })
+      .catch(() => {});
+
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
     iframe.style.right = '0';
@@ -455,7 +468,9 @@ export function useLibroDeTemasSync({
 
         const createdData = await createRes.json();
         targetSpreadsheetId = createdData.spreadsheetId;
+      }
 
+      if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
         try {
           const folderStruct = await driveService.setupCourseFolderStructure(
             courseName,
@@ -476,6 +491,8 @@ export function useLibroDeTemasSync({
               .updateCourse(courseId, {
                 driveFolderId: folderStruct.mainFolder.id,
                 driveFolderUrl: folderStruct.mainFolder.url,
+                libroDeTemasFolderId: folderStruct.libroDeTemasFolder.id,
+                libroDeTemasFolderUrl: folderStruct.libroDeTemasFolder.url,
               })
               .catch(() => {});
           }
@@ -697,9 +714,24 @@ export function useLibroDeTemasSync({
       XLSX.utils.book_append_sheet(wb, ws, 'Libro de Temas');
 
       const safeCourse = courseName.replace(/[^a-zA-Z0-9_-]/g, '_');
-      XLSX.writeFile(wb, `Libro_de_Temas_${safeCourse}_${todayStr}.xlsx`);
+      const fileName = `Libro_de_Temas_${safeCourse}_${todayStr}.xlsx`;
+      XLSX.writeFile(wb, fileName);
 
-      setToastMsg('Libro de Temas descargado en formato Excel (.xlsx).');
+      try {
+        const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+        driveService
+          .uploadFileToCourseCategory({
+            courseName,
+            category: 'Libro de Temas',
+            fileName,
+            content: buffer,
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            existingMainFolderId: driveFolderId,
+          })
+          .catch(() => {});
+      } catch (_) {}
+
+      setToastMsg('Libro de Temas descargado en formato Excel (.xlsx) y guardado en la subcarpeta "Libro de Temas" de Drive.');
       setTimeout(() => setToastMsg(null), 3500);
     } catch (err) {
       console.warn('Error descargando Libro de Temas:', err);

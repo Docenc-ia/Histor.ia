@@ -52,13 +52,24 @@ export function exportGradebookToCsv(
   });
 
   const csvContent = [headers.map((h) => `"${h}"`).join(','), ...rows].join('\n');
+  const fileName = `Calificaciones_${courseName.replace(/\s+/g, '_')}.csv`;
   const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `Calificaciones_${courseName.replace(/\s+/g, '_')}.csv`;
+  a.download = fileName;
   a.click();
   URL.revokeObjectURL(url);
+
+  driveService
+    .uploadFileToCourseCategory({
+      courseName,
+      category: 'Calificaciones',
+      fileName,
+      content: '\uFEFF' + csvContent,
+      mimeType: 'text/csv',
+    })
+    .catch(() => {});
 }
 
 /**
@@ -192,15 +203,27 @@ export function exportDispositionToCsv(
     ...historyRows,
   ].join('\n');
 
+  const safeAtt = attendanceLabel.replace(/\s+/g, '_');
+  const safeDisp = dispositionLabel.replace(/\s+/g, '_');
+  const fileName = `Registro_${safeAtt}_${safeDisp}_${courseName.replace(/\s+/g, '_')}.csv`;
   const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  const safeAtt = attendanceLabel.replace(/\s+/g, '_');
-  const safeDisp = dispositionLabel.replace(/\s+/g, '_');
-  a.download = `Registro_${safeAtt}_${safeDisp}_${courseName.replace(/\s+/g, '_')}.csv`;
+  a.download = fileName;
   a.click();
   URL.revokeObjectURL(url);
+
+  driveService
+    .uploadFileToCourseCategory({
+      courseName,
+      category: 'Asistencia',
+      fileName,
+      content: '\uFEFF' + csvContent,
+      mimeType: 'text/csv',
+      alsoShortcutInCategories: ['Disposición', 'Historial de Incidencias'],
+    })
+    .catch(() => {});
 }
 
 /**
@@ -327,6 +350,29 @@ export async function syncPreliminaryValuationSheetHelper(
 
       if (createRes.ok) {
         const sheetData = await createRes.json();
+        try {
+          const folders = await driveService.setupCourseFolderStructure(
+            courseName,
+            undefined,
+            token
+          );
+          const targetReportsFolderId = folders.reportsFolder?.id || folders.mainFolder.id;
+          if (targetReportsFolderId) {
+            await driveService.moveFileToFolder(
+              sheetData.spreadsheetId,
+              targetReportsFolderId,
+              token
+            );
+          }
+          if (folders.gradesFolder?.id) {
+            await driveService.ensureShortcutInFolder(
+              sheetTitle,
+              sheetData.spreadsheetId,
+              folders.gradesFolder.id,
+              token
+            );
+          }
+        } catch (_) {}
         return {
           spreadsheetId: sheetData.spreadsheetId,
           url: `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`,
@@ -523,13 +569,22 @@ export async function syncLibroDeTemasToSheetHelper(
         if (createRes.ok) {
           const created = await createRes.json();
           targetSpreadsheetId = created.spreadsheetId;
-          if (folderId && !folderId.startsWith('folder-') && !folderId.startsWith('f-')) {
-            await driveService.moveFileToFolder(targetSpreadsheetId!, folderId, token);
-          }
         }
       }
 
       if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+        try {
+          const folders = await driveService.setupCourseFolderStructure(
+            course.name,
+            folderId,
+            token
+          );
+          const libroFolderId =
+            folders.libroDeTemasFolder?.id || folders.mainFolder?.id || folderId;
+          if (libroFolderId && !libroFolderId.startsWith('folder-') && !libroFolderId.startsWith('f-')) {
+            await driveService.moveFileToFolder(targetSpreadsheetId, libroFolderId, token);
+          }
+        } catch (_) {}
         await ensureSheetsExist(targetSpreadsheetId, token, [tabName]);
         await fetchGoogleApiWithRetry(
           `https://sheets.googleapis.com/v4/spreadsheets/${targetSpreadsheetId}/values/${encodeURIComponent(`'${tabName}'!A1`)}?valueInputOption=USER_ENTERED`,

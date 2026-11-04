@@ -23,6 +23,11 @@ import {
   PERIOD_NAME_PRESETS,
   INITIAL_DISPOSITION_SCORE_PRESETS,
 } from '../../../utils/terminologySettings';
+import {
+  formatCourseDriveFolderName,
+  getDirectDriveFolderUrl,
+  isRealDriveFolderId,
+} from '../../../services/workspace/driveService';
 
 export interface CourseHeaderCardProps {
   activeCourse: Course;
@@ -275,24 +280,41 @@ export const CourseHeaderCard: React.FC<CourseHeaderCardProps> = React.memo(({
               </button>
             )}
 
-            <button
-              type="button"
-              onClick={onOpenCourseDriveFolder}
-              disabled={isSettingUpDriveFolder}
-              className={`inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
-                isDarkMode
-                  ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
-                  : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
-              }`}
-              title={`Crear y abrir carpeta en Google Drive ("${activeCourse.name}") con los documentos de ${attendanceLabel} y ${dispositionLabel}, Libro de Temas, Calificaciones y la subcarpeta Informes`}
-            >
-              {isSettingUpDriveFolder ? (
-                <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
-              ) : (
-                <FolderClosed className="w-3.5 h-3.5 text-amber-500" />
+            <div className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={onOpenCourseDriveFolder}
+                disabled={isSettingUpDriveFolder}
+                className={`inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-all cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
+                    : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
+                }`}
+                title={`Abrir o crear la carpeta "${formatCourseDriveFolderName(activeCourse.name)}" en tu Google Drive con las 6 subcarpetas (Calificaciones, Asistencia, Disposición, Libro de Temas, Informes e Historial de Incidencias)`}
+              >
+                {isSettingUpDriveFolder ? (
+                  <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                ) : (
+                  <FolderClosed className="w-3.5 h-3.5 text-amber-500" />
+                )}
+                <span>{isSettingUpDriveFolder ? 'Preparando Drive...' : 'Carpeta de Drive'}</span>
+              </button>
+              {isRealDriveFolderId(activeCourse.driveFolderId) && (
+                <a
+                  href={getDirectDriveFolderUrl(activeCourse.driveFolderId, activeCourse.driveFolderUrl)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center shrink-0 ${
+                    isDarkMode
+                      ? 'bg-amber-950/40 hover:bg-amber-950/60 text-amber-300 border-amber-800/60'
+                      : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200 shadow-2xs'
+                  }`}
+                  title={`Ir directamente a la carpeta "${formatCourseDriveFolderName(activeCourse.name)}" en Google Drive`}
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-amber-500" />
+                </a>
               )}
-              <span>{isSettingUpDriveFolder ? 'Preparando Drive...' : 'Carpeta de Drive'}</span>
-            </button>
+            </div>
 
             <div className="inline-flex items-center gap-1">
               <button

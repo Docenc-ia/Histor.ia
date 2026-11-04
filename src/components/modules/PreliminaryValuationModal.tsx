@@ -412,22 +412,33 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
       csv += rowParts.join(',') + '\r\n';
     });
 
+    const fileName = `Valoracion_Preliminar_${term}_${courseName.replace(/\s+/g, '_')}.csv`;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute(
-      'download',
-      `Valoracion_Preliminar_${term}_${courseName.replace(/\s+/g, '_')}.csv`
-    );
+    link.setAttribute('download', fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+
+    driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Informes',
+        fileName,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+        alsoShortcutInCategories: ['Calificaciones'],
+      })
+      .catch(() => {});
   };
 
-  // Print view
+  // Print view and auto-archive in Informes subfolder
   const handlePrint = () => {
+    handleSaveToReportsDriveFolder().catch(() => {});
     window.print();
   };
 

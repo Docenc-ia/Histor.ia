@@ -22,5 +22,5 @@ export const dispositionRepository = {
   fetchCloudDisposition: (): Promise<{
     disposition: Record<string, StudentDispositionData>;
     history: StudentHistoryItem[];
-  }> => api.getDispositionData(),
+  }> => api.getDisposition(),
 };

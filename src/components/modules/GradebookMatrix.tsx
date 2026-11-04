@@ -55,6 +55,14 @@ import {
 } from '../../utils/gradeCalculations';
 import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
 import { GradebookCategoryModals } from './GradebookCategoryModals';
+import { driveService } from '../../services/workspace/driveService';
+import { DriveSaveFormatSelector } from '../common/DriveSaveFormatSelector';
+import {
+  buildGradebookHtml,
+  buildGradebookCsv,
+  DriveSaveFormat,
+  SavedDriveFileResult,
+} from '../../utils/driveFormatExporters';
 
 export type { GradebookTerm };
 
@@ -699,16 +707,164 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       overallCalculation,
       activePreliminaryValuation
     );
+    const fileName = `Calificaciones_${currentTerm === '1c' ? '1er_Cuatrimestre' : '2do_Cuatrimestre'}_${courseName.replace(/\s+/g, '_')}.csv`;
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute(
-      'download',
-      `Calificaciones_${currentTerm === '1c' ? '1er_Cuatrimestre' : '2do_Cuatrimestre'}_${courseName.replace(/\s+/g, '_')}.csv`
-    );
+    link.setAttribute('download', fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    const rawCsv = csvContent.replace(/^data:text\/csv;charset=utf-8,/i, '');
+    driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName,
+        content: '\uFEFF' + rawCsv,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+      })
+      .catch(() => {});
+  };
+
+  const handleSaveGradesInFormat = async (
+    format: DriveSaveFormat,
+    customTitle: string
+  ): Promise<SavedDriveFileResult | null> => {
+    const termLabel = currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
+    if (format === 'sheets') {
+      const csv = buildGradebookCsv({
+        students,
+        categories,
+        gradesMap: draftGradesMap,
+      });
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName: customTitle,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+        convertToGoogleFormat: 'sheet',
+      });
+      handleSyncCuatrimestreWithSheets();
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'sheets',
+        formatLabel: 'Google Sheets (.gsheet)',
+        category: 'Calificaciones',
+      };
+    }
+
+    if (format === 'gdoc') {
+      const html = buildGradebookHtml({
+        courseName,
+        termLabel,
+        title: customTitle,
+        students,
+        categories,
+        gradesMap: draftGradesMap,
+      });
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName: customTitle,
+        content: html,
+        mimeType: 'text/html',
+        existingMainFolderId: driveFolderId,
+        convertToGoogleFormat: 'doc',
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'gdoc',
+        formatLabel: 'Google Docs (.gdoc editable)',
+        category: 'Calificaciones',
+      };
+    }
+
+    if (format === 'xlsx') {
+      const uploaded = await exportGradebookMatrixToExcel(
+        courseName,
+        termLabel,
+        students,
+        categories,
+        draftGradesMap,
+        {
+          customFileName: customTitle,
+          existingMainFolderId: driveFolderId,
+        }
+      );
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'xlsx',
+        formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Calificaciones',
+      };
+    }
+
+    const html = buildGradebookHtml({
+      courseName,
+      termLabel,
+      title: customTitle,
+      students,
+      categories,
+      gradesMap: draftGradesMap,
+    });
+    const fileNameHtml = customTitle.toLowerCase().endsWith('.html')
+      ? customTitle
+      : `${customTitle}.html`;
+    const uploaded = await driveService.uploadFileToCourseCategory({
+      courseName,
+      category: 'Calificaciones',
+      fileName: fileNameHtml,
+      content: html,
+      mimeType: 'text/html',
+      existingMainFolderId: driveFolderId,
+      convertToGoogleFormat: false,
+    });
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(html);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 2000);
+      }, 300);
+    }
+    if (!uploaded) return null;
+    return {
+      id: uploaded.id,
+      name: uploaded.name,
+      url: uploaded.url,
+      folderUrl: uploaded.folderUrl,
+      format: 'html',
+      formatLabel: 'Reporte Imprimible HTML / PDF',
+      category: 'Calificaciones',
+    };
   };
 
   const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
@@ -925,7 +1081,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 </button>
               </div>
 
-              {/* Columna 2: Sincronizar Notas en Sheets */}
+              {/* Columna 2: Sincronizar Notas en Sheets y Guardar en Drive (Elegir formato) */}
               <div className="flex flex-col gap-1.5">
                 <button
                   type="button"
@@ -943,6 +1099,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     {isSavingSheets ? 'Sincronizando...' : 'Sincronizar Notas en Sheets'}
                   </span>
                 </button>
+
+                <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
+                  <DriveSaveFormatSelector
+                    courseName={courseName}
+                    category="Calificaciones"
+                    defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
+                    buttonLabel="Guardar en Drive (Elegir formato)"
+                    compact
+                    onSaveFormat={handleSaveGradesInFormat}
+                  />
+                </div>
 
                 {sheetsSavedInfo && (
                   <div className="flex items-center gap-1.5 flex-wrap text-[11px] mt-0.5">

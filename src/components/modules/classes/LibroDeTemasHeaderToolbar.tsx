@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   BookOpen,
   Calendar,
@@ -8,6 +8,8 @@ import {
   Download,
   ExternalLink,
   FileSpreadsheet,
+  FileText,
+  FolderOpen,
   Loader2,
   Lock,
   Pencil,
@@ -29,6 +31,7 @@ import { WEEKDAY_LABELS, extractWeekdaysFromSchedule } from '../../../utils/scho
 import { isValidCourseSchedule } from '../../../utils/courseFormatting';
 import { CloudSyncStatusInfo } from '../../../services/firestoreSync';
 import { api } from '../../../services/api';
+import { formatCourseDriveFolderName } from '../../../services/workspace/driveService';
 import {
   LibroDeTemasEntry,
   LibroDeTemasMetadata,
@@ -44,6 +47,224 @@ const SHORT_WEEKDAYS: Record<number, string> = {
   4: 'Jue',
   5: 'Vie',
   6: 'Sáb',
+};
+
+const LibroDriveFormatPanel: React.FC<{
+  isDarkMode: boolean;
+  courseName: string;
+  driveDocTitle: string;
+  setDriveDocTitle: React.Dispatch<React.SetStateAction<string>>;
+  isExportingDoc: boolean;
+  isSyncingSheet: boolean;
+  handleExportToGoogleDoc: () => void;
+  handleSyncWithSheets: (openAfterSync?: boolean) => void;
+  handleDownloadLibro: () => void;
+  handlePrintLibro: () => void;
+  onClose: () => void;
+}> = ({
+  isDarkMode,
+  courseName,
+  driveDocTitle,
+  setDriveDocTitle,
+  isExportingDoc,
+  isSyncingSheet,
+  handleExportToGoogleDoc,
+  handleSyncWithSheets,
+  handleDownloadLibro,
+  handlePrintLibro,
+  onClose,
+}) => {
+  const [selectedFormat, setSelectedFormat] = useState<'gdoc' | 'sheets' | 'xlsx' | 'html'>('gdoc');
+  const mainFolderLabel = formatCourseDriveFolderName(courseName);
+  const isBusy = isExportingDoc || isSyncingSheet;
+
+  const handleConfirm = () => {
+    if (selectedFormat === 'gdoc') {
+      handleExportToGoogleDoc();
+    } else if (selectedFormat === 'sheets') {
+      handleSyncWithSheets(false);
+      onClose();
+    } else if (selectedFormat === 'xlsx') {
+      handleDownloadLibro();
+      onClose();
+    } else if (selectedFormat === 'html') {
+      handlePrintLibro();
+      onClose();
+    }
+  };
+
+  return (
+    <div
+      className={`px-3 sm:px-4 py-3.5 border-b flex flex-col gap-3 min-w-0 animate-in fade-in ${
+        isDarkMode
+          ? 'bg-emerald-950/30 border-emerald-800/60'
+          : 'bg-emerald-50/70 border-emerald-200'
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs font-bold text-emerald-900 dark:text-emerald-200">
+          <FolderOpen className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          <span>
+            Guardar en Google Drive &rarr; <strong>{mainFolderLabel}</strong> /{' '}
+            <strong>Libro de Temas</strong>
+          </span>
+        </div>
+        <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+          Elegí el formato en el que preferís guardarlo:
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+        <button
+          type="button"
+          onClick={() => setSelectedFormat('gdoc')}
+          className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            selectedFormat === 'gdoc'
+              ? 'border-blue-500 bg-blue-50/90 dark:bg-blue-950/50 text-blue-900 dark:text-blue-200 ring-1 ring-blue-500'
+              : isDarkMode
+              ? 'border-slate-700 bg-slate-900/80 text-slate-300 hover:bg-slate-800'
+              : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-50/50'
+          }`}
+        >
+          <FileText className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-xs font-bold truncate">Google Docs</span>
+              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-blue-100/80 dark:bg-blue-900/60 text-blue-700 dark:text-blue-200">
+                .gdoc
+              </span>
+            </div>
+            <p className="text-[11px] opacity-80 leading-snug mt-0.5">
+              Documento de texto con tablas editable en Drive
+            </p>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSelectedFormat('sheets')}
+          className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            selectedFormat === 'sheets'
+              ? 'border-emerald-500 bg-emerald-50/90 dark:bg-emerald-950/50 text-emerald-900 dark:text-emerald-200 ring-1 ring-emerald-500'
+              : isDarkMode
+              ? 'border-slate-700 bg-slate-900/80 text-slate-300 hover:bg-slate-800'
+              : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-50/50'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-xs font-bold truncate">Google Sheets</span>
+              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-emerald-100/80 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-200">
+                .gsheet
+              </span>
+            </div>
+            <p className="text-[11px] opacity-80 leading-snug mt-0.5">
+              Planilla de cálculo sincronizada en Drive
+            </p>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSelectedFormat('xlsx')}
+          className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            selectedFormat === 'xlsx'
+              ? 'border-teal-500 bg-teal-50/90 dark:bg-teal-950/50 text-teal-900 dark:text-teal-200 ring-1 ring-teal-500'
+              : isDarkMode
+              ? 'border-slate-700 bg-slate-900/80 text-slate-300 hover:bg-slate-800'
+              : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-50/50'
+          }`}
+        >
+          <Download className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-xs font-bold truncate">Excel</span>
+              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-teal-100/80 dark:bg-teal-900/60 text-teal-700 dark:text-teal-200">
+                .xlsx
+              </span>
+            </div>
+            <p className="text-[11px] opacity-80 leading-snug mt-0.5">
+              Sube archivo .xlsx a la subcarpeta y lo descarga
+            </p>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setSelectedFormat('html')}
+          className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+            selectedFormat === 'html'
+              ? 'border-indigo-500 bg-indigo-50/90 dark:bg-indigo-950/50 text-indigo-900 dark:text-indigo-200 ring-1 ring-indigo-500'
+              : isDarkMode
+              ? 'border-slate-700 bg-slate-900/80 text-slate-300 hover:bg-slate-800'
+              : 'border-emerald-200 bg-white text-slate-700 hover:bg-emerald-50/50'
+          }`}
+        >
+          <Printer className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-xs font-bold truncate">Folio Imprimible</span>
+              <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-indigo-100/80 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200">
+                HTML/PDF
+              </span>
+            </div>
+            <p className="text-[11px] opacity-80 leading-snug mt-0.5">
+              Guarda copia en Drive y abre vista de impresión
+            </p>
+          </div>
+        </button>
+      </div>
+
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+        <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
+          <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 shrink-0">
+            Nombre del archivo:
+          </span>
+          <input
+            type="text"
+            value={driveDocTitle}
+            onChange={(e) => setDriveDocTitle(e.target.value)}
+            className={`flex-1 min-w-0 px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden ${
+              isDarkMode
+                ? 'bg-slate-900 border-slate-700 text-white'
+                : 'bg-white border-emerald-300 text-neutral-900'
+            }`}
+          />
+        </div>
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={isBusy}
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer"
+          >
+            {isBusy ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Check className="w-3.5 h-3.5" />
+            )}
+            <span>
+              {selectedFormat === 'gdoc'
+                ? 'Guardar como Google Docs (.gdoc)'
+                : selectedFormat === 'sheets'
+                ? 'Guardar en Google Sheets (.gsheet)'
+                : selectedFormat === 'xlsx'
+                ? 'Guardar como Excel (.xlsx)'
+                : 'Guardar Folio HTML / Imprimir'}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-neutral-500 hover:text-neutral-700 dark:text-slate-400 cursor-pointer"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 export interface LibroDeTemasHeaderToolbarProps {
@@ -331,16 +552,16 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                 setDriveDocTitle(`Libro de Temas - ${courseName} (${todayStr})`);
                 setShowDriveConfirm((prev) => !prev);
               }}
-              disabled={isExportingDoc}
+              disabled={isExportingDoc || isSyncingSheet}
               className="w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors cursor-pointer"
-              title="Guardar el Libro de Temas directamente en Google Drive como documento editable (.gdoc)"
+              title="Elegir formato (Google Docs, Google Sheets, Excel o HTML/PDF) para guardar en Google Drive"
             >
-              {isExportingDoc ? (
+              {isExportingDoc || isSyncingSheet ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               ) : (
                 <Save className="w-3.5 h-3.5 shrink-0" />
               )}
-              <span className="truncate">Guardar Drive</span>
+              <span className="truncate">Guardar en Drive</span>
             </button>
           </div>
 
@@ -391,53 +612,21 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
         </div>
       </div>
 
-      {/* Panel de confirmación para Guardar en Drive (.gdoc) */}
+      {/* Panel de selección de formato para Guardar en Drive (Subcarpeta: Libro de Temas) */}
       {showDriveConfirm && (
-        <div
-          className={`px-3 sm:px-4 py-3 border-b flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-w-0 animate-in fade-in ${
-            isDarkMode
-              ? 'bg-emerald-950/30 border-emerald-800/60'
-              : 'bg-emerald-50/70 border-emerald-200'
-          }`}
-        >
-          <div className="flex-1 flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
-            <span className="text-xs font-bold text-emerald-800 dark:text-emerald-300 shrink-0">
-              Nombre del Google Doc (.gdoc):
-            </span>
-            <input
-              type="text"
-              value={driveDocTitle}
-              onChange={(e) => setDriveDocTitle(e.target.value)}
-              className={`flex-1 min-w-0 px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden ${
-                isDarkMode
-                  ? 'bg-slate-900 border-slate-700 text-white'
-                  : 'bg-white border-emerald-300 text-neutral-900'
-              }`}
-            />
-          </div>
-          <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            <button
-              type="button"
-              onClick={handleExportToGoogleDoc}
-              disabled={isExportingDoc}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer"
-            >
-              {isExportingDoc ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Check className="w-3.5 h-3.5" />
-              )}
-              <span>Crear .gdoc ahora</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowDriveConfirm(false)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-neutral-500 hover:text-neutral-700 dark:text-slate-400 cursor-pointer"
-            >
-              Cancelar
-            </button>
-          </div>
-        </div>
+        <LibroDriveFormatPanel
+          isDarkMode={isDarkMode}
+          courseName={courseName}
+          driveDocTitle={driveDocTitle}
+          setDriveDocTitle={setDriveDocTitle}
+          isExportingDoc={isExportingDoc}
+          isSyncingSheet={isSyncingSheet}
+          handleExportToGoogleDoc={handleExportToGoogleDoc}
+          handleSyncWithSheets={handleSyncWithSheets}
+          handleDownloadLibro={handleDownloadLibro}
+          handlePrintLibro={handlePrintLibro}
+          onClose={() => setShowDriveConfirm(false)}
+        />
       )}
 
       {/* Campos del Encabezado del Libro de Temas: ASIGNATURA, PROF. TITULAR, DÍAS DE CLASE y CALENDARIO ESCOLAR Y FERIADOS */}

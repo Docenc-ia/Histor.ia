@@ -252,6 +252,13 @@ export const sheetsService = {
     if (token) {
       try {
         if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+          try {
+            const folders = await driveService.setupCourseFolderStructure(courseName, folderId, token);
+            const gradesFolderId = folders.gradesFolder?.id || folders.mainFolder?.id || folderId;
+            if (gradesFolderId) {
+              driveService.moveFileToFolder(targetSpreadsheetId, gradesFolderId, token).catch(() => {});
+            }
+          } catch (_) {}
           // Update existing course spreadsheet
           await this.ensureSheetsExist(targetSpreadsheetId, token, ['Calificaciones']);
           const updateRes = await fetch(
@@ -310,16 +317,13 @@ export const sheetsService = {
 
         if (createRes.ok) {
           const sheetData = await createRes.json();
-          let targetFolderId = folderId;
-          if (!targetFolderId) {
-            try {
-              const folders = await driveService.setupCourseFolderStructure(courseName, undefined, token);
-              targetFolderId = folders.gradesFolder.id || folders.mainFolder.id;
-            } catch (_) {}
-          }
-          if (targetFolderId) {
-            await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
-          }
+          try {
+            const folders = await driveService.setupCourseFolderStructure(courseName, folderId, token);
+            const targetFolderId = folders.gradesFolder?.id || folders.mainFolder?.id || folderId;
+            if (targetFolderId) {
+              await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
+            }
+          } catch (_) {}
           const url = `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`;
           if (courseId) {
             api.updateCourse(courseId, { gradesSheetId: sheetData.spreadsheetId, gradesSheetUrl: url }).catch(() => {});
@@ -777,6 +781,33 @@ export const sheetsService = {
     if (token) {
       try {
         if (targetSpreadsheetId && isRealGoogleSpreadsheetId(targetSpreadsheetId)) {
+          try {
+            const folders = await driveService.setupCourseFolderStructure(course.name, folderId, token);
+            const targetAttFolderId = folders.attendanceFolder?.id || folders.mainFolder?.id || folderId;
+            if (targetAttFolderId) {
+              driveService.moveFileToFolder(targetSpreadsheetId, targetAttFolderId, token).catch(() => {});
+            }
+            if (folders.dispositionFolder?.id) {
+              driveService
+                .ensureShortcutInFolder(
+                  `📋 Disposición - ${course.name}`,
+                  targetSpreadsheetId,
+                  folders.dispositionFolder.id,
+                  token
+                )
+                .catch(() => {});
+            }
+            if (folders.incidentsFolder?.id) {
+              driveService
+                .ensureShortcutInFolder(
+                  `📋 Historial de Incidencias - ${course.name}`,
+                  targetSpreadsheetId,
+                  folders.incidentsFolder.id,
+                  token
+                )
+                .catch(() => {});
+            }
+          } catch (_) {}
           const historyPayload =
             historyRows.length > 0
               ? historyRows
@@ -1147,16 +1178,33 @@ export const sheetsService = {
 
         if (createRes.ok) {
           const sheetData = await createRes.json();
-          let targetFolderId = folderId;
-          if (!targetFolderId) {
-            try {
-              const folders = await driveService.setupCourseFolderStructure(course.name, undefined, token);
-              targetFolderId = folders.attendanceFolder.id || folders.mainFolder.id;
-            } catch (_) {}
-          }
-          if (targetFolderId) {
-            await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
-          }
+          try {
+            const folders = await driveService.setupCourseFolderStructure(course.name, folderId, token);
+            const targetFolderId = folders.attendanceFolder?.id || folders.mainFolder?.id || folderId;
+            if (targetFolderId) {
+              await driveService.moveFileToFolder(sheetData.spreadsheetId, targetFolderId, token);
+            }
+            if (folders.dispositionFolder?.id) {
+              driveService
+                .ensureShortcutInFolder(
+                  `📋 Disposición - ${course.name}`,
+                  sheetData.spreadsheetId,
+                  folders.dispositionFolder.id,
+                  token
+                )
+                .catch(() => {});
+            }
+            if (folders.incidentsFolder?.id) {
+              driveService
+                .ensureShortcutInFolder(
+                  `📋 Historial de Incidencias - ${course.name}`,
+                  sheetData.spreadsheetId,
+                  folders.incidentsFolder.id,
+                  token
+                )
+                .catch(() => {});
+            }
+          } catch (_) {}
           const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetData.spreadsheetId}/edit`;
           const updatedAtStr = new Date().toLocaleTimeString();
 
@@ -1833,16 +1881,6 @@ export const sheetsService = {
           if (createRes.ok) {
             const sheetData = await createRes.json();
             sheetIdToUse = sheetData.spreadsheetId;
-            let targetFolderId = folderId;
-            if (!targetFolderId) {
-              try {
-                const folders = await driveService.setupCourseFolderStructure(course.name, undefined, token);
-                targetFolderId = folders.gradesFolder.id || folders.mainFolder.id;
-              } catch (_) {}
-            }
-            if (targetFolderId) {
-              await driveService.moveFileToFolder(sheetIdToUse, targetFolderId, token);
-            }
             const sheetUrl = `https://docs.google.com/spreadsheets/d/${sheetIdToUse}/edit`;
             if (typeof window !== 'undefined') {
               const payloadStr = JSON.stringify({ spreadsheetId: sheetIdToUse, url: sheetUrl, lastSyncedAt: new Date().toLocaleTimeString() });
@@ -1859,6 +1897,13 @@ export const sheetsService = {
         }
 
         if (sheetIdToUse && isRealGoogleSpreadsheetId(sheetIdToUse)) {
+          try {
+            const folders = await driveService.setupCourseFolderStructure(course.name, folderId, token);
+            const targetGradesFolderId = folders.gradesFolder?.id || folders.mainFolder?.id || folderId;
+            if (targetGradesFolderId && !targetGradesFolderId.startsWith('folder-') && !targetGradesFolderId.startsWith('f-')) {
+              await driveService.moveFileToFolder(sheetIdToUse, targetGradesFolderId, token);
+            }
+          } catch (_) {}
           await this.ensureSheetsExist(sheetIdToUse, token, [tabName]);
 
           // Clear previous data in tab

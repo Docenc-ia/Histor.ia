@@ -105,25 +105,52 @@ export const storageGateway = {
   },
 
   /**
+   * Reads and parses a JSON value from a direct localStorage key.
+   */
+  getJson<T>(key: string, fallback: T): T {
+    if (typeof window === 'undefined') return fallback;
+    try {
+      const raw = indexedDbStore.getFromMemory(key) ?? localStorage.getItem(key);
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return (parsed ?? fallback) as T;
+    } catch {
+      return fallback;
+    }
+  },
+
+  /**
+   * Serializes and writes a JSON value to a direct localStorage key.
+   */
+  setJson<T>(key: string, value: T): void {
+    if (typeof window === 'undefined') return;
+    try {
+      const serialized = JSON.stringify(value);
+      indexedDbStore.setMemoryAndIdb(key, serialized);
+      safeSetLocalStorageItem(key, serialized);
+    } catch (_) {}
+  },
+
+  /**
    * Reads grade history entries for a specific course.
    */
   getCourseGradeHistory<T = any>(courseId: string): T[] {
     if (!courseId || typeof window === 'undefined') return [];
-    return this.getScopedJson<T[]>(`fds_grade_history_${courseId}`, []);
+    return storageGateway.getScopedJson<T[]>(`fds_grade_history_${courseId}`, []);
   },
 
   /**
    * Reads the student observations map for the active teacher.
    */
   getStudentObservationsMap<T = Record<string, any>>(): T {
-    return this.getScopedJson<T>('fds_student_observations', {} as T);
+    return storageGateway.getScopedJson<T>('fds_student_observations', {} as T);
   },
 
   /**
    * Reads 2° Cuatrimestre disposition map for the active teacher.
    */
   getDisposition2cMap<T = Record<string, any>>(): T {
-    return this.getScopedJson<T>('fds_disposition_data_2c', {} as T);
+    return storageGateway.getScopedJson<T>('fds_disposition_data_2c', {} as T);
   },
 
   /**

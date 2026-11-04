@@ -42,6 +42,7 @@ interface AttendanceHeaderProps {
   onOpenAttendanceSettings?: () => void;
   onOpenBackupModal?: () => void;
   onOpenQuickRollCall?: () => void;
+  saveToDriveControl?: React.ReactNode;
   isDarkMode: boolean;
 }
 
@@ -69,6 +70,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   onOpenAttendanceSettings,
   onOpenBackupModal,
   onOpenQuickRollCall,
+  saveToDriveControl,
   isDarkMode,
 }) => {
   const isSyncActive = isSyncingSheet || isPullingFromSheet;
@@ -157,8 +159,8 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
             )}
           </div>
 
-          {/* COLUMNA 3: Sincronizar con Sheets y Abrir en Sheets */}
-          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
+          {/* COLUMNA 3: Sincronizar con Sheets, Abrir en Sheets y Guardar en Drive (Elegir formato) */}
+          <div className="flex flex-col gap-1.5 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
             <button
               type="button"
               onClick={onManualSheetsSync}
@@ -192,6 +194,12 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               )}
               <span className="truncate">Abrir en Sheets</span>
             </button>
+
+            {saveToDriveControl && (
+              <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
+                {saveToDriveControl}
+              </div>
+            )}
           </div>
 
           {/* COLUMNA 4: Mandar a Calificaciones y Copia de Seguridad */}

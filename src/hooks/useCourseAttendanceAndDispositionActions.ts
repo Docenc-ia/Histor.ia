@@ -15,7 +15,7 @@ import {
 } from '../services/api';
 import { classroomService } from '../services/workspace/classroomService';
 import { gmailService } from '../services/workspace/gmailService';
-import { CourseFolderStructure } from '../services/workspace/driveService';
+import { driveService, CourseFolderStructure } from '../services/workspace/driveService';
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { enqueueOfflineAction } from '../services/offlineSyncQueue';
@@ -1677,13 +1677,25 @@ export function useCourseAttendanceAndDispositionActions({
     ]);
 
     const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const fileName = `Historial_Asistencia_Disposicion_${activeCourse.name.replace(/\s+/g, '_')}.csv`;
     const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `Historial_Asistencia_Disposicion_${activeCourse.name.replace(/\s+/g, '_')}.csv`;
+    a.download = fileName;
     a.click();
     URL.revokeObjectURL(url);
+
+    driveService
+      .uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Historial de Incidencias',
+        fileName,
+        content: '\uFEFF' + csvContent,
+        mimeType: 'text/csv',
+        existingMainFolderId: activeCourse.driveFolderId,
+      })
+      .catch(() => {});
   };
 
   // 6b. Exportar Historial a Excel (.xlsx) nativo

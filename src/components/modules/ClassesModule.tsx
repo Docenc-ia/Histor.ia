@@ -56,6 +56,20 @@ import { navigationService, CourseSubTabType } from '../../services/navigationSe
 import { subscribeAppEvents } from '../../utils/appEventBus';
 import { areCourseListsEqual, areStudentListsEqual } from '../../utils/entityEquality';
 import { useTerminologySettings } from '../../utils/terminologySettings';
+import { DriveSaveFormatSelector } from '../common/DriveSaveFormatSelector';
+import { driveService } from '../../services/workspace/driveService';
+import {
+  exportCourseDispositionToExcel,
+  exportCourseClassHistoryToExcel,
+} from '../../utils/excelExport';
+import {
+  buildAttendanceDispositionHtml,
+  buildAttendanceDispositionCsv,
+  buildCourseHistoryHtml,
+  buildCourseHistoryCsv,
+  DriveSaveFormat,
+  SavedDriveFileResult,
+} from '../../utils/driveFormatExporters';
 
 interface ClassesModuleProps {
   courses: Course[];
@@ -784,6 +798,281 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     }, 0);
   }, [courseStudents, dispositionMap]);
 
+  const handleSaveAttendanceDispositionInFormat = async (
+    format: DriveSaveFormat,
+    customTitle: string
+  ): Promise<SavedDriveFileResult | null> => {
+    if (!activeCourse) return null;
+    if (format === 'sheets') {
+      const csv = buildAttendanceDispositionCsv({
+        students: courseStudents,
+        map1c: dispositionMap,
+        map2c: dispositionMap2c,
+      });
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Asistencia',
+        fileName: customTitle,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: 'sheet',
+        alsoShortcutInCategories: ['Disposición'],
+      });
+      handleManualSheetsSync();
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'sheets',
+        formatLabel: 'Google Sheets (.gsheet)',
+        category: 'Asistencia',
+      };
+    }
+
+    if (format === 'gdoc') {
+      const html = buildAttendanceDispositionHtml({
+        courseName: activeCourse.name,
+        title: customTitle,
+        students: courseStudents,
+        map1c: dispositionMap,
+        map2c: dispositionMap2c,
+      });
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Asistencia',
+        fileName: customTitle,
+        content: html,
+        mimeType: 'text/html',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: 'doc',
+        alsoShortcutInCategories: ['Disposición'],
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'gdoc',
+        formatLabel: 'Google Docs (.gdoc editable)',
+        category: 'Asistencia',
+      };
+    }
+
+    if (format === 'xlsx') {
+      const uploaded = await exportCourseDispositionToExcel(
+        activeCourse.name,
+        courseStudents,
+        dispositionMap,
+        dispositionMap2c,
+        {
+          customFileName: customTitle,
+          existingMainFolderId: activeCourse.driveFolderId,
+        }
+      );
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'xlsx',
+        formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Asistencia',
+      };
+    }
+
+    // format === 'html' or 'csv'
+    const html = buildAttendanceDispositionHtml({
+      courseName: activeCourse.name,
+      title: customTitle,
+      students: courseStudents,
+      map1c: dispositionMap,
+      map2c: dispositionMap2c,
+    });
+    const fileNameHtml = customTitle.toLowerCase().endsWith('.html')
+      ? customTitle
+      : `${customTitle}.html`;
+    const uploaded = await driveService.uploadFileToCourseCategory({
+      courseName: activeCourse.name,
+      category: 'Asistencia',
+      fileName: fileNameHtml,
+      content: html,
+      mimeType: 'text/html',
+      existingMainFolderId: activeCourse.driveFolderId,
+      convertToGoogleFormat: false,
+      alsoShortcutInCategories: ['Disposición'],
+    });
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(html);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 2000);
+      }, 300);
+    }
+    if (!uploaded) return null;
+    return {
+      id: uploaded.id,
+      name: uploaded.name,
+      url: uploaded.url,
+      folderUrl: uploaded.folderUrl,
+      format: 'html',
+      formatLabel: 'Reporte Imprimible HTML / PDF',
+      category: 'Asistencia',
+    };
+  };
+
+  const handleSaveHistoryInFormat = async (
+    format: DriveSaveFormat,
+    customTitle: string
+  ): Promise<SavedDriveFileResult | null> => {
+    if (!activeCourse) return null;
+    if (format === 'sheets') {
+      const csv = buildCourseHistoryCsv(courseHistory);
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Historial de Incidencias',
+        fileName: customTitle,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: 'sheet',
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'sheets',
+        formatLabel: 'Google Sheets (.gsheet)',
+        category: 'Historial de Incidencias',
+      };
+    }
+
+    if (format === 'gdoc') {
+      const html = buildCourseHistoryHtml({
+        courseName: activeCourse.name,
+        title: customTitle,
+        historyItems: courseHistory,
+      });
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Historial de Incidencias',
+        fileName: customTitle,
+        content: html,
+        mimeType: 'text/html',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: 'doc',
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'gdoc',
+        formatLabel: 'Google Docs (.gdoc editable)',
+        category: 'Historial de Incidencias',
+      };
+    }
+
+    if (format === 'xlsx') {
+      const uploaded = await exportCourseClassHistoryToExcel(
+        activeCourse.name,
+        courseHistory,
+        {
+          customFileName: customTitle,
+          existingMainFolderId: activeCourse.driveFolderId,
+        }
+      );
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'xlsx',
+        formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Historial de Incidencias',
+      };
+    }
+
+    const html = buildCourseHistoryHtml({
+      courseName: activeCourse.name,
+      title: customTitle,
+      historyItems: courseHistory,
+    });
+    const fileNameHtml = customTitle.toLowerCase().endsWith('.html')
+      ? customTitle
+      : `${customTitle}.html`;
+    const uploaded = await driveService.uploadFileToCourseCategory({
+      courseName: activeCourse.name,
+      category: 'Historial de Incidencias',
+      fileName: fileNameHtml,
+      content: html,
+      mimeType: 'text/html',
+      existingMainFolderId: activeCourse.driveFolderId,
+      convertToGoogleFormat: false,
+    });
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    document.body.appendChild(iframe);
+    const doc = iframe.contentWindow?.document;
+    if (doc) {
+      doc.open();
+      doc.write(html);
+      doc.close();
+      setTimeout(() => {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(iframe), 2000);
+      }, 300);
+    }
+    if (!uploaded) return null;
+    return {
+      id: uploaded.id,
+      name: uploaded.name,
+      url: uploaded.url,
+      folderUrl: uploaded.folderUrl,
+      format: 'html',
+      formatLabel: 'Reporte Imprimible HTML / PDF',
+      category: 'Historial de Incidencias',
+    };
+  };
+
+  const attendanceDriveSaveSelector = activeCourse ? (
+    <DriveSaveFormatSelector
+      courseName={activeCourse.name}
+      category="Asistencia"
+      alsoShortcutInCategories={['Disposición']}
+      defaultTitle={`${combinedTabLabel} - ${activeCourse.name} (${new Date().toISOString().slice(0, 10)})`}
+      buttonLabel="Guardar en Drive"
+      compact
+      onSaveFormat={handleSaveAttendanceDispositionInFormat}
+    />
+  ) : null;
+
   return (
     <CourseWorkspaceProvider
       activeCourse={activeCourse}
@@ -1040,6 +1329,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               onOpenAttendanceSettings={() => setIsAttendanceSettingsModalOpen(true)}
               onOpenBackupModal={() => setIsBackupModalOpen(true)}
               onOpenQuickRollCall={() => setIsQuickRollCallOpen(true)}
+              saveToDriveControl={attendanceDriveSaveSelector}
               isDarkMode={isDarkMode}
             />
           )}
@@ -1147,35 +1437,48 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                   </button>
                 </div>
 
-                {/* COLUMNA 3: Exportar Excel y Descargar CSV */}
+                {/* COLUMNA 3: Guardar en Drive (Elegir formato), Exportar Excel y Descargar CSV */}
                 <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0">
-                  <button
-                    type="button"
-                    onClick={handleExportHistoryExcel}
-                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Descargar historial en formato Excel (.xlsx) nativo"
-                  >
-                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                    <span>Exportar Excel</span>
-                  </button>
+                  <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
+                    <DriveSaveFormatSelector
+                      courseName={activeCourse.name}
+                      category="Historial de Incidencias"
+                      defaultTitle={`Historial de Incidencias - ${activeCourse.name} (${new Date().toISOString().slice(0, 10)})`}
+                      buttonLabel="Guardar en Drive (Elegir formato)"
+                      compact
+                      onSaveFormat={handleSaveHistoryInFormat}
+                    />
+                  </div>
 
-                  <button
-                    type="button"
-                    onClick={handleExportHistoryCsv}
-                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Descargar historial en formato CSV"
-                  >
-                    <Download className="w-3.5 h-3.5 text-purple-500" />
-                    <span>Descargar CSV</span>
-                  </button>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleExportHistoryExcel}
+                      className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                          : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                      }`}
+                      title="Descargar historial en formato Excel (.xlsx) nativo"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      <span className="truncate">Excel</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleExportHistoryCsv}
+                      className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
+                          : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
+                      }`}
+                      title="Descargar historial en formato CSV"
+                    >
+                      <Download className="w-3.5 h-3.5 text-purple-500 shrink-0" />
+                      <span className="truncate">CSV</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1259,6 +1562,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               handleOpenBatchFromPending={handleOpenBatchFromPending}
               setActiveTab={setActiveTab}
               setToastMessage={setToastMessage}
+              saveToDriveControl={attendanceDriveSaveSelector}
             />
           )}
 
@@ -1282,8 +1586,8 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                   onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
                   onOpenBackupModal={() => setIsBackupModalOpen(true)}
                   isDarkMode={isDarkMode}
-                  driveFolderId={activeCourse.driveFolderId}
-                  driveFolderUrl={activeCourse.driveFolderUrl}
+                  driveFolderId={activeCourse.libroDeTemasFolderId || activeCourse.driveFolderId}
+                  driveFolderUrl={activeCourse.libroDeTemasFolderUrl || activeCourse.driveFolderUrl}
                 />
               </Suspense>
             </ErrorBoundary>
@@ -1305,8 +1609,8 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                   isDarkMode={isDarkMode}
                   activeTerm={attendanceTerm}
                   onTermChange={setAttendanceTermHandler}
-                  driveFolderId={activeCourse.driveFolderId}
-                  driveFolderUrl={activeCourse.driveFolderUrl}
+                  driveFolderId={activeCourse.gradesFolderId || activeCourse.driveFolderId}
+                  driveFolderUrl={activeCourse.gradesFolderUrl || activeCourse.driveFolderUrl}
                   onDeleteStudent={setStudentToRemove}
                 />
               </Suspense>

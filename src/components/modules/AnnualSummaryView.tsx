@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Student } from '../../types';
 import { CourseReportModal } from './CourseReportModal';
+import { driveService } from '../../services/workspace/driveService';
 
 export interface AnnualSummaryViewProps {
   courseId: string;
@@ -175,13 +176,26 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
       csv += [name, s1, s2, avg, fin, cond].join(',') + '\r\n';
     });
 
+    const fileName = `Cierre_Calificaciones_Anual_${courseName.replace(/\s+/g, '_')}.csv`;
     const encodedUri = encodeURI(csv);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `Cierre_Calificaciones_Anual_${courseName.replace(/\s+/g, '_')}.csv`);
+    link.setAttribute('download', fileName);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    const rawCsv = csv.replace(/^data:text\/csv;charset=utf-8,/i, '');
+    driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName,
+        content: '\uFEFF' + rawCsv,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+      })
+      .catch(() => {});
   };
 
   // Badge color for individual scores

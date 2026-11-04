@@ -15,7 +15,12 @@ import {
 } from '../services/api';
 import { getCachedAccessToken, setCachedAccessToken, isValidGoogleAccessToken } from '../services/workspace/googleAuth';
 import { sheetsService } from '../services/workspace/sheetsService';
-import { driveService } from '../services/workspace/driveService';
+import {
+  driveService,
+  CourseFolderStructure,
+  isRealDriveFolderId,
+  getDirectDriveFolderUrl,
+} from '../services/workspace/driveService';
 import { formatLocalDateDMY, formatLocalTimeHMS } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { isRealGoogleSpreadsheetId, copyTableToClipboard, extractSpreadsheetIdFromInput } from '../utils/sheetsUtils';
@@ -92,15 +97,7 @@ export function useGoogleSheetsAndDriveSync({
   // Google Drive course folder structure state
   const [isSettingUpDriveFolder, setIsSettingUpDriveFolder] = useState<boolean>(false);
   const [driveFolderModalOpen, setDriveFolderModalOpen] = useState<boolean>(false);
-  const [courseDriveStructure, setCourseDriveStructure] = useState<{
-    mainFolder: { id: string; name: string; url: string };
-    reportsFolder?: { id: string; name: string; url: string };
-    attendanceFolder: { id: string; name: string; url: string };
-    gradesFolder: { id: string; name: string; url: string };
-    attendanceSheetUrl?: string;
-    gradesSheetUrl?: string;
-    libroDeTemasSheetUrl?: string;
-  } | null>(null);
+  const [courseDriveStructure, setCourseDriveStructure] = useState<CourseFolderStructure | null>(null);
 
   // Load saved Google Sheet configuration when activeCourse changes
   useEffect(() => {
@@ -219,29 +216,36 @@ export function useGoogleSheetsAndDriveSync({
         (isRealGoogleSpreadsheetId(sheetConfig?.spreadsheetId) && (isS2NatCourse || sheetConfig?.spreadsheetId !== POISONED_S2_NAT_SHEET_ID) ? sheetConfig?.spreadsheetId : undefined) ||
         (isRealGoogleSpreadsheetId(activeCourse.dispositionSheetId) && (isS2NatCourse || activeCourse.dispositionSheetId !== POISONED_S2_NAT_SHEET_ID) ? activeCourse.dispositionSheetId : undefined);
 
-      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
-      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+      let targetFolderId = activeCourse.attendanceFolderId;
+      if (
+        !isRealDriveFolderId(targetFolderId) ||
+        targetFolderId === activeCourse.driveFolderId
+      ) {
         try {
           const folderStruct = await driveService.setupCourseFolderStructure(
             activeCourse.name,
-            undefined,
+            activeCourse.driveFolderId,
             activeToken
           );
           targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
-          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
-          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
-          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
-          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
-          activeCourse.driveFolderId = folderStruct.mainFolder.id;
-          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
-          api.updateCourse(activeCourse.id, {
-            attendanceFolderId: folderStruct.attendanceFolder.id,
-            attendanceFolderUrl: folderStruct.attendanceFolder.url,
-            gradesFolderId: folderStruct.gradesFolder.id,
-            gradesFolderUrl: folderStruct.gradesFolder.url,
+          const folderUpdates: Partial<Course> = {
             driveFolderId: folderStruct.mainFolder.id,
             driveFolderUrl: folderStruct.mainFolder.url,
-          }).catch(() => {});
+            gradesFolderId: folderStruct.gradesFolder.id,
+            gradesFolderUrl: folderStruct.gradesFolder.url,
+            attendanceFolderId: folderStruct.attendanceFolder.id,
+            attendanceFolderUrl: folderStruct.attendanceFolder.url,
+            dispositionFolderId: folderStruct.dispositionFolder.id,
+            dispositionFolderUrl: folderStruct.dispositionFolder.url,
+            libroDeTemasFolderId: folderStruct.libroDeTemasFolder.id,
+            libroDeTemasFolderUrl: folderStruct.libroDeTemasFolder.url,
+            reportsFolderId: folderStruct.reportsFolder.id,
+            reportsFolderUrl: folderStruct.reportsFolder.url,
+            incidentsFolderId: folderStruct.incidentsFolder.id,
+            incidentsFolderUrl: folderStruct.incidentsFolder.url,
+          };
+          Object.assign(activeCourse, folderUpdates);
+          api.updateCourse(activeCourse.id, folderUpdates).catch(() => {});
         } catch (_) {}
       }
 
@@ -426,29 +430,36 @@ export function useGoogleSheetsAndDriveSync({
         }
       }
 
-      let targetFolderId = activeCourse.attendanceFolderId || activeCourse.driveFolderId;
-      if (!targetFolderId || targetFolderId.startsWith('f-') || targetFolderId.startsWith('folder-')) {
+      let targetFolderId = activeCourse.attendanceFolderId;
+      if (
+        !isRealDriveFolderId(targetFolderId) ||
+        targetFolderId === activeCourse.driveFolderId
+      ) {
         try {
           const folderStruct = await driveService.setupCourseFolderStructure(
             activeCourse.name,
-            undefined,
+            activeCourse.driveFolderId,
             activeToken
           );
           targetFolderId = folderStruct.attendanceFolder.id || folderStruct.mainFolder.id;
-          activeCourse.attendanceFolderId = folderStruct.attendanceFolder.id;
-          activeCourse.attendanceFolderUrl = folderStruct.attendanceFolder.url;
-          activeCourse.gradesFolderId = folderStruct.gradesFolder.id;
-          activeCourse.gradesFolderUrl = folderStruct.gradesFolder.url;
-          activeCourse.driveFolderId = folderStruct.mainFolder.id;
-          activeCourse.driveFolderUrl = folderStruct.mainFolder.url;
-          api.updateCourse(activeCourse.id, {
-            attendanceFolderId: folderStruct.attendanceFolder.id,
-            attendanceFolderUrl: folderStruct.attendanceFolder.url,
-            gradesFolderId: folderStruct.gradesFolder.id,
-            gradesFolderUrl: folderStruct.gradesFolder.url,
+          const folderUpdates: Partial<Course> = {
             driveFolderId: folderStruct.mainFolder.id,
             driveFolderUrl: folderStruct.mainFolder.url,
-          }).catch(() => {});
+            gradesFolderId: folderStruct.gradesFolder.id,
+            gradesFolderUrl: folderStruct.gradesFolder.url,
+            attendanceFolderId: folderStruct.attendanceFolder.id,
+            attendanceFolderUrl: folderStruct.attendanceFolder.url,
+            dispositionFolderId: folderStruct.dispositionFolder.id,
+            dispositionFolderUrl: folderStruct.dispositionFolder.url,
+            libroDeTemasFolderId: folderStruct.libroDeTemasFolder.id,
+            libroDeTemasFolderUrl: folderStruct.libroDeTemasFolder.url,
+            reportsFolderId: folderStruct.reportsFolder.id,
+            reportsFolderUrl: folderStruct.reportsFolder.url,
+            incidentsFolderId: folderStruct.incidentsFolder.id,
+            incidentsFolderUrl: folderStruct.incidentsFolder.url,
+          };
+          Object.assign(activeCourse, folderUpdates);
+          api.updateCourse(activeCourse.id, folderUpdates).catch(() => {});
         } catch (_) {}
       }
 
@@ -1116,9 +1127,20 @@ export function useGoogleSheetsAndDriveSync({
     if (!activeCourse || isSettingUpDriveFolder) return;
     setIsSettingUpDriveFolder(true);
     try {
+      let activeToken = token || getCachedAccessToken();
+      if (!activeToken || !isValidGoogleAccessToken(activeToken)) {
+        try {
+          const freshToken = await requestAccessToken();
+          if (freshToken && isValidGoogleAccessToken(freshToken)) {
+            activeToken = freshToken;
+          }
+        } catch (_) {}
+      }
+
       const structure = await driveService.setupCourseFolderStructure(
         activeCourse.name,
-        activeCourse.driveFolderId
+        activeCourse.driveFolderId,
+        activeToken || undefined
       );
 
       let dispSheetUrl: string | undefined = activeCourse.dispositionSheetUrl;
@@ -1135,11 +1157,28 @@ export function useGoogleSheetsAndDriveSync({
           dispositionMap,
           historyList,
           activeCourse.dispositionSheetId,
-          structure.mainFolder.id
+          structure.attendanceFolder.id,
+          activeToken || undefined,
+          dispositionMap2c
         );
         if (dispRes.url) dispSheetUrl = dispRes.url;
         if (dispRes.spreadsheetId && isRealGoogleSpreadsheetId(dispRes.spreadsheetId)) {
           dispSheetId = dispRes.spreadsheetId;
+          // Also ensure direct shortcuts exist inside "Disposición" and "Historial de Incidencias" subfolders
+          await Promise.all([
+            driveService.ensureShortcutInFolder(
+              `📋 Disposición - ${activeCourse.name}`,
+              dispSheetId,
+              structure.dispositionFolder.id,
+              activeToken || undefined
+            ),
+            driveService.ensureShortcutInFolder(
+              `📋 Historial de Incidencias - ${activeCourse.name}`,
+              dispSheetId,
+              structure.incidentsFolder.id,
+              activeToken || undefined
+            ),
+          ]);
         }
       } catch (err) {
         console.warn('Could not auto-sync disposition sheet to Drive folder:', err);
@@ -1154,8 +1193,9 @@ export function useGoogleSheetsAndDriveSync({
             schedule: activeCourse.schedule,
           },
           undefined,
-          structure.mainFolder.id,
-          activeCourse.libroDeTemasSheetId
+          structure.libroDeTemasFolder.id,
+          activeCourse.libroDeTemasSheetId,
+          activeToken || undefined
         );
         if (libroRes.url) libroSheetUrl = libroRes.url;
         if (libroRes.spreadsheetId && isRealGoogleSpreadsheetId(libroRes.spreadsheetId)) {
@@ -1194,7 +1234,8 @@ export function useGoogleSheetsAndDriveSync({
           term1Data.cats,
           term1Data.gMap,
           activeCourse.gradesSheetId,
-          structure.mainFolder.id
+          structure.gradesFolder.id,
+          activeToken || undefined
         );
         if (gradesRes1c.url) gradesSheetUrl = gradesRes1c.url;
         if (gradesRes1c.spreadsheetId && isRealGoogleSpreadsheetId(gradesRes1c.spreadsheetId)) {
@@ -1212,18 +1253,34 @@ export function useGoogleSheetsAndDriveSync({
             term2Data.cats,
             term2Data.gMap,
             gradesSheetId,
-            structure.mainFolder.id
+            structure.gradesFolder.id,
+            activeToken || undefined
           );
         }
       } catch (err) {
         console.warn('Could not auto-sync gradebook sheet to Drive folder:', err);
       }
 
+      const mainFolderDirectUrl = getDirectDriveFolderUrl(
+        structure.mainFolder.id,
+        structure.mainFolder.url
+      );
+
       const updatedCourseData: Partial<Course> = {
         driveFolderId: structure.mainFolder.id,
-        driveFolderUrl: structure.mainFolder.url,
+        driveFolderUrl: mainFolderDirectUrl,
+        gradesFolderId: structure.gradesFolder.id,
+        gradesFolderUrl: getDirectDriveFolderUrl(structure.gradesFolder.id, structure.gradesFolder.url),
+        attendanceFolderId: structure.attendanceFolder.id,
+        attendanceFolderUrl: getDirectDriveFolderUrl(structure.attendanceFolder.id, structure.attendanceFolder.url),
+        dispositionFolderId: structure.dispositionFolder.id,
+        dispositionFolderUrl: getDirectDriveFolderUrl(structure.dispositionFolder.id, structure.dispositionFolder.url),
+        libroDeTemasFolderId: structure.libroDeTemasFolder.id,
+        libroDeTemasFolderUrl: getDirectDriveFolderUrl(structure.libroDeTemasFolder.id, structure.libroDeTemasFolder.url),
         reportsFolderId: structure.reportsFolder.id,
-        reportsFolderUrl: structure.reportsFolder.url,
+        reportsFolderUrl: getDirectDriveFolderUrl(structure.reportsFolder.id, structure.reportsFolder.url),
+        incidentsFolderId: structure.incidentsFolder.id,
+        incidentsFolderUrl: getDirectDriveFolderUrl(structure.incidentsFolder.id, structure.incidentsFolder.url),
         dispositionSheetId: dispSheetId,
         dispositionSheetUrl: dispSheetUrl,
         libroDeTemasSheetId: libroSheetId,
@@ -1237,6 +1294,10 @@ export function useGoogleSheetsAndDriveSync({
 
       setCourseDriveStructure({
         ...structure,
+        mainFolder: {
+          ...structure.mainFolder,
+          url: mainFolderDirectUrl,
+        },
         attendanceSheetUrl: dispSheetUrl,
         libroDeTemasSheetUrl: libroSheetUrl,
         gradesSheetUrl: gradesSheetUrl,
@@ -1244,7 +1305,7 @@ export function useGoogleSheetsAndDriveSync({
 
       setDriveFolderModalOpen(true);
       setToastMessage(
-        `Carpeta de Drive "${activeCourse.name}" preparada con los 3 documentos (Asistencia y Disposición, Libro de Temas, Calificaciones) y la subcarpeta Informes.`
+        `Carpeta "${structure.mainFolder.name}" lista en Google Drive con las 6 subcarpetas (Calificaciones, Asistencia, Disposición, Libro de Temas, Informes e Historial de Incidencias).`
       );
       setTimeout(() => setToastMessage(null), 4500);
     } catch (err: any) {

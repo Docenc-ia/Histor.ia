@@ -260,14 +260,16 @@ export function useStudentProfileAndObservationsActions({
         profileDocTitle.trim() ||
         `📄 Ficha de Seguimiento - ${student.lastName}, ${student.firstName} (${activeCourse.name})`;
 
-      let parentFolderId = courseDriveStructure?.mainFolder?.id;
-      if (!parentFolderId) {
+      let parentFolderId =
+        courseDriveStructure?.reportsFolder?.id || activeCourse.reportsFolderId;
+      if (!parentFolderId || parentFolderId === activeCourse.driveFolderId) {
         try {
-          const folderStruct = await driveService.ensureCourseFolderStructure(
+          const folderStruct = await driveService.setupCourseFolderStructure(
             activeCourse.name,
-            activeCourse.id
+            activeCourse.driveFolderId
           );
-          parentFolderId = folderStruct.mainFolder.id;
+          parentFolderId =
+            folderStruct.reportsFolder?.id || folderStruct.mainFolder.id;
           setCourseDriveStructure(folderStruct);
         } catch {
           // Si no se pudo crear carpeta, se guarda en Mi Unidad de Drive

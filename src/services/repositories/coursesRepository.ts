@@ -19,7 +19,7 @@ export const coursesRepository = {
   deduplicate: deduplicateCourses,
   fetchAll: (): Promise<Course[]> => api.getCourses(),
   create: (courseData: Partial<Course>): Promise<Course> => api.createCourse(courseData),
-  update: (courseId: string, updates: Partial<Course>): Promise<Course> =>
+  update: (courseId: string, updates: Partial<Course>): Promise<{ success: boolean; course: Course }> =>
     api.updateCourse(courseId, updates),
   delete: (courseId: string) => api.deleteCourse(courseId),
   clearAll: () => api.clearAllCourses(),

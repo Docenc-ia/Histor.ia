@@ -22,12 +22,12 @@ export const studentsRepository = {
   saveLocal: saveLocalStudents,
   deduplicate: deduplicateStudents,
   fetchAll: (): Promise<Student[]> => api.getStudents(),
-  create: (studentData: Partial<Student>): Promise<Student> =>
+  create: (studentData: Partial<Student> & { courseId: string; firstName: string; lastName: string; email?: string }): Promise<Student> =>
     api.createStudent(studentData),
-  update: (studentId: string, updates: Partial<Student>, courseId?: string) =>
-    api.updateStudent(studentId, updates, courseId),
-  delete: (studentId: string, courseId?: string) =>
-    api.deleteStudent(studentId, courseId),
+  update: (studentId: string, courseId: string, updates: Partial<Student>) =>
+    api.updateStudent(studentId, courseId, updates),
+  delete: (studentOrId: Student | string, courseId: string) =>
+    api.removeStudentFromCourse(studentOrId, courseId),
   getRemovedIds: getRemovedStudentIds,
   getRemovedList: getRemovedStudentsList,
   markRemoved: markStudentRemoved,

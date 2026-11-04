@@ -1,6 +1,7 @@
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
+import { driveService } from '../services/workspace/driveService';
 
 export interface GradeHistoryEntry {
   id: string;
@@ -145,6 +146,21 @@ export async function exportGradeHistoryToExcel(
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
   const filename = `Historial_Calificaciones_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
   XLSX.writeFile(wb, filename);
+
+  try {
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+    return await driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName: filename,
+        content: buffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      })
+      .catch(() => null);
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -159,7 +175,8 @@ export async function exportCourseClassHistoryToExcel(
     action: string;
     category: string;
     timestamp?: number;
-  }>
+  }>,
+  options?: { customFileName?: string; existingMainFolderId?: string; skipLocalDownload?: boolean }
 ) {
   const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
@@ -190,8 +207,29 @@ export async function exportCourseClassHistoryToExcel(
   XLSX.utils.book_append_sheet(wb, ws, 'Historial Clase');
 
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-  const filename = `Historial_Asistencia_Conducta_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  const rawName =
+    options?.customFileName?.trim() ||
+    `Historial_Asistencia_Conducta_${safeName}_${new Date().toISOString().slice(0, 10)}`;
+  const filename = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
+  if (!options?.skipLocalDownload) {
+    XLSX.writeFile(wb, filename);
+  }
+
+  try {
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+    return await driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Historial de Incidencias',
+        fileName: filename,
+        content: buffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        existingMainFolderId: options?.existingMainFolderId,
+      })
+      .catch(() => null);
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -202,7 +240,8 @@ export async function exportGradebookMatrixToExcel(
   termLabel: string,
   students: Student[],
   categories: GradeCategory[],
-  gradesMap: StudentGradesMap
+  gradesMap: StudentGradesMap,
+  options?: { customFileName?: string; existingMainFolderId?: string; skipLocalDownload?: boolean }
 ) {
   const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
@@ -268,8 +307,29 @@ export async function exportGradebookMatrixToExcel(
   XLSX.utils.book_append_sheet(wb, ws, tabTitle);
 
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-  const filename = `Planilla_Calificaciones_${safeName}_${termLabel.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  const rawName =
+    options?.customFileName?.trim() ||
+    `Planilla_Calificaciones_${safeName}_${termLabel.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0, 10)}`;
+  const filename = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
+  if (!options?.skipLocalDownload) {
+    XLSX.writeFile(wb, filename);
+  }
+
+  try {
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+    return await driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName: filename,
+        content: buffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        existingMainFolderId: options?.existingMainFolderId,
+      })
+      .catch(() => null);
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -279,7 +339,8 @@ export async function exportCourseDispositionToExcel(
   courseName: string,
   students: Student[],
   map1c: Record<string, any>,
-  map2c: Record<string, any>
+  map2c: Record<string, any>,
+  options?: { customFileName?: string; existingMainFolderId?: string; skipLocalDownload?: boolean }
 ) {
   const XLSX = await loadXlsxModule();
   const wb = XLSX.utils.book_new();
@@ -380,7 +441,7 @@ export async function exportCourseDispositionToExcel(
       'N°': idx + 1,
       'Apellido': sanitizeExcelText(s.lastName),
       'Nombre': sanitizeExcelText(s.firstName),
-      'Email': sanitizeExcelText(s.email || '-',),
+      'Email': sanitizeExcelText(s.email || '-'),
       'Total Ausencias Anual': absTotal,
       'Total Tardanzas Anual': latesTotal,
       [`${dispositionLabel} ${term1ShortLabel}`]: disp1,
@@ -405,7 +466,29 @@ export async function exportCourseDispositionToExcel(
   const safeName = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
   const safeAtt = attendanceLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
   const safeDisp = dispositionLabel.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-  const filename = `${safeAtt}_${safeDisp}_${safeName}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-  XLSX.writeFile(wb, filename);
+  const rawName =
+    options?.customFileName?.trim() ||
+    `${safeAtt}_${safeDisp}_${safeName}_${new Date().toISOString().slice(0, 10)}`;
+  const filename = rawName.toLowerCase().endsWith('.xlsx') ? rawName : `${rawName}.xlsx`;
+  if (!options?.skipLocalDownload) {
+    XLSX.writeFile(wb, filename);
+  }
+
+  try {
+    const buffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+    return await driveService
+      .uploadFileToCourseCategory({
+        courseName,
+        category: 'Asistencia',
+        fileName: filename,
+        content: buffer,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        alsoShortcutInCategories: ['Disposición'],
+        existingMainFolderId: options?.existingMainFolderId,
+      })
+      .catch(() => null);
+  } catch (_) {
+    return null;
+  }
 }
 

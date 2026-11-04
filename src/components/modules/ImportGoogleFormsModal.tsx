@@ -645,7 +645,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     }
 
     const detected = autoDetectGoogleFormsColumns(headers, rows, students);
-    const effectiveMax = explicitMaxScore && explicitMaxScore > 0 ? explicitMax : detected.detectedMaxScore;
+    const effectiveMax = explicitMaxScore && explicitMaxScore > 0 ? explicitMaxScore : detected.detectedMaxScore;
 
     setNameCol(detected.nameCol);
     setSecondaryNameCol(detected.secondaryNameCol);

@@ -15,6 +15,7 @@ import {
 import { Course, Student, StudentHistoryItem } from '../../../types';
 import { AttendanceSettings, getCourseAttendanceSettings, saveCourseAttendanceSettings } from '../../../utils/attendanceCalculations';
 import { firestoreSync, getActiveUserId } from '../../../services/firestoreSync';
+import { getUserScopedItem, setUserScopedItem } from '../../../services/storageHelpers';
 
 interface BackupRestoreModalProps {
   isOpen: boolean;
@@ -75,7 +76,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
 
       const parseJsonKey = (key: string) => {
         try {
-          const raw = localStorage.getItem(key);
+          const raw = getUserScopedItem(key);
           return raw ? JSON.parse(raw) : null;
         } catch {
           return null;
@@ -94,10 +95,10 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           parseJsonKey(`fds_grades_data_${course.id}`),
         gradesData2c: parseJsonKey(`fds_grades_data_${course.id}_2c`),
         finalCalc1c:
-          localStorage.getItem(`fds_grades_final_calc_${course.id}_1c`) ||
-          localStorage.getItem(`fds_grades_final_calc_${course.id}`) ||
+          getUserScopedItem(`fds_grades_final_calc_${course.id}_1c`) ||
+          getUserScopedItem(`fds_grades_final_calc_${course.id}`) ||
           null,
-        finalCalc2c: localStorage.getItem(`fds_grades_final_calc_${course.id}_2c`) || null,
+        finalCalc2c: getUserScopedItem(`fds_grades_final_calc_${course.id}_2c`) || null,
         annualOverrides: parseJsonKey(`fds_grades_annual_override_${course.id}`),
         preliminaryValuation1c: parseJsonKey(`fds_preliminary_valuation_${course.id}_1c`),
         preliminaryValuation2c: parseJsonKey(`fds_preliminary_valuation_${course.id}_2c`),
@@ -106,7 +107,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       // Libro de Temas if present
       let libroDeTemas = null;
       try {
-        const storageRaw = localStorage.getItem(`fds_libro_temas_${course.id}`);
+        const storageRaw = getUserScopedItem(`fds_libro_temas_${course.id}`);
         if (storageRaw) {
           libroDeTemas = JSON.parse(storageRaw);
         }
@@ -216,8 +217,8 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       // 2. Restore student observations
       if (parsedBackup.studentObservations && typeof parsedBackup.studentObservations === 'object') {
         const storedGlobal =
-          localStorage.getItem('student_observations') ||
-          localStorage.getItem('fds_student_observations');
+          getUserScopedItem('student_observations') ||
+          getUserScopedItem('fds_student_observations');
         let currentGlobal: Record<string, any[]> = { ...studentObservations };
         if (storedGlobal) {
           try {
@@ -239,9 +240,9 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
           }
         });
 
-        localStorage.setItem('student_observations', JSON.stringify(mergedObservations));
-        localStorage.setItem('fds_student_observations', JSON.stringify(mergedObservations));
-        localStorage.setItem(`fds_student_observations_${course.id}`, JSON.stringify(mergedObservations));
+        setUserScopedItem('student_observations', JSON.stringify(mergedObservations));
+        setUserScopedItem('fds_student_observations', JSON.stringify(mergedObservations));
+        setUserScopedItem(`fds_student_observations_${course.id}`, JSON.stringify(mergedObservations));
         if (onRestoreObservations) {
           onRestoreObservations(mergedObservations);
         }
@@ -255,40 +256,40 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       const cats1c = gb.categories1c || parsedBackup.gradebookCategories;
       if (cats1c) {
         try {
-          localStorage.setItem(`fds_grades_categories_${course.id}_1c`, JSON.stringify(cats1c));
-          localStorage.setItem(`fds_grades_categories_${course.id}`, JSON.stringify(cats1c));
+          setUserScopedItem(`fds_grades_categories_${course.id}_1c`, JSON.stringify(cats1c));
+          setUserScopedItem(`fds_grades_categories_${course.id}`, JSON.stringify(cats1c));
         } catch (_) {}
       }
       if (gb.categories2c) {
         try {
-          localStorage.setItem(`fds_grades_categories_${course.id}_2c`, JSON.stringify(gb.categories2c));
+          setUserScopedItem(`fds_grades_categories_${course.id}_2c`, JSON.stringify(gb.categories2c));
         } catch (_) {}
       }
       if (gb.gradesData1c) {
         try {
-          localStorage.setItem(`fds_grades_data_${course.id}_1c`, JSON.stringify(gb.gradesData1c));
-          localStorage.setItem(`fds_grades_data_${course.id}`, JSON.stringify(gb.gradesData1c));
+          setUserScopedItem(`fds_grades_data_${course.id}_1c`, JSON.stringify(gb.gradesData1c));
+          setUserScopedItem(`fds_grades_data_${course.id}`, JSON.stringify(gb.gradesData1c));
         } catch (_) {}
       }
       if (gb.gradesData2c) {
         try {
-          localStorage.setItem(`fds_grades_data_${course.id}_2c`, JSON.stringify(gb.gradesData2c));
+          setUserScopedItem(`fds_grades_data_${course.id}_2c`, JSON.stringify(gb.gradesData2c));
         } catch (_) {}
       }
       if (gb.finalCalc1c) {
         try {
-          localStorage.setItem(`fds_grades_final_calc_${course.id}_1c`, gb.finalCalc1c);
-          localStorage.setItem(`fds_grades_final_calc_${course.id}`, gb.finalCalc1c);
+          setUserScopedItem(`fds_grades_final_calc_${course.id}_1c`, gb.finalCalc1c);
+          setUserScopedItem(`fds_grades_final_calc_${course.id}`, gb.finalCalc1c);
         } catch (_) {}
       }
       if (gb.finalCalc2c) {
         try {
-          localStorage.setItem(`fds_grades_final_calc_${course.id}_2c`, gb.finalCalc2c);
+          setUserScopedItem(`fds_grades_final_calc_${course.id}_2c`, gb.finalCalc2c);
         } catch (_) {}
       }
       if (gb.annualOverrides) {
         try {
-          localStorage.setItem(
+          setUserScopedItem(
             `fds_grades_annual_override_${course.id}`,
             JSON.stringify(gb.annualOverrides)
           );
@@ -296,7 +297,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       }
       if (gb.preliminaryValuation1c) {
         try {
-          localStorage.setItem(
+          setUserScopedItem(
             `fds_preliminary_valuation_${course.id}_1c`,
             JSON.stringify(gb.preliminaryValuation1c)
           );
@@ -304,7 +305,7 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
       }
       if (gb.preliminaryValuation2c) {
         try {
-          localStorage.setItem(
+          setUserScopedItem(
             `fds_preliminary_valuation_${course.id}_2c`,
             JSON.stringify(gb.preliminaryValuation2c)
           );
@@ -343,16 +344,16 @@ export const BackupRestoreModal: React.FC<BackupRestoreModalProps> = ({
         try {
           const ldt = parsedBackup.libroDeTemas;
           if (restoreMergeMode === 'replace') {
-            localStorage.setItem(`fds_libro_temas_${course.id}`, JSON.stringify(ldt));
+            setUserScopedItem(`fds_libro_temas_${course.id}`, JSON.stringify(ldt));
           } else {
-            const existingRaw = localStorage.getItem(`fds_libro_temas_${course.id}`);
+            const existingRaw = getUserScopedItem(`fds_libro_temas_${course.id}`);
             const existing = existingRaw ? JSON.parse(existingRaw) : {};
             const merged = {
               ...existing,
               ...ldt,
               entries: { ...(existing.entries || {}), ...(ldt.entries || {}) },
             };
-            localStorage.setItem(`fds_libro_temas_${course.id}`, JSON.stringify(merged));
+            setUserScopedItem(`fds_libro_temas_${course.id}`, JSON.stringify(merged));
           }
         } catch (_) {}
       }

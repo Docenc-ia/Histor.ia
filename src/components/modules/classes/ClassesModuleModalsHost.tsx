@@ -8,17 +8,14 @@
  */
 
 import React, { Suspense, lazy } from 'react';
-import { History } from 'lucide-react';
 import { Course, Student, StudentDispositionData } from '../../../types';
 import { storageGateway } from '../../../services/storageGateway';
 import { DEFAULT_ABSENCE_PRESETS } from '../../../hooks/useCourseNotifications';
 import {
   DirectMessageModal,
   AddStudentModal,
-  DobleEntradaModal,
-  HeaderExportExcelModal,
 } from './CourseUtilityModals';
-import { DriveFolderModal, SheetsConnectModal } from './DriveSheetsModals';
+import { DriveFolderModal } from './DriveSheetsModals';
 import { CalendarSyncModal, EditCourseDetailsModal } from './CourseCalendarAndEditModals';
 import { RemovedStudentsModals } from './RemovedStudentsModals';
 import { SelectiveStudentSyncModal } from './SelectiveStudentSyncModal';
@@ -201,24 +198,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
   } = rosterAndSchedule;
 
   const {
-    sheetConfig,
-    isSyncingSheet,
-    isOpeningSheet,
-    showSheetsConnectModal,
-    setShowSheetsConnectModal,
-    sheetsModalFeedback,
-    customSheetInput,
-    setCustomSheetInput,
-    isLinkingCustomSheet,
-    customFolderInput,
-    setCustomFolderInput,
-    isLinkingCustomFolder,
-    isPullingFromSheet,
-    dobleEntradaDiffs,
-    isDobleEntradaModalOpen,
-    setIsDobleEntradaModalOpen,
-    isHeaderExportExcelModalOpen,
-    setIsHeaderExportExcelModalOpen,
     isHeaderImportModalOpen,
     setIsHeaderImportModalOpen,
     headerImportSourceType,
@@ -226,18 +205,10 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
     driveFolderModalOpen,
     setDriveFolderModalOpen,
     courseDriveStructure,
-    handleManualSheetsSync,
-    handleLinkCustomSpreadsheet,
-    handleSaveCustomDriveFolder,
-    handleConnectGoogleForSheets,
-    handlePullFromGoogleSheet,
-    handleExportAllCourseExcel,
     getCategoriesForImport,
     getGradesMapForImport,
     handleApplyImportFromClassesModule,
     handleApplyMultiImportFromClassesModule,
-    handleOpenInSheetsNew,
-    handleDownloadCourseCsv,
   } = sheetsAndDriveSync;
 
   const {
@@ -697,40 +668,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
         isDarkMode={isDarkMode}
       />
 
-      <SheetsConnectModal
-        isOpen={showSheetsConnectModal}
-        onClose={() => setShowSheetsConnectModal(false)}
-        activeCourse={activeCourse}
-        isDarkMode={isDarkMode}
-        sheetConfig={sheetConfig}
-        isSyncingSheet={isSyncingSheet}
-        isOpeningSheet={isOpeningSheet}
-        handleManualSheetsSync={handleManualSheetsSync}
-        customFolderInput={customFolderInput}
-        setCustomFolderInput={setCustomFolderInput}
-        handleSaveCustomDriveFolder={handleSaveCustomDriveFolder}
-        isLinkingCustomFolder={isLinkingCustomFolder}
-        customSheetInput={customSheetInput}
-        setCustomSheetInput={setCustomSheetInput}
-        handleLinkCustomSpreadsheet={handleLinkCustomSpreadsheet}
-        isLinkingCustomSheet={isLinkingCustomSheet}
-        sheetsModalFeedback={sheetsModalFeedback}
-        handlePullFromGoogleSheet={handlePullFromGoogleSheet}
-        isPullingFromSheet={isPullingFromSheet}
-        handleConnectGoogleForSheets={handleConnectGoogleForSheets}
-        handleOpenInSheetsNew={handleOpenInSheetsNew}
-        handleDownloadCourseCsv={handleDownloadCourseCsv}
-      />
-
-      <HeaderExportExcelModal
-        isOpen={isHeaderExportExcelModalOpen}
-        onClose={() => setIsHeaderExportExcelModalOpen(false)}
-        activeCourse={activeCourse}
-        isDarkMode={isDarkMode}
-        handleExportAllCourseExcel={handleExportAllCourseExcel}
-        HistoryIcon={History}
-      />
-
       {isHeaderImportModalOpen && activeCourse && (
         <Suspense fallback={null}>
           <ImportGradesModal
@@ -783,14 +720,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
           />
         </Suspense>
       )}
-
-      <DobleEntradaModal
-        isOpen={isDobleEntradaModalOpen}
-        onClose={() => setIsDobleEntradaModalOpen(false)}
-        activeCourse={activeCourse}
-        dobleEntradaDiffs={dobleEntradaDiffs}
-        isDarkMode={isDarkMode}
-      />
 
       <AddStudentModal
         isOpen={isAddStudentModalOpen}

@@ -5,15 +5,11 @@ import {
   Check,
   Cloud,
   Database,
-  Download,
-  ExternalLink,
-  FileSpreadsheet,
   Lock,
   Pencil,
   PenTool,
   Plus,
   Printer,
-  RefreshCw,
   Search,
   Settings,
   X,
@@ -32,7 +28,6 @@ import { DriveSaveFormat, SavedDriveFileResult } from '../../../utils/driveForma
 import {
   LibroDeTemasEntry,
   LibroDeTemasMetadata,
-  LibroDeTemasSheetInfo,
   ScheduledRow,
 } from '../LibroDeTemasMatrix';
 
@@ -74,14 +69,6 @@ export interface LibroDeTemasHeaderToolbarProps {
   onUpdateAttendanceSettings?: (next: AttendanceSettings) => void;
   onRefreshCourse?: () => void;
   onOpenAttendanceSettingsModal?: () => void;
-  sheetInfo: LibroDeTemasSheetInfo | null;
-  isOpeningSheet: boolean;
-  isSyncingSheet: boolean;
-  isExportingDoc: boolean;
-  showDriveConfirm: boolean;
-  setShowDriveConfirm: React.Dispatch<React.SetStateAction<boolean>>;
-  driveDocTitle: string;
-  setDriveDocTitle: React.Dispatch<React.SetStateAction<string>>;
   termFilter: 'all' | '1c' | '2c';
   setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c'>>;
   sortOrder: 'asc' | 'desc';
@@ -96,12 +83,8 @@ export interface LibroDeTemasHeaderToolbarProps {
   handleSignAllCompletedClasses: () => void;
   setShowCharacterOptionsModal: React.Dispatch<React.SetStateAction<boolean>>;
   setShowAddDateModal: React.Dispatch<React.SetStateAction<boolean>>;
-  handleOpenGoogleSheet: () => void;
-  handleSyncWithSheets: (openAfterSync?: boolean) => void;
   handlePrintLibro: () => void;
-  handleDownloadLibro: () => void;
   handleOpenOrDownloadBackup: () => void;
-  handleExportToGoogleDoc: () => void;
   handleSaveLibroInFormat: (
     format: DriveSaveFormat,
     customTitle: string
@@ -112,8 +95,7 @@ export interface LibroDeTemasHeaderToolbarProps {
     nextMetadata: LibroDeTemasMetadata,
     nextEntries: Record<string, LibroDeTemasEntry>,
     nextCharacterOptions?: string[],
-    immediateCloud?: boolean,
-    nextSheetInfo?: LibroDeTemasSheetInfo | null
+    immediateCloud?: boolean
   ) => void;
   setToastMsg: React.Dispatch<React.SetStateAction<string | null>>;
 }
@@ -141,14 +123,6 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
   onUpdateAttendanceSettings,
   onRefreshCourse,
   onOpenAttendanceSettingsModal,
-  sheetInfo,
-  isOpeningSheet,
-  isSyncingSheet,
-  isExportingDoc,
-  showDriveConfirm,
-  setShowDriveConfirm,
-  driveDocTitle,
-  setDriveDocTitle,
   termFilter,
   setTermFilter,
   sortOrder,
@@ -161,9 +135,7 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
   handleSignAllCompletedClasses,
   setShowCharacterOptionsModal,
   setShowAddDateModal,
-  handleSyncWithSheets,
   handlePrintLibro,
-  handleDownloadLibro,
   handleOpenOrDownloadBackup,
   handleSaveLibroInFormat,
   handleMetadataChange,
@@ -239,8 +211,8 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
           </div>
         </div>
 
-        {/* 3 Columnas de Opciones debajo del título y arriba de Asignatura, Prof. Titular, etc. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full min-w-0 pt-2 border-t border-neutral-200/70 dark:border-slate-800">
+        {/* 2 Columnas de 3 Opciones debajo del título y arriba de Asignatura, Prof. Titular, etc. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full min-w-0 pt-2 border-t border-neutral-200/70 dark:border-slate-800">
           {/* COLUMNA 1: Firmar clases cargadas, Opciones de carácter y Agregar Fecha */}
           <div className="flex flex-col gap-1.5 min-w-0">
             <button
@@ -286,43 +258,8 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
             </button>
           </div>
 
-          {/* COLUMNA 2: Sincronizar Sheets y Guardar en Drive (menú desplegable) */}
-          <div className="flex flex-col gap-1.5 justify-center min-w-0 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={() => handleSyncWithSheets(false)}
-              disabled={isSyncingSheet}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer shadow-2xs ${
-                isDarkMode
-                  ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
-                  : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
-              }`}
-              title="Sincronizar Libro de Temas con Google Sheets en la carpeta de Drive de la materia (doble entrada)"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${
-                  isSyncingSheet ? 'animate-spin' : ''
-                }`}
-              />
-              <span className="truncate">
-                {isSyncingSheet ? 'Sincronizando...' : 'Sincronizar Sheets'}
-              </span>
-            </button>
-
-            <div className="w-full min-w-0 [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
-              <DriveSaveFormatSelector
-                courseName={courseName}
-                category="Libro de Temas"
-                defaultTitle={`Libro de Temas - ${courseName} (${todayStr})`}
-                buttonLabel="Guardar en Drive"
-                compact
-                onSaveFormat={handleSaveLibroInFormat}
-              />
-            </div>
-          </div>
-
-          {/* COLUMNA 3: Imprimir, Descargar y Copia de Seguridad */}
-          <div className="flex flex-col gap-1.5 min-w-0 sm:col-span-2 lg:col-span-1 lg:border-l lg:pl-2.5 border-neutral-200 dark:border-slate-800">
+          {/* COLUMNA 2: Imprimir, Copia de Seguridad y Guardar en Drive */}
+          <div className="flex flex-col gap-1.5 min-w-0 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
             <button
               type="button"
               onClick={handlePrintLibro}
@@ -339,20 +276,6 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
 
             <button
               type="button"
-              onClick={handleDownloadLibro}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
-                  : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-              }`}
-              title="Descargar Libro de Temas en formato Excel (.xlsx)"
-            >
-              <Download className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span className="truncate">Descargar</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleOpenOrDownloadBackup}
               className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                 isDarkMode
@@ -364,6 +287,17 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
               <Database className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
               <span className="truncate">Copia de Seguridad</span>
             </button>
+
+            <div className="w-full min-w-0 [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
+              <DriveSaveFormatSelector
+                courseName={courseName}
+                category="Libro de Temas"
+                defaultTitle={`Libro de Temas - ${courseName} (${todayStr})`}
+                buttonLabel="Guardar en Drive"
+                compact
+                onSaveFormat={handleSaveLibroInFormat}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -620,31 +554,10 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
 
       {/* Barra de Filtros y Buscador 100% Elástica */}
       <div
-        className={`px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-between gap-2.5 min-w-0 ${
+        className={`px-3 sm:px-4 py-2.5 flex flex-wrap items-center justify-end gap-2.5 min-w-0 ${
           isDarkMode ? 'bg-slate-850/60' : 'bg-neutral-50/80'
         }`}
       >
-        <div className="flex items-center gap-2 flex-wrap min-w-0 max-w-full">
-          {sheetInfo?.url && (
-            <a
-              href={sheetInfo.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors max-w-full min-w-0 ${
-                isDarkMode
-                  ? 'bg-emerald-950/50 border-emerald-800 text-emerald-300 hover:bg-emerald-900/60'
-                  : 'bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-              }`}
-              title="Abrir hoja de Google Sheets vinculada en la carpeta de Drive de la materia"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-              <span className="truncate">
-                Sheet en Drive{sheetInfo.lastSyncedAt ? ` (${sheetInfo.lastSyncedAt})` : ''}
-              </span>
-              <ExternalLink className="w-3 h-3 opacity-80 shrink-0" />
-            </a>
-          )}
-        </div>
 
         {/* Filtros de período, estado y buscador */}
         <div className="flex items-center gap-2 flex-wrap w-full xl:w-auto flex-1 justify-end min-w-0">

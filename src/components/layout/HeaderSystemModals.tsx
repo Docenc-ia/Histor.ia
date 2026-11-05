@@ -362,7 +362,7 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
                   required
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  placeholder="ej: Prof. Jorge Cano"
+                  placeholder="ej: Prof. Nombre Apellido"
                   className={`w-full px-3.5 py-2 text-xs sm:text-sm rounded-xl border outline-none ${
                     isDarkMode
                       ? 'bg-slate-800 border-slate-700 text-white focus:border-blue-500'

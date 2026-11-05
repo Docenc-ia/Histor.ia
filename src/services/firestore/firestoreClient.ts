@@ -478,15 +478,27 @@ function getCachedStoredProfile(): { id?: string; email?: string } | null {
 }
 
 export function getActiveUserEmail(): string {
-  if (auth.currentUser?.email) return auth.currentUser.email.trim().toLowerCase();
   if (typeof window !== 'undefined') {
     try {
+      const isSessionActive =
+        sessionStorage.getItem('docencia_session_active') === 'true' ||
+        localStorage.getItem('docencia_session_active') === 'true';
+      if (!isSessionActive) {
+        return '';
+      }
+      const sessionEmail = sessionStorage.getItem('docencia_teacher_email');
+      if (sessionEmail && sessionEmail.trim()) {
+        return sessionEmail.trim().toLowerCase();
+      }
       const parsed = getCachedStoredProfile();
       if (parsed?.email) return String(parsed.email).trim().toLowerCase();
-      const email = sessionStorage.getItem('docencia_teacher_email') || localStorage.getItem('docencia_teacher_email');
-      if (email) return email.trim().toLowerCase();
+      const localEmail = localStorage.getItem('docencia_teacher_email');
+      if (localEmail && localEmail.trim()) {
+        return localEmail.trim().toLowerCase();
+      }
     } catch (_) {}
   }
+  if (auth.currentUser?.email) return auth.currentUser.email.trim().toLowerCase();
   return '';
 }
 

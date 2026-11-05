@@ -13,7 +13,7 @@ import { getCachedAccessToken } from '../services/workspace/googleAuth';
 import { extractWeekdaysFromSchedule } from '../utils/schoolHolidays';
 import { formatLocalDateDMY } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
-import { getUserStorageKey } from '../services/storageHelpers';
+import { getUserScopedItem, setUserScopedItem } from '../services/storageHelpers';
 import { AttendanceSettings, saveCourseAttendanceSettings } from '../utils/attendanceCalculations';
 import { touchCourseDataLru, putCourseSnapshotInLru } from '../utils/lruCourseCache';
 import { subscribeAppEvents } from '../utils/appEventBus';
@@ -255,9 +255,7 @@ export function useCourseRosterAndSchedule({
 
         try {
           const rawLibroKey = `fds_libro_temas_${calendarModalCourse.id}`;
-          const scopedLibroKey = getUserStorageKey(rawLibroKey);
-          const currentLibroRaw =
-            localStorage.getItem(scopedLibroKey) || localStorage.getItem(rawLibroKey);
+          const currentLibroRaw = getUserScopedItem(rawLibroKey);
           const parsed = currentLibroRaw ? JSON.parse(currentLibroRaw) : {};
           const updatedLibro = {
             ...parsed,
@@ -268,11 +266,7 @@ export function useCourseRosterAndSchedule({
             },
             updatedAt: new Date().toISOString(),
           };
-          const serialized = JSON.stringify(updatedLibro);
-          localStorage.setItem(scopedLibroKey, serialized);
-          if (scopedLibroKey !== rawLibroKey) {
-            localStorage.setItem(rawLibroKey, serialized);
-          }
+          setUserScopedItem(rawLibroKey, JSON.stringify(updatedLibro));
           const uid = getActiveUserId();
           if (uid) {
             firestoreSync.saveUserSetting(uid, `libro_temas_${calendarModalCourse.id}`, updatedLibro).catch(() => {});
@@ -361,9 +355,7 @@ export function useCourseRosterAndSchedule({
 
         try {
           const rawLibroKey = `fds_libro_temas_${editCourseData.id}`;
-          const scopedLibroKey = getUserStorageKey(rawLibroKey);
-          const currentLibroRaw =
-            localStorage.getItem(scopedLibroKey) || localStorage.getItem(rawLibroKey);
+          const currentLibroRaw = getUserScopedItem(rawLibroKey);
           const parsed = currentLibroRaw ? JSON.parse(currentLibroRaw) : {};
           const updatedLibro = {
             ...parsed,
@@ -375,11 +367,7 @@ export function useCourseRosterAndSchedule({
             },
             updatedAt: new Date().toISOString(),
           };
-          const serialized = JSON.stringify(updatedLibro);
-          localStorage.setItem(scopedLibroKey, serialized);
-          if (scopedLibroKey !== rawLibroKey) {
-            localStorage.setItem(rawLibroKey, serialized);
-          }
+          setUserScopedItem(rawLibroKey, JSON.stringify(updatedLibro));
           const uid = getActiveUserId();
           if (uid) {
             firestoreSync.saveUserSetting(uid, `libro_temas_${editCourseData.id}`, updatedLibro).catch(() => {});

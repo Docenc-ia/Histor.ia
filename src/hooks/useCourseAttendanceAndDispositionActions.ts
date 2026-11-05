@@ -15,11 +15,9 @@ import {
 } from '../services/api';
 import { classroomService } from '../services/workspace/classroomService';
 import { gmailService } from '../services/workspace/gmailService';
-import { driveService, CourseFolderStructure } from '../services/workspace/driveService';
+import { CourseFolderStructure } from '../services/workspace/driveService';
 import { isSameCalendarDay, formatLocalDateDMY, formatLocalTimeHMS } from '../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
-import { enqueueOfflineAction } from '../services/offlineSyncQueue';
-import { exportCourseClassHistoryToExcel } from '../utils/excelExport';
 import {
   DEFAULT_ABSENCE_PRESETS,
   DEFAULT_CONDUCT_PRESETS,
@@ -67,17 +65,6 @@ interface UseCourseAttendanceAndDispositionActionsProps {
     newHistory: StudentHistoryItem[]
   ) => void;
   deduplicateHistory: (items: StudentHistoryItem[]) => StudentHistoryItem[];
-  triggerSheetsSync: (
-    updatedMap?: Record<string, StudentDispositionData>,
-    updatedHistory?: StudentHistoryItem[],
-    updatedMap2c?: Record<string, StudentDispositionData>
-  ) => void;
-  sheetConfig: {
-    spreadsheetId: string;
-    url: string;
-    isLiveGoogle?: boolean;
-    lastSyncedAt?: string;
-  } | null;
   courseDriveStructure: CourseFolderStructure | null;
   setCourseDriveStructure: React.Dispatch<React.SetStateAction<CourseFolderStructure | null>>;
   token: string | null;
@@ -86,9 +73,6 @@ interface UseCourseAttendanceAndDispositionActionsProps {
     React.SetStateAction<'roster' | 'libro_temas' | 'grades' | 'history'>
   >;
   setToastMessage: React.Dispatch<React.SetStateAction<string | null>>;
-  setCourseReportModalStudentId: React.Dispatch<React.SetStateAction<string>>;
-  setCourseReportModalTab: React.Dispatch<React.SetStateAction<'course' | 'individual'>>;
-  setCourseReportModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   studentObservationsProps: {
     selectedStudentForProfile: Student | null;
     setSelectedStudentForProfile: React.Dispatch<React.SetStateAction<Student | null>>;
@@ -136,17 +120,12 @@ export function useCourseAttendanceAndDispositionActions({
   getStudentMetrics,
   saveTermDisposition,
   deduplicateHistory,
-  triggerSheetsSync,
-  sheetConfig,
   courseDriveStructure,
   setCourseDriveStructure,
   token,
   onRefreshData,
   setActiveTab,
   setToastMessage,
-  setCourseReportModalStudentId,
-  setCourseReportModalTab,
-  setCourseReportModalOpen,
   studentObservationsProps,
 }: UseCourseAttendanceAndDispositionActionsProps) {
   // Batch selection of students for notification at the end of class
@@ -279,7 +258,6 @@ export function useCourseAttendanceAndDispositionActions({
     });
 
     setHistoryList(updatedHistory);
-    triggerSheetsSync(dispositionMap, updatedHistory);
 
     api
       .updateDispositionHistoryNotification(historyItem.id, {
@@ -404,12 +382,6 @@ export function useCourseAttendanceAndDispositionActions({
       `Ausencia registrada para ${student.firstName} ${student.lastName} (+1 Falta en ${targetTerm === '2c' ? '2°C' : '1°C'})`
     );
     setTimeout(() => setToastMessage(null), 3500);
-
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
 
     if (onRefreshData) {
       onRefreshData();
@@ -665,11 +637,6 @@ export function useCourseAttendanceAndDispositionActions({
       const mergedHistory = deduplicateHistory([...newHistoryEntries, ...historyList]);
       setHistoryList(mergedHistory);
       saveTermDisposition(targetTerm, updatedMap, mergedHistory);
-      triggerSheetsSync(
-        targetTerm === '1c' ? updatedMap : dispositionMap,
-        mergedHistory,
-        targetTerm === '2c' ? updatedMap : dispositionMap2c
-      );
     }
 
     const defaultPreset =
@@ -812,7 +779,6 @@ export function useCourseAttendanceAndDispositionActions({
     }
 
     setHistoryList(updatedHistoryItems);
-    triggerSheetsSync(dispositionMap, updatedHistoryItems);
 
     setBatchAbsenceModal({
       isOpen: false,
@@ -837,7 +803,7 @@ export function useCourseAttendanceAndDispositionActions({
     setSelectedPendingHistoryIds([]);
 
     setToastMessage(
-      `¡Listo! Se enviaron ${sentCount} avisos por ${channel === 'classroom' ? 'Classroom' : 'Gmail'} y se registraron en Google Sheets.`
+      `¡Listo! Se enviaron ${sentCount} avisos por ${channel === 'classroom' ? 'Classroom' : 'Gmail'}.`
     );
     setTimeout(() => setToastMessage(null), 5000);
   };
@@ -899,8 +865,6 @@ export function useCourseAttendanceAndDispositionActions({
     setHistoryList(updatedHistory);
     saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
     setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
-
-    triggerSheetsSync(dispositionMap, updatedHistory, dispositionMap2c);
 
     api
       .recordDisposition({
@@ -1085,12 +1049,6 @@ export function useCourseAttendanceAndDispositionActions({
       `${typeStr} para ${student.lastName}, ${student.firstName} en ${targetTerm === '2c' ? '2°C' : '1°C'}: ${finalAction} (${deltaStr} pto | ${currentDisp} → ${newDisposition} pts)`
     );
     setTimeout(() => setToastMessage(null), 3500);
-
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
 
     if (onRefreshData) {
       onRefreshData();
@@ -1306,12 +1264,6 @@ export function useCourseAttendanceAndDispositionActions({
     );
     setTimeout(() => setToastMessage(null), 3500);
 
-    triggerSheetsSync(
-      itemTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      itemTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
     if (onRefreshData) {
       onRefreshData();
     }
@@ -1369,11 +1321,6 @@ export function useCourseAttendanceAndDispositionActions({
         },
       };
       saveTermDisposition(targetTerm, updatedMap, historyList);
-      triggerSheetsSync(
-        targetTerm === '1c' ? updatedMap : dispositionMap,
-        historyList,
-        targetTerm === '2c' ? updatedMap : dispositionMap2c
-      );
       setToastMessage(
         `Falta eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
       );
@@ -1423,11 +1370,6 @@ export function useCourseAttendanceAndDispositionActions({
         },
       };
       saveTermDisposition(targetTerm, updatedMap, historyList);
-      triggerSheetsSync(
-        targetTerm === '1c' ? updatedMap : dispositionMap,
-        historyList,
-        targetTerm === '2c' ? updatedMap : dispositionMap2c
-      );
       setToastMessage(
         `Llegada tarde eliminada para ${student.lastName}, ${student.firstName} (${targetTerm === '2c' ? '2°C' : '1°C'}).`
       );
@@ -1535,12 +1477,6 @@ export function useCourseAttendanceAndDispositionActions({
     }
     setTimeout(() => setToastMessage(null), 4000);
 
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
     if (onRefreshData) {
       onRefreshData();
     }
@@ -1636,75 +1572,6 @@ export function useCourseAttendanceAndDispositionActions({
     });
   };
 
-  // 5. Copiar al portapapeles en formato Google Sheets
-  const handleCopyForGoogleSheets = () => {
-    const cHistory = historyList.filter((h) => h.courseId === activeCourse?.id);
-    if (cHistory.length === 0) {
-      setToastMessage('Aún no hay registros en el historial de este curso para copiar.');
-      setTimeout(() => setToastMessage(null), 3500);
-      return;
-    }
-
-    const sorted = [...cHistory].sort((a, b) => {
-      const nameComp = a.studentName.localeCompare(b.studentName);
-      if (nameComp !== 0) return nameComp;
-      return b.timestamp - a.timestamp;
-    });
-
-    const lines = [
-      ['Alumno', 'Fecha', 'Hora', 'Acción'].join('\t'),
-      ...sorted.map((item) => [item.studentName, item.date, item.time, item.action].join('\t')),
-    ];
-
-    navigator.clipboard.writeText(lines.join('\n')).then(() => {
-      setToastMessage('¡Copiado al portapapeles! Ahora ve a tu Google Sheet y presiona Ctrl + V.');
-      setTimeout(() => setToastMessage(null), 4500);
-    });
-  };
-
-  // 6. Exportar CSV compatible con Excel y Google Sheets
-  const handleExportHistoryCsv = () => {
-    const cHistory = historyList.filter((h) => h.courseId === activeCourse?.id);
-    const sorted = [...cHistory].sort((a, b) => b.timestamp - a.timestamp);
-
-    const headers = ['Alumno', 'Fecha', 'Hora', 'Acción', 'Categoría'];
-    const rows = sorted.map((h) => [
-      `"${h.studentName}"`,
-      `"${h.date}"`,
-      `"${h.time}"`,
-      `"${h.action.replace(/"/g, '""')}"`,
-      `"${h.category}"`,
-    ]);
-
-    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    const fileName = `Historial_Asistencia_Disposicion_${activeCourse.name.replace(/\s+/g, '_')}.csv`;
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    a.click();
-    URL.revokeObjectURL(url);
-
-    driveService
-      .uploadFileToCourseCategory({
-        courseName: activeCourse.name,
-        category: 'Historial de Incidencias',
-        fileName,
-        content: '\uFEFF' + csvContent,
-        mimeType: 'text/csv',
-        existingMainFolderId: activeCourse.driveFolderId,
-      })
-      .catch(() => {});
-  };
-
-  // 6b. Exportar Historial a Excel (.xlsx) nativo
-  const handleExportHistoryExcel = () => {
-    if (!activeCourse) return;
-    const cHistory = historyList.filter((h) => h.courseId === activeCourse.id);
-    exportCourseClassHistoryToExcel(activeCourse.name, cHistory);
-  };
-
   const manualEditorActions = useManualDispositionAndAbsenceEditor({
     activeCourse,
     courseStudents,
@@ -1720,8 +1587,6 @@ export function useCourseAttendanceAndDispositionActions({
     getStudentMetrics,
     saveTermDisposition,
     deduplicateHistory,
-    triggerSheetsSync,
-    sheetConfig,
     token,
     setActiveTab,
     setToastMessage,
@@ -1736,9 +1601,6 @@ export function useCourseAttendanceAndDispositionActions({
     setCourseDriveStructure,
     onRefreshData,
     setToastMessage,
-    setCourseReportModalStudentId,
-    setCourseReportModalTab,
-    setCourseReportModalOpen,
     studentObservationsProps,
   });
 
@@ -1777,9 +1639,6 @@ export function useCourseAttendanceAndDispositionActions({
     handleDeleteLatestLate,
     handleRecordLateArrival,
     handleOpenNotifyModal,
-    handleCopyForGoogleSheets,
-    handleExportHistoryCsv,
-    handleExportHistoryExcel,
     ...profileAndObservationsActions,
   };
 }

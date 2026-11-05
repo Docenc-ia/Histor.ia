@@ -14,7 +14,6 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { Course, Student, StudentHistoryItem, StudentDispositionData } from '../../../types';
-import { GoogleSyncManager } from './GoogleSyncManager';
 
 interface CourseHistoryTabViewProps {
   activeCourse: Course;
@@ -25,15 +24,6 @@ interface CourseHistoryTabViewProps {
   setSelectedPendingHistoryIds: (ids: string[]) => void;
   historySubTab: 'incidents' | 'summary';
   setHistorySubTab: (tab: 'incidents' | 'summary') => void;
-  isSyncingSheet: boolean;
-  sheetConfig: any;
-  isOpeningSheet: boolean;
-  isTokenExpired: boolean;
-  handleOpenGoogleSheet: () => void;
-  handleManualSheetsSync: () => void;
-  setSheetsModalFeedback: (msg: string | null) => void;
-  setShowSheetsConnectModal: (open: boolean) => void;
-  renewGoogleSession: () => Promise<boolean>;
   isDarkMode: boolean;
   handleBatchMarkOmitNotification: () => void;
   handleOpenBatchFromSelectedHistory: () => void;
@@ -57,15 +47,6 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
   setSelectedPendingHistoryIds,
   historySubTab,
   setHistorySubTab,
-  isSyncingSheet,
-  sheetConfig,
-  isOpeningSheet,
-  isTokenExpired,
-  handleOpenGoogleSheet,
-  handleManualSheetsSync,
-  setSheetsModalFeedback,
-  setShowSheetsConnectModal,
-  renewGoogleSession,
   isDarkMode,
   handleBatchMarkOmitNotification,
   handleOpenBatchFromSelectedHistory,
@@ -81,24 +62,6 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
 }) => {
   return (
     <div className="space-y-4">
-      {/* Google Sheets Live Status Banner (GoogleSyncManager) */}
-      <GoogleSyncManager
-        courseName={activeCourse.name}
-        isSyncingSheet={isSyncingSheet}
-        isLiveGoogle={sheetConfig?.isLiveGoogle || false}
-        lastSyncedAt={sheetConfig?.lastSyncedAt}
-        isOpeningSheet={isOpeningSheet}
-        isTokenExpired={isTokenExpired}
-        onOpenGoogleSheet={handleOpenGoogleSheet}
-        onManualSheetsSync={handleManualSheetsSync}
-        onOpenConnectModal={() => {
-          setSheetsModalFeedback(null);
-          setShowSheetsConnectModal(true);
-        }}
-        onRenewToken={renewGoogleSession}
-        isDarkMode={isDarkMode}
-      />
-
       {/* Sub-tabs: Incidencias vs Resumen Alumnos y Disposición */}
       <div
         className={`rounded-xl border overflow-hidden shadow-xs transition-colors ${

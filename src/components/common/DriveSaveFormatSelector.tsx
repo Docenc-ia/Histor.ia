@@ -155,6 +155,14 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
       activeClass: 'border-teal-500 bg-teal-50/90 text-teal-900 ring-1 ring-teal-500',
     },
     {
+      id: 'csv',
+      label: 'Archivo CSV',
+      shortDesc: 'Sube .csv a la subcarpeta de Drive + descarga',
+      badge: '.csv',
+      icon: <Download className="w-4 h-4 text-purple-600" />,
+      activeClass: 'border-purple-500 bg-purple-50/90 text-purple-900 ring-1 ring-purple-500',
+    },
+    {
       id: 'html',
       label: 'Reporte Imprimible / PDF',
       shortDesc: 'Guarda copia en Drive y abre vista de impresión',

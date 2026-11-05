@@ -21,9 +21,6 @@ export interface UseStudentProfileAndObservationsActionsProps {
   setCourseDriveStructure: React.Dispatch<React.SetStateAction<CourseFolderStructure | null>>;
   onRefreshData?: () => void;
   setToastMessage: React.Dispatch<React.SetStateAction<string | null>>;
-  setCourseReportModalStudentId: React.Dispatch<React.SetStateAction<string>>;
-  setCourseReportModalTab: React.Dispatch<React.SetStateAction<'course' | 'individual'>>;
-  setCourseReportModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
   studentObservationsProps: {
     selectedStudentForProfile: Student | null;
     setSelectedStudentForProfile: React.Dispatch<React.SetStateAction<Student | null>>;
@@ -56,9 +53,6 @@ export function useStudentProfileAndObservationsActions({
   setCourseDriveStructure,
   onRefreshData,
   setToastMessage,
-  setCourseReportModalStudentId,
-  setCourseReportModalTab,
-  setCourseReportModalOpen,
   studentObservationsProps,
 }: UseStudentProfileAndObservationsActionsProps) {
   const {
@@ -339,28 +333,13 @@ export function useStudentProfileAndObservationsActions({
     }
   };
 
-  const handlePrintStudentProfile = (
-    student: Student,
-    _tl: any,
-    _disp: number,
-    _m1: StudentDispositionData,
-    _m2: StudentDispositionData
-  ) => {
-    if (!student) return;
-    setCourseReportModalStudentId(student.id);
-    setCourseReportModalTab('individual');
-    setCourseReportModalOpen(true);
-  };
-
   return {
     handleSaveEditedStudentEmail,
     handleOpenStudentProfile,
     handleNavigateProfileStudent,
     handleSaveObservation,
     handleDeleteObservation,
-    buildStudentTrackingDocHtml,
     handleOpenExportProfileDocConfirm,
     handleConfirmExportProfileToGoogleDoc,
-    handlePrintStudentProfile,
   };
 }

@@ -300,12 +300,16 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    // If we are in attendance/disposition import context and there is only 1 data column (e.g. 2-column sheet),
-    // automatically map it to Disposition so the teacher doesn't even have to select it manually!
+    // If we are in attendance/disposition import context and there is only 1 data column
+    // that doesn't look like an evaluation/grade column, map it to Disposition; otherwise detect grades just like in Calificaciones.
     const nonIdentityCols = cols.filter(
       (c) => c !== nameCol && c !== secondaryNameCol && c !== emailCol
     );
-    if (importContext === 'attendance' && nonIdentityCols.length === 1) {
+    const looksLikeGradeCol =
+      /nota|calific|tp|trabajo|practico|parcial|examen|eval|prueba|trimestre|cuatrimestre| Oral|escrito|entrega/i.test(
+        lower
+      );
+    if (importContext === 'attendance' && nonIdentityCols.length === 1 && !looksLikeGradeCol) {
       configs.push({
         colKey: col,
         isIncluded: true,
@@ -320,7 +324,7 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    if (isSummaryOrMeta || importContext === 'attendance') {
+    if (isSummaryOrMeta) {
       configs.push({
         colKey: col,
         isIncluded: false,

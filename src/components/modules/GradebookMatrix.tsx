@@ -14,6 +14,8 @@ import {
   Settings,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  FileDown,
   Calendar,
   Award,
   Copy,
@@ -42,7 +44,6 @@ const ImportGoogleFormsModal = lazy(() =>
   import('./ImportGoogleFormsModal').then((m) => ({ default: m.ImportGoogleFormsModal }))
 );
 import {
-  exportGradeHistoryToExcel,
   exportGradebookMatrixToExcel,
 } from '../../utils/excelExport';
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../utils/attendanceCalculations';
@@ -51,7 +52,6 @@ import {
   calculateFinalScoreForStudent,
   computeTermScoresMap,
   getScoreColorClass as computeScoreColorClass,
-  buildGradesCsvContent,
 } from '../../utils/gradeCalculations';
 import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
 import { GradebookCategoryModals } from './GradebookCategoryModals';
@@ -389,12 +389,20 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const [isPreliminaryModalOpen, setIsPreliminaryModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isFormsModalOpen, setIsFormsModalOpen] = useState(false);
-  const [importSourceType, setImportSourceType] = useState<'file' | 'sheets' | 'paste'>('file');
+  const [importSourceType, setImportSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>('file');
+  const [isImportMenuOpen, setIsImportMenuOpen] = useState(false);
+  const importMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const handleExportFullExcel = () => {
-    const termLabel = currentTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre';
-    exportGradebookMatrixToExcel(courseName, termLabel, students, categories, gradesMap);
-  };
+  useEffect(() => {
+    if (!isImportMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (importMenuRef.current && !importMenuRef.current.contains(e.target as Node)) {
+        setIsImportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isImportMenuOpen]);
 
   // Double Scrollbar Synchronization: Top scrollbar & Bottom Table scrollbar
   const topScrollRef = useRef<HTMLDivElement | null>(null);
@@ -699,36 +707,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     [students, categories2c, gradesMap2c, overallCalc2c]
   );
 
-  const handleExportCSV = () => {
-    const csvContent = buildGradesCsvContent(
-      students,
-      categories,
-      gradesMap,
-      overallCalculation,
-      activePreliminaryValuation
-    );
-    const fileName = `Calificaciones_${currentTerm === '1c' ? '1er_Cuatrimestre' : '2do_Cuatrimestre'}_${courseName.replace(/\s+/g, '_')}.csv`;
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', fileName);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-
-    const rawCsv = csvContent.replace(/^data:text\/csv;charset=utf-8,/i, '');
-    driveService
-      .uploadFileToCourseCategory({
-        courseName,
-        category: 'Calificaciones',
-        fileName,
-        content: '\uFEFF' + rawCsv,
-        mimeType: 'text/csv',
-        existingMainFolderId: driveFolderId,
-      })
-      .catch(() => {});
-  };
-
   const handleSaveGradesInFormat = async (
     format: DriveSaveFormat,
     customTitle: string
@@ -812,6 +790,47 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         folderUrl: uploaded.folderUrl,
         format: 'xlsx',
         formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Calificaciones',
+      };
+    }
+
+    if (format === 'csv') {
+      const csv = buildGradebookCsv({
+        students,
+        categories,
+        gradesMap: draftGradesMap,
+      });
+      const fileNameCsv = customTitle.toLowerCase().endsWith('.csv')
+        ? customTitle
+        : `${customTitle}.csv`;
+      try {
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileNameCsv;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName,
+        category: 'Calificaciones',
+        fileName: fileNameCsv,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: driveFolderId,
+        convertToGoogleFormat: false,
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'csv',
+        formatLabel: 'Archivo CSV (.csv)',
         category: 'Calificaciones',
       };
     }
@@ -1048,41 +1067,153 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               </div>
             </div>
 
-            {/* Abajo de Planilla de Calificaciones (en el mismo cuadrado): Opciones con las 2 de Importar en una columna nueva al final */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 w-full items-start">
-              {/* Columna 1: Descargar Excel y Descargar CSV */}
+            {/* Abajo de Planilla de Calificaciones: 2 Columnas de 3 Opciones */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full items-start">
+              {/* Columna 1: Subir Evaluación de Forms, Importar (desplegable) y Sincronizar Notas en Sheets */}
               <div className="flex flex-col gap-1.5">
                 <button
                   type="button"
-                  onClick={handleExportFullExcel}
-                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Descargar planilla completa en formato Excel (.xlsx)"
+                  id="btn-subir-forms-calificaciones"
+                  onClick={() => setIsFormsModalOpen(true)}
+                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer ring-2 ring-purple-500/20"
+                  title="Subir una evaluación de Google Forms (.csv, .xlsx o Hoja de respuestas) para detectar alumnos y puntajes, revisar bajo qué columna va y aceptar"
                 >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                  <span className="truncate">Descargar Excel</span>
+                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Subir Evaluación de Forms</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={handleExportCSV}
-                  className={`w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 border rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-2xs ${
-                    isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                      : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
-                  }`}
-                  title="Descargar planilla en formato CSV para abrir en Excel o Google Sheets"
-                >
-                  <Download className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
-                  <span className="truncate">Descargar CSV</span>
-                </button>
-              </div>
+                <div className="relative w-full" ref={importMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsImportMenuOpen((prev) => !prev)}
+                    className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                    title="Elegir desde qué formato importar datos (Excel, Google Sheets o CSV) detectando alumnos, notas y categorías con comprobación previa"
+                  >
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate flex-1 sm:flex-initial text-center sm:text-left">Importar</span>
+                    <ChevronDown
+                      className={`w-3.5 h-3.5 shrink-0 sm:ml-auto transition-transform ${
+                        isImportMenuOpen ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
 
-              {/* Columna 2: Sincronizar Notas en Sheets y Guardar en Drive (Elegir formato) */}
-              <div className="flex flex-col gap-1.5">
+                  {isImportMenuOpen && (
+                    <div
+                      className={`absolute left-0 mt-2 w-72 sm:w-80 rounded-2xl border shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150 ${
+                        isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-100'
+                          : 'bg-white border-neutral-200 text-neutral-900'
+                      }`}
+                    >
+                      <div
+                        className={`px-3.5 py-2.5 border-b text-[11px] font-bold flex items-center justify-between ${
+                          isDarkMode
+                            ? 'bg-slate-800/80 border-slate-700 text-slate-300'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Upload className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Elegí desde dónde importar</span>
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px]">
+                          Detecta Alumnos y Notas
+                        </span>
+                      </div>
+
+                      <div className="p-2 space-y-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsImportMenuOpen(false);
+                            setImportSourceType('file');
+                            setIsImportModalOpen(true);
+                          }}
+                          className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-emerald-500/50'
+                              : 'bg-white hover:bg-emerald-50/40 border-neutral-200 hover:border-emerald-300'
+                          }`}
+                        >
+                          <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 shrink-0 mt-0.5">
+                            <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-bold">Microsoft Excel</span>
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                                .xlsx / .xls
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                              Subir archivo Excel y detectar alumnos, notas y categorías.
+                            </p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsImportMenuOpen(false);
+                            setImportSourceType('sheets');
+                            setIsImportModalOpen(true);
+                          }}
+                          className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-blue-500/50'
+                              : 'bg-white hover:bg-blue-50/40 border-neutral-200 hover:border-blue-300'
+                          }`}
+                        >
+                          <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 shrink-0 mt-0.5">
+                            <FileSpreadsheet className="w-4 h-4 text-blue-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-bold">Google Sheets</span>
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400">
+                                .gsheet
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                              Conectar o elegir una hoja de tu Google Drive y detectar notas.
+                            </p>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsImportMenuOpen(false);
+                            setImportSourceType('csv');
+                            setIsImportModalOpen(true);
+                          }}
+                          className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-teal-500/50'
+                              : 'bg-white hover:bg-teal-50/40 border-neutral-200 hover:border-teal-300'
+                          }`}
+                        >
+                          <div className="p-1.5 rounded-lg bg-teal-500/10 border border-teal-500/20 shrink-0 mt-0.5">
+                            <FileDown className="w-4 h-4 text-teal-500" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1">
+                              <span className="text-xs font-bold">Archivo CSV</span>
+                              <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                                .csv
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                              Subir archivo CSV separado por comas o punto y coma y detectar notas.
+                            </p>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <button
                   type="button"
                   onClick={handleSyncCuatrimestreWithSheets}
@@ -1099,17 +1230,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     {isSavingSheets ? 'Sincronizando...' : 'Sincronizar Notas en Sheets'}
                   </span>
                 </button>
-
-                <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
-                  <DriveSaveFormatSelector
-                    courseName={courseName}
-                    category="Calificaciones"
-                    defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
-                    buttonLabel="Guardar en Drive"
-                    compact
-                    onSaveFormat={handleSaveGradesInFormat}
-                  />
-                </div>
 
                 {sheetsSavedInfo && (
                   <div className="flex items-center gap-1.5 flex-wrap text-[11px] mt-0.5">
@@ -1138,8 +1258,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 )}
               </div>
 
-              {/* Columna 3: Generar Valoración Preliminar y Nota Final */}
-              <div className="flex flex-col gap-1.5">
+              {/* Columna 2: Generar Valoración Preliminar, Nota Final y Guardar en Drive */}
+              <div className="flex flex-col gap-1.5 sm:border-l sm:pl-3 border-neutral-200 dark:border-slate-800">
                 <button
                   type="button"
                   id="btn-generar-valoracion-preliminar"
@@ -1188,51 +1308,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                       : '📊 Promedio'}
                   </button>
                 </div>
-              </div>
 
-              {/* Columna 4 (al final): Subir Forms, Importar desde Excel e Importar desde Sheets */}
-              <div className="flex flex-col gap-1.5">
-                <button
-                  type="button"
-                  id="btn-subir-forms-calificaciones"
-                  onClick={() => setIsFormsModalOpen(true)}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer ring-2 ring-purple-500/20"
-                  title="Subir una evaluación de Google Forms (.csv, .xlsx o Hoja de respuestas) para detectar alumnos y puntajes, revisar bajo qué columna va y aceptar"
-                >
-                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Subir Evaluación de Forms</span>
-                </button>
-
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportSourceType('file');
-                      setIsImportModalOpen(true);
-                    }}
-                    className="w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                    title="Subir archivo Excel (.xlsx, .xls, .csv) para que la app detecte las notas y categorías con comprobación previa"
-                  >
-                    <Upload className="w-3 h-3 shrink-0" />
-                    <span className="truncate">Excel</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setImportSourceType('sheets');
-                      setIsImportModalOpen(true);
-                    }}
-                    className={`w-full inline-flex items-center justify-center gap-1 px-2.5 py-1.5 border rounded-xl text-[11px] font-bold transition-all cursor-pointer shadow-2xs ${
-                      isDarkMode
-                        ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
-                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                    }`}
-                    title="Importar documento existente de Google Sheets para que la app detecte las notas y categorías con comprobación previa"
-                  >
-                    <FileSpreadsheet className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                    <span className="truncate">Sheets</span>
-                  </button>
+                <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
+                  <DriveSaveFormatSelector
+                    courseName={courseName}
+                    category="Calificaciones"
+                    defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
+                    buttonLabel="Guardar en Drive"
+                    compact
+                    onSaveFormat={handleSaveGradesInFormat}
+                  />
                 </div>
               </div>
             </div>

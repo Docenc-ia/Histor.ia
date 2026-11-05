@@ -363,25 +363,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   });
 
   const {
-    sheetConfig,
-    isSyncingSheet,
-    isOpeningSheet,
-    showSheetsConnectModal,
-    setShowSheetsConnectModal,
-    sheetsModalFeedback,
-    setSheetsModalFeedback,
-    customSheetInput,
-    setCustomSheetInput,
-    isLinkingCustomSheet,
-    customFolderInput,
-    setCustomFolderInput,
-    isLinkingCustomFolder,
-    isPullingFromSheet,
-    dobleEntradaDiffs,
-    isDobleEntradaModalOpen,
-    setIsDobleEntradaModalOpen,
-    isHeaderExportExcelModalOpen,
-    setIsHeaderExportExcelModalOpen,
     isHeaderImportModalOpen,
     setIsHeaderImportModalOpen,
     headerImportSourceType,
@@ -393,37 +374,22 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     setDriveFolderModalOpen,
     courseDriveStructure,
     setCourseDriveStructure,
-    triggerSheetsSync,
-    handleManualSheetsSync,
-    handleLinkCustomSpreadsheet,
-    handleSaveCustomDriveFolder,
-    handleOpenGoogleSheet,
-    handleConnectGoogleForSheets,
-    handlePullFromGoogleSheet,
-    handleExportAllCourseExcel,
     getCategoriesForImport,
     getGradesMapForImport,
     handleApplyImportFromClassesModule,
     handleApplyMultiImportFromClassesModule,
-    handleOpenInSheetsNew,
-    handleDownloadCourseCsv,
     handleOpenCourseDriveFolder,
   } = useGoogleSheetsAndDriveSync({
     activeCourse,
-    students,
     courseStudents,
     dispositionMap,
     setDispositionMap,
     dispositionMap2c,
     setDispositionMap2c,
     historyList,
-    setHistoryList,
-    courseHistory,
-    activeConcreteTerm,
     token,
     requestAccessToken,
     getStudentMetrics,
-    deduplicateHistory,
     onRefreshData,
     setActiveTab,
     setToastMessage,
@@ -670,9 +636,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     handleDeleteLatestLate,
     handleRecordLateArrival,
     handleOpenNotifyModal,
-    handleCopyForGoogleSheets,
-    handleExportHistoryCsv,
-    handleExportHistoryExcel,
     handleOpenEditDisposition,
     handleChangeEditingTerm,
     handleNavigateEditStudent,
@@ -686,12 +649,9 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     handleNavigateProfileStudent,
     handleSaveObservation,
     handleDeleteObservation,
-    buildStudentTrackingDocHtml,
     handleOpenExportProfileDocConfirm,
     handleConfirmExportProfileToGoogleDoc,
-    handlePrintStudentProfile,
     handleResetSingleStudentDisposition,
-    handleResetCourseDisposition,
     handleSendDispositionToGrades,
   } = useCourseAttendanceAndDispositionActions({
     activeCourse,
@@ -718,17 +678,12 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     getStudentMetrics,
     saveTermDisposition,
     deduplicateHistory,
-    triggerSheetsSync,
-    sheetConfig,
     courseDriveStructure,
     setCourseDriveStructure,
     token,
     onRefreshData,
     setActiveTab,
     setToastMessage,
-    setCourseReportModalStudentId,
-    setCourseReportModalTab,
-    setCourseReportModalOpen,
     studentObservationsProps: {
       selectedStudentForProfile,
       setSelectedStudentForProfile,
@@ -829,9 +784,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         convertToGoogleFormat: 'sheet',
         alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
       });
-      if (scope === 'both') {
-        handleManualSheetsSync();
-      }
       if (!uploaded) return null;
       return {
         id: uploaded.id,
@@ -899,7 +851,50 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
       };
     }
 
-    // format === 'html' or 'csv'
+    if (format === 'csv') {
+      const csv = buildAttendanceDispositionCsv({
+        students: courseStudents,
+        map1c: dispositionMap,
+        map2c: dispositionMap2c,
+        scope,
+      });
+      const fileNameCsv = customTitle.toLowerCase().endsWith('.csv')
+        ? customTitle
+        : `${customTitle}.csv`;
+      try {
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileNameCsv;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: targetCategory,
+        fileName: fileNameCsv,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: false,
+        alsoShortcutInCategories: shortcuts ? [...shortcuts] : undefined,
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'csv',
+        formatLabel: 'Archivo CSV (.csv)',
+        category: targetCategory,
+      };
+    }
+
+    // format === 'html'
     const html = buildAttendanceDispositionHtml({
       courseName: activeCourse.name,
       title: customTitle,
@@ -1024,6 +1019,43 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         folderUrl: uploaded.folderUrl,
         format: 'xlsx',
         formatLabel: 'Microsoft Excel (.xlsx)',
+        category: 'Historial de Incidencias',
+      };
+    }
+
+    if (format === 'csv') {
+      const csv = buildCourseHistoryCsv(courseHistory);
+      const fileNameCsv = customTitle.toLowerCase().endsWith('.csv')
+        ? customTitle
+        : `${customTitle}.csv`;
+      try {
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileNameCsv;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+      const uploaded = await driveService.uploadFileToCourseCategory({
+        courseName: activeCourse.name,
+        category: 'Historial de Incidencias',
+        fileName: fileNameCsv,
+        content: csv,
+        mimeType: 'text/csv',
+        existingMainFolderId: activeCourse.driveFolderId,
+        convertToGoogleFormat: false,
+      });
+      if (!uploaded) return null;
+      return {
+        id: uploaded.id,
+        name: uploaded.name,
+        url: uploaded.url,
+        folderUrl: uploaded.folderUrl,
+        format: 'csv',
+        formatLabel: 'Archivo CSV (.csv)',
         category: 'Historial de Incidencias',
       };
     }
@@ -1348,12 +1380,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               onOpenAddStudentModal={handleOpenAddStudentModal}
               onOpenSendDispositionModal={() => setIsSendDispositionModalOpen(true)}
               onOpenNotifConfigModal={() => setIsNotifConfigModalOpen(true)}
-              isSyncingSheet={isSyncingSheet}
-              isPullingFromSheet={isPullingFromSheet}
-              lastSyncedAt={sheetConfig?.lastSyncedAt}
-              onManualSheetsSync={handleManualSheetsSync}
-              isOpeningSheet={isOpeningSheet}
-              onOpenGoogleSheet={handleOpenGoogleSheet}
               onOpenImportExcel={() => {
                 setHeaderImportContext('attendance');
                 setHeaderImportSourceType('file');
@@ -1364,11 +1390,15 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                 setHeaderImportSourceType('sheets');
                 setIsHeaderImportModalOpen(true);
               }}
+              onOpenImportCsv={() => {
+                setHeaderImportContext('attendance');
+                setHeaderImportSourceType('csv');
+                setIsHeaderImportModalOpen(true);
+              }}
               attendanceTerm={attendanceTerm}
               onSelectTerm={setAttendanceTermHandler}
               attendanceSummary={currentAttendanceSummary}
               onOpenAttendanceSettings={() => setIsAttendanceSettingsModalOpen(true)}
-              onOpenBackupModal={() => setIsBackupModalOpen(true)}
               onOpenQuickRollCall={() => setIsQuickRollCallOpen(true)}
               saveToDriveControl={attendanceDriveSaveSelector}
               isDarkMode={isDarkMode}
@@ -1390,8 +1420,8 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                 </span>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {/* COLUMNA 1: Informes y Reportes, Abrir en Google Sheets */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* COLUMNA 1: Informes y Reportes */}
                 <div className="flex flex-col gap-2 justify-center">
                   <div className="flex items-center gap-1.5 w-full">
                     <button
@@ -1424,62 +1454,10 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                       <ExternalLink className="w-3.5 h-3.5 text-blue-500" />
                     </a>
                   </div>
-
-                  <button
-                    type="button"
-                    onClick={handleOpenGoogleSheet}
-                    disabled={isOpeningSheet}
-                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Abrir o crear hoja oficial en Google Sheets"
-                  >
-                    {isOpeningSheet ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <ExternalLink className="w-3.5 h-3.5 text-emerald-500" />
-                    )}
-                    <span>Abrir en Google Sheets</span>
-                  </button>
                 </div>
 
-                {/* COLUMNA 2: Vincular Sheet y Copiar datos */}
-                <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-x border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:px-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSheetsModalFeedback(null);
-                      setShowSheetsConnectModal(true);
-                    }}
-                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Configurar y vincular hoja existente de Google Sheets"
-                  >
-                    <Settings className="w-3.5 h-3.5 text-emerald-500" />
-                    <span>Vincular Sheet</span>
-                  </button>
-
-                  <button
-                    onClick={handleCopyForGoogleSheets}
-                    className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                        : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                    }`}
-                    title="Copia los datos tabulados para pegar con Ctrl+V directamente en Google Sheets"
-                  >
-                    <Copy className="w-3.5 h-3.5 text-blue-500" />
-                    <span>Copiar datos</span>
-                  </button>
-                </div>
-
-                {/* COLUMNA 3: Guardar en Drive (Elegir formato), Exportar Excel y Descargar CSV */}
-                <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0">
+                {/* COLUMNA 2: Guardar en Drive con todas las opciones */}
+                <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:pl-3">
                   <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
                     <DriveSaveFormatSelector
                       courseName={activeCourse.name}
@@ -1489,36 +1467,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                       compact
                       onSaveFormat={handleSaveHistoryInFormat}
                     />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={handleExportHistoryExcel}
-                      className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                          : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                      }`}
-                      title="Descargar historial en formato Excel (.xlsx) nativo"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                      <span className="truncate">Excel</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleExportHistoryCsv}
-                      className={`w-full inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-800 hover:bg-slate-750 text-slate-200 border-slate-700'
-                          : 'bg-white hover:bg-neutral-100 text-neutral-700 border-neutral-200'
-                      }`}
-                      title="Descargar historial en formato CSV"
-                    >
-                      <Download className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-                      <span className="truncate">CSV</span>
-                    </button>
                   </div>
                 </div>
               </div>
@@ -1539,7 +1487,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               currentAttendanceSummary={currentAttendanceSummary}
               userEmail={user?.email}
               isDarkMode={isDarkMode}
-              isSyncingSheet={isSyncingSheet}
               isSyncingClassroomRoster={isSyncingClassroomRoster}
               selectedStudentIds={selectedStudentIds}
               setSelectedStudentIds={setSelectedStudentIds}
@@ -1568,7 +1515,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               selectedPendingHistoryIds={selectedPendingHistoryIds}
               setSelectedPendingHistoryIds={setSelectedPendingHistoryIds}
               getStudentMetrics={getStudentMetrics}
-              handleManualSheetsSync={handleManualSheetsSync}
               handleOpenStudentProfile={handleOpenStudentProfile}
               handleOpenEditAbsences={handleOpenEditAbsences}
               handleOpenEditDisposition={handleOpenEditDisposition}
@@ -1672,15 +1618,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                 setSelectedPendingHistoryIds={setSelectedPendingHistoryIds}
                 historySubTab={historySubTab}
                 setHistorySubTab={setHistorySubTab}
-                isSyncingSheet={isSyncingSheet}
-                sheetConfig={sheetConfig}
-                isOpeningSheet={isOpeningSheet}
-                isTokenExpired={isTokenExpired}
-                handleOpenGoogleSheet={handleOpenGoogleSheet}
-                handleManualSheetsSync={handleManualSheetsSync}
-                setSheetsModalFeedback={setSheetsModalFeedback}
-                setShowSheetsConnectModal={setShowSheetsConnectModal}
-                renewGoogleSession={renewGoogleSession}
                 isDarkMode={isDarkMode}
                 handleBatchMarkOmitNotification={handleBatchMarkOmitNotification}
                 handleOpenBatchFromSelectedHistory={handleOpenBatchFromSelectedHistory}
@@ -1790,24 +1727,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
           handleSendDirectMessage,
         }}
         sheetsAndDriveSync={{
-          sheetConfig,
-          isSyncingSheet,
-          isOpeningSheet,
-          showSheetsConnectModal,
-          setShowSheetsConnectModal,
-          sheetsModalFeedback,
-          customSheetInput,
-          setCustomSheetInput,
-          isLinkingCustomSheet,
-          customFolderInput,
-          setCustomFolderInput,
-          isLinkingCustomFolder,
-          isPullingFromSheet,
-          dobleEntradaDiffs,
-          isDobleEntradaModalOpen,
-          setIsDobleEntradaModalOpen,
-          isHeaderExportExcelModalOpen,
-          setIsHeaderExportExcelModalOpen,
           isHeaderImportModalOpen,
           setIsHeaderImportModalOpen,
           headerImportSourceType,
@@ -1815,18 +1734,10 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
           driveFolderModalOpen,
           setDriveFolderModalOpen,
           courseDriveStructure,
-          handleManualSheetsSync,
-          handleLinkCustomSpreadsheet,
-          handleSaveCustomDriveFolder,
-          handleConnectGoogleForSheets,
-          handlePullFromGoogleSheet,
-          handleExportAllCourseExcel,
           getCategoriesForImport,
           getGradesMapForImport,
           handleApplyImportFromClassesModule,
           handleApplyMultiImportFromClassesModule,
-          handleOpenInSheetsNew,
-          handleDownloadCourseCsv,
         }}
         notifications={{
           savedPresets,

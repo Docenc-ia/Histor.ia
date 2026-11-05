@@ -20,7 +20,7 @@ import {
 } from '../services/firestoreSync';
 import { useWorkspaceAuth } from '../context/WorkspaceAuthContext';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
-import { getUserStorageKey } from '../services/api';
+import { getUserStorageKey, getUserScopedItem } from '../services/api';
 import {
   getCourseCachedItem,
   setCourseCachedItem,
@@ -867,12 +867,12 @@ export function useGradebookSync({
       try {
         const savedCats1c =
           localStorage.getItem(getCatKey('1c')) ||
-          localStorage.getItem(`fds_grades_categories_${courseId}`);
+          getUserScopedItem(`fds_grades_categories_${courseId}`);
         if (savedCats1c) setCategories1c(JSON.parse(savedCats1c));
 
         const savedGrades1c =
           localStorage.getItem(getGradesKey('1c')) ||
-          localStorage.getItem(`fds_grades_data_${courseId}`);
+          getUserScopedItem(`fds_grades_data_${courseId}`);
         if (savedGrades1c) setGradesMap1c(JSON.parse(savedGrades1c));
 
         const savedCats2c = localStorage.getItem(getCatKey('2c'));

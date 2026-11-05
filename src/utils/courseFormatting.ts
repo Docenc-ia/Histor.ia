@@ -222,22 +222,29 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
 
   if (typeof window !== 'undefined' && course.id) {
     try {
-      const uid =
+      const uid = (
         sessionStorage.getItem('docencia_teacher_email') ||
         localStorage.getItem('docencia_teacher_email') ||
-        '';
-      const sanitizedUid = uid ? uid.replace(/[^a-zA-Z0-9]/g, '_') : '';
-      const candidateKeys = new Set<string>([
-        `fds_libro_temas_${course.id}`,
-        ...(uid ? [`fds_libro_temas_${course.id}_${uid}`] : []),
-        ...(sanitizedUid ? [`fds_libro_temas_${course.id}_teacher_${sanitizedUid}`] : []),
-      ]);
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(`fds_libro_temas_${course.id}`)) {
-          candidateKeys.add(k);
-        }
+        ''
+      )
+        .trim()
+        .toLowerCase();
+      if (!uid) {
+        return bestCandidate || (rawValid ? rawSched : '');
       }
+      const isOwner =
+        uid === 'jorge.cano@fds-esc.edu.ar' || uid === 'canomorenojj@gmail.com';
+      const sanitizedUid = uid.replace(/[^a-zA-Z0-9]/g, '_');
+      const candidateKeys = new Set<string>([
+        `fds_libro_temas_${course.id}_${uid}`,
+        `fds_libro_temas_${course.id}_teacher_${sanitizedUid}`,
+        ...(isOwner
+          ? [
+              `fds_libro_temas_${course.id}_global_shared_workspace`,
+              `fds_libro_temas_${course.id}`,
+            ]
+          : []),
+      ]);
       for (const k of candidateKeys) {
         const raw = localStorage.getItem(k);
         if (!raw) continue;
@@ -277,14 +284,21 @@ export function getEffectiveScheduleStringForCourse(course?: Partial<Course> | n
         }
       }
 
-      // Check saved attendance settings (dailySlots or courseWeekdays)
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (
-          k &&
-          (k.startsWith(`fds_attendance_settings_${course.id}`) ||
-            k.startsWith(`fds_course_attendance_settings_${course.id}`))
-        ) {
+      // Check saved attendance settings (dailySlots or courseWeekdays) for the active teacher only
+      const settingsKeys = [
+        `fds_attendance_settings_${course.id}_teacher_${sanitizedUid}`,
+        `fds_course_attendance_settings_${course.id}_teacher_${sanitizedUid}`,
+        ...(isOwner
+          ? [
+              `fds_attendance_settings_${course.id}_global_shared_workspace`,
+              `fds_course_attendance_settings_${course.id}_global_shared_workspace`,
+              `fds_attendance_settings_${course.id}`,
+              `fds_course_attendance_settings_${course.id}`,
+            ]
+          : []),
+      ];
+      for (const k of settingsKeys) {
+        {
           const raw = localStorage.getItem(k);
           if (!raw) continue;
           const settings = JSON.parse(raw);
@@ -434,10 +448,28 @@ export function getNextCourseClassInfo(
   let fallbackConfiguredDays: number[] = [];
   if (typeof window !== 'undefined' && course.id) {
     try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (!k) continue;
-        if (k.startsWith(`fds_libro_temas_${course.id}`)) {
+      const uid = (
+        sessionStorage.getItem('docencia_teacher_email') ||
+        localStorage.getItem('docencia_teacher_email') ||
+        ''
+      )
+        .trim()
+        .toLowerCase();
+      if (uid) {
+        const isOwner =
+          uid === 'jorge.cano@fds-esc.edu.ar' || uid === 'canomorenojj@gmail.com';
+        const sanitizedUid = uid.replace(/[^a-zA-Z0-9]/g, '_');
+        const libroKeys = [
+          `fds_libro_temas_${course.id}_${uid}`,
+          `fds_libro_temas_${course.id}_teacher_${sanitizedUid}`,
+          ...(isOwner
+            ? [
+                `fds_libro_temas_${course.id}_global_shared_workspace`,
+                `fds_libro_temas_${course.id}`,
+              ]
+            : []),
+        ];
+        for (const k of libroKeys) {
           const raw = localStorage.getItem(k);
           if (raw) {
             const parsed = JSON.parse(raw);
@@ -448,12 +480,24 @@ export function getNextCourseClassInfo(
               fallbackConfiguredDays = parsed.metadata.configuredWeekdays
                 .map(Number)
                 .filter((n: number) => !isNaN(n));
+              break;
             }
           }
-        } else if (
-          k.startsWith(`fds_attendance_settings_${course.id}`) ||
-          k.startsWith(`fds_course_attendance_settings_${course.id}`)
-        ) {
+        }
+
+        const settingsKeys = [
+          `fds_attendance_settings_${course.id}_teacher_${sanitizedUid}`,
+          `fds_course_attendance_settings_${course.id}_teacher_${sanitizedUid}`,
+          ...(isOwner
+            ? [
+                `fds_attendance_settings_${course.id}_global_shared_workspace`,
+                `fds_course_attendance_settings_${course.id}_global_shared_workspace`,
+                `fds_attendance_settings_${course.id}`,
+                `fds_course_attendance_settings_${course.id}`,
+              ]
+            : []),
+        ];
+        for (const k of settingsKeys) {
           const raw = localStorage.getItem(k);
           if (!raw) continue;
           const settings = JSON.parse(raw);
@@ -488,6 +532,7 @@ export function getNextCourseClassInfo(
               }
             }
           }
+          break;
         }
       }
     } catch (_) {}

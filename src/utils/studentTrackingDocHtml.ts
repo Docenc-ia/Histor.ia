@@ -1,6 +1,6 @@
 import { Course, Student, StudentDispositionData, StudentHistoryItem, StudentObservation } from '../types';
 import { GradeCategory, DEFAULT_CATEGORIES } from '../types/grades';
-import { getUserStorageKey } from '../services/api';
+import { getUserScopedItem } from '../services/api';
 import { escapeHtml, sanitizeSafeUrl } from './htmlEscape';
 
 export function buildStudentTrackingDocHtml(
@@ -97,25 +97,17 @@ export function buildStudentTrackingDocHtml(
     if (!activeCourse) return [];
     try {
       const catRaw =
-        localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${term}`)) ||
-        localStorage.getItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
-        (term === '1c'
-          ? localStorage.getItem(getUserStorageKey(`fds_grades_categories_${activeCourse.id}`)) ||
-            localStorage.getItem(`fds_grades_categories_${activeCourse.id}`)
-          : null) ||
-        localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
-        (term === '1c' ? localStorage.getItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null);
+        getUserScopedItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
+        (term === '1c' ? getUserScopedItem(`fds_grades_categories_${activeCourse.id}`) : null) ||
+        getUserScopedItem(`fds_gradebook_categories_v1_${activeCourse.id}_${term}`) ||
+        (term === '1c' ? getUserScopedItem(`fds_gradebook_categories_v1_${activeCourse.id}`) : null);
       const cats: GradeCategory[] = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES;
 
       const gradesRaw =
-        localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}_${term}`)) ||
-        localStorage.getItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
-        (term === '1c'
-          ? localStorage.getItem(getUserStorageKey(`fds_grades_data_${activeCourse.id}`)) ||
-            localStorage.getItem(`fds_grades_data_${activeCourse.id}`)
-          : null) ||
-        localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
-        (term === '1c' ? localStorage.getItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null);
+        getUserScopedItem(`fds_grades_data_${activeCourse.id}_${term}`) ||
+        (term === '1c' ? getUserScopedItem(`fds_grades_data_${activeCourse.id}`) : null) ||
+        getUserScopedItem(`fds_gradebook_grades_v1_${activeCourse.id}_${term}`) ||
+        (term === '1c' ? getUserScopedItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null);
       const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
       const stGrades = gMap[student.id] || {};
 

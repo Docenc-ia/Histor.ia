@@ -27,8 +27,6 @@ interface Course {
   attendanceFolderUrl?: string;
   gradesFolderId?: string;
   gradesFolderUrl?: string;
-  dispositionSheetId?: string;
-  dispositionSheetUrl?: string;
   gradesSheetId?: string;
   gradesSheetUrl?: string;
   code?: string;
@@ -170,7 +168,6 @@ const PRIMARY_OWNER_IDENTIFIERS = new Set([
   "jorge.cano@fds-esc.edu.ar",
   "canomorenojj@gmail.com",
   "global_shared_workspace_v1",
-  "docente-titular",
 ]);
 
 // Initial Datasets (persisted to disk so classes and students survive app closures, isolated per teacher workspace)
@@ -914,11 +911,6 @@ async function startServer() {
     courses = courses.filter((c) => !targetIds.has(c.id) && (!c.classroomCourseId || !targetIds.has(c.classroomCourseId)) && normalizeCourseKey(c) !== targetKey);
     // Remove students associated with this course
     students = students.filter((s) => !targetIds.has(s.courseId));
-    // Remove sheet configuration for deleted course
-    targetIds.forEach((tId) => {
-      delete courseDispositionSheets[tId];
-    });
-    saveSheetsConfigToDisk();
     saveCoursesToDisk(true);
     saveStudentsToDisk(true);
     res.json({
@@ -932,8 +924,6 @@ async function startServer() {
   app.post("/api/courses/clear", (_req, res) => {
     courses = [];
     students = [];
-    Object.keys(courseDispositionSheets).forEach((k) => delete courseDispositionSheets[k]);
-    saveSheetsConfigToDisk();
     coursesLoadedFromDisk = true;
     saveCoursesToDisk(true);
     saveStudentsToDisk(true);
@@ -1618,58 +1608,6 @@ async function startServer() {
     res.json({ success: true, disposition: studentDispositionMap, history: studentHistoryList });
   });
 
-  // Course Google Sheets Disposition mapping (persisted to disk)
-  function isRealSpreadsheetId(id?: string): boolean {
-    return Boolean(
-      id &&
-      typeof id === 'string' &&
-      !id.startsWith('sheet-') &&
-      !id.startsWith('libreta-') &&
-      !id.startsWith('mock-') &&
-      id.length >= 25
-    );
-  }
-
-  let courseDispositionSheets: Record<string, { spreadsheetId: string; url: string; lastSyncedAt: string }> = {};
-  let SHEETS_CONFIG_FILE = path.join(process.cwd(), "data", "sheets-config.json");
-
-  function loadSheetsConfigFromDisk() {
-    try {
-      for (const k of Object.keys(courseDispositionSheets)) {
-        delete courseDispositionSheets[k];
-      }
-      if (fs.existsSync(SHEETS_CONFIG_FILE)) {
-        const raw = fs.readFileSync(SHEETS_CONFIG_FILE, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          for (const [cId, item] of Object.entries(parsed as any)) {
-            const spId = (item as any)?.spreadsheetId || "";
-            const isReal = spId && !spId.startsWith("sheet-") && !spId.startsWith("libreta-") && !spId.startsWith("mock-") && spId.length >= 25;
-            courseDispositionSheets[cId] = {
-              spreadsheetId: spId,
-              url: isReal ? ((item as any)?.url || `https://docs.google.com/spreadsheets/d/${spId}/edit`) : "",
-              lastSyncedAt: (item as any)?.lastSyncedAt || "",
-            };
-          }
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to load sheets config from disk:", e);
-    }
-  }
-
-  function saveSheetsConfigToDisk() {
-    try {
-      const dir = path.dirname(SHEETS_CONFIG_FILE);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(SHEETS_CONFIG_FILE, JSON.stringify(courseDispositionSheets, null, 2), "utf-8");
-    } catch (e) {
-      console.warn("Failed to save sheets config to disk:", e);
-    }
-  }
-
-  loadSheetsConfigFromDisk();
-
   // ISO/IEC 27001 A.5.15 & A.8.3: Per-teacher workspace isolation on Express backend
   // Ensures no secondary teacher can overwrite or clear the primary owner's or another teacher's fallback files.
   interface TeacherWorkspaceSlice {
@@ -1678,7 +1616,6 @@ async function startServer() {
     coursesLoadedFromDisk: boolean;
     studentDispositionMap: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
     studentHistoryList: DispositionRecord[];
-    courseDispositionSheets: Record<string, { spreadsheetId: string; url: string; lastSyncedAt: string }>;
     lessonPlans: LessonPlan[];
     grades: GradeEntry[];
     driveResources: DriveResource[];
@@ -1700,13 +1637,13 @@ async function startServer() {
 
     if (rawEmail && PRIMARY_OWNER_IDENTIFIERS.has(rawEmail)) return "owner";
     if (rawUserId && PRIMARY_OWNER_IDENTIFIERS.has(rawUserId)) return "owner";
-    if (!rawEmail && !rawUserId) return "owner";
+    if (!rawEmail && !rawUserId) return "anonymous";
 
     const candidate = rawEmail || rawUserId;
     if (PRIMARY_OWNER_IDENTIFIERS.has(candidate)) return "owner";
 
     const safeKey = candidate.replace(/[^a-z0-9._-]/g, "_").slice(0, 64);
-    return safeKey ? `user_${safeKey}` : "owner";
+    return safeKey ? `user_${safeKey}` : "anonymous";
   }
 
   function getWorkspaceDataFiles(workspaceKey: string) {
@@ -1715,7 +1652,6 @@ async function startServer() {
         coursesFile: path.join(process.cwd(), "data", "courses.json"),
         studentsFile: path.join(process.cwd(), "data", "students.json"),
         dispositionFile: path.join(process.cwd(), "data", "disposition-records.json"),
-        sheetsFile: path.join(process.cwd(), "data", "sheets-config.json"),
       };
     }
     const userDir = path.join(process.cwd(), "data", "users", workspaceKey);
@@ -1723,7 +1659,6 @@ async function startServer() {
       coursesFile: path.join(userDir, "courses.json"),
       studentsFile: path.join(userDir, "students.json"),
       dispositionFile: path.join(userDir, "disposition-records.json"),
-      sheetsFile: path.join(userDir, "sheets-config.json"),
     };
   }
 
@@ -1734,7 +1669,6 @@ async function startServer() {
       coursesLoadedFromDisk,
       studentDispositionMap,
       studentHistoryList,
-      courseDispositionSheets,
       lessonPlans,
       grades,
       driveResources,
@@ -1757,7 +1691,6 @@ async function startServer() {
     COURSES_DATA_FILE = files.coursesFile;
     STUDENTS_DATA_FILE = files.studentsFile;
     DISPOSITION_DATA_FILE = files.dispositionFile;
-    SHEETS_CONFIG_FILE = files.sheetsFile;
 
     const existing = teacherWorkspaces.get(targetKey);
     if (existing && existing.initialized) {
@@ -1766,7 +1699,6 @@ async function startServer() {
       coursesLoadedFromDisk = existing.coursesLoadedFromDisk;
       studentDispositionMap = existing.studentDispositionMap;
       studentHistoryList = existing.studentHistoryList;
-      courseDispositionSheets = existing.courseDispositionSheets;
       lessonPlans = existing.lessonPlans;
       grades = existing.grades;
       driveResources = existing.driveResources;
@@ -1778,7 +1710,6 @@ async function startServer() {
       coursesLoadedFromDisk = false;
       studentDispositionMap = {};
       studentHistoryList = [];
-      courseDispositionSheets = {};
       lessonPlans = [];
       grades = [];
       driveResources = [];
@@ -1787,7 +1718,6 @@ async function startServer() {
       loadCoursesFromDisk();
       loadStudentsFromDisk();
       loadDispositionDataFromDisk();
-      loadSheetsConfigFromDisk();
       saveCurrentSliceToMap();
     }
   }
@@ -1800,69 +1730,6 @@ async function startServer() {
       saveCurrentSliceToMap();
     });
   };
-
-  app.get("/api/courses/:courseId/disposition-sheet", (req, res) => {
-    const { courseId } = req.params;
-    loadSheetsConfigFromDisk();
-    let data = courseDispositionSheets[courseId] || null;
-
-    // Check if course has a dedicated sheet saved in courses data
-    if ((!data || !data.spreadsheetId) && coursesLoadedFromDisk) {
-      const course = courses.find((c) => c.id === courseId || c.classroomCourseId === courseId);
-      if (course?.dispositionSheetId && isRealSpreadsheetId(course.dispositionSheetId)) {
-        data = {
-          spreadsheetId: course.dispositionSheetId,
-          url: course.dispositionSheetUrl || `https://docs.google.com/spreadsheets/d/${course.dispositionSheetId}/edit`,
-          lastSyncedAt: new Date().toISOString(),
-        };
-        courseDispositionSheets[courseId] = data;
-        saveSheetsConfigToDisk();
-      }
-    }
-
-    res.json(data || {});
-  });
-
-  app.post("/api/courses/:courseId/disposition-sheet", (req, res) => {
-    const { courseId } = req.params;
-    const { spreadsheetId, url, lastSyncedAt } = req.body;
-    if (!spreadsheetId) {
-      return res.status(400).json({ error: "Falta spreadsheetId" });
-    }
-    const isReal = isRealSpreadsheetId(spreadsheetId);
-    const sheetData = {
-      spreadsheetId,
-      url: isReal ? (url || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`) : "",
-      lastSyncedAt: lastSyncedAt || new Date().toISOString(),
-    };
-    courseDispositionSheets[courseId] = sheetData;
-    saveSheetsConfigToDisk();
-
-    // Also update course object if loaded
-    const courseIndex = courses.findIndex((c) => c.id === courseId || c.classroomCourseId === courseId);
-    if (courseIndex !== -1) {
-      courses[courseIndex].dispositionSheetId = spreadsheetId;
-      courses[courseIndex].dispositionSheetUrl = sheetData.url;
-      saveCoursesToDisk();
-    }
-
-    res.json({ success: true, sheet: sheetData });
-  });
-
-  app.delete("/api/courses/:courseId/disposition-sheet", (req, res) => {
-    const { courseId } = req.params;
-    delete courseDispositionSheets[courseId];
-    saveSheetsConfigToDisk();
-
-    const courseIndex = courses.findIndex((c) => c.id === courseId || c.classroomCourseId === courseId);
-    if (courseIndex !== -1) {
-      courses[courseIndex].dispositionSheetId = undefined;
-      courses[courseIndex].dispositionSheetUrl = undefined;
-      saveCoursesToDisk();
-    }
-
-    res.json({ success: true, message: "Hoja de cálculo desvinculada del curso." });
-  });
 
   // Custom Teacher Conduct Options API (persisted to disk)
   const teacherConductOptionsMap: Record<string, string[]> = {};

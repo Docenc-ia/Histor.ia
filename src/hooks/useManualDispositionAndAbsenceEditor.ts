@@ -15,7 +15,8 @@ import {
 } from '../types/grades';
 import {
   api,
-  getUserStorageKey,
+  getUserScopedItem,
+  setUserScopedItem,
   markHistoryIdDeleted,
 } from '../services/api';
 import { getCachedAccessToken } from '../services/workspace/googleAuth';
@@ -57,17 +58,6 @@ export interface UseManualDispositionAndAbsenceEditorProps {
     newHistory: StudentHistoryItem[]
   ) => void;
   deduplicateHistory: (items: StudentHistoryItem[]) => StudentHistoryItem[];
-  triggerSheetsSync: (
-    updatedMap?: Record<string, StudentDispositionData>,
-    updatedHistory?: StudentHistoryItem[],
-    updatedMap2c?: Record<string, StudentDispositionData>
-  ) => void;
-  sheetConfig: {
-    spreadsheetId: string;
-    url: string;
-    isLiveGoogle?: boolean;
-    lastSyncedAt?: string;
-  } | null;
   token: string | null;
   setActiveTab: React.Dispatch<
     React.SetStateAction<'roster' | 'libro_temas' | 'grades' | 'history'>
@@ -90,8 +80,6 @@ export function useManualDispositionAndAbsenceEditor({
   getStudentMetrics,
   saveTermDisposition,
   deduplicateHistory,
-  triggerSheetsSync,
-  sheetConfig,
   token,
   setActiveTab,
   setToastMessage,
@@ -215,12 +203,6 @@ export function useManualDispositionAndAbsenceEditor({
     const updatedHistory = deduplicateHistory([editEntry, ...historyList]);
     setHistoryList(updatedHistory);
     saveTermDisposition(term, updatedMap, updatedHistory);
-
-    triggerSheetsSync(
-      term === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      term === '2c' ? updatedMap : dispositionMap2c
-    );
 
     api
       .recordDisposition({
@@ -474,12 +456,6 @@ export function useManualDispositionAndAbsenceEditor({
       setHistoryList(updatedHistory);
       saveTermDisposition(term, updatedMap, updatedHistory);
 
-      triggerSheetsSync(
-        term === '1c' ? updatedMap : dispositionMap,
-        updatedHistory,
-        term === '2c' ? updatedMap : dispositionMap2c
-      );
-
       api
         .recordDisposition({
           id: auditEntry.id,
@@ -601,12 +577,6 @@ export function useManualDispositionAndAbsenceEditor({
     setHistoryList(updatedHistory);
     saveTermDisposition(targetTerm, updatedMap, updatedHistory);
 
-    triggerSheetsSync(
-      targetTerm === '1c' ? updatedMap : dispositionMap,
-      updatedHistory,
-      targetTerm === '2c' ? updatedMap : dispositionMap2c
-    );
-
     api
       .resetDisposition({
         studentId: student.id,
@@ -625,90 +595,6 @@ export function useManualDispositionAndAbsenceEditor({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
-  // Reiniciar puntajes (Inicio de nuevo trimestre o para toda la clase)
-  const handleResetCourseDisposition = (clearHistory: boolean = false) => {
-    if (!activeCourse) return;
-    const { initialDispositionScore, dispositionLabel } = getTerminologySettings();
-    const baseScore = initialDispositionScore ?? 10;
-    const targetTerm: '1c' | '2c' = activeConcreteTerm;
-    const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
-    const updated: Record<string, StudentDispositionData> = { ...baseMap };
-    courseStudents.forEach((st) => {
-      const current = updated[st.id] || getStudentMetrics(st.id, targetTerm);
-      updated[st.id] = {
-        ...current,
-        courseId: activeCourse.id,
-        totalDisposition: baseScore,
-      };
-    });
-
-    const now = new Date();
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    const date = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
-    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const timestamp = Date.now();
-
-    let updatedHistory = [...historyList];
-    if (clearHistory) {
-      const removedIds: string[] = [];
-      updatedHistory = updatedHistory.filter((h) => {
-        const isTarget =
-          h.courseId === activeCourse.id &&
-          (targetTerm === '2c' ? h.term === '2c' : h.term === '1c' || !h.term) &&
-          (h.category === 'Disposición' || (h.pointsChange !== undefined && h.pointsChange < 0));
-        if (isTarget) {
-          removedIds.push(h.id);
-          return false;
-        }
-        return true;
-      });
-      removedIds.forEach((id) => markHistoryIdDeleted(id));
-    }
-
-    const resetEntry: StudentHistoryItem = {
-      id: `rec-reset-${timestamp}`,
-      studentId: 'all',
-      studentName: 'Toda la clase',
-      courseId: activeCourse.id,
-      date,
-      time,
-      term: targetTerm,
-      action: clearHistory
-        ? `Reinicio general de ${dispositionLabel.toLowerCase()} a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`
-        : `Reinicio general de puntaje de ${dispositionLabel.toLowerCase()} a ${baseScore} puntos (${targetTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`,
-      category: 'Sistema',
-      pointsChange: 0,
-      timestamp,
-      messageSent: false,
-      messageText: '',
-      notificationMethod: 'none',
-    };
-    const updatedHistoryDedup = deduplicateHistory([resetEntry, ...updatedHistory]);
-    setHistoryList(updatedHistoryDedup);
-    saveTermDisposition(targetTerm, updated, updatedHistoryDedup);
-
-    setToastMessage(
-      clearHistory
-        ? `${dispositionLabel} restablecida a ${baseScore} para todos los estudiantes en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
-        : `Puntaje de ${dispositionLabel.toLowerCase()} reiniciado a ${baseScore} en ${targetTerm === '2c' ? '2°C' : '1°C'}.`
-    );
-    setTimeout(() => setToastMessage(null), 3500);
-
-    triggerSheetsSync(
-      targetTerm === '1c' ? updated : dispositionMap,
-      updatedHistoryDedup,
-      targetTerm === '2c' ? updated : dispositionMap2c
-    );
-    api
-      .resetDisposition({
-        courseId: activeCourse.id,
-        term: targetTerm,
-        resetWhat: 'disposition',
-        clearHistory,
-      })
-      .catch(() => {});
-  };
-
   // Mandar la nota de disposición calculada (1 a 10) de todos los alumnos a Calificaciones
   const handleSendDispositionToGrades = (
     targetTermOverride?: '1c' | '2c',
@@ -718,14 +604,14 @@ export function useManualDispositionAndAbsenceEditor({
     const term: '1c' | '2c' = targetTermOverride || activeConcreteTerm;
     const courseId = activeCourse.id;
 
-    const catKey = getUserStorageKey(`fds_grades_categories_${courseId}_${term}`);
-    const gradesKey = getUserStorageKey(`fds_grades_data_${courseId}_${term}`);
+    const catBaseKey = `fds_grades_categories_${courseId}_${term}`;
+    const gradesBaseKey = `fds_grades_data_${courseId}_${term}`;
 
     let categories: GradeCategory[] = [];
     try {
       const saved =
-        localStorage.getItem(catKey) ||
-        (term === '1c' ? localStorage.getItem(`fds_grades_categories_${courseId}`) : null);
+        getUserScopedItem(catBaseKey) ||
+        (term === '1c' ? getUserScopedItem(`fds_grades_categories_${courseId}`) : null);
       if (saved) {
         categories = JSON.parse(saved);
       }
@@ -816,17 +702,17 @@ export function useManualDispositionAndAbsenceEditor({
     }
 
     if (categoriesModified && typeof window !== 'undefined') {
-      localStorage.setItem(catKey, JSON.stringify(categories));
+      setUserScopedItem(catBaseKey, JSON.stringify(categories));
       if (term === '1c') {
-        localStorage.setItem(`fds_grades_categories_${courseId}`, JSON.stringify(categories));
+        setUserScopedItem(`fds_grades_categories_${courseId}`, JSON.stringify(categories));
       }
     }
 
     let gradesMap: StudentGradesMap = {};
     try {
       const savedGrades =
-        localStorage.getItem(gradesKey) ||
-        (term === '1c' ? localStorage.getItem(`fds_grades_data_${courseId}`) : null);
+        getUserScopedItem(gradesBaseKey) ||
+        (term === '1c' ? getUserScopedItem(`fds_grades_data_${courseId}`) : null);
       if (savedGrades) {
         gradesMap = JSON.parse(savedGrades);
       }
@@ -844,11 +730,11 @@ export function useManualDispositionAndAbsenceEditor({
     });
 
     if (typeof window !== 'undefined') {
-      localStorage.setItem(gradesKey, JSON.stringify(gradesMap));
+      setUserScopedItem(gradesBaseKey, JSON.stringify(gradesMap));
       if (term === '1c') {
-        localStorage.setItem(`fds_grades_data_${courseId}`, JSON.stringify(gradesMap));
+        setUserScopedItem(`fds_grades_data_${courseId}`, JSON.stringify(gradesMap));
       }
-      localStorage.setItem(`fds_grades_active_term_${courseId}`, term);
+      setUserScopedItem(`fds_grades_active_term_${courseId}`, term);
       window.dispatchEvent(
         new CustomEvent('fds-grades-updated', {
           detail: { term, courseId },
@@ -881,12 +767,6 @@ export function useManualDispositionAndAbsenceEditor({
     const updatedHistory = deduplicateHistory([gradesEntry, ...historyList]);
     setHistoryList(updatedHistory);
 
-    triggerSheetsSync(
-      term === '1c' ? dispositionMap : undefined,
-      updatedHistory,
-      term === '2c' ? dispositionMap2c : undefined
-    );
-
     sheetsService
       .syncGradebookMatrixToSheet(
         activeCourse,
@@ -894,7 +774,7 @@ export function useManualDispositionAndAbsenceEditor({
         courseStudents,
         categories,
         gradesMap,
-        sheetConfig?.spreadsheetId || activeCourse.gradesSheetId,
+        activeCourse.gradesSheetId,
         activeCourse.gradesFolderId,
         token || getCachedAccessToken() || undefined
       )
@@ -983,7 +863,6 @@ export function useManualDispositionAndAbsenceEditor({
     handleNavigateEditAbsenceStudent,
     handleSaveStudentAbsences,
     handleResetSingleStudentDisposition,
-    handleResetCourseDisposition,
     handleSendDispositionToGrades,
   };
 }

@@ -8,10 +8,10 @@
  * - https://www.googleapis.com/auth/calendar.events
  */
 
-import { getCachedAccessToken, fetchGoogleApiWithRetry, renewGoogleSessionSilently } from './googleAuth';
+import { getCachedAccessToken, fetchGoogleApiWithRetry, renewGoogleSessionSilently, getActiveTeacherEmail } from './googleAuth';
 import { CalendarEventItem, GoogleCalendarInfo, Course, CalendarEventCategory } from '../../types';
 import { extractDailySlotsFromSchedule, extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
-import { getLocalCourses } from '../storageHelpers';
+import { getLocalCourses, getUserScopedItem } from '../storageHelpers';
 
 export function isBusyOrGenericTitle(title?: string | null): boolean {
   if (!title) return true;
@@ -31,7 +31,7 @@ export function getEffectiveCourseSchedule(course: Course): string {
   }
   if (typeof window !== 'undefined' && course.id) {
     try {
-      const raw = localStorage.getItem(`fds_libro_temas_${course.id}`);
+      const raw = getUserScopedItem(`fds_libro_temas_${course.id}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         const h = parsed?.metadata?.horario;
@@ -586,35 +586,43 @@ export const calendarService = {
       };
     }
 
-    // Evitar que se modifique el calendario personal (canomorenojj@gmail.com) al sincronizar materias del colegio
+    const activeEmail = getActiveTeacherEmail();
+    const isOwnerAccount =
+      activeEmail === 'jorge.cano@fds-esc.edu.ar' || activeEmail === 'canomorenojj@gmail.com';
+
     let targetCalendarId =
-      !calendarId || calendarId === 'all' || calendarId.toLowerCase() === 'canomorenojj@gmail.com'
+      !calendarId || calendarId === 'all'
+        ? isOwnerAccount
+          ? 'jorge.cano@fds-esc.edu.ar'
+          : activeEmail || 'primary'
+        : isOwnerAccount && calendarId.toLowerCase() === 'canomorenojj@gmail.com'
         ? 'jorge.cano@fds-esc.edu.ar'
         : calendarId;
 
-    // Verificar si el token actual pertenece al Gmail personal en vez de la cuenta del colegio
-    try {
-      const checkRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (checkRes.ok) {
-        const primaryData = await checkRes.json();
-        const primaryEmail = String(primaryData?.id || '').toLowerCase();
-        if (primaryEmail === 'canomorenojj@gmail.com') {
-          const { requestAccessToken } = await import('./googleAuth');
-          const schoolToken = await requestAccessToken(true, 'jorge.cano@fds-esc.edu.ar');
-          if (schoolToken) {
-            token = schoolToken;
-          } else {
-            return {
-              success: false,
-              createdCount: 0,
-              message: 'Para no modificar tu calendario personal, selecciona tu cuenta del colegio (jorge.cano@fds-esc.edu.ar) en la ventana de Google.',
-            };
+    if (isOwnerAccount) {
+      try {
+        const checkRes = await fetch('https://www.googleapis.com/calendar/v3/calendars/primary', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (checkRes.ok) {
+          const primaryData = await checkRes.json();
+          const primaryEmail = String(primaryData?.id || '').toLowerCase();
+          if (primaryEmail === 'canomorenojj@gmail.com') {
+            const { requestAccessToken } = await import('./googleAuth');
+            const schoolToken = await requestAccessToken(true, 'jorge.cano@fds-esc.edu.ar');
+            if (schoolToken) {
+              token = schoolToken;
+            } else {
+              return {
+                success: false,
+                createdCount: 0,
+                message: 'Para no modificar tu calendario personal, selecciona tu cuenta del colegio en la ventana de Google.',
+              };
+            }
           }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
     // RRULE day codes
     const rruleDays: { [key: number]: string } = {
@@ -723,7 +731,8 @@ export const calendarService = {
     if (!token) {
       try {
         const { requestAccessToken } = await import('./googleAuth');
-        token = await requestAccessToken(false, 'jorge.cano@fds-esc.edu.ar');
+        const activeEmail = getActiveTeacherEmail();
+        token = await requestAccessToken(false, activeEmail || undefined);
       } catch (err) {
         console.warn('Could not obtain fresh Google OAuth token:', err);
         return null;
@@ -759,13 +768,17 @@ export const calendarService = {
       return { success: false, slots: [], message: 'Inicia sesión con Google Workspace para ver los módulos de tu calendario.' };
     }
 
+    const activeEmail = getActiveTeacherEmail();
+    const isOwnerAccount =
+      activeEmail === 'jorge.cano@fds-esc.edu.ar' || activeEmail === 'canomorenojj@gmail.com';
+
     const targetCalendarId =
-      !calendarId || calendarId === 'all' || calendarId.toLowerCase() === 'canomorenojj@gmail.com'
+      !calendarId || calendarId === 'all' || (isOwnerAccount && calendarId.toLowerCase() === 'canomorenojj@gmail.com')
         ? 'primary'
         : calendarId;
 
     const calendarIdsToQuery = new Set<string>([targetCalendarId]);
-    if (targetCalendarId === 'primary') {
+    if (targetCalendarId === 'primary' && isOwnerAccount) {
       calendarIdsToQuery.add('jorge.cano@fds-esc.edu.ar');
     }
 
@@ -825,7 +838,7 @@ export const calendarService = {
         // Token expired -> clear and request a fresh one automatically
         const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
         setCachedAccessToken(null);
-        token = await requestAccessToken(false, 'jorge.cano@fds-esc.edu.ar');
+        token = await requestAccessToken(false, activeEmail || undefined);
         if (!token) {
           return { success: false, slots: [], message: 'Tu sesión de Google expiró. Vuelve a intentar para autorizar.' };
         }

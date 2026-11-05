@@ -13,14 +13,13 @@ import {
   clearAuthSession,
   googleSignIn,
   signInWithGoogleIdToken,
-  signInWithGoogleIdentityServices,
   requestGoogleAccessToken,
   logoutUser,
   initAuth,
   WORKSPACE_SCOPES,
   isGoogleSessionExpired,
   isValidGoogleAccessToken,
-  renewGoogleSessionSilently,
+  auth,
 } from '../services/workspace/googleAuth';
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
@@ -199,11 +198,9 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const renewGoogleSession = useCallback(async (): Promise<boolean> => {
     try {
       const emailHint = user?.email || undefined;
-      const gsiRes = await signInWithGoogleIdentityServices(emailHint, {
-        prompt: emailHint ? '' : 'select_account',
-      });
-      if (gsiRes?.accessToken && isValidGoogleAccessToken(gsiRes.accessToken)) {
-        setToken(gsiRes.accessToken);
+      const res = await googleSignIn(emailHint);
+      if (res?.accessToken && isValidGoogleAccessToken(res.accessToken)) {
+        setToken(res.accessToken);
         setIsTokenExpired(false);
         return true;
       }
@@ -346,9 +343,18 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           (sessionStorage.getItem('docencia_session_active') === 'true' ||
             localStorage.getItem('docencia_session_active') === 'true');
         if (isSessionActive) {
+          const activeStoredEmail = (
+            sessionStorage.getItem('docencia_teacher_email') ||
+            localStorage.getItem('docencia_teacher_email') ||
+            ''
+          ).trim().toLowerCase();
+          const teacherEmail = (authUser.email || '').trim().toLowerCase();
+          // Do not overwrite an active session belonging to a different teacher email
+          if (activeStoredEmail && teacherEmail && activeStoredEmail !== teacherEmail) {
+            return;
+          }
           setToken(accessToken);
           setMode('connected');
-          const teacherEmail = (authUser.email || '').trim().toLowerCase();
           const rawName = authUser.displayName || (teacherEmail ? teacherEmail.split('@')[0] : 'Docente');
           const teacherName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
           const derivedSchool = deriveSchoolFromEmail(teacherEmail);
@@ -366,8 +372,11 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           setUser(newProfile);
           if (typeof window !== 'undefined') {
             sessionStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
+            sessionStorage.setItem('docencia_teacher_email', teacherEmail);
             localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
+            localStorage.setItem('docencia_teacher_email', teacherEmail);
           }
+          firestoreSync.clearCaches();
         }
       },
       () => {
@@ -429,6 +438,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         localStorage.setItem('docencia_teacher_email', result.profile.email);
       }
+      firestoreSync.clearCaches();
 
       try {
         await api.syncAuthSession({
@@ -446,10 +456,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (err: any) {
       if (err?.code === 'auth/unauthorized-domain-needs-email' || err?.message?.includes('UNAUTHORIZED_DOMAIN_NEEDS_EMAIL')) {
         throw err;
-      }
-      if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
-        // Handled via fallback profile
-        return null;
       }
       console.warn('Aviso de inicio de sesión:', err);
       if (err?.code === 'auth/popup-closed-by-user' || err?.type === 'popup_closed') {
@@ -503,10 +509,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         scopes: WORKSPACE_SCOPES,
       };
 
+      if (auth.currentUser?.email && auth.currentUser.email.trim().toLowerCase() !== cleanEmail) {
+        try {
+          await auth.signOut();
+        } catch (_) {}
+      }
+
       setCachedAccessToken(null);
       setToken(null);
-      setUser(teacherProfile);
-      setMode('connected');
 
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('docencia_session_active', 'true');
@@ -516,6 +526,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
         localStorage.setItem('docencia_teacher_email', cleanEmail);
       }
+
+      firestoreSync.clearCaches();
+      setUser(teacherProfile);
+      setMode('connected');
 
       await api.syncAuthSession({
         uid: teacherProfile.id || 'user-inst',

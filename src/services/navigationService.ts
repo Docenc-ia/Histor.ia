@@ -78,9 +78,7 @@ class UnifiedNavigationService {
   public getLastActiveCourseId = (): string => {
     if (typeof window === 'undefined') return '';
     try {
-      const scoped = (api.getUserScopedItem?.(LAST_ACTIVE_COURSE_ID_KEY) || '').trim();
-      if (scoped) return scoped;
-      return (window.localStorage.getItem(LAST_ACTIVE_COURSE_ID_KEY) || '').trim();
+      return (api.getUserScopedItem?.(LAST_ACTIVE_COURSE_ID_KEY) || '').trim();
     } catch (_) {
       return '';
     }
@@ -89,11 +87,7 @@ class UnifiedNavigationService {
   public getLastActiveView = (): AppViewType | null => {
     if (typeof window === 'undefined') return null;
     try {
-      const raw = (
-        api.getUserScopedItem?.(LAST_ACTIVE_VIEW_KEY) ||
-        window.localStorage.getItem(LAST_ACTIVE_VIEW_KEY) ||
-        ''
-      ).trim() as AppViewType;
+      const raw = (api.getUserScopedItem?.(LAST_ACTIVE_VIEW_KEY) || '').trim() as AppViewType;
       return VALID_VIEWS.has(raw) ? raw : null;
     } catch (_) {
       return null;
@@ -103,11 +97,7 @@ class UnifiedNavigationService {
   public getLastActiveSubTab = (): CourseSubTabType | null => {
     if (typeof window === 'undefined') return null;
     try {
-      const raw = (
-        api.getUserScopedItem?.(LAST_ACTIVE_SUBTAB_KEY) ||
-        window.localStorage.getItem(LAST_ACTIVE_SUBTAB_KEY) ||
-        ''
-      ).trim() as CourseSubTabType;
+      const raw = (api.getUserScopedItem?.(LAST_ACTIVE_SUBTAB_KEY) || '').trim() as CourseSubTabType;
       return VALID_SUB_TABS.has(raw) ? raw : null;
     } catch (_) {
       return null;
@@ -124,9 +114,7 @@ class UnifiedNavigationService {
       }
 
       // 2. Fallback to legacy single snapshot key if present
-      const raw =
-        api.getUserScopedItem?.(LAST_ACTIVE_COURSE_SNAPSHOT_KEY) ||
-        window.localStorage.getItem(LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
+      const raw = api.getUserScopedItem?.(LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as Course;
       if (!parsed || typeof parsed !== 'object' || !parsed.id) return null;
@@ -160,7 +148,6 @@ class UnifiedNavigationService {
       const cleanId = (courseId || '').trim();
       if (cleanId) {
         api.setUserScopedItem?.(LAST_ACTIVE_COURSE_ID_KEY, cleanId);
-        safeSetLocalStorageItem(LAST_ACTIVE_COURSE_ID_KEY, cleanId);
         touchCourseDataLru(cleanId);
 
         const pool = this.getCoursesPool(coursesPool);
@@ -173,11 +160,9 @@ class UnifiedNavigationService {
       }
       if (view && VALID_VIEWS.has(view)) {
         api.setUserScopedItem?.(LAST_ACTIVE_VIEW_KEY, view);
-        safeSetLocalStorageItem(LAST_ACTIVE_VIEW_KEY, view);
       }
       if (subTab && VALID_SUB_TABS.has(subTab)) {
         api.setUserScopedItem?.(LAST_ACTIVE_SUBTAB_KEY, subTab);
-        safeSetLocalStorageItem(LAST_ACTIVE_SUBTAB_KEY, subTab);
       }
     } catch (_) {}
   };
@@ -203,16 +188,13 @@ class UnifiedNavigationService {
         const nextMru = getCourseSnapshotFromLru(undefined, false);
         if (nextMru?.id) {
           api.setUserScopedItem?.(LAST_ACTIVE_COURSE_ID_KEY, nextMru.id);
-          safeSetLocalStorageItem(LAST_ACTIVE_COURSE_ID_KEY, nextMru.id);
           return;
         }
       } else {
         removeCourseSnapshotFromLru();
       }
       api.setUserScopedItem?.(LAST_ACTIVE_COURSE_ID_KEY, '');
-      window.localStorage.removeItem(LAST_ACTIVE_COURSE_ID_KEY);
       api.setUserScopedItem?.(LAST_ACTIVE_COURSE_SNAPSHOT_KEY, '');
-      window.localStorage.removeItem(LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
     } catch (_) {}
   };
 

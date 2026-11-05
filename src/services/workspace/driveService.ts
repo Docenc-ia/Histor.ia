@@ -15,9 +15,7 @@ export interface CourseFolderStructure {
   libroDeTemasFolder: { id: string; name: string; url: string };
   reportsFolder: { id: string; name: string; url: string };
   incidentsFolder: { id: string; name: string; url: string };
-  attendanceSheetUrl?: string;
   gradesSheetUrl?: string;
-  libroDeTemasSheetUrl?: string;
 }
 
 /**
@@ -125,10 +123,11 @@ export const driveService = {
   async findOrCreateFolder(
     folderName: string,
     parentFolderId?: string,
-    providedToken?: string
+    providedToken?: string,
+    skipTokenRequest = false
   ): Promise<{ id: string; name: string; url: string }> {
     let token = providedToken || getCachedAccessToken();
-    if (!token) {
+    if (!token && !skipTokenRequest) {
       try {
         token = await requestGoogleAccessToken();
       } catch {}
@@ -482,7 +481,7 @@ export const driveService = {
       }
 
       if (!mainFolder) {
-        mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token);
+        mainFolder = await this.findOrCreateFolder(mainFolderName, undefined, token, true);
       }
     }
 
@@ -496,12 +495,12 @@ export const driveService = {
       reportsFolder,
       incidentsFolder,
     ] = await Promise.all([
-      this.findOrCreateFolder('Calificaciones', mainFolder.id, token),
-      this.findOrCreateFolder('Asistencia', mainFolder.id, token),
-      this.findOrCreateFolder('Disposición', mainFolder.id, token),
-      this.findOrCreateFolder('Libro de Temas', mainFolder.id, token),
-      this.findOrCreateFolder('Informes', mainFolder.id, token),
-      this.findOrCreateFolder('Historial de Incidencias', mainFolder.id, token),
+      this.findOrCreateFolder('Calificaciones', mainFolder.id, token, true),
+      this.findOrCreateFolder('Asistencia', mainFolder.id, token, true),
+      this.findOrCreateFolder('Disposición', mainFolder.id, token, true),
+      this.findOrCreateFolder('Libro de Temas', mainFolder.id, token, true),
+      this.findOrCreateFolder('Informes', mainFolder.id, token, true),
+      this.findOrCreateFolder('Historial de Incidencias', mainFolder.id, token, true),
     ]);
 
     const resultStructure: CourseFolderStructure = {

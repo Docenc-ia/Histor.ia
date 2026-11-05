@@ -313,14 +313,6 @@ export function deduplicateCourses(coursesList: Course[]): Course[] {
       if (classroomId) merged.classroomCourseId = classroomId;
       else delete merged.classroomCourseId;
 
-      const sheetId = c.dispositionSheetId || existing.dispositionSheetId;
-      if (sheetId) merged.dispositionSheetId = sheetId;
-      else delete merged.dispositionSheetId;
-
-      const sheetUrl = c.dispositionSheetUrl || existing.dispositionSheetUrl;
-      if (sheetUrl) merged.dispositionSheetUrl = sheetUrl;
-      else delete merged.dispositionSheetUrl;
-
       const driveFolderId = c.driveFolderId || existing.driveFolderId;
       if (driveFolderId) merged.driveFolderId = driveFolderId;
       else delete merged.driveFolderId;
@@ -491,6 +483,7 @@ export function getLocalCourses(): Course[] {
   if (typeof window === 'undefined') return [];
   try {
     const userId = getActiveUserId();
+    if (!userId) return [];
     if (cachedCourses && cachedCourses.userId === userId) {
       return cachedCourses.list;
     }
@@ -663,6 +656,7 @@ export function getLocalStudents(courseId?: string): Student[] {
   if (typeof window === 'undefined') return [];
   try {
     const userId = getActiveUserId();
+    if (!userId) return [];
     const targetCourseId = courseId ? String(courseId).trim() : '';
 
     // 1. Fast path for a specific courseId from isolated per-course cache or storage
@@ -1013,6 +1007,7 @@ export function saveAllDispositionStorage(
 export function getAllDispositionStorage(): { disposition: Record<string, any>; history: any[] } {
   if (typeof window === 'undefined') return { disposition: {}, history: [] };
   const userId = getActiveUserId();
+  if (!userId) return { disposition: {}, history: [] };
   if (cachedDisposition && cachedDisposition.userId === userId) {
     return cachedDisposition.data;
   }

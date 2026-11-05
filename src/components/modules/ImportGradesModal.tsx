@@ -145,7 +145,7 @@ export interface ImportGradesModalProps {
   gradesMap2c: StudentGradesMap;
   currentTerm: '1c' | '2c';
   isDarkMode: boolean;
-  initialSourceType?: 'file' | 'sheets' | 'paste';
+  initialSourceType?: 'file' | 'csv' | 'sheets' | 'paste';
   importContext?: 'grades' | 'attendance';
   currentDispositionMap1c?: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
   currentDispositionMap2c?: Record<string, { totalAbsences: number; totalLates?: number; totalDisposition: number }>;
@@ -192,7 +192,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   historyEntries = [],
 }) => {
   const [activeStep, setActiveStep] = useState<'upload' | 'verify' | 'history'>('upload');
-  const [sourceType, setSourceType] = useState<'file' | 'sheets' | 'paste'>(initialSourceType);
+  const [sourceType, setSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>(initialSourceType);
 
   useEffect(() => {
     if (isOpen) {
@@ -516,11 +516,101 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Handle Excel (.xlsx, .xls, .csv) upload
+   * Parse CSV text into a 2D array with auto-detected delimiter (;, ,, or \t) and quoted string support
+   */
+  const parseCsvTextTo2D = (csvText: string): string[][] => {
+    const cleanText = csvText.replace(/^\uFEFF/, '');
+    const lines = cleanText
+      .split(/\r?\n/)
+      .filter((l) => l.trim() !== '');
+    if (lines.length === 0) return [];
+
+    // Detect best delimiter from first 5 lines outside quotes
+    const countDelimiter = (line: string, delim: string): number => {
+      let inQuotes = false;
+      let count = 0;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          inQuotes = !inQuotes;
+        } else if (!inQuotes && ch === delim) {
+          count++;
+        }
+      }
+      return count;
+    };
+
+    const sample = lines.slice(0, 5);
+    const semiCount = sample.reduce((acc, l) => acc + countDelimiter(l, ';'), 0);
+    const commaCount = sample.reduce((acc, l) => acc + countDelimiter(l, ','), 0);
+    const tabCount = sample.reduce((acc, l) => acc + countDelimiter(l, '\t'), 0);
+
+    let delimiter = ',';
+    if (tabCount > semiCount && tabCount > commaCount) {
+      delimiter = '\t';
+    } else if (semiCount > commaCount) {
+      delimiter = ';';
+    }
+
+    const splitCsvLine = (line: string): string[] => {
+      const result: string[] = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === delimiter && !inQuotes) {
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += ch;
+        }
+      }
+      result.push(current.trim());
+      return result;
+    };
+
+    return lines.map(splitCsvLine);
+  };
+
+  /**
+   * Handle Excel (.xlsx, .xls) or CSV (.csv) upload
    */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    const isCsv = file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv';
+
+    if (isCsv) {
+      const textReader = new FileReader();
+      textReader.onload = (evt) => {
+        try {
+          const text = String(evt.target?.result || '');
+          const raw2D = parseCsvTextTo2D(text);
+          if (raw2D.length === 0) return;
+          setRawWorkbook(null);
+          setSheetNames(['CSV']);
+          setSelectedSheetName('CSV');
+          setRaw2DGrid(raw2D);
+          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+          setSelectedHeaderRowIndex(headerRowIndex);
+          if (rows.length === 0 || headers.length === 0) return;
+          processLoadedTableData(rows, headers, `${file.name} (CSV)`, true);
+        } catch (err) {
+          console.error('Error al procesar archivo CSV:', err);
+        }
+      };
+      textReader.readAsText(file, 'UTF-8');
+      e.target.value = '';
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = async (evt) => {
@@ -538,6 +628,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       }
     };
     reader.readAsBinaryString(file);
+    e.target.value = '';
   };
 
   const parseExcelSheet = async (
@@ -1226,9 +1317,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                 <h3 className="font-bold text-base leading-tight">
                   {sourceType === 'sheets'
                     ? 'Importar Documento desde Google Sheets'
+                    : sourceType === 'csv'
+                    ? 'Importar Documento desde Archivo CSV (.csv)'
                     : sourceType === 'paste'
                     ? 'Pegado Rápido desde Planilla (Ctrl+V)'
-                    : 'Importar Documento desde Excel (.xlsx, .xls, .csv)'}
+                    : 'Importar Documento desde Excel (.xlsx, .xls) o Google Sheets'}
                 </h3>
                 <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
                   {courseName}
@@ -1314,7 +1407,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   }`}
                 >
                   <Upload className="w-4 h-4" />
-                  <span>Importar desde Excel (.xlsx, .xls, .csv)</span>
+                  <span>Importar desde Excel (.xlsx, .xls)</span>
                 </button>
 
                 <button
@@ -1330,6 +1423,21 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                 >
                   <FileSpreadsheet className="w-4 h-4" />
                   <span>Importar desde Google Sheets</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSourceType('csv')}
+                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    sourceType === 'csv'
+                      ? 'bg-teal-600 text-white shadow-xs'
+                      : isDarkMode
+                      ? 'bg-slate-800 text-slate-300 hover:text-white'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Importar CSV (.csv)</span>
                 </button>
 
                 <button
@@ -1425,8 +1533,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
               </button>
             </div>
 
-            {/* MODO 1: SUBIR ARCHIVO EXCEL */}
-            {sourceType === 'file' && (
+            {/* MODO 1: SUBIR ARCHIVO EXCEL (.xlsx, .xls) O CSV (.csv) */}
+            {(sourceType === 'file' || sourceType === 'csv') && (
               <div className="space-y-4">
                 <div
                   onClick={() => fileInputRef.current?.click()}
@@ -1439,7 +1547,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept=".xlsx,.xls,.csv"
+                    accept={sourceType === 'csv' ? '.csv,text/csv' : '.xlsx,.xls,.csv'}
                     onChange={handleFileUpload}
                     className="hidden"
                   />
@@ -1449,10 +1557,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <p className="text-sm font-bold">
                     {fileName
                       ? `Documento cargado: ${fileName}`
-                      : 'Hacé clic aquí para seleccionar tu archivo Excel (.xlsx, .xls o .csv)'}
+                      : sourceType === 'csv'
+                      ? 'Hacé clic aquí para seleccionar tu archivo CSV (.csv)'
+                      : 'Hacé clic aquí para seleccionar tu archivo Excel (.xlsx, .xls)'}
                   </p>
                   <p className={`text-xs mt-1.5 max-w-xl mx-auto ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Subí cualquier planilla tuya: en el siguiente paso verás tu hoja en pantalla y podrás elegir con un clic en qué fila están los títulos y qué columna corresponde a Alumno, Disposición, Faltas o Notas.
+                    Subí tu archivo: se detectarán automáticamente los alumnos, sus notas/calificaciones, inasistencias y disposición con comprobación previa antes de guardar.
                   </p>
                 </div>
               </div>

@@ -22,8 +22,6 @@ import {
   extractDailySlotsFromSchedule,
   CourseDayTimeSlot,
 } from '../../utils/schoolHolidays';
-import { sheetsSyncQueue } from '../../services/workspace/sheetsSyncQueue';
-import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import {
   firestoreSync,
   getActiveUserId,
@@ -33,10 +31,6 @@ import {
   notifyDebouncedSyncPending,
 } from '../../services/firestoreSync';
 import { api, getUserStorageKey } from '../../services/api';
-import {
-  getCachedAccessToken,
-  isValidGoogleAccessToken,
-} from '../../services/workspace/googleAuth';
 import { LibroDeTemasModals } from './classes/LibroDeTemasModals';
 import { LibroDeTemasHeaderToolbar } from './classes/LibroDeTemasHeaderToolbar';
 import { LibroDeTemasTodayCard } from './classes/LibroDeTemasTodayCard';
@@ -107,17 +101,10 @@ export interface ScheduledRow {
   entry: LibroDeTemasEntry;
 }
 
-export interface LibroDeTemasSheetInfo {
-  spreadsheetId: string;
-  url: string;
-  lastSyncedAt?: string;
-}
-
 export interface LibroDeTemasStorageData {
   metadata: LibroDeTemasMetadata;
   entries: Record<string, LibroDeTemasEntry>; // key: YYYY-MM-DD
   characterOptions?: string[]; // Opciones personalizadas del desplegable "Carácter de la clase"
-  sheetInfo?: LibroDeTemasSheetInfo | null;
   updatedAt: string;
 }
 
@@ -316,16 +303,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   const [newCustomContents, setNewCustomContents] = useState('');
   const [newCustomCharacter, setNewCustomCharacter] = useState('Teórico - Práctica');
 
-  // Exportación a Google Docs (.gdoc) en Drive y Sincronización con Google Sheets
-  const [showDriveConfirm, setShowDriveConfirm] = useState(false);
-  const [driveDocTitle, setDriveDocTitle] = useState('');
-  const [isExportingDoc, setIsExportingDoc] = useState(false);
+  // Exportación a Google Docs (.gdoc) en Drive
   const [exportedDocLink, setExportedDocLink] = useState<{ url: string; name: string } | null>(
     null
   );
-  const [sheetInfo, setSheetInfo] = useState<LibroDeTemasSheetInfo | null>(null);
-  const [isSyncingSheet, setIsSyncingSheet] = useState(false);
-  const [isOpeningSheet, setIsOpeningSheet] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
     state: 'synced',
@@ -343,17 +324,15 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     metadata: LibroDeTemasMetadata;
     entries: Record<string, LibroDeTemasEntry>;
     characterOptions: string[];
-    sheetInfo: LibroDeTemasSheetInfo | null;
   }>({
     metadata,
     entries: entriesMap,
     characterOptions,
-    sheetInfo,
   });
 
   useEffect(() => {
-    latestStateRef.current = { metadata, entries: entriesMap, characterOptions, sheetInfo };
-  }, [metadata, entriesMap, characterOptions, sheetInfo]);
+    latestStateRef.current = { metadata, entries: entriesMap, characterOptions };
+  }, [metadata, entriesMap, characterOptions]);
 
   const todayStr = useMemo(() => formatYYYYMMDD(new Date()), []);
 
@@ -414,25 +393,17 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           setCharacterOptions(globalCharOpts);
         }
 
-        if (parsed.sheetInfo && isRealGoogleSpreadsheetId(parsed.sheetInfo.spreadsheetId)) {
-          setSheetInfo(parsed.sheetInfo);
-        } else {
-          setSheetInfo(null);
-        }
-
         hasLocalData = true;
       } else {
         setMetadata(defaultMetadata);
         setEntriesMap({});
         setCharacterOptions(globalCharOpts);
-        setSheetInfo(null);
         setIsEditingScheduleConfig(!defaultMetadata.isScheduleLocked);
       }
     } catch (_) {
       setMetadata(defaultMetadata);
       setEntriesMap({});
       setCharacterOptions(globalCharOpts);
-      setSheetInfo(null);
     }
 
     // Cargar desde Firestore en segundo plano y fusionar inteligentemente para no perder ningún registro entre dispositivos
@@ -467,10 +438,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     isCloudNewer && Array.isArray(cloudData.characterOptions) && cloudData.characterOptions.length > 0
                       ? cloudData.characterOptions
                       : latestStateRef.current.characterOptions,
-                  sheetInfo:
-                    cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)
-                      ? cloudData.sheetInfo
-                      : latestStateRef.current.sheetInfo,
                   updatedAt: isCloudNewer && cloudUpdatedAt ? cloudUpdatedAt : localUpdatedAt || new Date().toISOString(),
                 };
                 setCourseCachedItem(courseId, getStorageKey(courseId), JSON.stringify(updatedPayload));
@@ -520,10 +487,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           ) {
             setCharacterOptions(cloudData.characterOptions);
           }
-
-          if (cloudData.sheetInfo && isRealGoogleSpreadsheetId(cloudData.sheetInfo.spreadsheetId)) {
-            setSheetInfo((prev) => (isCloudNewer ? cloudData.sheetInfo! : prev || cloudData.sheetInfo || null));
-          }
         })
         .catch(() => {});
     };
@@ -547,7 +510,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           if (parsed.metadata) setMetadata(parsed.metadata);
           if (parsed.entries) setEntriesMap(parsed.entries);
           if (Array.isArray(parsed.characterOptions)) setCharacterOptions(parsed.characterOptions);
-          if (parsed.sheetInfo) setSheetInfo(parsed.sheetInfo);
         }
       } catch (_) {}
     };
@@ -568,7 +530,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             metadata: latestStateRef.current.metadata,
             entries: latestStateRef.current.entries,
             characterOptions: latestStateRef.current.characterOptions,
-            sheetInfo: latestStateRef.current.sheetInfo,
             updatedAt: new Date().toISOString(),
           })
           .catch(() => {});
@@ -598,8 +559,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     nextMetadata: LibroDeTemasMetadata,
     nextEntries: Record<string, LibroDeTemasEntry>,
     nextCharacterOptions: string[] = characterOptions,
-    immediateCloud = false,
-    nextSheetInfo: LibroDeTemasSheetInfo | null = sheetInfo
+    immediateCloud = false
   ) => {
     if (!courseId) return;
     const flushKey = `libro_temas_${courseId}`;
@@ -607,7 +567,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       metadata: nextMetadata,
       entries: nextEntries,
       characterOptions: nextCharacterOptions,
-      sheetInfo: nextSheetInfo,
       updatedAt: new Date().toISOString(),
     };
     try {
@@ -634,22 +593,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     } else {
       notifyDebouncedSyncPending(flushKey, true);
       cloudSyncTimeoutRef.current = window.setTimeout(syncToCloud, 1400);
-    }
-
-    // Si ya hay una planilla de Google Sheets vinculada, encolar sincronización automática con debounce
-    const activeSpreadsheetId = nextSheetInfo?.spreadsheetId || sheetInfo?.spreadsheetId;
-    if (activeSpreadsheetId && isRealGoogleSpreadsheetId(activeSpreadsheetId)) {
-      const token = getCachedAccessToken();
-      if (token && isValidGoogleAccessToken(token)) {
-        sheetsSyncQueue.enqueue(
-          courseId,
-          'libro_de_temas',
-          async () => {
-            await pushLibroSnapshotToSheets(activeSpreadsheetId, nextMetadata, nextEntries);
-          },
-          3500
-        );
-      }
     }
   };
 
@@ -1332,13 +1275,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   }, [activeWeekdays]);
 
   const {
-    pushLibroSnapshotToSheets,
-    handleSyncWithSheets,
-    handleOpenGoogleSheet,
-    handleExportToGoogleDoc,
     handleSaveLibroInFormat,
     handlePrintLibro,
-    handleDownloadLibro,
     handleOpenOrDownloadBackup,
   } = useLibroDeTemasSync({
     courseId,
@@ -1347,25 +1285,12 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     todayStr,
     metadata,
     entriesMap,
-    setEntriesMap,
     characterOptions,
-    scheduledRows,
     filteredRows,
     activeWeekdaysLabel,
     scheduleSummaryText,
-    holidaysByDate,
-    sheetInfo,
-    setSheetInfo,
-    isSyncingSheet,
-    setIsSyncingSheet,
-    setIsOpeningSheet,
-    driveDocTitle,
-    setIsExportingDoc,
     setExportedDocLink,
-    setShowDriveConfirm,
-    setToastMsg,
     onOpenBackupModal,
-    persistLibroData,
   });
 
   return (
@@ -1453,14 +1378,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         onUpdateAttendanceSettings={onUpdateAttendanceSettings}
         onRefreshCourse={onRefreshCourse}
         onOpenAttendanceSettingsModal={onOpenAttendanceSettingsModal}
-        sheetInfo={sheetInfo}
-        isOpeningSheet={isOpeningSheet}
-        isSyncingSheet={isSyncingSheet}
-        isExportingDoc={isExportingDoc}
-        showDriveConfirm={showDriveConfirm}
-        setShowDriveConfirm={setShowDriveConfirm}
-        driveDocTitle={driveDocTitle}
-        setDriveDocTitle={setDriveDocTitle}
         termFilter={termFilter}
         setTermFilter={setTermFilter}
         sortOrder={sortOrder}
@@ -1473,12 +1390,8 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         handleSignAllCompletedClasses={handleSignAllCompletedClasses}
         setShowCharacterOptionsModal={setShowCharacterOptionsModal}
         setShowAddDateModal={setShowAddDateModal}
-        handleOpenGoogleSheet={handleOpenGoogleSheet}
-        handleSyncWithSheets={handleSyncWithSheets}
         handlePrintLibro={handlePrintLibro}
-        handleDownloadLibro={handleDownloadLibro}
         handleOpenOrDownloadBackup={handleOpenOrDownloadBackup}
-        handleExportToGoogleDoc={handleExportToGoogleDoc}
         handleSaveLibroInFormat={handleSaveLibroInFormat}
         handleMetadataChange={handleMetadataChange}
         handleToggleCourseWeekday={handleToggleCourseWeekday}

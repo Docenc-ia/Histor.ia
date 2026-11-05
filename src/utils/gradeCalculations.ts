@@ -5,7 +5,6 @@
 
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
-import type { PreliminaryValuationRecord } from '../components/modules/PreliminaryValuationModal';
 
 export const CATEGORY_COLORS = [
   { name: 'Azul', border: 'border-blue-500', headerBg: 'bg-blue-500/10 text-blue-700 dark:text-blue-300 dark:bg-blue-950/40', badge: 'bg-blue-500' },
@@ -73,55 +72,4 @@ export function getScoreColorClass(valStr: string, isDarkMode: boolean): string 
   if (num >= 7) return 'text-emerald-600 dark:text-emerald-400 font-bold';
   if (num >= 6) return 'text-amber-600 dark:text-amber-400 font-semibold';
   return 'text-red-600 dark:text-red-400 font-bold';
-}
-
-export function buildGradesCsvContent(
-  students: Student[],
-  categories: GradeCategory[],
-  gradesMap: StudentGradesMap,
-  overallCalc: 'average_of_categories' | 'manual_final',
-  preliminaryValuation?: PreliminaryValuationRecord | null
-): string {
-  let csvContent = 'data:text/csv;charset=utf-8,';
-
-  const headerParts = ['Apellido y Nombre'];
-  categories.forEach((cat) => {
-    if (cat.subcategories.length === 0) {
-      headerParts.push(`"${cat.name}"`);
-    } else {
-      cat.subcategories.forEach((sub) => {
-        headerParts.push(`"${cat.name} - ${sub.name}"`);
-      });
-    }
-  });
-  if (preliminaryValuation && preliminaryValuation.showInMatrix) {
-    headerParts.push('"Valoración Preliminar (TEA/TEP)"');
-  }
-  headerParts.push('"Calificación Final"');
-  csvContent += headerParts.join(',') + '\r\n';
-
-  students.forEach((st) => {
-    const row = [`"${st.lastName}, ${st.firstName}"`];
-    const stGrades = gradesMap[st.id] || {};
-    categories.forEach((cat) => {
-      if (cat.subcategories.length === 0) {
-        const val = stGrades[cat.id] || '';
-        row.push(`"${val}"`);
-      } else {
-        cat.subcategories.forEach((sub) => {
-          const val = stGrades[sub.id] || '';
-          row.push(`"${val}"`);
-        });
-      }
-    });
-    if (preliminaryValuation && preliminaryValuation.showInMatrix) {
-      const traj = preliminaryValuation.valuations[st.id]?.trajectory || '';
-      row.push(`"${traj}"`);
-    }
-    const finalScore = calculateFinalScoreForStudent(categories, gradesMap, overallCalc, st.id).scoreStr;
-    row.push(`"${finalScore}"`);
-    csvContent += row.join(',') + '\r\n';
-  });
-
-  return csvContent;
 }

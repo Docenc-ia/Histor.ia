@@ -128,8 +128,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
         setAuthError('La ventana de Google se cerró antes de completar el inicio de sesión.');
       } else if (err?.code === 'auth/popup-blocked') {
         setAuthError('La ventana emergente de Google fue bloqueada. Habilita las ventanas emergentes en tu navegador.');
+      } else if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
+        const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'tu dominio';
+        setAuthError(
+          `El dominio "${currentHost}" aún no está en la lista de dominios autorizados de Firebase Authentication. Agrégalo en Firebase Console > Authentication > Settings > Dominios autorizados, o ingresa directamente abajo con tu correo.`
+        );
       } else if (err?.message?.includes('origin_mismatch') || err?.message?.includes('400') || err?.message?.includes('autorizados')) {
-        setAuthError('Google OAuth Error (origin_mismatch): La URL de este entorno de vista previa debe registrarse en Google Cloud Console > Credenciales > Orígenes autorizados de JavaScript. Mientras tanto, puedes ingresar abajo con cualquier correo institucional o personal.');
+        setAuthError('Google OAuth Error (origin_mismatch): Registra este dominio en Google Cloud Console > Credenciales > Orígenes autorizados de JavaScript, o ingresa abajo con tu correo.');
       } else {
         setAuthError(err?.message || 'No se pudo completar el inicio de sesión con Google. Puedes ingresar con tu correo abajo.');
       }

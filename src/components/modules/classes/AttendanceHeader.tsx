@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Search,
   UserPlus,
@@ -6,12 +6,12 @@ import {
   Bell,
   Award,
   Bookmark,
-  RefreshCw,
   FileSpreadsheet,
   Calendar,
-  Database,
   Smartphone,
   Upload,
+  ChevronDown,
+  FileDown,
 } from 'lucide-react';
 
 import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
@@ -27,19 +27,13 @@ interface AttendanceHeaderProps {
   onOpenAddStudentModal: () => void;
   onOpenSendDispositionModal: () => void;
   onOpenNotifConfigModal: () => void;
-  isSyncingSheet: boolean;
-  isPullingFromSheet?: boolean;
-  lastSyncedAt?: string;
-  onManualSheetsSync: () => void;
-  isOpeningSheet?: boolean;
-  onOpenGoogleSheet?: () => void;
   onOpenImportExcel?: () => void;
   onOpenImportSheets?: () => void;
+  onOpenImportCsv?: () => void;
   attendanceTerm: '1c' | '2c' | 'annual';
   onSelectTerm: (term: '1c' | '2c' | 'annual') => void;
   attendanceSummary?: CourseAttendanceSummary;
   onOpenAttendanceSettings?: () => void;
-  onOpenBackupModal?: () => void;
   onOpenQuickRollCall?: () => void;
   saveToDriveControl?: React.ReactNode;
   isDarkMode: boolean;
@@ -55,31 +49,40 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   onOpenAddStudentModal,
   onOpenSendDispositionModal,
   onOpenNotifConfigModal,
-  isSyncingSheet,
-  isPullingFromSheet = false,
-  onManualSheetsSync,
   onOpenImportExcel,
   onOpenImportSheets,
+  onOpenImportCsv,
   attendanceTerm,
   onSelectTerm,
-  onOpenBackupModal,
   onOpenQuickRollCall,
   saveToDriveControl,
   isDarkMode,
 }) => {
-  const isSyncActive = isSyncingSheet || isPullingFromSheet;
   const { combinedTabLabel, dispositionLabel, term1FullLabel, term2FullLabel } = useTerminologySettings();
+  const [isImportMenuOpen, setIsImportMenuOpen] = useState(false);
+  const importMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isImportMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (importMenuRef.current && !importMenuRef.current.contains(e.target as Node)) {
+        setIsImportMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isImportMenuOpen]);
 
   return (
     <div className="space-y-3">
-      {/* Search & Actions Bar Organizado en 5 Columnas */}
+      {/* Search & Actions Bar Organizado en 3 Columnas */}
       <div
         className={`p-3.5 rounded-xl border transition-colors ${
           isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
         }`}
       >
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          {/* COLUMNA 1: Buscar estudiante y Agregar Alumno */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {/* COLUMNA 1: Buscar estudiante, Agregar Alumno y Mensajes Preestablecidos */}
           <div className="flex flex-col gap-2 justify-center">
             <div className="relative flex items-center w-full">
               <Search className={`absolute left-3 w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
@@ -105,10 +108,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               <UserPlus className="w-3.5 h-3.5" />
               <span>+ Agregar Alumno</span>
             </button>
-          </div>
 
-          {/* COLUMNA 2: Mensajes Preestablecidos y Avisos Pendientes / Seleccionados */}
-          <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:pl-3">
             <button
               type="button"
               onClick={onOpenNotifConfigModal}
@@ -122,7 +122,10 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               <Bookmark className="w-3.5 h-3.5 text-blue-500" />
               <span className="truncate">Mensajes Preestablecidos</span>
             </button>
+          </div>
 
+          {/* COLUMNA 2: Avisos Pendientes / Seleccionados y Mandar a Calificaciones */}
+          <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:pl-3">
             {selectedStudentCount > 0 ? (
               <button
                 type="button"
@@ -151,34 +154,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 <span className="truncate">Avisos pendientes ({pendingCount})</span>
               </button>
             )}
-          </div>
 
-          {/* COLUMNA 3: Sincronizar con Sheets y Guardar en Drive */}
-          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
-            <button
-              type="button"
-              onClick={onManualSheetsSync}
-              disabled={isSyncActive}
-              className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                isDarkMode
-                  ? 'bg-blue-950/60 hover:bg-blue-900/70 text-blue-300 border-blue-800'
-                  : 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
-              }`}
-              title="Subir y actualizar el documento de Asistencia y Disposición en la carpeta de Google Drive de la materia"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-blue-500 shrink-0 ${isSyncActive ? 'animate-spin' : ''}`} />
-              <span className="truncate">{isSyncActive ? 'Subiendo a Sheets...' : 'Sincronizar con Sheets'}</span>
-            </button>
-
-            {saveToDriveControl && (
-              <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
-                {saveToDriveControl}
-              </div>
-            )}
-          </div>
-
-          {/* COLUMNA 4: Mandar a Calificaciones y Copia de Seguridad */}
-          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
             <button
               type="button"
               onClick={onOpenSendDispositionModal}
@@ -188,49 +164,144 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               <Award className="w-3.5 h-3.5 text-amber-300 shrink-0" />
               <span className="truncate">Mandar a Calificaciones</span>
             </button>
-
-            {onOpenBackupModal && (
-              <button
-                type="button"
-                onClick={onOpenBackupModal}
-                className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border transition-colors cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-slate-800 hover:bg-slate-750 text-indigo-300 border-indigo-900/60 hover:border-indigo-700'
-                    : 'bg-white hover:bg-indigo-50/60 text-indigo-700 border-indigo-200'
-                }`}
-                title="Copia de seguridad local: Descargar respaldo o restaurar observaciones y ajustes del curso"
-              >
-                <Database className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                <span className="truncate">Copia de Seguridad</span>
-              </button>
-            )}
           </div>
 
-          {/* COLUMNA 5 (al final): Importar desde Excel e Importar desde Sheets */}
-          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3">
-            <button
-              type="button"
-              onClick={onOpenImportExcel}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
-              title="Subir archivo Excel (.xlsx, .xls, .csv) para detectar asistencia, disposición, notas y categorías con comprobación previa"
-            >
-              <Upload className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Importar desde Excel</span>
-            </button>
+          {/* COLUMNA 3: Guardar en Drive arriba de Importar (desplegable con Excel, Sheets y CSV) */}
+          <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3 sm:col-span-2 lg:col-span-1">
+            {saveToDriveControl && (
+              <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
+                {saveToDriveControl}
+              </div>
+            )}
 
-            <button
-              type="button"
-              onClick={onOpenImportSheets}
-              className={`w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-xs ${
-                isDarkMode
-                  ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-800'
-                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-              }`}
-              title="Importar un documento existente desde Google Sheets detectando asistencia, disposición, notas y categorías con comprobación previa"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              <span className="truncate">Importar desde Sheets</span>
-            </button>
+            <div className="relative w-full" ref={importMenuRef}>
+              <button
+                type="button"
+                onClick={() => setIsImportMenuOpen((prev) => !prev)}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+                title="Elegir desde qué formato importar datos (Excel, Google Sheets o CSV) detectando alumnos, notas, asistencia y disposición"
+              >
+                <Upload className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Importar</span>
+                <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${isImportMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isImportMenuOpen && (
+                <div
+                  className={`absolute right-0 mt-2 w-72 sm:w-80 rounded-2xl border shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150 ${
+                    isDarkMode
+                      ? 'bg-slate-900 border-slate-700 text-slate-100'
+                      : 'bg-white border-neutral-200 text-neutral-900'
+                  }`}
+                >
+                  <div
+                    className={`px-3.5 py-2.5 border-b text-[11px] font-bold flex items-center justify-between ${
+                      isDarkMode
+                        ? 'bg-slate-800/80 border-slate-700 text-slate-300'
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-700'
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Upload className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>Elegí desde dónde importar</span>
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px]">
+                      Detecta Alumnos y Notas
+                    </span>
+                  </div>
+
+                  <div className="p-2 space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsImportMenuOpen(false);
+                        onOpenImportExcel?.();
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-emerald-500/50'
+                          : 'bg-white hover:bg-emerald-50/40 border-neutral-200 hover:border-emerald-300'
+                      }`}
+                    >
+                      <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 shrink-0 mt-0.5">
+                        <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs font-bold">Microsoft Excel</span>
+                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                            .xlsx / .xls
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                          Subir archivo Excel y detectar alumnos, notas, faltas y disposición.
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsImportMenuOpen(false);
+                        if (onOpenImportSheets) {
+                          onOpenImportSheets();
+                        } else {
+                          onOpenImportExcel?.();
+                        }
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-blue-500/50'
+                          : 'bg-white hover:bg-blue-50/40 border-neutral-200 hover:border-blue-300'
+                      }`}
+                    >
+                      <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 shrink-0 mt-0.5">
+                        <FileSpreadsheet className="w-4 h-4 text-blue-500" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs font-bold">Google Sheets</span>
+                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400">
+                            .gsheet
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                          Conectar o elegir una hoja de tu Google Drive y detectar alumnos y notas.
+                        </p>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsImportMenuOpen(false);
+                        onOpenImportCsv?.();
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
+                        isDarkMode
+                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-teal-500/50'
+                          : 'bg-white hover:bg-teal-50/40 border-neutral-200 hover:border-teal-300'
+                      }`}
+                    >
+                      <div className="p-1.5 rounded-lg bg-teal-500/10 border border-teal-500/20 shrink-0 mt-0.5">
+                        <FileDown className="w-4 h-4 text-teal-500" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs font-bold">Archivo CSV</span>
+                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                            .csv
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
+                          Subir archivo CSV separado por comas o punto y coma y detectar alumnos y notas.
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

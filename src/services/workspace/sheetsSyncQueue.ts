@@ -5,7 +5,7 @@
  * preventing HTTP 429 Too Many Requests on the Google Sheets API.
  */
 
-export type SheetsDocType = 'attendance' | 'grades' | 'libro_de_temas';
+export type SheetsDocType = 'grades';
 
 interface PendingSyncItem {
   key: string;
@@ -182,7 +182,7 @@ class SheetsSyncQueueManager {
       const key = this.getKey(courseId, docType);
       return this.pending.has(key) || this.inFlight.has(key);
     }
-    const types: SheetsDocType[] = ['attendance', 'grades', 'libro_de_temas'];
+    const types: SheetsDocType[] = ['grades'];
     return types.some((t) => {
       const k = this.getKey(courseId, t);
       return this.pending.has(k) || this.inFlight.has(k);

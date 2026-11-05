@@ -6,7 +6,7 @@
 import { Course } from '../types';
 import { findCourseMatch } from './courseFormatting';
 import { safeSetLocalStorageItem, reclaimTransientStorageSpace } from './storageGuard';
-import { getActiveUserId } from '../services/firestoreSync';
+import { getActiveUserId, isPrimaryOwnerAccount } from '../services/firestoreSync';
 
 /**
  * Maximum number of full Course metadata snapshots kept in the Navigation LRU cache.
@@ -88,13 +88,14 @@ export function sanitizeCourseSnapshot(course: Course): Course {
     attendanceFolderUrl: course.attendanceFolderUrl,
     gradesFolderId: course.gradesFolderId,
     gradesFolderUrl: course.gradesFolderUrl,
-    dispositionSheetId: course.dispositionSheetId,
-    dispositionSheetUrl: course.dispositionSheetUrl,
   };
 }
 
 function loadSnapshotLruFromStorage(): CourseSnapshotLruEntry[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
+  const uid = getActiveUserId();
+  if (!uid) return [];
+  const isOwner = isPrimaryOwnerAccount();
   const currentScope = getScopedStorageKey(COURSE_SNAPSHOTS_LRU_STORAGE_KEY);
   if (memorySnapshotLruCache && memorySnapshotLruUserScope === currentScope) {
     return memorySnapshotLruCache;
@@ -104,7 +105,7 @@ function loadSnapshotLruFromStorage(): CourseSnapshotLruEntry[] {
   try {
     const raw =
       window.localStorage.getItem(currentScope) ||
-      window.localStorage.getItem(COURSE_SNAPSHOTS_LRU_STORAGE_KEY);
+      (isOwner ? window.localStorage.getItem(COURSE_SNAPSHOTS_LRU_STORAGE_KEY) : null);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
@@ -132,7 +133,7 @@ function loadSnapshotLruFromStorage(): CourseSnapshotLruEntry[] {
     // Migrate or include legacy single snapshot if not yet in LRU list
     const legacyRaw =
       window.localStorage.getItem(getScopedStorageKey(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY)) ||
-      window.localStorage.getItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
+      (isOwner ? window.localStorage.getItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY) : null);
     if (legacyRaw) {
       try {
         const legacyCourse = JSON.parse(legacyRaw) as Course;
@@ -163,6 +164,9 @@ function loadSnapshotLruFromStorage(): CourseSnapshotLruEntry[] {
 
 function persistSnapshotLruToStorage(entries: CourseSnapshotLruEntry[]): void {
   if (typeof window === 'undefined' || !window.localStorage) return;
+  const uid = getActiveUserId();
+  if (!uid) return;
+  const isOwner = isPrimaryOwnerAccount();
   const bounded = entries.slice(0, MAX_COURSE_SNAPSHOTS_LRU);
   const currentScope = getScopedStorageKey(COURSE_SNAPSHOTS_LRU_STORAGE_KEY);
   memorySnapshotLruCache = bounded;
@@ -171,7 +175,7 @@ function persistSnapshotLruToStorage(entries: CourseSnapshotLruEntry[]): void {
   try {
     const serialized = JSON.stringify(bounded);
     safeSetLocalStorageItem(currentScope, serialized);
-    if (currentScope !== COURSE_SNAPSHOTS_LRU_STORAGE_KEY) {
+    if (isOwner && currentScope !== COURSE_SNAPSHOTS_LRU_STORAGE_KEY) {
       safeSetLocalStorageItem(COURSE_SNAPSHOTS_LRU_STORAGE_KEY, serialized);
     }
 
@@ -181,10 +185,14 @@ function persistSnapshotLruToStorage(entries: CourseSnapshotLruEntry[]): void {
     if (mruSnapshot) {
       const mruSerialized = JSON.stringify(mruSnapshot);
       safeSetLocalStorageItem(legacyScopedKey, mruSerialized);
-      safeSetLocalStorageItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY, mruSerialized);
+      if (isOwner) {
+        safeSetLocalStorageItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY, mruSerialized);
+      }
     } else {
       window.localStorage.removeItem(legacyScopedKey);
-      window.localStorage.removeItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
+      if (isOwner) {
+        window.localStorage.removeItem(LEGACY_LAST_ACTIVE_COURSE_SNAPSHOT_KEY);
+      }
     }
   } catch (_) {}
 }
@@ -357,6 +365,9 @@ function isEvictableCourseSnapshotKey(key: string): boolean {
 
 function loadDataLruIndex(): CourseDataLruIndexEntry[] {
   if (typeof window === 'undefined' || !window.localStorage) return [];
+  const uid = getActiveUserId();
+  if (!uid) return [];
+  const isOwner = isPrimaryOwnerAccount();
   const currentScope = getScopedStorageKey(COURSE_DATA_LRU_INDEX_STORAGE_KEY);
   if (memoryDataLruIndex && memoryDataLruUserScope === currentScope) {
     return memoryDataLruIndex;
@@ -366,7 +377,7 @@ function loadDataLruIndex(): CourseDataLruIndexEntry[] {
   try {
     const raw =
       window.localStorage.getItem(currentScope) ||
-      window.localStorage.getItem(COURSE_DATA_LRU_INDEX_STORAGE_KEY);
+      (isOwner ? window.localStorage.getItem(COURSE_DATA_LRU_INDEX_STORAGE_KEY) : null);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {

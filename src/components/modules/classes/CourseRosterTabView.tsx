@@ -44,7 +44,6 @@ interface CourseRosterTabViewProps {
   currentAttendanceSummary?: CourseAttendanceSummary;
   userEmail?: string;
   isDarkMode: boolean;
-  isSyncingSheet: boolean;
   isSyncingClassroomRoster: boolean;
   selectedStudentIds: string[];
   setSelectedStudentIds: React.Dispatch<React.SetStateAction<string[]>>;
@@ -73,7 +72,6 @@ interface CourseRosterTabViewProps {
   selectedPendingHistoryIds: string[];
   setSelectedPendingHistoryIds: React.Dispatch<React.SetStateAction<string[]>>;
   getStudentMetrics: (studentId: string, targetTerm?: '1c' | '2c' | 'annual' | 'all') => StudentDispositionData;
-  handleManualSheetsSync: () => void;
   handleOpenStudentProfile: (student: Student) => void;
   handleOpenEditAbsences: (student: Student, termOverride?: '1c' | '2c') => void;
   handleOpenEditDisposition: (student: Student, termOverride?: '1c' | '2c') => void;
@@ -117,7 +115,6 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   currentAttendanceSummary,
   userEmail,
   isDarkMode,
-  isSyncingSheet,
   isSyncingClassroomRoster,
   selectedStudentIds,
   setSelectedStudentIds,
@@ -146,7 +143,6 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   selectedPendingHistoryIds,
   setSelectedPendingHistoryIds,
   getStudentMetrics,
-  handleManualSheetsSync,
   handleOpenStudentProfile,
   handleOpenEditAbsences,
   handleOpenEditDisposition,
@@ -334,16 +330,6 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                 >
                   <Copy className="w-3.5 h-3.5" />
                   <span>Copiar Resumen Anual</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleManualSheetsSync}
-                  disabled={isSyncingSheet}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSheet ? 'animate-spin' : ''}`} />
-                  <span>Sincronizar Sheets</span>
                 </button>
 
                 {saveToDriveControl}

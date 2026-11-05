@@ -113,11 +113,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   } | null>(null);
   const [courseObservation, setCourseObservation] = useState<string>(() => {
     try {
-      return (
-        getStorageItemForUser(`fds_report_course_observation_${courseId}`) ||
-        localStorage.getItem(`fds_report_course_observation_${courseId}`) ||
-        ''
-      );
+      return getStorageItemForUser(`fds_report_course_observation_${courseId}`) || '';
     } catch {
       return '';
     }
@@ -164,9 +160,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Load attendance, disposition and observations maps strictly scoped to courseId
   const disp1cMap = useMemo(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_disposition_data_${courseId}_1c`) ||
-        localStorage.getItem(`fds_disposition_data_${courseId}_1c`);
+      const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_1c`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
@@ -187,9 +181,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const disp2cMap = useMemo(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_disposition_data_${courseId}_2c`) ||
-        localStorage.getItem(`fds_disposition_data_${courseId}_2c`);
+      const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_2c`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
@@ -213,9 +205,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     try {
       const raw =
         getStorageItemForUser(`fds_grades_categories_${courseId}_1c`) ||
-        localStorage.getItem(`fds_grades_categories_${courseId}_1c`) ||
-        getStorageItemForUser(`fds_grades_categories_${courseId}`) ||
-        localStorage.getItem(`fds_grades_categories_${courseId}`);
+        getStorageItemForUser(`fds_grades_categories_${courseId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -226,9 +216,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const categories2c = useMemo<GradeCategory[]>(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_grades_categories_${courseId}_2c`) ||
-        localStorage.getItem(`fds_grades_categories_${courseId}_2c`);
+      const raw = getStorageItemForUser(`fds_grades_categories_${courseId}_2c`);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -245,9 +233,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     try {
       const raw =
         getStorageItemForUser(`fds_grades_data_${courseId}_1c`) ||
-        localStorage.getItem(`fds_grades_data_${courseId}_1c`) ||
-        getStorageItemForUser(`fds_grades_data_${courseId}`) ||
-        localStorage.getItem(`fds_grades_data_${courseId}`);
+        getStorageItemForUser(`fds_grades_data_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -256,9 +242,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const gradesData2c = useMemo<StudentGradesMap>(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_grades_data_${courseId}_2c`) ||
-        localStorage.getItem(`fds_grades_data_${courseId}_2c`);
+      const raw = getStorageItemForUser(`fds_grades_data_${courseId}_2c`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -269,9 +253,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     try {
       const raw =
         getStorageItemForUser(`fds_grades_final_calc_${courseId}_1c`) ||
-        localStorage.getItem(`fds_grades_final_calc_${courseId}_1c`) ||
-        getStorageItemForUser(`fds_grades_final_calc_${courseId}`) ||
-        localStorage.getItem(`fds_grades_final_calc_${courseId}`);
+        getStorageItemForUser(`fds_grades_final_calc_${courseId}`);
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
     return 'manual_final';
@@ -279,9 +261,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const calcMode2c = useMemo<'average_of_categories' | 'manual_final'>(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_grades_final_calc_${courseId}_2c`) ||
-        localStorage.getItem(`fds_grades_final_calc_${courseId}_2c`);
+      const raw = getStorageItemForUser(`fds_grades_final_calc_${courseId}_2c`);
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
     return 'manual_final';
@@ -297,7 +277,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         'student_observations',
       ];
       for (const key of keysToCheck) {
-        const raw = getStorageItemForUser(key) || localStorage.getItem(key);
+        const raw = getStorageItemForUser(key);
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed && typeof parsed === 'object') {
@@ -314,9 +294,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Dedicated observations for reports / certificates
   const [reportObservations, setReportObservations] = useState<Record<string, string>>(() => {
     try {
-      const raw =
-        getStorageItemForUser(`fds_report_student_observations_${courseId}`) ||
-        localStorage.getItem(`fds_report_student_observations_${courseId}`);
+      const raw = getStorageItemForUser(`fds_report_student_observations_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -402,9 +380,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const effectiveOverrides = useMemo(() => {
     if (annualOverrides && Object.keys(annualOverrides).length > 0) return annualOverrides;
     try {
-      const raw =
-        getStorageItemForUser(`fds_grades_annual_override_${courseId}`) ||
-        localStorage.getItem(`fds_grades_annual_override_${courseId}`);
+      const raw = getStorageItemForUser(`fds_grades_annual_override_${courseId}`);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};

@@ -69,7 +69,7 @@ type GCalViewMode = 'WEEK' | 'MONTH' | 'AGENDA';
 const resolveInstitutionalCalendarEmail = (email?: string): string => {
   const clean = (email || '').trim().toLowerCase();
   if (!clean || clean === 'primary') {
-    return 'jorge.cano@fds-esc.edu.ar';
+    return '';
   }
   if (clean.startsWith('canomorenojj@') || clean.startsWith('jorge.cano@')) {
     return 'jorge.cano@fds-esc.edu.ar';
@@ -81,45 +81,48 @@ const normalizeConfiguredCalendars = (
   list: ConfiguredCalendar[],
   schoolEmail: string
 ): ConfiguredCalendar[] => {
+  const effectiveCalendarId = schoolEmail || 'primary';
+  const descriptionTarget = schoolEmail || 'tu cuenta docente';
+
   const filtered = list.filter(
     (c: any) =>
       c &&
       c.id !== 'colegio@fds-esc.edu.ar' &&
       c.id !== 'evaluaciones@fds-esc.edu.ar' &&
-      c.id !== 'es.ar#holiday@group.v.calendar.google.com'
+      c.id !== 'es.ar#holiday@group.v.calendar.google.com' &&
+      (schoolEmail === 'jorge.cano@fds-esc.edu.ar' || c.id !== 'jorge.cano@fds-esc.edu.ar')
   );
 
   if (filtered.length === 0) {
     return [
       {
-        id: schoolEmail,
-        name: 'Mi Calendario Docente (Colegio)',
+        id: effectiveCalendarId,
+        name: 'Mi Calendario Docente',
         color: '#1a73e8',
         enabled: true,
         isPrimary: true,
-        description: `Clases, horarios y eventos de ${schoolEmail}`,
+        description: `Clases, horarios y eventos de ${descriptionTarget}`,
       },
     ];
   }
 
   return filtered.map((c, idx) => {
     const cleanId = (c.id || '').trim().toLowerCase();
-    // Si el calendario principal había quedado con el Gmail personal o 'primary', restaurar al del colegio
     if (
       c.isPrimary ||
       idx === 0 ||
       cleanId === 'primary' ||
-      cleanId === 'canomorenojj@gmail.com'
+      (schoolEmail === 'jorge.cano@fds-esc.edu.ar' && cleanId === 'canomorenojj@gmail.com')
     ) {
       return {
         ...c,
-        id: schoolEmail,
+        id: effectiveCalendarId,
         name:
           c.name && !c.name.toLowerCase().includes('canomorenojj')
             ? c.name
-            : 'Mi Calendario Docente (Colegio)',
+            : 'Mi Calendario Docente',
         isPrimary: true,
-        description: `Clases, horarios y eventos de ${schoolEmail}`,
+        description: `Clases, horarios y eventos de ${descriptionTarget}`,
       };
     }
     return c;
@@ -149,12 +152,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
 
     return [
       {
-        id: institutionalEmail,
-        name: 'Mi Calendario Docente (Colegio)',
+        id: institutionalEmail || 'primary',
+        name: 'Mi Calendario Docente',
         color: '#1a73e8',
         enabled: true,
         isPrimary: true,
-        description: `Clases, horarios y eventos de ${institutionalEmail}`,
+        description: `Clases, horarios y eventos de ${institutionalEmail || 'tu cuenta docente'}`,
       },
     ];
   });
@@ -295,9 +298,10 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   // se autentique con la sesión del colegio y muestre los nombres reales e información de cada evento
   // en lugar de "No disponible" (que ocurría cuando el navegador abría el iframe con la cuenta personal u/0).
   const iframeSrc = useMemo(() => {
-    const base = `https://calendar.google.com/calendar/embed?authuser=${encodeURIComponent(
-      institutionalEmail
-    )}&ctz=America%2FArgentina%2FBuenos_Aires&showTitle=0&showNav=1&showDate=1&showPrint=1&showTabs=1&showCalendars=1&hl=es`;
+    const authUserParam = institutionalEmail
+      ? `authuser=${encodeURIComponent(institutionalEmail)}&`
+      : '';
+    const base = `https://calendar.google.com/calendar/embed?${authUserParam}ctz=America%2FArgentina%2FBuenos_Aires&showTitle=0&showNav=1&showDate=1&showPrint=1&showTabs=1&showCalendars=1&hl=es`;
     const viewParam = `&mode=${viewMode}`;
 
     const calendarParams = enabledCalendars
@@ -306,8 +310,9 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         const srcId =
           c.isPrimary ||
           cleanId === 'primary' ||
-          cleanId.toLowerCase() === 'canomorenojj@gmail.com'
-            ? institutionalEmail
+          (institutionalEmail === 'jorge.cano@fds-esc.edu.ar' &&
+            cleanId.toLowerCase() === 'canomorenojj@gmail.com')
+            ? institutionalEmail || 'primary'
             : cleanId;
         return `&src=${encodeURIComponent(srcId)}&color=${encodeURIComponent(c.color || '#1a73e8')}`;
       })
@@ -501,10 +506,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
               >
                 Google Calendar Oficial
               </h1>
-              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
-                Cuenta Colegio: {institutionalEmail}
-              </span>
+              {institutionalEmail && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                  <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                  Cuenta: {institutionalEmail}
+                </span>
+              )}
             </div>
             <p
               className={`text-xs mt-0.5 flex items-center gap-1.5 ${

@@ -26,12 +26,8 @@ export interface Course {
   reportsFolderUrl?: string;
   incidentsFolderId?: string;
   incidentsFolderUrl?: string;
-  dispositionSheetId?: string;
-  dispositionSheetUrl?: string;
   gradesSheetId?: string;
   gradesSheetUrl?: string;
-  libroDeTemasSheetId?: string;
-  libroDeTemasSheetUrl?: string;
   code?: string;
   gradeLevel?: string;
   studentCount?: number;

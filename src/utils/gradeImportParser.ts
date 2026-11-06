@@ -453,7 +453,375 @@ export function autoDetectColumnsConfiguration(
 }
 
 /**
- * Pure builder for the multi-column verification table for all students in the course + any new students in the file
+ * Parses free-form text lines (from Google Docs, Word, TXT, or pasted lists) into a 2D grid.
+ * Supports tab/semicolon/pipe separated tables AND lines like:
+ *   "1. García, Ana - 9.5"
+ *   "Pérez, Juan: 8,5"
+ *   "López María 10"
+ */
+export function parseTextLinesTo2DGrid(text: string): any[][] {
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (lines.length === 0) return [];
+
+  // 1. Check if most lines use tab, semicolon, or pipe delimiters
+  const tabCount = lines.filter((l) => l.includes('\t')).length;
+  const semiCount = lines.filter((l) => l.includes(';')).length;
+  const pipeCount = lines.filter((l) => l.includes('|')).length;
+
+  let rows: string[][] = [];
+
+  if (tabCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
+    rows = lines.map((l) => l.split('\t').map((c) => c.trim()));
+  } else if (pipeCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
+    rows = lines
+      .map((l) =>
+        l
+          .replace(/^\|+|\|+$/g, '')
+          .split('|')
+          .map((c) => c.trim())
+      )
+      .filter((r) => !r.every((c) => /^[-:]+$/.test(c)));
+  } else if (semiCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
+    rows = lines.map((l) => l.split(';').map((c) => c.trim()));
+  } else {
+    // Parse line by line: strip leading numbering ("1.", "1)", "01 -") and separate Name from trailing score(s)
+    rows = lines.map((line) => {
+      const cleaned = line.replace(/^\d+\s*[.):\-]\s*/, '').trim();
+      // Check for separator like " - ", " : ", " – ", " — " before a number or conceptual grade
+      const dashOrColonMatch = cleaned.match(
+        /^(.+?)\s*(?:[-–—:=]+)\s*(-?\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?|EX|EXCELENTE|MB|MUY BUENO|B|BUENO|R|REGULAR|I|INSUFICIENTE)$/i
+      );
+      if (dashOrColonMatch) {
+        return [dashOrColonMatch[1].trim(), dashOrColonMatch[2].trim()];
+      }
+
+      // Check for trailing number at the end of the line (e.g. "García, Ana 9,5")
+      const trailingNumMatch = cleaned.match(
+        /^([a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s,.'’-]+?)\s+(-?\d+(?:[.,]\d+)?|EX|MB|B|R)$/i
+      );
+      if (trailingNumMatch) {
+        return [trailingNumMatch[1].trim(), trailingNumMatch[2].trim()];
+      }
+
+      // Check if comma-separated "Apellido, Nombre, 9"
+      const commaParts = cleaned.split(',').map((p) => p.trim());
+      if (
+        commaParts.length >= 2 &&
+        /^-?\d+(?:[.,]\d+)?$/.test(commaParts[commaParts.length - 1])
+      ) {
+        const scorePart = commaParts[commaParts.length - 1];
+        const namePart = commaParts.slice(0, -1).join(', ');
+        return [namePart, scorePart];
+      }
+
+      return [cleaned];
+    });
+  }
+
+  return ensureHeaderRowIn2DGrid(rows);
+}
+
+/**
+ * Ensures that if row 0 of a 2D grid already contains a student name + numeric score (instead of column headers),
+ * synthetic headers ['Alumno', 'Disposición / Nota', ...] are prepended so the first student is not lost.
+ */
+export function ensureHeaderRowIn2DGrid(grid: any[][]): any[][] {
+  const nonEmpty = grid.filter(
+    (r) => Array.isArray(r) && r.some((cell) => String(cell ?? '').trim() !== '')
+  );
+  if (nonEmpty.length === 0) return [];
+
+  const firstRow = nonEmpty[0].map((c) => String(c ?? '').trim());
+  const maxCols = Math.max(...nonEmpty.map((r) => r.length), 1);
+
+  if (maxCols === 1) {
+    const firstCell = firstRow[0] || '';
+    const isHeaderWord = /^(alumno|estudiante|nombre|apellido|nota|disposicion|calificacion)/i.test(
+      normalizeImportText(firstCell)
+    );
+    if (!isHeaderWord) {
+      const looksNumeric = /^-?\d+(?:[.,]\d+)?$/.test(firstCell);
+      return [[looksNumeric ? 'Disposición' : 'Alumno'], ...nonEmpty];
+    }
+    return nonEmpty;
+  }
+
+  // Check if any cell in firstRow looks like a known header keyword
+  const hasExplicitHeaderWord = firstRow.some((cell) =>
+    /^(alumno|alumnos|estudiante|estudiantes|nombre|nombres|apellido|apellidos|disposicion|nota|notas|calificacion|ausencia|falta|tardanza|email|correo|tp|examen|parcial|concepto|conducta)/i.test(
+      normalizeImportText(cell)
+    )
+  );
+
+  if (!hasExplicitHeaderWord) {
+    // Check if any cell from index 1..end in firstRow is a valid number or conceptual grade
+    const secondCellNumeric = firstRow
+      .slice(1)
+      .some((cell) => /^-?\d+(?:[.,]\d+)?$/.test(cell) || /^(EX|MB|B|R)$/i.test(cell));
+    if (secondCellNumeric) {
+      const synthHeaders = ['Alumno'];
+      for (let i = 1; i < maxCols; i++) {
+        synthHeaders.push(i === 1 ? 'Disposición' : `Columna ${i + 1}`);
+      }
+      return [synthHeaders, ...nonEmpty];
+    }
+  }
+
+  return nonEmpty;
+}
+
+/**
+ * Parses HTML (from Google Docs export, Word .doc/.html, or web tables) or plain text into a 2D grid.
+ */
+export function parseHtmlOrTextDocumentTo2DGrid(htmlOrText: string): any[][] {
+  const raw = String(htmlOrText || '').trim();
+  if (!raw) return [];
+
+  if (typeof DOMParser !== 'undefined' && /<(table|tr|td|th|p|div|li|html|body)\b/i.test(raw)) {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(raw, 'text/html');
+
+      // 1. Prefer HTML <table> if present
+      const tables = Array.from(doc.querySelectorAll('table'));
+      if (tables.length > 0) {
+        let bestTableGrid: string[][] = [];
+        for (const table of tables) {
+          const trs = Array.from(table.querySelectorAll('tr'));
+          const tableRows: string[][] = [];
+          for (const tr of trs) {
+            const cells = Array.from(tr.querySelectorAll('th, td')).map((cell) =>
+              (cell.textContent || '').replace(/\s+/g, ' ').trim()
+            );
+            if (cells.some((c) => c !== '')) {
+              tableRows.push(cells);
+            }
+          }
+          if (tableRows.length > bestTableGrid.length) {
+            bestTableGrid = tableRows;
+          }
+        }
+        if (bestTableGrid.length > 0) {
+          return ensureHeaderRowIn2DGrid(bestTableGrid);
+        }
+      }
+
+      // 2. Otherwise extract paragraphs and list items
+      const blocks = Array.from(doc.querySelectorAll('p, li, h1, h2, h3, h4, tr'));
+      if (blocks.length > 0) {
+        const lines = blocks
+          .map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim())
+          .filter(Boolean);
+        if (lines.length > 0) {
+          return parseTextLinesTo2DGrid(lines.join('\n'));
+        }
+      }
+
+      const bodyText = doc.body?.innerText || doc.body?.textContent || '';
+      if (bodyText.trim()) {
+        return parseTextLinesTo2DGrid(bodyText);
+      }
+    } catch (err) {
+      console.warn('Fallback to text parser after HTML parse notice:', err);
+    }
+  }
+
+  return parseTextLinesTo2DGrid(raw);
+}
+
+/**
+ * Extracts `word/document.xml` from a `.docx` ArrayBuffer in the browser (using DecompressionStream)
+ * and parses Word tables (`<w:tbl>`) or paragraphs (`<w:p>`) into a 2D grid.
+ */
+export async function parseDocxArrayBufferTo2DGrid(buffer: ArrayBuffer): Promise<any[][]> {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  // Locate local file header for "word/document.xml"
+  let offset = 0;
+  let xmlText = '';
+
+  while (offset + 30 < bytes.length) {
+    const sig = view.getUint32(offset, true);
+    if (sig !== 0x04034b50) {
+      offset++;
+      continue;
+    }
+
+    const compressionMethod = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const fileNameLen = view.getUint16(offset + 26, true);
+    const extraLen = view.getUint16(offset + 28, true);
+
+    const nameBytes = bytes.subarray(offset + 30, offset + 30 + fileNameLen);
+    const entryName = new TextDecoder('utf-8').decode(nameBytes);
+    const dataStart = offset + 30 + fileNameLen + extraLen;
+
+    if (entryName === 'word/document.xml') {
+      // Find next PK header if compressedSize is 0 (data descriptor bit set)
+      let actualEnd = dataStart + compressedSize;
+      if (compressedSize === 0 || actualEnd > bytes.length) {
+        actualEnd = bytes.length;
+        for (let i = dataStart; i < bytes.length - 4; i++) {
+          if (
+            bytes[i] === 0x50 &&
+            bytes[i + 1] === 0x4b &&
+            (bytes[i + 2] === 0x03 || bytes[i + 2] === 0x01 || bytes[i + 2] === 0x07)
+          ) {
+            actualEnd = i;
+            break;
+          }
+        }
+      }
+
+      const rawSlice = bytes.subarray(dataStart, actualEnd);
+      if (compressionMethod === 0) {
+        xmlText = new TextDecoder('utf-8').decode(rawSlice);
+      } else if (compressionMethod === 8 && typeof DecompressionStream !== 'undefined') {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        writer.write(rawSlice).catch(() => {});
+        writer.close().catch(() => {});
+        const decompressedBuf = await new Response(ds.readable).arrayBuffer();
+        xmlText = new TextDecoder('utf-8').decode(decompressedBuf);
+      }
+      break;
+    }
+
+    offset = dataStart + (compressedSize > 0 ? compressedSize : 0);
+  }
+
+  if (!xmlText) {
+    // Fallback: try decoding as plain text / HTML (.doc saved as HTML)
+    const fallbackText = new TextDecoder('utf-8').decode(bytes);
+    return parseHtmlOrTextDocumentTo2DGrid(fallbackText);
+  }
+
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(xmlText, 'application/xml');
+
+  // 1. Check for Word tables (<w:tbl>)
+  const tables = Array.from(xmlDoc.getElementsByTagNameNS('*', 'tbl'));
+  if (tables.length > 0) {
+    let bestRows: string[][] = [];
+    for (const tbl of tables) {
+      const trs = Array.from(tbl.getElementsByTagNameNS('*', 'tr'));
+      const tblRows: string[][] = [];
+      for (const tr of trs) {
+        const tcs = Array.from(tr.getElementsByTagNameNS('*', 'tc'));
+        const rowCells = tcs.map((tc) => {
+          const ts = Array.from(tc.getElementsByTagNameNS('*', 't'));
+          return ts
+            .map((t) => t.textContent || '')
+            .join('')
+            .replace(/\s+/g, ' ')
+            .trim();
+        });
+        if (rowCells.some((c) => c !== '')) {
+          tblRows.push(rowCells);
+        }
+      }
+      if (tblRows.length > bestRows.length) {
+        bestRows = tblRows;
+      }
+    }
+    if (bestRows.length > 0) {
+      return ensureHeaderRowIn2DGrid(bestRows);
+    }
+  }
+
+  // 2. Fallback: extract paragraphs (<w:p>)
+  const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS('*', 'p'));
+  const lines: string[] = [];
+  for (const p of paragraphs) {
+    const ts = Array.from(p.getElementsByTagNameNS('*', 't'));
+    const line = ts
+      .map((t) => t.textContent || '')
+      .join('')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (line) lines.push(line);
+  }
+
+  return parseTextLinesTo2DGrid(lines.join('\n'));
+}
+
+/**
+ * Extracts a readable label for each row in `rawRows` so the teacher can choose
+ * which document row corresponds to which student in the course.
+ */
+export function buildDocumentRowOptions(
+  rawRows: Array<Record<string, any>>,
+  nameCol: string,
+  secondaryNameCol: string,
+  emailCol: string,
+  colConfigs: DetectedColumnConfig[]
+): Array<{
+  rawRowIndex: number;
+  rawName: string;
+  rawEmail: string;
+  summaryPreview: string;
+}> {
+  const includedConfigs = colConfigs.filter((c) => c.isIncluded && c.kind !== 'ignore');
+
+  return rawRows
+    .map((row, idx) => {
+      const primaryName = nameCol && nameCol !== '__ORDER__' ? String(row[nameCol] ?? '').trim() : '';
+      const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
+      const rawName =
+        nameCol === '__ORDER__'
+          ? `Fila #${idx + 1}`
+          : primaryName && secondaryName
+          ? `${primaryName}, ${secondaryName}`
+          : primaryName || secondaryName || `Fila #${idx + 1}`;
+      const rawEmail = emailCol ? String(row[emailCol] ?? '').trim() : '';
+
+      const previews: string[] = [];
+      for (const cfg of includedConfigs.slice(0, 3)) {
+        const val = String(row[cfg.colKey] ?? '').trim();
+        if (val && val !== '-') {
+          const shortCol =
+            cfg.kind === 'disposition'
+              ? 'Disp'
+              : cfg.kind === 'disposition_deduction'
+              ? 'Desc'
+              : cfg.kind === 'absences'
+              ? 'Faltas'
+              : cfg.kind === 'lates'
+              ? 'Tardes'
+              : cfg.subcategoryName || cfg.colKey;
+          previews.push(`${shortCol}: ${val}`);
+        }
+      }
+
+      return {
+        rawRowIndex: idx,
+        rawName,
+        rawEmail,
+        summaryPreview: previews.join(' · '),
+      };
+    })
+    .filter((item) => {
+      if (!item.rawName) return false;
+      if (
+        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(
+          item.rawName
+        )
+      ) {
+        return false;
+      }
+      return true;
+    });
+}
+
+/**
+ * Pure builder for the multi-column verification table for all students in the course + any new students in the file.
+ * Supports `manualRowMatches` (mapping `studentId -> rawRowIndex | null`) so the teacher can manually choose
+ * or override which name from the document belongs to each student.
  */
 export function computeMultiVerificationRows(
   students: Student[],
@@ -466,23 +834,56 @@ export function computeMultiVerificationRows(
     string,
     { totalAbsences: number; totalLates?: number; totalDisposition: number }
   >,
-  secondaryNameCol = ''
+  secondaryNameCol = '',
+  manualRowMatches: Record<string, number | null> = {}
 ): {
   rowsResult: MultiVerifiedStudentRow[];
   shouldAutoEnableNewStudents: boolean;
 } {
   const matchedByStudentId: Record<
     string,
-    { rawRow: Record<string, any>; rawName: string; rawEmail: string; matchScore: number }
+    {
+      rawRow: Record<string, any>;
+      rawRowIndex: number;
+      rawName: string;
+      rawEmail: string;
+      matchScore: number;
+    }
   > = {};
 
-  const unmatchedRawRows: Array<{
-    rawRow: Record<string, any>;
-    rawName: string;
-    rawEmail: string;
-  }> = [];
+  const usedRawRowIndices = new Set<number>();
 
-  // Mode: Order-by-roster matching when nameCol is '__ORDER__' (1-column paste mode)
+  const getRowDisplayName = (row: Record<string, any>, idx: number) => {
+    if (nameCol === '__ORDER__') return `Fila #${idx + 1} (Orden de lista)`;
+    const primaryName = nameCol ? String(row[nameCol] ?? '').trim() : '';
+    const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
+    return primaryName && secondaryName
+      ? `${primaryName}, ${secondaryName}`
+      : primaryName || secondaryName;
+  };
+
+  // 1. Apply explicit manual matches chosen by the teacher first
+  Object.entries(manualRowMatches).forEach(([studentId, chosenIdx]) => {
+    if (chosenIdx === null) {
+      // Explicitly unassigned by teacher
+      return;
+    }
+    if (typeof chosenIdx === 'number' && chosenIdx >= 0 && chosenIdx < rawRows.length) {
+      const row = rawRows[chosenIdx];
+      const rawNameVal = getRowDisplayName(row, chosenIdx) || `Fila #${chosenIdx + 1}`;
+      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
+      matchedByStudentId[studentId] = {
+        rawRow: row,
+        rawRowIndex: chosenIdx,
+        rawName: rawNameVal,
+        rawEmail: rawEmailVal,
+        matchScore: 1.0,
+      };
+      usedRawRowIndices.add(chosenIdx);
+    }
+  });
+
+  // 2. Mode: Order-by-roster matching when nameCol is '__ORDER__' (1-column paste mode)
   if (nameCol === '__ORDER__') {
     const sortedRoster = [...students].sort((a, b) =>
       `${a.lastName}, ${a.firstName}`.localeCompare(`${b.lastName}, ${b.firstName}`, 'es', {
@@ -490,46 +891,83 @@ export function computeMultiVerificationRows(
       })
     );
     rawRows.forEach((row, idx) => {
+      if (usedRawRowIndices.has(idx)) return;
       const targetStudent = sortedRoster[idx];
-      if (targetStudent) {
+      if (
+        targetStudent &&
+        manualRowMatches[targetStudent.id] !== null &&
+        !matchedByStudentId[targetStudent.id]
+      ) {
         matchedByStudentId[targetStudent.id] = {
           rawRow: row,
+          rawRowIndex: idx,
           rawName: `Fila #${idx + 1} (Orden de lista)`,
           rawEmail: targetStudent.email || '',
           matchScore: 1.0,
         };
+        usedRawRowIndices.add(idx);
       }
     });
   } else {
-    rawRows.forEach((row) => {
-      const primaryName = nameCol ? String(row[nameCol] ?? '').trim() : '';
-      const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
-      const rawNameVal =
-        primaryName && secondaryName
-          ? `${primaryName}, ${secondaryName}`
-          : primaryName || secondaryName;
-
+    // Automatic fuzzy matching for remaining rows
+    rawRows.forEach((row, idx) => {
+      if (usedRawRowIndices.has(idx)) return;
+      const rawNameVal = getRowDisplayName(row, idx);
       const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
       if (!rawNameVal && !rawEmailVal) return;
-      if (/^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)) {
+      if (
+        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)
+      ) {
         return;
       }
 
-      const { student, score } = findBestStudentMatchInRoster(students, rawNameVal, rawEmailVal);
+      // Only match against students not already matched or manually unassigned
+      const availableStudents = students.filter(
+        (s) => !matchedByStudentId[s.id] && manualRowMatches[s.id] !== null
+      );
+      const { student, score } = findBestStudentMatchInRoster(
+        availableStudents,
+        rawNameVal,
+        rawEmailVal
+      );
       if (student && score >= 0.5 && !matchedByStudentId[student.id]) {
         matchedByStudentId[student.id] = {
           rawRow: row,
+          rawRowIndex: idx,
           rawName: rawNameVal,
           rawEmail: rawEmailVal,
           matchScore: score,
         };
-      } else if (rawNameVal) {
-        unmatchedRawRows.push({
-          rawRow: row,
-          rawName: rawNameVal,
-          rawEmail: rawEmailVal,
-        });
+        usedRawRowIndices.add(idx);
       }
+    });
+  }
+
+  // Collect unmatched rows from the document
+  const unmatchedRawRows: Array<{
+    rawRow: Record<string, any>;
+    rawRowIndex: number;
+    rawName: string;
+    rawEmail: string;
+  }> = [];
+
+  if (nameCol !== '__ORDER__') {
+    rawRows.forEach((row, idx) => {
+      if (usedRawRowIndices.has(idx)) return;
+      const rawNameVal = getRowDisplayName(row, idx);
+      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
+      if (!rawNameVal) return;
+      if (
+        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)
+      ) {
+        return;
+      }
+      unmatchedRawRows.push({
+        rawRow: row,
+        rawRowIndex: idx,
+        rawName: rawNameVal,
+        rawEmail: rawEmailVal,
+      });
     });
   }
 
@@ -624,6 +1062,7 @@ export function computeMultiVerificationRows(
       lastName: st.lastName,
       studentEmail: st.email || matched?.rawEmail || '',
       matchedFromRaw: matched?.rawName || '',
+      matchedRawRowIndex: matched?.rawRowIndex,
       matchScore: matched?.matchScore || 0,
       isIncluded: Boolean(matched && hasAnyValidChange),
       valuesByCol,
@@ -631,7 +1070,7 @@ export function computeMultiVerificationRows(
   });
 
   unmatchedRawRows.forEach((unmatched, idx) => {
-    const tempId = `new-student-${Date.now()}-${idx}`;
+    const tempId = `new-student-${unmatched.rawRowIndex}-${idx}`;
     const valuesByCol: MultiVerifiedStudentRow['valuesByCol'] = {};
     colConfigs.forEach((cfg) => {
       valuesByCol[cfg.colKey] = evaluateCell(tempId, unmatched.rawRow[cfg.colKey], cfg);
@@ -663,6 +1102,7 @@ export function computeMultiVerificationRows(
       lastName,
       studentEmail: unmatched.rawEmail || '',
       matchedFromRaw: unmatched.rawName,
+      matchedRawRowIndex: unmatched.rawRowIndex,
       matchScore: 0,
       isIncluded: students.length === 0,
       valuesByCol,
@@ -674,3 +1114,4 @@ export function computeMultiVerificationRows(
     shouldAutoEnableNewStudents: students.length === 0 && unmatchedRawRows.length > 0,
   };
 }
+

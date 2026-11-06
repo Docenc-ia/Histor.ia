@@ -273,7 +273,17 @@ export function useGoogleSheetsAndDriveSync({
           setDispositionMap2c(updatedMap2c);
           updatedMapForEvent = updatedMap2c;
           if (typeof window !== 'undefined' && activeCourse?.id) {
-            setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, JSON.stringify(updatedMap2c));
+            const serialized2c = JSON.stringify(updatedMap2c);
+            setUserScopedItem(`fds_disposition_data_${activeCourse.id}_2c`, serialized2c);
+            try {
+              const global2cRaw = getUserScopedItem('fds_disposition_data_2c');
+              const global2c = global2cRaw ? JSON.parse(global2cRaw) : {};
+              const merged2c = { ...global2c, ...updatedMap2c };
+              setUserScopedItem('fds_disposition_data_2c', JSON.stringify(merged2c));
+              if (userId) {
+                firestoreSync.saveUserSetting(userId, 'disposition_map_2c', merged2c);
+              }
+            } catch {}
           }
           saveAllDispositionStorage(dispositionMap, historyList, { courseId: activeCourse.id });
           if (userId) {
@@ -308,6 +318,8 @@ export function useGoogleSheetsAndDriveSync({
           window.dispatchEvent(
             new CustomEvent('docencia_disposition_storage_change', {
               detail: {
+                term: payload.term,
+                courseId: activeCourse.id,
                 disposition: updatedMapForEvent,
                 history: historyList,
               },

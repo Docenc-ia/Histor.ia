@@ -16,6 +16,7 @@ import {
   Square,
   CheckCheck,
   Pencil,
+  Upload,
 } from 'lucide-react';
 import {
   Course,
@@ -103,6 +104,7 @@ interface CourseRosterTabViewProps {
   setActiveTab: (tab: 'roster' | 'libro_temas' | 'grades' | 'history') => void;
   setToastMessage: (msg: string | null) => void;
   saveToDriveControl?: React.ReactNode;
+  onOpenImportDisposition?: (sourceType?: 'file' | 'csv' | 'sheets' | 'paste') => void;
 }
 
 export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
@@ -169,6 +171,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
   setActiveTab,
   setToastMessage,
   saveToDriveControl,
+  onOpenImportDisposition,
 }) => {
   const {
     attendanceLabel,
@@ -331,6 +334,18 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                   <Copy className="w-3.5 h-3.5" />
                   <span>Copiar Resumen Anual</span>
                 </button>
+
+                {onOpenImportDisposition && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenImportDisposition('sheets')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+                    title={`Importar notas de ${dispositionLabel.toLowerCase()} desde un documento (Sheets, Docs, Excel, Word, CSV) o link`}
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Importar</span>
+                  </button>
+                )}
 
                 {saveToDriveControl}
               </div>
@@ -736,15 +751,28 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                             <Pencil className="w-3 h-3" />
                           </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setIsSendDispositionModalOpen(true)}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-950/80 dark:hover:bg-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 transition-all cursor-pointer shadow-2xs"
-                          title={`Mandar notas de ${dispositionLabel.toLowerCase()} a Calificaciones (${activeConcreteTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
-                        >
-                          <Award className="w-3 h-3 text-amber-500" />
-                          <span>Mandar a Calificaciones</span>
-                        </button>
+                        <div className="flex flex-wrap items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setIsSendDispositionModalOpen(true)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 hover:bg-blue-200 text-blue-800 dark:bg-blue-950/80 dark:hover:bg-blue-900 dark:text-blue-200 border border-blue-200 dark:border-blue-800 transition-all cursor-pointer shadow-2xs"
+                            title={`Mandar notas de ${dispositionLabel.toLowerCase()} a Calificaciones (${activeConcreteTerm === '2c' ? '2° Cuatrimestre' : '1° Cuatrimestre'})`}
+                          >
+                            <Award className="w-3 h-3 text-amber-500" />
+                            <span>Mandar a Calificaciones</span>
+                          </button>
+                          {onOpenImportDisposition && (
+                            <button
+                              type="button"
+                              onClick={() => onOpenImportDisposition('sheets')}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800 transition-all cursor-pointer shadow-2xs"
+                              title={`Importar notas de ${dispositionLabel.toLowerCase()} desde un documento (Sheets, Docs, Excel, Word, CSV) o pegando un link, y elegir los nombres para verificar que esté todo bien`}
+                            >
+                              <Upload className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
+                              <span>Importar</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </th>
                     <th className="py-3 px-4">

@@ -1395,6 +1395,11 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                 setHeaderImportSourceType('csv');
                 setIsHeaderImportModalOpen(true);
               }}
+              onOpenImportPaste={() => {
+                setHeaderImportContext('attendance');
+                setHeaderImportSourceType('paste');
+                setIsHeaderImportModalOpen(true);
+              }}
               attendanceTerm={attendanceTerm}
               onSelectTerm={setAttendanceTermHandler}
               attendanceSummary={currentAttendanceSummary}
@@ -1550,6 +1555,11 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               setActiveTab={setActiveTab}
               setToastMessage={setToastMessage}
               saveToDriveControl={attendanceDriveSaveSelector}
+              onOpenImportDisposition={(srcType = 'sheets') => {
+                setHeaderImportContext('attendance');
+                setHeaderImportSourceType(srcType);
+                setIsHeaderImportModalOpen(true);
+              }}
             />
           )}
 

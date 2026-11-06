@@ -26,6 +26,7 @@ import {
   Loader2,
   Sparkles,
   UserPlus,
+  FileText,
 } from 'lucide-react';
 import type * as XLSXType from 'xlsx';
 import { Student } from '../../types';
@@ -42,6 +43,10 @@ import {
   autoDetectColumnsConfiguration,
   computeMultiVerificationRows,
   parseFlexibleCellNumber,
+  parseHtmlOrTextDocumentTo2DGrid,
+  parseDocxArrayBufferTo2DGrid,
+  ensureHeaderRowIn2DGrid,
+  buildDocumentRowOptions,
 } from '../../utils/gradeImportParser';
 
 export interface ParsedStudentRow {
@@ -96,6 +101,7 @@ export interface MultiVerifiedStudentRow {
   lastName: string;
   studentEmail: string;
   matchedFromRaw: string;
+  matchedRawRowIndex?: number;
   matchScore: number;
   isIncluded: boolean;
   // Values keyed by colKey
@@ -226,7 +232,14 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   const [remoteSheetError, setRemoteSheetError] = useState<string | null>(null);
   const [activeRemoteSpreadsheetId, setActiveRemoteSpreadsheetId] = useState<string>('');
   const [driveSpreadsheets, setDriveSpreadsheets] = useState<
-    Array<{ id: string; name: string; modifiedTime?: string; url: string }>
+    Array<{
+      id: string;
+      name: string;
+      modifiedTime?: string;
+      url: string;
+      mimeType?: string;
+      docType?: 'sheet' | 'doc';
+    }>
   >([]);
   const [isLoadingDriveSheets, setIsLoadingDriveSheets] = useState<boolean>(false);
   const [driveSearchQuery, setDriveSearchQuery] = useState<string>('');
@@ -246,6 +259,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   // Multi-column auto-detection states
   const [detectedColumns, setDetectedColumns] = useState<DetectedColumnConfig[]>([]);
   const [verifiedRows, setVerifiedRows] = useState<MultiVerifiedStudentRow[]>([]);
+  const [manualRowMatches, setManualRowMatches] = useState<Record<string, number | null>>({});
   const [includeNewStudentsFromDoc, setIncludeNewStudentsFromDoc] = useState<boolean>(false);
 
   // Filters & inspection mode in Step 2
@@ -286,7 +300,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     nameCol: string,
     emailCol: string,
     colConfigs: DetectedColumnConfig[],
-    secondaryNameCol = selectedSecondaryNameColumn
+    secondaryNameCol = selectedSecondaryNameColumn,
+    customManualMatches: Record<string, number | null> = manualRowMatches
   ) => {
     const { rowsResult, shouldAutoEnableNewStudents } = computeMultiVerificationRows(
       students,
@@ -296,7 +311,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       colConfigs,
       activeGradesMap,
       activeDispMap,
-      secondaryNameCol
+      secondaryNameCol,
+      customManualMatches
     );
 
     if (shouldAutoEnableNewStudents) {
@@ -307,7 +323,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Process any loaded table (from Excel, Google Sheets, or Paste)
+   * Process any loaded table (from Excel, Google Sheets, Google Docs, Word, CSV, or Paste)
    */
   const processLoadedTableData = (
     rows: Array<Record<string, any>>,
@@ -324,6 +340,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     setRawTableRows(rows);
     setAvailableColumns(cols);
     setFileName(sourceTitle);
+    setManualRowMatches({});
 
     const detectedIdentity = autoDetectIdentityColumns(cols);
     const nameCol =
@@ -351,7 +368,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       );
 
     setDetectedColumns(detected);
-    buildMultiVerificationRows(rows, nameCol, emailCol, detected, secondaryNameCol);
+    buildMultiVerificationRows(rows, nameCol, emailCol, detected, secondaryNameCol, {});
 
     if (autoAdvanceToVerify) {
       setActiveStep('verify');
@@ -580,20 +597,27 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Handle Excel (.xlsx, .xls) or CSV (.csv) upload
+   * Handle Excel (.xlsx, .xls), CSV (.csv), Word (.docx, .doc), HTML (.html), or Text (.txt) upload
    */
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const isCsv = file.name.toLowerCase().endsWith('.csv') || file.type === 'text/csv';
+    const lowerName = file.name.toLowerCase();
+    const isCsv = lowerName.endsWith('.csv') || lowerName.endsWith('.tsv') || file.type === 'text/csv';
+    const isDocx = lowerName.endsWith('.docx');
+    const isTextOrHtmlDoc =
+      lowerName.endsWith('.doc') ||
+      lowerName.endsWith('.txt') ||
+      lowerName.endsWith('.html') ||
+      lowerName.endsWith('.htm');
 
     if (isCsv) {
       const textReader = new FileReader();
       textReader.onload = (evt) => {
         try {
           const text = String(evt.target?.result || '');
-          const raw2D = parseCsvTextTo2D(text);
+          const raw2D = ensureHeaderRowIn2DGrid(parseCsvTextTo2D(text));
           if (raw2D.length === 0) return;
           setRawWorkbook(null);
           setSheetNames(['CSV']);
@@ -605,6 +629,55 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
           processLoadedTableData(rows, headers, `${file.name} (CSV)`, true);
         } catch (err) {
           console.error('Error al procesar archivo CSV:', err);
+        }
+      };
+      textReader.readAsText(file, 'UTF-8');
+      e.target.value = '';
+      return;
+    }
+
+    if (isDocx) {
+      const bufReader = new FileReader();
+      bufReader.onload = async (evt) => {
+        try {
+          const buf = evt.target?.result as ArrayBuffer;
+          if (!buf) return;
+          const raw2D = await parseDocxArrayBufferTo2DGrid(buf);
+          if (raw2D.length === 0) return;
+          setRawWorkbook(null);
+          setSheetNames(['Documento Word']);
+          setSelectedSheetName('Documento Word');
+          setRaw2DGrid(raw2D);
+          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+          setSelectedHeaderRowIndex(headerRowIndex);
+          if (rows.length === 0 || headers.length === 0) return;
+          processLoadedTableData(rows, headers, `${file.name} (Word)`, true);
+        } catch (err) {
+          console.error('Error al procesar archivo Word (.docx):', err);
+        }
+      };
+      bufReader.readAsArrayBuffer(file);
+      e.target.value = '';
+      return;
+    }
+
+    if (isTextOrHtmlDoc) {
+      const textReader = new FileReader();
+      textReader.onload = (evt) => {
+        try {
+          const text = String(evt.target?.result || '');
+          const raw2D = parseHtmlOrTextDocumentTo2DGrid(text);
+          if (raw2D.length === 0) return;
+          setRawWorkbook(null);
+          setSheetNames(['Documento']);
+          setSelectedSheetName('Documento');
+          setRaw2DGrid(raw2D);
+          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+          setSelectedHeaderRowIndex(headerRowIndex);
+          if (rows.length === 0 || headers.length === 0) return;
+          processLoadedTableData(rows, headers, file.name, true);
+        } catch (err) {
+          console.error('Error al procesar documento de texto/HTML:', err);
         }
       };
       textReader.readAsText(file, 'UTF-8');
@@ -641,7 +714,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     if (!ws) return;
 
     const XLSX = await import('xlsx');
-    const raw2D: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const raw2DFromSheet: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const raw2D = ensureHeaderRowIn2DGrid(raw2DFromSheet);
     setRaw2DGrid(raw2D);
     const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
     setSelectedHeaderRowIndex(headerRowIndex);
@@ -656,36 +730,134 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Handle loading a Google Sheet by URL/ID or from Drive list
+   * Handle loading a Google Sheet, Google Doc, or direct CSV/web link by URL/ID or from Drive list
    */
-  const handleLoadRemoteGoogleSheet = async (idOrUrl: string, targetTab?: string) => {
-    if (!idOrUrl.trim()) return;
+  const handleLoadRemoteGoogleSheet = async (
+    idOrUrl: string,
+    targetTab?: string,
+    explicitDocType?: 'sheet' | 'doc'
+  ) => {
+    const trimmed = idOrUrl.trim();
+    if (!trimmed) return;
     setIsLoadingRemoteSheet(true);
     setRemoteSheetError(null);
     try {
-      const result = await sheetsService.fetchArbitrarySpreadsheetData(idOrUrl, targetTab);
+      // 1. Check if it's a Google Docs link or explicit Google Doc from Drive
+      const docUrlMatch = trimmed.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+      if (docUrlMatch || explicitDocType === 'doc') {
+        const docId = docUrlMatch ? docUrlMatch[1] : trimmed;
+        const exported = await driveService.exportGoogleDocContent(docId);
+        if (!exported || (!exported.html && !exported.text)) {
+          setRemoteSheetError(
+            'No se pudo leer el Google Doc. Verificá que el documento tenga permisos de lectura o que hayas conectado tu Google Drive.'
+          );
+          return;
+        }
+        const raw2D = parseHtmlOrTextDocumentTo2DGrid(exported.html || exported.text || '');
+        if (raw2D.length === 0) {
+          setRemoteSheetError('El documento de Google Docs no contiene tablas ni filas con nombres y notas.');
+          return;
+        }
+        setActiveRemoteSpreadsheetId('');
+        setSheetUrlInput(trimmed);
+        setSheetNames(['Google Docs']);
+        setSelectedSheetName('Google Docs');
+        setRawWorkbook(null);
+        setRaw2DGrid(raw2D);
+        const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+        setSelectedHeaderRowIndex(headerRowIndex);
+        if (rows.length === 0 || headers.length === 0) {
+          setRemoteSheetError('No se detectaron alumnos o notas en el Google Doc.');
+          return;
+        }
+        processLoadedTableData(rows, headers, `Google Docs: ${exported.title}`, true);
+        return;
+      }
+
+      // 2. Check if it's a direct CSV/TSV/HTML link (not a Google Spreadsheet URL)
+      if (
+        /^https?:\/\//i.test(trimmed) &&
+        !trimmed.includes('docs.google.com/spreadsheets') &&
+        !trimmed.includes('drive.google.com')
+      ) {
+        try {
+          const resp = await fetch(trimmed);
+          if (resp.ok) {
+            const text = await resp.text();
+            const raw2D =
+              trimmed.toLowerCase().endsWith('.csv')
+                ? ensureHeaderRowIn2DGrid(parseCsvTextTo2D(text))
+                : parseHtmlOrTextDocumentTo2DGrid(text);
+            if (raw2D.length > 0) {
+              setActiveRemoteSpreadsheetId('');
+              setSheetUrlInput(trimmed);
+              setSheetNames(['Enlace Web']);
+              setSelectedSheetName('Enlace Web');
+              setRawWorkbook(null);
+              setRaw2DGrid(raw2D);
+              const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+              setSelectedHeaderRowIndex(headerRowIndex);
+              if (rows.length > 0 && headers.length > 0) {
+                processLoadedTableData(rows, headers, 'Documento desde Enlace', true);
+                return;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 3. Default: Load Google Sheet via Sheets API / public export fallback
+      const result = await sheetsService.fetchArbitrarySpreadsheetData(trimmed, targetTab);
+      const safeRaw2D = ensureHeaderRowIn2DGrid(result.raw2D || []);
       setActiveRemoteSpreadsheetId(result.spreadsheetId);
-      setSheetUrlInput(idOrUrl);
+      setSheetUrlInput(trimmed);
       setSheetNames(result.sheetNames);
       setSelectedSheetName(result.selectedSheet);
       setRawWorkbook(null);
-      setRaw2DGrid(result.raw2D || []);
-      setSelectedHeaderRowIndex(result.headerRowIndex ?? 0);
+      setRaw2DGrid(safeRaw2D);
+      const parsedFromSafe =
+        safeRaw2D.length > 0
+          ? sheetsService.convert2DArrayToTableObjects(safeRaw2D)
+          : { headers: result.headers, rows: result.rows, headerRowIndex: result.headerRowIndex ?? 0 };
+      setSelectedHeaderRowIndex(parsedFromSafe.headerRowIndex ?? 0);
 
-      if (result.rows.length === 0 && (!result.raw2D || result.raw2D.length === 0)) {
+      if (parsedFromSafe.rows.length === 0 && safeRaw2D.length === 0) {
         setRemoteSheetError(`La pestaña "${result.selectedSheet}" no contiene filas de datos.`);
         return;
       }
 
       processLoadedTableData(
-        result.rows,
-        result.headers,
+        parsedFromSafe.rows,
+        parsedFromSafe.headers,
         `Google Sheet: ${result.title} (${result.selectedSheet})`,
         true
       );
     } catch (err: any) {
+      // If a generic Drive link was pasted and it's actually a Google Doc, try exporting as Google Doc
+      try {
+        const genericDriveMatch = trimmed.match(/[-\w]{25,}/);
+        if (genericDriveMatch) {
+          const docFallback = await driveService.exportGoogleDocContent(genericDriveMatch[0]);
+          if (docFallback && (docFallback.html || docFallback.text)) {
+            const raw2D = parseHtmlOrTextDocumentTo2DGrid(docFallback.html || docFallback.text || '');
+            if (raw2D.length > 0) {
+              setRaw2DGrid(raw2D);
+              setSheetNames(['Google Docs']);
+              setSelectedSheetName('Google Docs');
+              const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
+              setSelectedHeaderRowIndex(headerRowIndex);
+              if (rows.length > 0 && headers.length > 0) {
+                processLoadedTableData(rows, headers, `Google Docs: ${docFallback.title}`, true);
+                return;
+              }
+            }
+          }
+        }
+      } catch {}
+
       setRemoteSheetError(
-        err?.message || 'No se pudo leer el documento de Google Sheets. Verifica el enlace o tu conexión con Google.'
+        err?.message ||
+          'No se pudo leer el documento desde el enlace. Verificá que el link sea de Google Sheets o Google Docs y que tengas acceso.'
       );
     } finally {
       setIsLoadingRemoteSheet(false);
@@ -983,8 +1155,52 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     );
   };
 
+  // Choose which row from the uploaded document corresponds to a specific student in the course
+  const handleSelectDocumentRowForStudent = (
+    studentId: string,
+    rawRowIdxOrNull: number | null
+  ) => {
+    const nextMatches: Record<string, number | null> = { ...manualRowMatches };
+    // If another student had this same rawRowIdx manually assigned, free it
+    if (rawRowIdxOrNull !== null) {
+      Object.keys(nextMatches).forEach((stId) => {
+        if (stId !== studentId && nextMatches[stId] === rawRowIdxOrNull) {
+          delete nextMatches[stId];
+        }
+      });
+    }
+    nextMatches[studentId] = rawRowIdxOrNull;
+    setManualRowMatches(nextMatches);
+
+    const { rowsResult } = computeMultiVerificationRows(
+      students,
+      rawTableRows,
+      selectedNameColumn,
+      selectedEmailColumn,
+      detectedColumns,
+      activeGradesMap,
+      activeDispMap,
+      selectedSecondaryNameColumn,
+      nextMatches
+    );
+
+    setVerifiedRows(
+      rowsResult.map((r) =>
+        r.studentId === studentId
+          ? { ...r, isIncluded: rawRowIdxOrNull !== null }
+          : r
+      )
+    );
+  };
+
   // Reassign an unmatched or matched row to another student in the course
   const handleReassignRowStudent = (rowId: string, targetStudentId: string) => {
+    const sourceRow = verifiedRows.find((r) => r.rowId === rowId);
+    if (sourceRow && typeof sourceRow.matchedRawRowIndex === 'number') {
+      handleSelectDocumentRowForStudent(targetStudentId, sourceRow.matchedRawRowIndex);
+      return;
+    }
+
     const targetSt = students.find((s) => s.id === targetStudentId);
     if (!targetSt) return;
 
@@ -1005,6 +1221,24 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       })
     );
   };
+
+  const documentRowOptions = useMemo(
+    () =>
+      buildDocumentRowOptions(
+        rawTableRows,
+        selectedNameColumn,
+        selectedSecondaryNameColumn,
+        selectedEmailColumn,
+        detectedColumns
+      ),
+    [
+      rawTableRows,
+      selectedNameColumn,
+      selectedSecondaryNameColumn,
+      selectedEmailColumn,
+      detectedColumns,
+    ]
+  );
 
   const includedColumns = useMemo(
     () => detectedColumns.filter((c) => c.isIncluded && c.kind !== 'ignore'),
@@ -1296,7 +1530,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
       <div
-        className={`w-full max-w-6xl max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
+        className={`w-full max-w-4xl max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
           isDarkMode
             ? 'bg-slate-900 border-slate-750 text-slate-100'
             : 'bg-white border-neutral-200 text-neutral-800'
@@ -1304,45 +1538,32 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       >
         {/* Header */}
         <div
-          className={`px-5 py-4 border-b flex items-center justify-between gap-3 shrink-0 ${
-            isDarkMode ? 'bg-slate-850 border-slate-750' : 'bg-neutral-50/80 border-neutral-200'
+          className={`px-5 py-3.5 border-b flex items-center justify-between gap-3 shrink-0 ${
+            isDarkMode ? 'bg-slate-850 border-slate-750' : 'bg-neutral-50 border-neutral-200'
           }`}
         >
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-              <FileSpreadsheet className="w-5 h-5" />
+            <div className="p-2 rounded-xl bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+              <Upload className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-base leading-tight">
-                  {sourceType === 'sheets'
-                    ? 'Importar Documento desde Google Sheets'
-                    : sourceType === 'csv'
-                    ? 'Importar Documento desde Archivo CSV (.csv)'
-                    : sourceType === 'paste'
-                    ? 'Pegado Rápido desde Planilla (Ctrl+V)'
-                    : 'Importar Documento desde Excel (.xlsx, .xls) o Google Sheets'}
+                  Importar
                 </h3>
-                <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-blue-100 dark:bg-blue-950/70 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                   {courseName}
-                </span>
-                <span className="px-2 py-0.5 text-[11px] font-semibold rounded-full bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                  {importContext === 'attendance' ? 'Asistencia, Disposición y Notas' : 'Detección de Categorías y Notas'}
                 </span>
               </div>
               <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                {activeStep === 'upload' &&
-                  'Paso 1: Subí tu planilla, conectá tu Google Sheet o pegá 2 columnas para mapear tus datos sin errores'}
-                {activeStep === 'verify' &&
-                  'Paso 2: Mapeador Visual e Interfaz de Comprobación — Elegí qué es cada columna sobre tu planilla y verificá antes de guardar'}
-                {activeStep === 'history' && 'Historial de importaciones realizadas'}
+                Subí un documento (Sheets, Docs, Excel, Word o CSV), pegá un link o pegá la lista para elegir los nombres y verificar todo
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             {/* Selector de Cuatrimestre Destino */}
-            <div className="flex items-center gap-1.5 mr-2">
+            <div className="flex items-center gap-1.5 mr-1">
               <span className="text-[11px] font-bold text-neutral-500 dark:text-slate-400 hidden sm:inline">
                 Período:
               </span>
@@ -1378,164 +1599,224 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                isDarkMode ? 'hover:bg-slate-800 text-slate-400' : 'hover:bg-neutral-100 text-neutral-500'
-              }`}
+              className="p-1.5 rounded-lg hover:bg-neutral-200 dark:hover:bg-slate-750 transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
+        {/* Step Indicator Bar (ventanita style like Subir Evaluación de Forms) */}
+        <div
+          className={`px-5 py-2.5 border-b flex items-center justify-between text-xs shrink-0 ${
+            isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-100/70 border-neutral-200'
+          }`}
+        >
+          <div className="flex items-center gap-2 sm:gap-4 flex-wrap">
+            <span
+              className={`inline-flex items-center gap-1.5 font-bold ${
+                activeStep === 'upload'
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-neutral-500 dark:text-slate-400'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full inline-flex items-center justify-center text-[11px] ${
+                  activeStep === 'upload'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-emerald-600 text-white'
+                }`}
+              >
+                1
+              </span>
+              1. Seleccionar Documento o Link
+            </span>
+            <ChevronRight className="w-4 h-4 text-neutral-400" />
+            <span
+              className={`inline-flex items-center gap-1.5 font-bold ${
+                activeStep === 'verify'
+                  ? 'text-emerald-600 dark:text-emerald-400'
+                  : 'text-neutral-400 dark:text-slate-500'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full inline-flex items-center justify-center text-[11px] ${
+                  activeStep === 'verify'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-neutral-300 dark:bg-slate-700 text-neutral-600 dark:text-slate-400'
+                }`}
+              >
+                2
+              </span>
+              2. Elegir Nombres, Columna y Confirmar
+            </span>
+          </div>
+
+          {activeStep === 'verify' && (
+            <button
+              type="button"
+              onClick={() => setActiveStep('upload')}
+              className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+            >
+              Cambiar documento
+            </button>
+          )}
+        </div>
+
         {/* ========================================================================= */}
-        {/* PASO 1: SELECCIONAR ARCHIVO EXCEL O DOCUMENTO DE GOOGLE SHEETS            */}
+        {/* PASO 1: SELECCIONAR DOCUMENTO, LINK O TEXTO PEGADO                        */}
         {/* ========================================================================= */}
         {activeStep === 'upload' && (
-          <div className="p-6 overflow-y-auto space-y-5">
-            {/* Pestañas de origen: Importar desde Excel vs Importar desde Google Sheets vs Pegar + Descargar Plantilla */}
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-3 border-neutral-200 dark:border-slate-800">
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSourceType('file')}
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    sourceType === 'file'
-                      ? 'bg-emerald-600 text-white shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 hover:text-white'
-                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                  }`}
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Importar desde Excel (.xlsx, .xls)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSourceType('sheets')}
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    sourceType === 'sheets'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 hover:text-white'
-                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                  }`}
-                >
-                  <FileSpreadsheet className="w-4 h-4" />
-                  <span>Importar desde Google Sheets</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSourceType('csv')}
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    sourceType === 'csv'
-                      ? 'bg-teal-600 text-white shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 hover:text-white'
-                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                  }`}
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Importar CSV (.csv)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSourceType('paste')}
-                  className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                    sourceType === 'paste'
-                      ? 'bg-indigo-600 text-white shadow-xs'
-                      : isDarkMode
-                      ? 'bg-slate-800 text-slate-300 hover:text-white'
-                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                  }`}
-                >
-                  <ClipboardPaste className="w-4 h-4" />
-                  <span>Pegado Rápido de Columnas (Ctrl+V)</span>
-                </button>
-              </div>
+          <div className="p-5 overflow-y-auto space-y-5 flex-1">
+            {/* 3 Tarjetas de origen estilo Subir Evaluación de Forms */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setSourceType('sheets')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                  sourceType === 'sheets'
+                    ? isDarkMode
+                      ? 'bg-emerald-950/50 border-emerald-500 text-emerald-200 ring-2 ring-emerald-500/20'
+                      : 'bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500/20'
+                    : isDarkMode
+                    ? 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
+                }`}
+              >
+                <Link2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-xs font-bold">Google Sheets / Docs (Link o Drive)</div>
+                  <div className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
+                    Pegá el link del Sheet o Doc o elegilo de tu cuenta de Google
+                  </div>
+                </div>
+              </button>
 
               <button
                 type="button"
-                onClick={async () => {
-                  try {
-                    const XLSX = await import('xlsx');
-                    const sorted = [...students].sort((a, b) =>
-                      `${a.lastName}, ${a.firstName}`.localeCompare(`${b.lastName}, ${b.firstName}`, 'es')
-                    );
-
-                    const gradeCols: string[] = [];
-                    activeCategories.forEach((cat) => {
-                      if (cat.subcategories.length > 0) {
-                        cat.subcategories.forEach((sub) => {
-                          gradeCols.push(`${cat.name} - ${sub.name}`);
-                        });
-                      } else {
-                        gradeCols.push(`${cat.name} - Evaluación 1`);
-                      }
-                    });
-                    if (gradeCols.length === 0) {
-                      gradeCols.push('Exámenes - Parcial 1', 'Trabajos Prácticos - TP 1');
-                    }
-
-                    const activeDispositionMap =
-                      selectedTerm === '2c' ? currentDispositionMap2c : currentDispositionMap1c;
-
-                    const templateRows = (sorted.length > 0
-                      ? sorted
-                      : [
-                          { id: '1', lastName: 'García', firstName: 'Ana', email: 'ana.garcia@escuela.edu.ar' } as Student,
-                          { id: '2', lastName: 'López', firstName: 'Juan', email: 'juan.lopez@escuela.edu.ar' } as Student,
-                        ]
-                    ).map((st) => {
-                      const row: Record<string, any> = {
-                        'Apellido y Nombre': `${st.lastName}, ${st.firstName}`,
-                        'Correo Institucional': st.email || '',
-                      };
-                      if (importContext === 'attendance') {
-                        const d = activeDispositionMap?.[st.id];
-                        row['Faltas'] = d?.totalAbsences ?? 0;
-                        row['Tardanzas'] = d?.totalLates ?? 0;
-                        row['Disposición'] = d?.totalDisposition ?? 10;
-                      }
-                      gradeCols.forEach((colLabel) => {
-                        row[colLabel] = '';
-                      });
-                      return row;
-                    });
-
-                    const ws = XLSX.utils.json_to_sheet(templateRows);
-                    const wb = XLSX.utils.book_new();
-                    XLSX.utils.book_append_sheet(
-                      wb,
-                      ws,
-                      importContext === 'attendance' ? 'Asistencia y Notas' : 'Calificaciones'
-                    );
-                    const safeCourse = courseName.replace(/[^a-zA-Z0-9_-]/g, '_');
-                    XLSX.writeFile(
-                      wb,
-                      `Plantilla_Modelo_${importContext === 'attendance' ? 'Asistencia' : 'Calificaciones'}_${safeCourse}_${selectedTerm.toUpperCase()}.xlsx`
-                    );
-                  } catch (err) {
-                    console.error('Error generating template:', err);
-                  }
-                }}
-                className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
-                  isDarkMode
-                    ? 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800'
-                    : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300 shadow-2xs'
+                onClick={() => setSourceType('file')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                  sourceType === 'file' || sourceType === 'csv'
+                    ? isDarkMode
+                      ? 'bg-emerald-950/50 border-emerald-500 text-emerald-200 ring-2 ring-emerald-500/20'
+                      : 'bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500/20'
+                    : isDarkMode
+                    ? 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
-                title="Descargar una planilla Excel pre-cargada con la lista de alumnos y columnas listas para completar y volver a subir"
               >
-                <Download className="w-3.5 h-3.5" />
-                <span>Descargar plantilla modelo (.xlsx)</span>
+                <Upload className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-xs font-bold">Subir Archivo (.xlsx, .docx, .csv)</div>
+                  <div className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
+                    Subí un documento Excel, Word, Docs, CSV o TXT desde tu dispositivo
+                  </div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSourceType('paste')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                  sourceType === 'paste'
+                    ? isDarkMode
+                      ? 'bg-emerald-950/50 border-emerald-500 text-emerald-200 ring-2 ring-emerald-500/20'
+                      : 'bg-emerald-50 border-emerald-500 text-emerald-900 ring-2 ring-emerald-500/20'
+                    : isDarkMode
+                    ? 'bg-slate-800/60 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
+                }`}
+              >
+                <ClipboardPaste className="w-5 h-5 text-purple-500 shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-xs font-bold">Pegar Nombres y Notas (Ctrl+V)</div>
+                  <div className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
+                    Copiá y pegá las columnas de alumnos y notas directamente
+                  </div>
+                </div>
               </button>
             </div>
 
-            {/* MODO 1: SUBIR ARCHIVO EXCEL (.xlsx, .xls) O CSV (.csv) */}
+            {/* MODO 1: SUBIR DOCUMENTO EXCEL, WORD (.docx, .doc), CSV, HTML O TXT */}
             {(sourceType === 'file' || sourceType === 'csv') && (
               <div className="space-y-4">
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const XLSX = await import('xlsx');
+                        const sorted = [...students].sort((a, b) =>
+                          `${a.lastName}, ${a.firstName}`.localeCompare(`${b.lastName}, ${b.firstName}`, 'es')
+                        );
+
+                        const gradeCols: string[] = [];
+                        activeCategories.forEach((cat) => {
+                          if (cat.subcategories.length > 0) {
+                            cat.subcategories.forEach((sub) => {
+                              gradeCols.push(`${cat.name} - ${sub.name}`);
+                            });
+                          } else {
+                            gradeCols.push(`${cat.name} - Evaluación 1`);
+                          }
+                        });
+                        if (gradeCols.length === 0) {
+                          gradeCols.push('Exámenes - Parcial 1', 'Trabajos Prácticos - TP 1');
+                        }
+
+                        const activeDispositionMap =
+                          selectedTerm === '2c' ? currentDispositionMap2c : currentDispositionMap1c;
+
+                        const templateRows = (sorted.length > 0
+                          ? sorted
+                          : [
+                              { id: '1', lastName: 'García', firstName: 'Ana', email: 'ana.garcia@escuela.edu.ar' } as Student,
+                              { id: '2', lastName: 'López', firstName: 'Juan', email: 'juan.lopez@escuela.edu.ar' } as Student,
+                            ]
+                        ).map((st) => {
+                          const row: Record<string, any> = {
+                            'Apellido y Nombre': `${st.lastName}, ${st.firstName}`,
+                            'Correo Institucional': st.email || '',
+                          };
+                          if (importContext === 'attendance') {
+                            const d = activeDispositionMap?.[st.id];
+                            row['Faltas'] = d?.totalAbsences ?? 0;
+                            row['Tardanzas'] = d?.totalLates ?? 0;
+                            row['Disposición'] = d?.totalDisposition ?? 10;
+                          }
+                          gradeCols.forEach((colLabel) => {
+                            row[colLabel] = '';
+                          });
+                          return row;
+                        });
+
+                        const ws = XLSX.utils.json_to_sheet(templateRows);
+                        const wb = XLSX.utils.book_new();
+                        XLSX.utils.book_append_sheet(
+                          wb,
+                          ws,
+                          importContext === 'attendance' ? 'Asistencia y Notas' : 'Calificaciones'
+                        );
+                        const safeCourse = courseName.replace(/[^a-zA-Z0-9_-]/g, '_');
+                        XLSX.writeFile(
+                          wb,
+                          `Plantilla_Modelo_${importContext === 'attendance' ? 'Asistencia' : 'Calificaciones'}_${safeCourse}_${selectedTerm.toUpperCase()}.xlsx`
+                        );
+                      } catch (err) {
+                        console.error('Error generating template:', err);
+                      }
+                    }}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border-emerald-800'
+                        : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300 shadow-2xs'
+                    }`}
+                    title="Descargar una planilla Excel pre-cargada con la lista de alumnos y columnas listas para completar y volver a subir"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Descargar plantilla modelo (.xlsx)</span>
+                  </button>
+                </div>
                 <div
                   onClick={() => fileInputRef.current?.click()}
                   className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
@@ -1547,7 +1828,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <input
                     ref={fileInputRef}
                     type="file"
-                    accept={sourceType === 'csv' ? '.csv,text/csv' : '.xlsx,.xls,.csv'}
+                    accept={
+                      sourceType === 'csv'
+                        ? '.csv,.tsv,.txt,text/csv,text/plain'
+                        : '.xlsx,.xls,.csv,.tsv,.docx,.doc,.txt,.html,.htm'
+                    }
                     onChange={handleFileUpload}
                     className="hidden"
                   />
@@ -1558,20 +1843,34 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     {fileName
                       ? `Documento cargado: ${fileName}`
                       : sourceType === 'csv'
-                      ? 'Hacé clic aquí para seleccionar tu archivo CSV (.csv)'
-                      : 'Hacé clic aquí para seleccionar tu archivo Excel (.xlsx, .xls)'}
+                      ? 'Hacé clic aquí para seleccionar tu archivo CSV (.csv) o Texto (.txt)'
+                      : 'Hacé clic aquí para subir tu documento (Excel .xlsx, Word .docx/.doc, CSV o TXT)'}
                   </p>
                   <p className={`text-xs mt-1.5 max-w-xl mx-auto ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Subí tu archivo: se detectarán automáticamente los alumnos, sus notas/calificaciones, inasistencias y disposición con comprobación previa antes de guardar.
+                    Podés subir cualquier planilla o documento con nombres y notas de disposición. En el siguiente paso vas a poder <strong>elegir los nombres de los alumnos</strong> y verificar que esté todo bien antes de guardar.
                   </p>
+                  <div className="flex flex-wrap items-center justify-center gap-2 mt-3">
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                      Excel (.xlsx / .xls)
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-500/15 text-blue-600 dark:text-blue-400">
+                      Word / Docs (.docx / .doc)
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-500/15 text-teal-600 dark:text-teal-400">
+                      CSV (.csv)
+                    </span>
+                    <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-500/15 text-purple-600 dark:text-purple-400">
+                      Texto / Tabla (.txt / .html)
+                    </span>
+                  </div>
                 </div>
               </div>
             )}
 
-            {/* MODO 2: IMPORTAR DESDE GOOGLE SHEETS */}
+            {/* MODO 2: PEGAR UN LINK (GOOGLE SHEETS, GOOGLE DOCS, CSV) O ELEGIR DE GOOGLE DRIVE */}
             {sourceType === 'sheets' && (
               <div className="space-y-5">
-                {/* Opción A: Pegar enlace o ID de Google Sheets */}
+                {/* Opción A: Pegar enlace o ID de Google Sheets, Google Docs o Web */}
                 <div
                   className={`p-4 rounded-2xl border space-y-3 ${
                     isDarkMode ? 'bg-slate-850/60 border-slate-750' : 'bg-blue-50/40 border-blue-200'
@@ -1580,18 +1879,23 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <div className="flex items-center gap-2">
                     <Link2 className="w-4 h-4 text-blue-500" />
                     <h4 className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                      Opción 1: Cargar mediante enlace o ID de Google Sheets
+                      Opción 1: Pegar un Link de Google Sheets, Google Docs o Documento
                     </h4>
                   </div>
                   <p className={`text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                    Pegá el enlace de cualquier Google Sheet que tengas armado. En el paso siguiente podrás **ver las filas reales de tu hoja** y señalar con un clic cuál es la columna de Disposición, Ausencias o Alumno:
+                    Pegá el link de tu <strong>Google Sheet</strong>, <strong>Google Doc</strong> (con tabla o lista de nombres y notas) o archivo compartido. En el paso siguiente podrás <strong>elegir los nombres</strong> y ver si está todo bien antes de guardar:
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2">
                     <input
                       type="text"
                       value={sheetUrlInput}
                       onChange={(e) => setSheetUrlInput(e.target.value)}
-                      placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && sheetUrlInput.trim()) {
+                          handleLoadRemoteGoogleSheet(sheetUrlInput);
+                        }
+                      }}
+                      placeholder="Pegá acá el link (https://docs.google.com/spreadsheets/d/... o https://docs.google.com/document/d/...)"
                       className={`flex-1 px-3.5 py-2 text-xs rounded-xl border outline-hidden ${
                         isDarkMode
                           ? 'bg-slate-800 border-slate-700 text-white placeholder:text-slate-500'
@@ -1609,7 +1913,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       ) : (
                         <Eye className="w-4 h-4" />
                       )}
-                      <span>{isLoadingRemoteSheet ? 'Leyendo Hoja...' : 'Abrir en Mapeador Visual'}</span>
+                      <span>{isLoadingRemoteSheet ? 'Leyendo Documento...' : 'Cargar desde Link y Revisar'}</span>
                     </button>
                   </div>
 
@@ -1621,7 +1925,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   )}
                 </div>
 
-                {/* Opción B: Elegir un Google Sheet directamente de Google Drive */}
+                {/* Opción B: Elegir un Google Sheet o Google Doc directamente de Google Drive */}
                 <div
                   className={`p-4 rounded-2xl border space-y-3 ${
                     isDarkMode ? 'bg-slate-850/40 border-slate-750' : 'bg-white border-neutral-200'
@@ -1631,7 +1935,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     <div className="flex items-center gap-2">
                       <FolderOpen className="w-4 h-4 text-emerald-500" />
                       <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                        Opción 2: Seleccionar una hoja existente de tu Google Drive
+                        Opción 2: Elegir un Google Sheet o Google Doc de tu Google Drive
                       </h4>
                     </div>
                     <div className="flex items-center gap-2">
@@ -1644,7 +1948,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') handleLoadDriveSpreadsheets(driveSearchQuery);
                           }}
-                          placeholder="Buscar por nombre en Drive..."
+                          placeholder="Buscar hoja o doc en Drive..."
                           className={`pl-8 pr-3 py-1.5 text-xs rounded-xl border outline-hidden ${
                             isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-50 border-neutral-300'
                           }`}
@@ -1669,42 +1973,62 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   {isLoadingDriveSheets ? (
                     <div className="py-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
-                      <span>Buscando hojas de cálculo en tu Google Drive...</span>
+                      <span>Buscando hojas de cálculo y documentos en tu Google Drive...</span>
                     </div>
                   ) : driveSpreadsheets.length === 0 ? (
                     <div className="py-6 text-center text-xs text-neutral-500 dark:text-slate-400">
-                      No se encontraron hojas recientes o no has iniciado sesión en Google Drive. Podés pegar el enlace arriba o pulsar "Buscar" para conectar.
+                      No se encontraron documentos recientes o no has iniciado sesión en Google Drive. Podés pegar el link arriba o pulsar "Buscar" para conectar.
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
-                      {driveSpreadsheets.map((sheet) => (
-                        <button
-                          key={sheet.id}
-                          type="button"
-                          onClick={() => handleLoadRemoteGoogleSheet(sheet.id)}
-                          disabled={isLoadingRemoteSheet}
-                          className={`p-3 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer ${
-                            isDarkMode
-                              ? 'bg-slate-800/70 hover:bg-slate-800 border-slate-700 hover:border-emerald-500/60'
-                              : 'bg-neutral-50/70 hover:bg-emerald-50/50 border-neutral-200 hover:border-emerald-400'
-                          }`}
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <FileSpreadsheet className="w-4 h-4 text-emerald-500 shrink-0" />
-                            <div className="min-w-0">
-                              <div className="text-xs font-bold truncate">{sheet.name}</div>
-                              {sheet.modifiedTime && (
-                                <div className="text-[10px] text-neutral-400">
-                                  Modificado: {new Date(sheet.modifiedTime).toLocaleDateString('es-AR')}
-                                </div>
+                      {driveSpreadsheets.map((sheet) => {
+                        const isDoc = sheet.docType === 'doc';
+                        return (
+                          <button
+                            key={sheet.id}
+                            type="button"
+                            onClick={() =>
+                              handleLoadRemoteGoogleSheet(sheet.id, undefined, sheet.docType)
+                            }
+                            disabled={isLoadingRemoteSheet}
+                            className={`p-3 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-slate-800/70 hover:bg-slate-800 border-slate-700 hover:border-emerald-500/60'
+                                : 'bg-neutral-50/70 hover:bg-emerald-50/50 border-neutral-200 hover:border-emerald-400'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              {isDoc ? (
+                                <FileText className="w-4 h-4 text-blue-500 shrink-0" />
+                              ) : (
+                                <FileSpreadsheet className="w-4 h-4 text-emerald-500 shrink-0" />
                               )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-bold truncate">{sheet.name}</span>
+                                  <span
+                                    className={`text-[9px] font-bold px-1.5 py-0.2 rounded shrink-0 ${
+                                      isDoc
+                                        ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                                        : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                                    }`}
+                                  >
+                                    {isDoc ? 'Docs' : 'Sheets'}
+                                  </span>
+                                </div>
+                                {sheet.modifiedTime && (
+                                  <div className="text-[10px] text-neutral-400">
+                                    Modificado: {new Date(sheet.modifiedTime).toLocaleDateString('es-AR')}
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                          <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold shrink-0">
-                            Mapear Hoja
-                          </span>
-                        </button>
-                      ))}
+                            <span className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-[11px] font-bold shrink-0">
+                              Abrir
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -2432,8 +2756,115 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                 </div>
               )}
 
-              {/* 2. SECCIÓN DE COMPROBACIÓN DE ALUMNOS Y VALORES */}
+              {/* 2. SECCIÓN DE COMPROBACIÓN DE ALUMNOS Y VALORES ("¿ESTÁ TODO BIEN?") */}
               <div className="space-y-3">
+                {/* Banner de Verificación Rápida y Elección de Columnas */}
+                <div
+                  className={`p-3.5 rounded-2xl border flex flex-col lg:flex-row lg:items-center justify-between gap-3 ${
+                    isDarkMode
+                      ? 'bg-emerald-950/25 border-emerald-800/60 text-slate-100'
+                      : 'bg-emerald-50/60 border-emerald-200 text-neutral-900'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-xs font-extrabold flex items-center gap-2 flex-wrap">
+                        <span>¿Está todo bien? Verificación de Nombres y Notas</span>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                          {verifiedRows.filter((r) => !r.isNewStudent && r.matchedFromRaw).length} de{' '}
+                          {students.length} alumnos del curso vinculados
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-neutral-600 dark:text-slate-300 mt-0.5">
+                        En la columna <strong>"Nombre en Documento (Elegir / Verificar)"</strong> podés desplegar la lista y elegir manualmente qué nombre del documento corresponde a cada alumno o corregir cualquier nota antes de guardar.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Selectores rápidos de Columna de Nombres y Columna de Disposición */}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
+                        Columna Nombres:
+                      </span>
+                      <select
+                        value={selectedNameColumn}
+                        onChange={(e) => {
+                          const nextNameCol = e.target.value;
+                          setSelectedNameColumn(nextNameCol);
+                          setManualRowMatches({});
+                          const nextDetected = autoDetectColumnsConfiguration(
+                            availableColumns,
+                            nextNameCol,
+                            selectedEmailColumn,
+                            activeCategories,
+                            selectedSecondaryNameColumn,
+                            importContext
+                          );
+                          setDetectedColumns(nextDetected);
+                          buildMultiVerificationRows(
+                            rawTableRows,
+                            nextNameCol,
+                            selectedEmailColumn,
+                            nextDetected,
+                            selectedSecondaryNameColumn,
+                            {}
+                          );
+                        }}
+                        className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
+                          isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-blue-300'
+                            : 'bg-white border-neutral-300 text-blue-800'
+                        }`}
+                      >
+                        <option value="__ORDER__">🔢 Por orden de lista</option>
+                        {availableColumns.map((col) => (
+                          <option key={col} value={col}>
+                            👤 {col}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {availableColumns.length > 1 && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
+                          Columna Disposición:
+                        </span>
+                        <select
+                          value={
+                            detectedColumns.find(
+                              (c) =>
+                                c.isIncluded &&
+                                (c.kind === 'disposition' || c.kind === 'disposition_deduction')
+                            )?.colKey || ''
+                          }
+                          onChange={(e) => {
+                            const chosenDispCol = e.target.value;
+                            if (!chosenDispCol) return;
+                            handleVisualColumnRoleChange(chosenDispCol, 'disposition');
+                          }}
+                          className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800 border-slate-700 text-emerald-300'
+                              : 'bg-white border-neutral-300 text-emerald-800'
+                          }`}
+                        >
+                          <option value="">-- Elegir columna de Disposición --</option>
+                          {availableColumns
+                            .filter((col) => col !== selectedNameColumn)
+                            .map((col) => (
+                              <option key={col} value={col}>
+                                ⭐ {col}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <div
@@ -2471,7 +2902,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       </button>
                     </div>
 
-                    <div className="flex items-center gap-1 text-xs">
+                    <div className="flex items-center gap-1 text-xs flex-wrap">
                       <button
                         type="button"
                         onClick={() => setFilterMode('all')}
@@ -2497,6 +2928,19 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                         }`}
                       >
                         Con datos a importar ({summaryMetrics.includedRowsCount})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setFilterMode('missing')}
+                        className={`px-2.5 py-1 rounded-lg font-semibold border cursor-pointer ${
+                          filterMode === 'missing'
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-slate-300'
+                            : 'bg-white border-neutral-200 text-neutral-700'
+                        }`}
+                      >
+                        Sin coincidencia ({verifiedRows.filter((r) => !r.isNewStudent && !r.matchedFromRaw).length})
                       </button>
                     </div>
                   </div>
@@ -2558,7 +3002,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           >
                             <th className="py-2.5 px-3 w-10 text-center font-bold">Inc.</th>
                             <th className="py-2.5 px-3 font-bold min-w-[190px]">Alumno en la App</th>
-                            <th className="py-2.5 px-3 font-bold min-w-[160px]">Nombre en Documento</th>
+                            <th className="py-2.5 px-3 font-bold min-w-[230px]">
+                              Nombre en Documento (Elegir / Verificar)
+                            </th>
                             {includedColumns.map((col) => (
                               <th key={col.colKey} className="py-2.5 px-3 text-center font-bold min-w-[130px]">
                                 <div className="flex flex-col items-center">
@@ -2626,28 +3072,28 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                     <span>{row.studentName}</span>
                                     {row.isNewStudent && (
                                       <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                                        + Nuevo
+                                        + Fila en doc sin vincular
                                       </span>
                                     )}
                                   </div>
-                                  {students.length > 0 && (
+                                  {row.isNewStudent && students.length > 0 && (
                                     <select
-                                      value={row.isNewStudent ? '' : row.studentId}
+                                      value=""
                                       onChange={(e) => {
                                         if (e.target.value) {
                                           handleReassignRowStudent(row.rowId, e.target.value);
                                         }
                                       }}
-                                      className={`mt-1 w-full text-[10px] px-1.5 py-0.5 rounded border outline-hidden ${
+                                      className={`mt-1 w-full text-[10px] px-1.5 py-1 rounded border font-semibold outline-hidden cursor-pointer ${
                                         isDarkMode
-                                          ? 'bg-slate-800 border-slate-700 text-slate-300'
-                                          : 'bg-neutral-50 border-neutral-200 text-neutral-600'
+                                          ? 'bg-slate-800 border-slate-700 text-blue-300'
+                                          : 'bg-blue-50/60 border-blue-200 text-blue-800'
                                       }`}
-                                      title="Cambiar asignación de alumno manualmente si es necesario"
+                                      title="Asignar esta fila del documento a un alumno existente del curso"
                                     >
-                                      {row.isNewStudent && (
-                                        <option value="">-- Crear como alumno nuevo --</option>
-                                      )}
+                                      <option value="">
+                                        👉 Elegir a qué alumno del curso corresponde...
+                                      </option>
                                       {students.map((s) => (
                                         <option key={s.id} value={s.id}>
                                           Vincular con: {s.lastName}, {s.firstName}
@@ -2658,23 +3104,69 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                 </td>
 
                                 <td className="py-2 px-3">
-                                  {row.matchedFromRaw ? (
-                                    <div className="flex flex-col">
-                                      <span className="font-mono text-[11px]">{row.matchedFromRaw}</span>
+                                  {!row.isNewStudent && documentRowOptions.length > 0 ? (
+                                    <div className="flex flex-col gap-1">
+                                      <select
+                                        value={
+                                          typeof row.matchedRawRowIndex === 'number'
+                                            ? String(row.matchedRawRowIndex)
+                                            : ''
+                                        }
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          handleSelectDocumentRowForStudent(
+                                            row.studentId,
+                                            val === '' ? null : Number(val)
+                                          );
+                                        }}
+                                        className={`w-full text-[11px] px-2 py-1 rounded-lg border font-medium outline-hidden cursor-pointer ${
+                                          row.matchedFromRaw
+                                            ? isDarkMode
+                                              ? 'bg-slate-800 border-emerald-700/70 text-slate-100'
+                                              : 'bg-emerald-50/40 border-emerald-300 text-neutral-900'
+                                            : isDarkMode
+                                            ? 'bg-slate-800 border-amber-700/60 text-amber-300'
+                                            : 'bg-amber-50/50 border-amber-300 text-amber-900'
+                                        }`}
+                                        title="Elegí qué nombre del documento corresponde a este alumno"
+                                      >
+                                        <option value="">
+                                          — Sin vincular (elegir nombre del documento...) —
+                                        </option>
+                                        {documentRowOptions.map((opt) => (
+                                          <option key={opt.rawRowIndex} value={String(opt.rawRowIndex)}>
+                                            {opt.rawName}
+                                            {opt.summaryPreview ? ` (${opt.summaryPreview})` : ''}
+                                          </option>
+                                        ))}
+                                      </select>
                                       <span
                                         className={`text-[10px] font-semibold ${
-                                          row.matchScore >= 0.9
+                                          manualRowMatches[row.studentId] !== undefined &&
+                                          manualRowMatches[row.studentId] !== null
+                                            ? 'text-blue-600 dark:text-blue-400'
+                                            : row.matchScore >= 0.9
                                             ? 'text-emerald-600 dark:text-emerald-400'
-                                            : row.isNewStudent
-                                            ? 'text-indigo-600 dark:text-indigo-400'
-                                            : 'text-blue-600 dark:text-blue-400'
+                                            : row.matchedFromRaw
+                                            ? 'text-amber-600 dark:text-amber-400'
+                                            : 'text-neutral-400'
                                         }`}
                                       >
-                                        {row.matchScore >= 0.9
+                                        {manualRowMatches[row.studentId] !== undefined &&
+                                        manualRowMatches[row.studentId] !== null
+                                          ? '✓ Nombre elegido manualmente'
+                                          : row.matchScore >= 0.9
                                           ? '✓ Coincidencia exacta'
-                                          : row.isNewStudent
-                                          ? 'Alumno nuevo detectado'
-                                          : '~ Coincidencia aproximada'}
+                                          : row.matchedFromRaw
+                                          ? '~ Coincidencia aproximada (revisar)'
+                                          : 'Sin fila asignada — podés elegirla arriba'}
+                                      </span>
+                                    </div>
+                                  ) : row.matchedFromRaw ? (
+                                    <div className="flex flex-col">
+                                      <span className="font-mono text-[11px]">{row.matchedFromRaw}</span>
+                                      <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                                        Fila extra en documento (podés vincularla a la izquierda)
                                       </span>
                                     </div>
                                   ) : (
@@ -2744,15 +3236,52 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       isDarkMode ? 'bg-slate-850 border-slate-750' : 'bg-white border-neutral-200 shadow-xs'
                     }`}
                   >
-                    <div className="flex items-center justify-between gap-3 border-b pb-3 border-neutral-200 dark:border-slate-800">
-                      <div>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 border-neutral-200 dark:border-slate-800">
+                      <div className="space-y-1.5 flex-1">
                         <span className="text-[11px] font-bold uppercase text-blue-600 dark:text-blue-400">
                           Alumno {selectedStudentIndex + 1} de {displayedRows.length}
                         </span>
                         <h4 className="text-base font-bold">{currentInspectedRow.studentName}</h4>
-                        <p className="text-xs text-neutral-500 dark:text-slate-400">
-                          Detectado en documento como: "{currentInspectedRow.matchedFromRaw || 'No encontrado'}"
-                        </p>
+                        {!currentInspectedRow.isNewStudent && documentRowOptions.length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <span className="text-xs text-neutral-500 dark:text-slate-400 font-semibold">
+                              Nombre en el documento:
+                            </span>
+                            <select
+                              value={
+                                typeof currentInspectedRow.matchedRawRowIndex === 'number'
+                                  ? String(currentInspectedRow.matchedRawRowIndex)
+                                  : ''
+                              }
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                handleSelectDocumentRowForStudent(
+                                  currentInspectedRow.studentId,
+                                  val === '' ? null : Number(val)
+                                );
+                              }}
+                              className={`text-xs px-2.5 py-1 rounded-lg border font-semibold outline-hidden cursor-pointer ${
+                                isDarkMode
+                                  ? 'bg-slate-800 border-slate-700 text-slate-100'
+                                  : 'bg-neutral-50 border-neutral-300 text-neutral-900'
+                              }`}
+                            >
+                              <option value="">
+                                — Sin vincular (elegir nombre del documento...) —
+                              </option>
+                              {documentRowOptions.map((opt) => (
+                                <option key={opt.rawRowIndex} value={String(opt.rawRowIndex)}>
+                                  {opt.rawName}
+                                  {opt.summaryPreview ? ` (${opt.summaryPreview})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-neutral-500 dark:text-slate-400">
+                            Detectado en documento como: "{currentInspectedRow.matchedFromRaw || 'No encontrado'}"
+                          </p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <button

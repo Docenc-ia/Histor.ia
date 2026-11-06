@@ -787,12 +787,23 @@ export const driveService = {
   },
 
   /**
-   * List existing Google Spreadsheets from the teacher's Google Drive so they can import any existing sheet
+   * List existing Google Spreadsheets (and optionally Google Docs) from the teacher's Google Drive
+   * so they can import grades or disposition from any existing sheet or document.
    */
   async listUserSpreadsheets(
     searchQuery?: string,
-    providedToken?: string
-  ): Promise<Array<{ id: string; name: string; modifiedTime?: string; url: string }>> {
+    providedToken?: string,
+    includeDocs: boolean = true
+  ): Promise<
+    Array<{
+      id: string;
+      name: string;
+      modifiedTime?: string;
+      url: string;
+      mimeType?: string;
+      docType?: 'sheet' | 'doc';
+    }>
+  > {
     let token = providedToken || getCachedAccessToken();
     if (!token) {
       try {
@@ -802,29 +813,113 @@ export const driveService = {
     if (!token) return [];
 
     try {
-      let query = "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false";
+      const mimeFilter = includeDocs
+        ? "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.google-apps.document')"
+        : "mimeType = 'application/vnd.google-apps.spreadsheet'";
+      let query = `${mimeFilter} and trashed = false`;
       if (searchQuery && searchQuery.trim()) {
         const safeQ = searchQuery.trim().replace(/'/g, "\\'");
         query += ` and name contains '${safeQ}'`;
       }
       const res = await fetchGoogleApiWithRetry(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=25`,
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=30`,
         {},
         token
       );
       if (res.ok) {
         const data = await res.json();
-        return (data.files || []).map((f: any) => ({
-          id: f.id,
-          name: f.name,
-          modifiedTime: f.modifiedTime,
-          url: f.webViewLink || `https://docs.google.com/spreadsheets/d/${f.id}/edit`,
-        }));
+        return (data.files || []).map((f: any) => {
+          const isDoc = String(f.mimeType || '').includes('document');
+          return {
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            docType: isDoc ? 'doc' : 'sheet',
+            modifiedTime: f.modifiedTime,
+            url:
+              f.webViewLink ||
+              (isDoc
+                ? `https://docs.google.com/document/d/${f.id}/edit`
+                : `https://docs.google.com/spreadsheets/d/${f.id}/edit`),
+          };
+        });
       }
     } catch (err) {
-      console.warn('Error listing spreadsheets from Google Drive:', err);
+      console.warn('Error listing spreadsheets/documents from Google Drive:', err);
     }
     return [];
+  },
+
+  /**
+   * Export a Google Doc (by document ID) as HTML or plain text so its tables/lines can be parsed
+   * into rows of student names and disposition/grade scores.
+   */
+  async exportGoogleDocContent(
+    docId: string,
+    providedToken?: string
+  ): Promise<{ title: string; html?: string; text?: string } | null> {
+    const cleanId = docId.trim();
+    if (!cleanId) return null;
+
+    let token = providedToken || getCachedAccessToken();
+    if (!token) {
+      try {
+        token = await requestGoogleAccessToken();
+      } catch {}
+    }
+
+    let title = 'Documento de Google Docs';
+
+    if (token) {
+      try {
+        const metaRes = await fetchGoogleApiWithRetry(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}?fields=id,name,mimeType`,
+          {},
+          token
+        );
+        if (metaRes.ok) {
+          const meta = await metaRes.json();
+          if (meta.name) title = meta.name;
+        }
+
+        const htmlRes = await fetchGoogleApiWithRetry(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/html`,
+          {},
+          token
+        );
+        if (htmlRes.ok) {
+          const html = await htmlRes.text();
+          return { title, html };
+        }
+
+        const txtRes = await fetchGoogleApiWithRetry(
+          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/plain`,
+          {},
+          token
+        );
+        if (txtRes.ok) {
+          const text = await txtRes.text();
+          return { title, text };
+        }
+      } catch (err) {
+        console.warn('Error exporting Google Doc via Drive API:', err);
+      }
+    }
+
+    // Fallback for public/link-shared Google Docs
+    try {
+      const pubTxtRes = await fetch(
+        `https://docs.google.com/document/d/${encodeURIComponent(cleanId)}/export?format=txt`
+      );
+      if (pubTxtRes.ok) {
+        const text = await pubTxtRes.text();
+        if (text && !text.trim().startsWith('<!DOCTYPE html')) {
+          return { title, text };
+        }
+      }
+    } catch {}
+
+    return null;
   },
 
   /**

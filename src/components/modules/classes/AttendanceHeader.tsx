@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 import {
   Search,
   UserPlus,
@@ -6,12 +6,9 @@ import {
   Bell,
   Award,
   Bookmark,
-  FileSpreadsheet,
   Calendar,
   Smartphone,
   Upload,
-  ChevronDown,
-  FileDown,
 } from 'lucide-react';
 
 import { CourseAttendanceSummary } from '../../../utils/attendanceCalculations';
@@ -30,6 +27,7 @@ interface AttendanceHeaderProps {
   onOpenImportExcel?: () => void;
   onOpenImportSheets?: () => void;
   onOpenImportCsv?: () => void;
+  onOpenImportPaste?: () => void;
   attendanceTerm: '1c' | '2c' | 'annual';
   onSelectTerm: (term: '1c' | '2c' | 'annual') => void;
   attendanceSummary?: CourseAttendanceSummary;
@@ -51,7 +49,6 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   onOpenNotifConfigModal,
   onOpenImportExcel,
   onOpenImportSheets,
-  onOpenImportCsv,
   attendanceTerm,
   onSelectTerm,
   onOpenQuickRollCall,
@@ -59,19 +56,6 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   isDarkMode,
 }) => {
   const { combinedTabLabel, dispositionLabel, term1FullLabel, term2FullLabel } = useTerminologySettings();
-  const [isImportMenuOpen, setIsImportMenuOpen] = useState(false);
-  const importMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isImportMenuOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (importMenuRef.current && !importMenuRef.current.contains(e.target as Node)) {
-        setIsImportMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isImportMenuOpen]);
 
   return (
     <div className="space-y-3">
@@ -166,7 +150,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
             </button>
           </div>
 
-          {/* COLUMNA 3: Guardar en Drive arriba de Importar (desplegable con Excel, Sheets y CSV) */}
+          {/* COLUMNA 3: Guardar en Drive arriba de Importar */}
           <div className="flex flex-col gap-2 justify-center border-t lg:border-t-0 lg:border-l border-neutral-200 dark:border-slate-800 pt-2 lg:pt-0 lg:pl-3 sm:col-span-2 lg:col-span-1">
             {saveToDriveControl && (
               <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
@@ -174,134 +158,21 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               </div>
             )}
 
-            <div className="relative w-full" ref={importMenuRef}>
-              <button
-                type="button"
-                onClick={() => setIsImportMenuOpen((prev) => !prev)}
-                className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
-                title="Elegir desde qué formato importar datos (Excel, Google Sheets o CSV) detectando alumnos, notas, asistencia y disposición"
-              >
-                <Upload className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">Importar</span>
-                <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${isImportMenuOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {isImportMenuOpen && (
-                <div
-                  className={`absolute right-0 mt-2 w-72 sm:w-80 rounded-2xl border shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150 ${
-                    isDarkMode
-                      ? 'bg-slate-900 border-slate-700 text-slate-100'
-                      : 'bg-white border-neutral-200 text-neutral-900'
-                  }`}
-                >
-                  <div
-                    className={`px-3.5 py-2.5 border-b text-[11px] font-bold flex items-center justify-between ${
-                      isDarkMode
-                        ? 'bg-slate-800/80 border-slate-700 text-slate-300'
-                        : 'bg-neutral-50 border-neutral-200 text-neutral-700'
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <Upload className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>Elegí desde dónde importar</span>
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 text-[10px]">
-                      Detecta Alumnos y Notas
-                    </span>
-                  </div>
-
-                  <div className="p-2 space-y-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsImportMenuOpen(false);
-                        onOpenImportExcel?.();
-                      }}
-                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-emerald-500/50'
-                          : 'bg-white hover:bg-emerald-50/40 border-neutral-200 hover:border-emerald-300'
-                      }`}
-                    >
-                      <div className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 shrink-0 mt-0.5">
-                        <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold">Microsoft Excel</span>
-                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                            .xlsx / .xls
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
-                          Subir archivo Excel y detectar alumnos, notas, faltas y disposición.
-                        </p>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsImportMenuOpen(false);
-                        if (onOpenImportSheets) {
-                          onOpenImportSheets();
-                        } else {
-                          onOpenImportExcel?.();
-                        }
-                      }}
-                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-blue-500/50'
-                          : 'bg-white hover:bg-blue-50/40 border-neutral-200 hover:border-blue-300'
-                      }`}
-                    >
-                      <div className="p-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 shrink-0 mt-0.5">
-                        <FileSpreadsheet className="w-4 h-4 text-blue-500" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold">Google Sheets</span>
-                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-600 dark:text-blue-400">
-                            .gsheet
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
-                          Conectar o elegir una hoja de tu Google Drive y detectar alumnos y notas.
-                        </p>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsImportMenuOpen(false);
-                        onOpenImportCsv?.();
-                      }}
-                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-start gap-2.5 cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/80 hover:border-teal-500/50'
-                          : 'bg-white hover:bg-teal-50/40 border-neutral-200 hover:border-teal-300'
-                      }`}
-                    >
-                      <div className="p-1.5 rounded-lg bg-teal-500/10 border border-teal-500/20 shrink-0 mt-0.5">
-                        <FileDown className="w-4 h-4 text-teal-500" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs font-bold">Archivo CSV</span>
-                          <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded-full bg-teal-500/15 text-teal-600 dark:text-teal-400">
-                            .csv
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-neutral-500 dark:text-slate-400 leading-snug mt-0.5">
-                          Subir archivo CSV separado por comas o punto y coma y detectar alumnos y notas.
-                        </p>
-                      </div>
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenImportSheets) {
+                  onOpenImportSheets();
+                } else {
+                  onOpenImportExcel?.();
+                }
+              }}
+              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all cursor-pointer"
+              title={`Importar notas de ${dispositionLabel.toLowerCase()} o asistencia desde un link, Google Sheets, Google Docs, Word, Excel, CSV o texto pegado, eligiendo los nombres para verificar que esté todo bien`}
+            >
+              <Upload className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Importar</span>
+            </button>
           </div>
         </div>
       </div>

@@ -1540,9 +1540,26 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
 
                   {/* 2. Categoría Mayor */}
                   <div className="space-y-1">
-                    <label className="block text-[11px] font-bold text-neutral-600 dark:text-slate-300">
-                      Categoría Mayor:
-                    </label>
+                    <div className="flex items-center justify-between gap-1">
+                      <label className="block text-[11px] font-bold text-neutral-600 dark:text-slate-300">
+                        Categoría Mayor:
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleCategorySelectionChange(
+                            targetCategoryMode === 'new'
+                              ? activeCategories[0]?.id || '__NEW__'
+                              : '__NEW__'
+                          )
+                        }
+                        className="text-[10px] font-bold text-purple-600 dark:text-purple-400 hover:underline cursor-pointer"
+                      >
+                        {targetCategoryMode === 'new'
+                          ? 'Elegir existente'
+                          : '+ Nueva categoría mayor'}
+                      </button>
+                    </div>
                     <select
                       value={targetCategoryMode === 'new' ? '__NEW__' : selectedCategoryId}
                       onChange={(e) => handleCategorySelectionChange(e.target.value)}
@@ -1557,14 +1574,14 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           {cat.name}
                         </option>
                       ))}
-                      <option value="__NEW__">+ Crear nueva categoría...</option>
+                      <option value="__NEW__">+ Crear nueva categoría mayor...</option>
                     </select>
                     {targetCategoryMode === 'new' && (
                       <input
                         type="text"
                         value={newCategoryName}
                         onChange={(e) => setNewCategoryName(e.target.value)}
-                        placeholder="Nombre de la nueva categoría..."
+                        placeholder="Nombre de la nueva categoría mayor..."
                         className={`w-full mt-1.5 px-3 py-1.5 rounded-lg border text-xs ${
                           isDarkMode
                             ? 'bg-slate-900 border-slate-700 text-white'

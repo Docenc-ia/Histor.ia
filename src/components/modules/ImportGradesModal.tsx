@@ -2642,11 +2642,28 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
                       {colCfg.isIncluded && colCfg.kind === 'grade' && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-neutral-100 dark:border-slate-700/60 text-[11px]">
-                          {/* Categoría destino */}
+                          {/* Categoría Mayor destino */}
                           <div>
-                            <span className="block font-semibold text-neutral-500 dark:text-slate-400 mb-0.5">
-                              Categoría en la App:
-                            </span>
+                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                              <span className="font-semibold text-neutral-500 dark:text-slate-400">
+                                Categoría Mayor:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  handleUpdateColumnConfig(colCfg.colKey, {
+                                    targetCategoryMode:
+                                      colCfg.targetCategoryMode === 'new' ? 'existing' : 'new',
+                                    newCategoryName: colCfg.newCategoryName || colCfg.colKey,
+                                  })
+                                }
+                                className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                              >
+                                {colCfg.targetCategoryMode === 'new'
+                                  ? 'Elegir existente'
+                                  : '+ Nueva categoría mayor'}
+                              </button>
+                            </div>
                             <select
                               value={
                                 colCfg.targetCategoryMode === 'new'
@@ -2675,7 +2692,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                   {c.name}
                                 </option>
                               ))}
-                              <option value="__NEW_CAT__">➕ + Crear Nueva Categoría...</option>
+                              <option value="__NEW_CAT__">➕ + Crear Nueva Categoría Mayor...</option>
                             </select>
 
                             {colCfg.targetCategoryMode === 'new' && (
@@ -2687,7 +2704,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                     newCategoryName: e.target.value,
                                   })
                                 }
-                                placeholder="Nombre de la nueva categoría"
+                                placeholder="Nombre de la nueva Categoría Mayor..."
                                 className={`mt-1 w-full px-2 py-1 rounded-lg border font-semibold ${
                                   isDarkMode
                                     ? 'bg-slate-900 border-emerald-700 text-emerald-300'

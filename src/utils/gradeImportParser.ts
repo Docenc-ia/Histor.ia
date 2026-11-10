@@ -212,7 +212,8 @@ export function autoDetectColumnsConfiguration(
   emailCol: string,
   cats: GradeCategory[],
   secondaryNameCol = '',
-  importContext: 'grades' | 'attendance' = 'grades'
+  importContext: 'grades' | 'attendance' = 'grades',
+  attendanceDefaultKind: 'disposition' | 'absences' | 'both' = 'disposition'
 ): DetectedColumnConfig[] {
   const configs: DetectedColumnConfig[] = [];
   const defaultCat = cats[0] || {
@@ -300,20 +301,41 @@ export function autoDetectColumnsConfiguration(
       return;
     }
 
-    // If we are in attendance/disposition import context and there is only 1 data column
-    // that doesn't look like an evaluation/grade column, map it to Disposition; otherwise detect grades just like in Calificaciones.
+    // If we are in attendance/disposition import context:
+    // - If there is 1 data column, map it to the selected attendanceDefaultKind ('absences' or 'disposition')
+    // - If attendanceDefaultKind === 'both' and there are 2 generic data columns, map col 1 to 'absences' and col 2 to 'disposition'
     const nonIdentityCols = cols.filter(
       (c) => c !== nameCol && c !== secondaryNameCol && c !== emailCol
     );
-    const looksLikeGradeCol =
-      /nota|calific|tp|trabajo|practico|parcial|examen|eval|prueba|trimestre|cuatrimestre| Oral|escrito|entrega/i.test(
+    const nonIdentityIdx = nonIdentityCols.indexOf(col);
+    const looksLikeExplicitEvalCol =
+      /calific|tp|trabajo|practico|parcial|examen|eval|prueba|trimestre|cuatrimestre|oral|escrito|entrega/i.test(
         lower
       );
-    if (importContext === 'attendance' && nonIdentityCols.length === 1 && !looksLikeGradeCol) {
+    if (importContext === 'attendance' && nonIdentityCols.length === 1 && !looksLikeExplicitEvalCol) {
       configs.push({
         colKey: col,
         isIncluded: true,
-        kind: 'disposition',
+        kind: attendanceDefaultKind === 'absences' ? 'absences' : 'disposition',
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: clean,
+      });
+      return;
+    }
+    if (
+      importContext === 'attendance' &&
+      attendanceDefaultKind === 'both' &&
+      nonIdentityCols.length === 2 &&
+      !looksLikeExplicitEvalCol
+    ) {
+      configs.push({
+        colKey: col,
+        isIncluded: true,
+        kind: nonIdentityIdx === 0 ? 'absences' : 'disposition',
         targetCategoryMode: 'existing',
         targetCategoryId: defaultCat.id,
         newCategoryName: '',

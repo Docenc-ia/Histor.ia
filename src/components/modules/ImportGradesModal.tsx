@@ -76,8 +76,11 @@ export type QuickPastePreset =
   | 'auto'
   | 'name_and_disp'
   | 'last_first_disp'
+  | 'name_and_abs'
+  | 'last_first_abs'
   | 'name_abs_disp'
-  | 'only_disp_ordered';
+  | 'only_disp_ordered'
+  | 'only_abs_ordered';
 
 export interface DetectedColumnConfig {
   colKey: string; // Raw column header in Excel/Sheets
@@ -199,13 +202,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 }) => {
   const [activeStep, setActiveStep] = useState<'upload' | 'verify' | 'history'>('upload');
   const [sourceType, setSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>(initialSourceType);
-
-  useEffect(() => {
-    if (isOpen) {
-      setSourceType(initialSourceType);
-      setActiveStep('upload');
-    }
-  }, [isOpen, initialSourceType]);
+  const [attendanceTargetMode, setAttendanceTargetMode] = useState<'disposition' | 'absences' | 'both'>('disposition');
 
   const [selectedTerm, setSelectedTerm] = useState<'1c' | '2c'>(initialTerm);
   const activeCategories = selectedTerm === '1c' ? categories1c : categories2c;
@@ -252,9 +249,34 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setQuickPastePreset(importContext === 'attendance' ? 'name_and_disp' : 'auto');
+      setSourceType(initialSourceType);
+      setActiveStep('upload');
+      let defaultTarget: 'disposition' | 'absences' | 'both' = 'disposition';
+      try {
+        const storedTarget = sessionStorage.getItem('docencia_import_attendance_target_mode');
+        if (
+          storedTarget === 'absences' ||
+          storedTarget === 'disposition' ||
+          storedTarget === 'both'
+        ) {
+          defaultTarget = storedTarget;
+          sessionStorage.removeItem('docencia_import_attendance_target_mode');
+        }
+      } catch {}
+      setAttendanceTargetMode(defaultTarget);
+      if (importContext === 'attendance') {
+        setQuickPastePreset(
+          defaultTarget === 'absences'
+            ? 'name_and_abs'
+            : defaultTarget === 'both'
+            ? 'name_abs_disp'
+            : 'name_and_disp'
+        );
+      } else {
+        setQuickPastePreset('auto');
+      }
     }
-  }, [isOpen, importContext]);
+  }, [isOpen, initialSourceType, importContext]);
 
   // Multi-column auto-detection states
   const [detectedColumns, setDetectedColumns] = useState<DetectedColumnConfig[]>([]);
@@ -323,6 +345,67 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
+   * Switch between importing/updating Asistencia (Cantidad de Faltas), Disposición (1-10), or Ambos
+   */
+  const handleSwitchAttendanceTargetMode = (nextMode: 'disposition' | 'absences' | 'both') => {
+    setAttendanceTargetMode(nextMode);
+    if (nextMode === 'absences') {
+      setQuickPastePreset((prev) =>
+        prev === 'last_first_disp'
+          ? 'last_first_abs'
+          : prev === 'only_disp_ordered'
+          ? 'only_abs_ordered'
+          : 'name_and_abs'
+      );
+    } else if (nextMode === 'disposition') {
+      setQuickPastePreset((prev) =>
+        prev === 'last_first_abs'
+          ? 'last_first_disp'
+          : prev === 'only_abs_ordered'
+          ? 'only_disp_ordered'
+          : 'name_and_disp'
+      );
+    } else {
+      setQuickPastePreset('name_abs_disp');
+    }
+
+    if (rawTableRows.length > 0 && availableColumns.length > 0) {
+      const reDetected = autoDetectColumnsConfiguration(
+        availableColumns,
+        selectedNameColumn,
+        selectedEmailColumn,
+        activeCategories,
+        selectedSecondaryNameColumn,
+        importContext,
+        nextMode
+      );
+      let finalCols = reDetected;
+      // If user explicitly chose 'absences' or 'disposition' and there is a single active column, force its kind so switching in Step 2 is immediate
+      const activeNonIgnored = finalCols.filter((c) => c.isIncluded && c.kind !== 'ignore');
+      if (nextMode === 'absences' && activeNonIgnored.length === 1) {
+        finalCols = finalCols.map((c) =>
+          c.colKey === activeNonIgnored[0].colKey ? { ...c, kind: 'absences', isIncluded: true } : c
+        );
+      } else if (nextMode === 'disposition' && activeNonIgnored.length === 1) {
+        finalCols = finalCols.map((c) =>
+          c.colKey === activeNonIgnored[0].colKey
+            ? { ...c, kind: 'disposition', isIncluded: true }
+            : c
+        );
+      }
+      setDetectedColumns(finalCols);
+      buildMultiVerificationRows(
+        rawTableRows,
+        selectedNameColumn,
+        selectedEmailColumn,
+        finalCols,
+        selectedSecondaryNameColumn,
+        manualRowMatches
+      );
+    }
+  };
+
+  /**
    * Process any loaded table (from Excel, Google Sheets, Google Docs, Word, CSV, or Paste)
    */
   const processLoadedTableData = (
@@ -364,7 +447,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         emailCol,
         activeCategories,
         secondaryNameCol,
-        importContext
+        importContext,
+        attendanceTargetMode
       );
 
     setDetectedColumns(detected);
@@ -1026,6 +1110,100 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       return;
     }
 
+    // Preset 1B: 1 Single Column of Absences numbers in alphabetical roster order
+    if (quickPastePreset === 'only_abs_ordered') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const colHeader = 'Faltas';
+      const final2D = [[colHeader], ...dataRows2D.map((r) => [r[r.length - 1] ?? r[0] ?? ''])];
+      setRaw2DGrid(final2D);
+      setSelectedHeaderRowIndex(0);
+      const rows = dataRows2D.map((r) => ({
+        [colHeader]: r[r.length - 1] ?? r[0] ?? '',
+      }));
+      const colCfg: DetectedColumnConfig = {
+        colKey: colHeader,
+        isIncluded: true,
+        kind: 'absences',
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: colHeader,
+      };
+      processLoadedTableData(rows, [colHeader], 'Pegado Rápido (Faltas por Orden de Lista)', true, {
+        nameCol: '__ORDER__',
+        secondaryNameCol: '',
+        emailCol: '',
+        colConfigs: [colCfg],
+      });
+      return;
+    }
+
+    // Preset 2B: 2 Columns -> [Alumno] + [Faltas]
+    if (quickPastePreset === 'name_and_abs') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const headers = ['Apellido y Nombre', 'Faltas'];
+      const normalized2D = [
+        headers,
+        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '']),
+      ];
+      setRaw2DGrid(normalized2D);
+      setSelectedHeaderRowIndex(0);
+      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
+      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Cantidad de Faltas)', true, {
+        nameCol: 'Apellido y Nombre',
+        secondaryNameCol: '',
+        emailCol: '',
+        colConfigs: [
+          {
+            colKey: 'Faltas',
+            isIncluded: true,
+            kind: 'absences',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Faltas',
+          },
+        ],
+      });
+      return;
+    }
+
+    // Preset 3B: 3 Columns -> [Apellido] + [Nombre] + [Faltas]
+    if (quickPastePreset === 'last_first_abs') {
+      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
+      const headers = ['Apellido', 'Nombre', 'Faltas'];
+      const normalized2D = [
+        headers,
+        ...dataRows2D.map((r) => [r[0] || '', r[1] || '', r[2] ?? '']),
+      ];
+      setRaw2DGrid(normalized2D);
+      setSelectedHeaderRowIndex(0);
+      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
+      processLoadedTableData(rows, headers, 'Pegado Rápido (Apellido + Nombre + Faltas)', true, {
+        nameCol: 'Apellido',
+        secondaryNameCol: 'Nombre',
+        emailCol: '',
+        colConfigs: [
+          {
+            colKey: 'Faltas',
+            isIncluded: true,
+            kind: 'absences',
+            targetCategoryMode: 'existing',
+            targetCategoryId: defaultCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: 'Faltas',
+          },
+        ],
+      });
+      return;
+    }
+
     // Preset 4: 3 Columns -> [Alumno] + [Ausencias] + [Disposición]
     if (quickPastePreset === 'name_abs_disp') {
       const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
@@ -1070,14 +1248,21 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     }
 
     // Automatic mode
-    const defaultColLabel = importContext === 'attendance' ? 'Disposición' : 'Nota';
+    const defaultColLabel =
+      importContext === 'attendance'
+        ? attendanceTargetMode === 'absences'
+          ? 'Faltas'
+          : 'Disposición'
+        : 'Nota';
     const final2D = hasHeader
       ? raw2D
       : [
           [
             'Apellido y Nombre',
             ...raw2D[0].slice(1).map((_, idx) =>
-              idx === 0 && importContext === 'attendance' ? 'Disposición' : `${defaultColLabel} ${idx + 1}`
+              idx === 0 && importContext === 'attendance'
+                ? defaultColLabel
+                : `${defaultColLabel} ${idx + 1}`
             ),
           ],
           ...raw2D,
@@ -1663,6 +1848,61 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
           )}
         </div>
 
+        {/* Selector de qué importar en Asistencia y Disposición (Faltas, Disposición o Ambos) */}
+        {importContext === 'attendance' && activeStep !== 'history' && (
+          <div
+            className={`px-5 py-2.5 border-b flex flex-wrap items-center justify-between gap-2.5 shrink-0 ${
+              isDarkMode ? 'bg-slate-850/90 border-slate-800' : 'bg-amber-50/50 border-amber-200/70'
+            }`}
+          >
+            <div className="flex items-center gap-2 text-xs font-bold text-neutral-700 dark:text-slate-200">
+              <Calendar className="w-4 h-4 text-amber-500 shrink-0" />
+              <span>¿Qué querés importar o actualizar?</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => handleSwitchAttendanceTargetMode('absences')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                  attendanceTargetMode === 'absences'
+                    ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
+                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-amber-50'
+                }`}
+              >
+                <span>📅 Importar / Actualizar Asistencia (Cantidad de Faltas)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchAttendanceTargetMode('disposition')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                  attendanceTargetMode === 'disposition'
+                    ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
+                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-purple-50'
+                }`}
+              >
+                <span>⭐ Importar / Actualizar Disposición (1 a 10)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchAttendanceTargetMode('both')}
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                  attendanceTargetMode === 'both'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
+                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-emerald-50'
+                }`}
+              >
+                <span>📅 + ⭐ Ambos (Faltas y Disposición)</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ========================================================================= */}
         {/* PASO 1: SELECCIONAR DOCUMENTO, LINK O TEXTO PEGADO                        */}
         {/* ========================================================================= */}
@@ -2057,10 +2297,61 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                     <button
                       type="button"
-                      onClick={() => setQuickPastePreset('name_and_disp')}
+                      onClick={() => {
+                        setAttendanceTargetMode('absences');
+                        setQuickPastePreset('name_and_abs');
+                      }}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'name_and_abs'
+                          ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">📅 2 Columnas: Alumno + Cantidad de Faltas</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'name_and_abs' ? 'text-amber-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Ej: García, Juan [Tab] 3 (actualiza total de inasistencias)
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttendanceTargetMode('absences');
+                        setQuickPastePreset('last_first_abs');
+                      }}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'last_first_abs'
+                          ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">👤+👤+📅 3 Cols: Apellido + Nombre + Faltas</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'last_first_abs' ? 'text-amber-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Une Apellido y Nombre e importa la cantidad de faltas
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttendanceTargetMode('disposition');
+                        setQuickPastePreset('name_and_disp');
+                      }}
                       className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
                         quickPastePreset === 'name_and_disp'
                           ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
@@ -2081,7 +2372,10 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setQuickPastePreset('last_first_disp')}
+                      onClick={() => {
+                        setAttendanceTargetMode('disposition');
+                        setQuickPastePreset('last_first_disp');
+                      }}
                       className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
                         quickPastePreset === 'last_first_disp'
                           ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
@@ -2102,7 +2396,10 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setQuickPastePreset('name_abs_disp')}
+                      onClick={() => {
+                        setAttendanceTargetMode('both');
+                        setQuickPastePreset('name_abs_disp');
+                      }}
                       className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
                         quickPastePreset === 'name_abs_disp'
                           ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
@@ -2123,7 +2420,34 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
                     <button
                       type="button"
-                      onClick={() => setQuickPastePreset('only_disp_ordered')}
+                      onClick={() => {
+                        setAttendanceTargetMode('absences');
+                        setQuickPastePreset('only_abs_ordered');
+                      }}
+                      className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                        quickPastePreset === 'only_abs_ordered'
+                          ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                          : isDarkMode
+                          ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                      }`}
+                    >
+                      <div className="font-bold">🔢📅 1 Sola Columna de Faltas (Orden de lista)</div>
+                      <div
+                        className={`text-[10px] mt-0.5 ${
+                          quickPastePreset === 'only_abs_ordered' ? 'text-amber-100' : 'text-neutral-400'
+                        }`}
+                      >
+                        Pegá solo la columna de cantidad de faltas en orden alfabético
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAttendanceTargetMode('disposition');
+                        setQuickPastePreset('only_disp_ordered');
+                      }}
                       className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
                         quickPastePreset === 'only_disp_ordered'
                           ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
@@ -2132,13 +2456,13 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
                       }`}
                     >
-                      <div className="font-bold">🔢 1 Sola Columna (En orden de lista)</div>
+                      <div className="font-bold">🔢⭐ 1 Sola Columna de Disp. (Orden de lista)</div>
                       <div
                         className={`text-[10px] mt-0.5 ${
                           quickPastePreset === 'only_disp_ordered' ? 'text-indigo-100' : 'text-neutral-400'
                         }`}
                       >
-                        Pegá solo la columna de números de Disposición en orden alfabético
+                        Pegá solo la columna de notas de Disposición en orden alfabético
                       </div>
                     </button>
 
@@ -2167,14 +2491,20 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
                 <div>
                   <label className="block text-xs font-semibold mb-1.5 text-neutral-700 dark:text-slate-300">
-                    Seleccioná las celdas en tu Google Sheet o Excel, copialas (Ctrl+C) y pegalas aquí (Ctrl+V). Acepta decimales con coma (8,5), puntos o escala conceptual (MB, B, R):
+                    Seleccioná las celdas en tu Google Sheet o Excel, copialas (Ctrl+C) y pegalas aquí (Ctrl+V). Acepta números de faltas, decimales con coma (8,5), puntos o escala conceptual (MB, B, R):
                   </label>
                   <textarea
                     rows={8}
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
                     placeholder={
-                      quickPastePreset === 'name_and_disp'
+                      quickPastePreset === 'name_and_abs'
+                        ? `Ejemplo de Cantidad de Faltas (con o sin fila de títulos):\nGarcía, Ana\t2\nLópez, Juan\t0\nMartínez, Sofía\t4`
+                        : quickPastePreset === 'last_first_abs'
+                        ? `Ejemplo con Apellido y Nombre separados + Cantidad de Faltas:\nGarcía\tAna\t2\nLópez\tJuan\t0`
+                        : quickPastePreset === 'only_abs_ordered'
+                        ? `Pegá directamente la columna de cantidad de faltas en el orden alfabético del curso:\n2\n0\n4\n1`
+                        : quickPastePreset === 'name_and_disp'
                         ? `Ejemplo (con o sin fila de títulos):\nGarcía, Ana\t9,5\nLópez, Juan\t8\nMartínez, Sofía\t10`
                         : quickPastePreset === 'last_first_disp'
                         ? `Ejemplo con Apellido y Nombre separados:\nGarcía\tAna\t9,5\nLópez\tJuan\t8`
@@ -2270,7 +2600,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           selectedEmailColumn,
                           activeCategories,
                           selectedSecondaryNameColumn,
-                          importContext
+                          importContext,
+                          attendanceTargetMode
                         );
                         setDetectedColumns(nextDetected);
                         buildMultiVerificationRows(
@@ -2311,7 +2642,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             selectedEmailColumn,
                             activeCategories,
                             nextSec,
-                            importContext
+                            importContext,
+                            attendanceTargetMode
                           );
                           setDetectedColumns(nextDetected);
                           buildMultiVerificationRows(
@@ -2601,7 +2933,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                 kind:
                                   checked && colCfg.kind === 'ignore'
                                     ? importContext === 'attendance'
-                                      ? 'disposition'
+                                      ? attendanceTargetMode === 'absences'
+                                        ? 'absences'
+                                        : 'disposition'
                                       : 'grade'
                                     : colCfg.kind,
                               });
@@ -2628,17 +2962,81 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                               ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
                               : colCfg.kind === 'ignore'
                               ? 'bg-neutral-100 dark:bg-slate-800 text-neutral-500 border-neutral-300 dark:border-slate-700'
+                              : colCfg.kind === 'absences' || colCfg.kind === 'lates'
+                              ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
                               : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
                           }`}
                         >
+                          <option value="absences">📅 Total Ausencias / Cantidad de Faltas</option>
+                          <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
                           <option value="disposition">⭐ Nota de Disposición (1-10)</option>
                           <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
-                          <option value="absences">📅 Total Ausencias / Faltas</option>
-                          <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
                           <option value="grade">📊 Nota / Calificación</option>
                           <option value="ignore">🚫 Ignorar columna</option>
                         </select>
                       </div>
+
+                      {importContext === 'attendance' && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-neutral-100 dark:border-slate-700/60">
+                          <span className="text-[10px] font-semibold text-neutral-500 dark:text-slate-400 mr-1">
+                            Asignar como:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateColumnConfig(colCfg.colKey, {
+                                kind: 'absences',
+                                isIncluded: true,
+                              })
+                            }
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                              colCfg.isIncluded && colCfg.kind === 'absences'
+                                ? 'bg-amber-600 text-white border-amber-600'
+                                : isDarkMode
+                                ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-amber-50'
+                            }`}
+                          >
+                            📅 Cantidad de Faltas
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateColumnConfig(colCfg.colKey, {
+                                kind: 'disposition',
+                                isIncluded: true,
+                              })
+                            }
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                              colCfg.isIncluded && colCfg.kind === 'disposition'
+                                ? 'bg-purple-600 text-white border-purple-600'
+                                : isDarkMode
+                                ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-purple-50'
+                            }`}
+                          >
+                            ⭐ Nota de Disposición
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateColumnConfig(colCfg.colKey, {
+                                kind: 'lates',
+                                isIncluded: true,
+                              })
+                            }
+                            className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                              colCfg.isIncluded && colCfg.kind === 'lates'
+                                ? 'bg-amber-700 text-white border-amber-700'
+                                : isDarkMode
+                                ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-amber-50'
+                            }`}
+                          >
+                            ⏰ Tardanzas
+                          </button>
+                        </div>
+                      )}
 
                       {colCfg.isIncluded && colCfg.kind === 'grade' && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-neutral-100 dark:border-slate-700/60 text-[11px]">
@@ -2817,7 +3215,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             selectedEmailColumn,
                             activeCategories,
                             selectedSecondaryNameColumn,
-                            importContext
+                            importContext,
+                            attendanceTargetMode
                           );
                           setDetectedColumns(nextDetected);
                           buildMultiVerificationRows(
@@ -2843,6 +3242,40 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                         ))}
                       </select>
                     </div>
+
+                    {availableColumns.length > 1 && (
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
+                          Columna Faltas:
+                        </span>
+                        <select
+                          value={
+                            detectedColumns.find(
+                              (c) => c.isIncluded && c.kind === 'absences'
+                            )?.colKey || ''
+                          }
+                          onChange={(e) => {
+                            const chosenAbsCol = e.target.value;
+                            if (!chosenAbsCol) return;
+                            handleVisualColumnRoleChange(chosenAbsCol, 'absences');
+                          }}
+                          className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-800 border-slate-700 text-amber-300'
+                              : 'bg-white border-neutral-300 text-amber-800'
+                          }`}
+                        >
+                          <option value="">-- Elegir columna de Faltas --</option>
+                          {availableColumns
+                            .filter((col) => col !== selectedNameColumn)
+                            .map((col) => (
+                              <option key={col} value={col}>
+                                📅 {col}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
 
                     {availableColumns.length > 1 && (
                       <div className="flex items-center gap-1.5 text-xs">

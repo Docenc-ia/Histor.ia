@@ -47,6 +47,7 @@ import {
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../utils/attendanceCalculations';
 import {
   CATEGORY_COLORS,
+  calculateCategoryAverageForStudent,
   calculateFinalScoreForStudent,
   computeTermScoresMap,
   getScoreColorClass as computeScoreColorClass,
@@ -88,6 +89,7 @@ interface GradebookStudentRowProps {
   isDarkMode: boolean;
   overallCalculation: 'average_of_categories' | 'manual_final';
   finalScore: string;
+  autoAverageScore: string;
   preliminaryValuation?: PreliminaryValuationRecord | null;
   onScoreChange: (studentId: string, colKey: string, val: string) => void;
   onCellBlur: () => void;
@@ -105,6 +107,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
     isDarkMode,
     overallCalculation,
     finalScore,
+    autoAverageScore,
     preliminaryValuation,
     onScoreChange,
     onCellBlur,
@@ -112,6 +115,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
     onOpenPreliminaryModal,
     onDeleteStudent,
   }) => {
+    const [isFinalFocused, setIsFinalFocused] = useState(false);
     let runningColIdx = 0;
     const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
 
@@ -292,31 +296,72 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
             isDarkMode ? 'bg-blue-950/20 border-slate-800' : 'bg-blue-50/40 border-neutral-200'
           }`}
         >
-          {overallCalculation === 'manual_final' ? (
-            (() => {
-              const finalColIdx = runningColIdx++;
+          {(() => {
+            const finalColIdx = runningColIdx++;
+            if (overallCalculation === 'manual_final') {
+              const val = studentGrades['__final__'] || '';
               return (
                 <input
                   type="text"
                   data-grade-row={idx}
                   data-grade-col={finalColIdx}
-                  value={studentGrades['__final__'] || ''}
+                  value={val}
                   onChange={(e) => onScoreChange(student.id, '__final__', e.target.value)}
                   onBlur={onCellBlur}
                   onKeyDown={(e) => onCellKeyDown(e, idx, finalColIdx)}
                   placeholder="-"
                   className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
                     isDarkMode
-                      ? 'bg-purple-950/40 border-purple-800/80 text-purple-300 focus:border-purple-500'
-                      : 'bg-purple-50 border-purple-200 text-purple-900 focus:border-purple-400'
-                  }`}
+                      ? 'bg-purple-950/40 border-purple-800/80 focus:border-purple-500'
+                      : 'bg-purple-50 border-purple-200 focus:border-purple-400'
+                  } ${getScoreColorClass(val)}`}
                   title="Nota final asignada a criterio del docente"
                 />
               );
-            })()
-          ) : (
-            <span className={getScoreColorClass(finalScore)}>{finalScore || '-'}</span>
-          )}
+            }
+
+            const overrideVal = studentGrades['__final_avg_override__'];
+            const hasManualOverride =
+              overrideVal !== undefined && String(overrideVal).trim() !== '';
+            const displayedVal = isFinalFocused
+              ? overrideVal !== undefined
+                ? overrideVal
+                : autoAverageScore
+              : hasManualOverride
+              ? overrideVal
+              : autoAverageScore;
+
+            return (
+              <input
+                type="text"
+                data-grade-row={idx}
+                data-grade-col={finalColIdx}
+                value={displayedVal}
+                onFocus={() => setIsFinalFocused(true)}
+                onChange={(e) => onScoreChange(student.id, '__final_avg_override__', e.target.value)}
+                onBlur={() => {
+                  setIsFinalFocused(false);
+                  onCellBlur();
+                }}
+                onKeyDown={(e) => onCellKeyDown(e, idx, finalColIdx)}
+                placeholder={autoAverageScore || '-'}
+                className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
+                  hasManualOverride && overrideVal !== autoAverageScore
+                    ? isDarkMode
+                      ? 'bg-purple-950/40 border-purple-700 focus:border-purple-500'
+                      : 'bg-purple-50 border-purple-300 focus:border-purple-500'
+                    : isDarkMode
+                    ? 'bg-blue-950/40 border-blue-800/80 focus:border-blue-500'
+                    : 'bg-blue-50/70 border-blue-200 focus:border-blue-400'
+                } ${getScoreColorClass(displayedVal || finalScore)}`}
+                title={
+                  hasManualOverride && overrideVal !== autoAverageScore
+                    ? `Nota modificada manualmente (Promedio de referencia: ${autoAverageScore || '-'}). Borrá el valor para volver al promedio automático.`
+                    : `Promedio calculado: ${autoAverageScore || '-'}. Podés hacer clic y modificar la nota manualmente.`
+                }
+              />
+            );
+          })()}
         </td>
       </tr>
     );
@@ -492,12 +537,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const handleScoreChange = useCallback((studentId: string, colKey: string, val: string) => {
     const cleanVal = val.replace(',', '.');
     setDraftGradesMap((prev) => {
+      const nextStudentGrades: Record<string, string> = {
+        ...(prev[studentId] || {}),
+        [colKey]: cleanVal,
+      };
+      if (colKey === '__final_avg_override__' && cleanVal.trim() !== '') {
+        nextStudentGrades['__final__'] = cleanVal;
+      }
       const updated: StudentGradesMap = {
         ...prev,
-        [studentId]: {
-          ...(prev[studentId] || {}),
-          [colKey]: cleanVal,
-        },
+        [studentId]: nextStudentGrades,
       };
       pendingGradesSaveRef.current = updated;
       if (gradesSaveTimerRef.current) {
@@ -680,6 +729,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   const getFinalScore = (studentId: string): string => {
     return calculateFinalForTerm(is2c ? '2c' : '1c', studentId).scoreStr;
+  };
+
+  const getAutoAverageScore = (studentId: string): string => {
+    const termCats = is2c ? categories2c : categories1c;
+    return calculateCategoryAverageForStudent(termCats, draftGradesMap, studentId).scoreStr;
   };
 
   const score1cMap = useMemo(
@@ -1135,7 +1189,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 )}
               </div>
 
-              {/* Columna 2: Generar Valoración Preliminar, Nota Final y Guardar en Drive */}
+              {/* Columna 2: Generar Valoración Preliminar y Guardar en Drive */}
               <div className="flex flex-col gap-1.5 sm:border-l sm:pl-3 border-neutral-200 dark:border-slate-800">
                 <button
                   type="button"
@@ -1154,37 +1208,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     </span>
                   )}
                 </button>
-
-                {/* Criterio de Calificación Final Toggle */}
-                <div
-                  className={`w-full flex items-center justify-between gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs ${
-                    isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-50 border-neutral-200'
-                  }`}
-                >
-                  <span className={`font-semibold shrink-0 ${isDarkMode ? 'text-slate-300' : 'text-neutral-700'}`}>
-                    Nota Final:
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      saveOverallCalc(
-                        overallCalculation === 'manual_final'
-                          ? 'average_of_categories'
-                          : 'manual_final'
-                      )
-                    }
-                    className={`px-2 py-0.5 rounded-lg font-bold text-[11px] transition-all cursor-pointer truncate ${
-                      overallCalculation === 'manual_final'
-                        ? 'bg-purple-600 text-white shadow-2xs'
-                        : 'bg-blue-600 text-white shadow-2xs'
-                    }`}
-                    title="Cambiar criterio para la calificación final"
-                  >
-                    {overallCalculation === 'manual_final'
-                      ? '✍️ Manual'
-                      : '📊 Promedio'}
-                  </button>
-                </div>
 
                 <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
                   <DriveSaveFormatSelector
@@ -1474,15 +1497,44 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {/* Final Grade Col */}
                 <th
                   rowSpan={2}
-                  className={`p-3 font-extrabold text-center uppercase tracking-wider text-[11px] min-w-[120px] ${
+                  className={`p-2.5 font-extrabold text-center uppercase tracking-wider text-[11px] min-w-[140px] ${
                     isDarkMode
                       ? 'bg-blue-950/40 text-blue-300 border-l border-slate-800'
                       : 'bg-blue-50 text-blue-800 border-l border-neutral-200'
                   }`}
                 >
-                  <div>Calificación Final</div>
-                  <div className="text-[10px] font-normal opacity-80 mt-0.5">
-                    {overallCalculation === 'manual_final' ? '(Criterio docente)' : '(Promedio)'}
+                  <div className="flex flex-col items-center justify-center gap-1.5">
+                    <span>Calificación Final</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        saveOverallCalc(
+                          overallCalculation === 'manual_final'
+                            ? 'average_of_categories'
+                            : 'manual_final'
+                        )
+                      }
+                      className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] normal-case tracking-normal transition-all cursor-pointer shadow-2xs ${
+                        overallCalculation === 'manual_final'
+                          ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                          : 'bg-blue-600 hover:bg-blue-700 text-white'
+                      }`}
+                      title="Hacé clic para alternar entre Promedio (con posibilidad de editar la nota manualmente) y Criterio docente"
+                    >
+                      {overallCalculation === 'manual_final' ? (
+                        <>
+                          <span className="text-sm leading-none" role="img" aria-label="Docente">
+                            👨‍🏫
+                          </span>
+                          <span>Criterio docente</span>
+                        </>
+                      ) : (
+                        <>
+                          <Calculator className="w-3.5 h-3.5 shrink-0" />
+                          <span>Promedio</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 </th>
               </tr>
@@ -1579,6 +1631,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     isDarkMode={isDarkMode}
                     overallCalculation={overallCalculation}
                     finalScore={getFinalScore(student.id)}
+                    autoAverageScore={getAutoAverageScore(student.id)}
                     preliminaryValuation={activePreliminaryValuation}
                     onScoreChange={handleScoreChange}
                     onCellBlur={flushPendingGradesSave}

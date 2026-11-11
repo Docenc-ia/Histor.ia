@@ -77,6 +77,16 @@ export function computeTermScoreForStudent(
     return { scoreStr: val, num };
   }
 
+  if (
+    calcMode === 'average_of_categories' &&
+    stGrades['__final_avg_override__'] !== undefined &&
+    String(stGrades['__final_avg_override__']).trim() !== ''
+  ) {
+    const val = String(stGrades['__final_avg_override__']).trim();
+    const num = parseScoreNumber(val);
+    return { scoreStr: val, num };
+  }
+
   const numericScores: number[] = [];
   cats.forEach((cat) => {
     if (cat.subcategories.length === 0) {

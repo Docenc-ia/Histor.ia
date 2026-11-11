@@ -4,7 +4,7 @@
  */
 
 import { useState, useRef, useEffect } from 'react';
-import { Student } from '../types';
+import { Student, StudentDispositionData, StudentHistoryItem } from '../types';
 import { GradeCategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../types/grades';
 import type { PreliminaryValuationRecord } from '../components/modules/PreliminaryValuationModal';
 import { GradeHistoryEntry } from '../utils/excelExport';
@@ -20,13 +20,23 @@ import {
 } from '../services/firestoreSync';
 import { useWorkspaceAuth } from '../context/WorkspaceAuthContext';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
-import { getUserStorageKey, getUserScopedItem } from '../services/api';
+import {
+  getUserStorageKey,
+  getUserScopedItem,
+  setUserScopedItem,
+  saveAllDispositionStorage,
+  getAllDispositionStorage,
+} from '../services/api';
 import {
   getCourseCachedItem,
   setCourseCachedItem,
   touchCourseDataLru,
   capCourseHistoryEntries,
 } from '../utils/lruCourseCache';
+import { findDispositionColumnKey } from '../utils/gradeCalculations';
+import { getTerminologySettings } from '../utils/terminologySettings';
+import { calculateStudentMetrics } from '../utils/studentMetricsCalculator';
+import { emitAppEvent } from '../utils/appEventBus';
 
 export type GradebookTerm = '1c' | '2c' | 'annual';
 
@@ -515,8 +525,114 @@ export function useGradebookSync({
     }
   };
 
+  const syncDispositionColumnToAttendance = (
+    term: '1c' | '2c',
+    targetCategories: GradeCategory[],
+    newGrades: StudentGradesMap,
+    prevGrades?: StudentGradesMap
+  ) => {
+    if (typeof window === 'undefined' || !courseId) return;
+    const { dispositionLabel } = getTerminologySettings();
+    const dispColKey = findDispositionColumnKey(targetCategories, dispositionLabel);
+    if (!dispColKey) return;
+
+    const changedStudentScores: Array<{ studentId: string; score: number }> = [];
+    for (const st of students) {
+      const rawVal = newGrades[st.id]?.[dispColKey];
+      const prevVal = prevGrades ? prevGrades[st.id]?.[dispColKey] : undefined;
+      if (rawVal === undefined || String(rawVal).trim() === '') continue;
+      if (prevGrades && String(rawVal).trim() === String(prevVal ?? '').trim()) continue;
+
+      const parsed = parseFloat(String(rawVal).replace(',', '.'));
+      if (!isNaN(parsed) && parsed >= 0 && parsed <= 10) {
+        const clamped = Math.min(10, Math.max(0, Math.round(parsed * 10) / 10));
+        changedStudentScores.push({ studentId: st.id, score: clamped });
+      }
+    }
+
+    if (changedStudentScores.length === 0) return;
+
+    try {
+      const storageKey = `fds_disposition_data_${courseId}_${term}`;
+      const rawExisting = getUserScopedItem(storageKey);
+      const currentMap: Record<string, StudentDispositionData> = rawExisting
+        ? JSON.parse(rawExisting)
+        : {};
+      const globalStored = getAllDispositionStorage();
+      const historyList: StudentHistoryItem[] = Array.isArray(globalStored.history)
+        ? globalStored.history
+        : [];
+
+      let hasAnyUpdate = false;
+      for (const { studentId, score } of changedStudentScores) {
+        const existingEntry = currentMap[studentId];
+        if (existingEntry && existingEntry.totalDisposition === score) {
+          continue;
+        }
+        const fallbackMetrics = existingEntry
+          ? existingEntry
+          : calculateStudentMetrics({
+              studentId,
+              targetTerm: term,
+              activeCourseId: courseId,
+              students,
+              dispositionMap: term === '1c' ? currentMap : {},
+              dispositionMap2c: term === '2c' ? currentMap : {},
+              historyList,
+            });
+
+        currentMap[studentId] = {
+          ...fallbackMetrics,
+          courseId,
+          totalDisposition: score,
+        };
+        hasAnyUpdate = true;
+      }
+
+      if (!hasAnyUpdate) return;
+
+      const serialized = JSON.stringify(currentMap);
+      setUserScopedItem(storageKey, serialized);
+      setCourseCachedItem(courseId, getUserStorageKey(storageKey), serialized);
+
+      emitAppEvent('docencia_disposition_storage_change', {
+        term,
+        courseId,
+        disposition: currentMap,
+      });
+
+      const uid = getActiveUserId();
+      if (term === '1c') {
+        saveAllDispositionStorage(currentMap, historyList, {
+          silent: true,
+          courseId,
+        });
+        if (uid) {
+          firestoreSync.syncCompactDispositionNow(uid, false);
+        }
+      } else {
+        if (uid) {
+          firestoreSync.syncCompactDispositionNow(uid, false);
+          firestoreSync
+            .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
+            .then((cloud2c) => {
+              const merged2c: Record<string, StudentDispositionData> = { ...(cloud2c || {}) };
+              for (const [sId, val] of Object.entries(currentMap)) {
+                merged2c[`${courseId}::${sId}`] = { ...val, courseId };
+              }
+              return firestoreSync.saveUserSetting(uid, 'disposition_map_2c', merged2c);
+            })
+            .catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.warn('Error syncing disposition score from Gradebook to Attendance:', err);
+    }
+  };
+
   const saveGrades = (newGrades: StudentGradesMap) => {
     if (is2c) {
+      syncDispositionColumnToAttendance('2c', categories2c, newGrades, gradesMap2c);
       setGradesMap2c(newGrades);
       if (typeof window !== 'undefined') {
         setCourseCachedItem(courseId, getGradesKey('2c'), JSON.stringify(newGrades));
@@ -524,6 +640,7 @@ export function useGradebookSync({
       persistTermSnapshotToCloud('2c', categories2c, newGrades);
       enqueueBackgroundSheetsSync('2c', categories2c, newGrades);
     } else {
+      syncDispositionColumnToAttendance('1c', categories1c, newGrades, gradesMap1c);
       setGradesMap1c(newGrades);
       if (typeof window !== 'undefined') {
         const serialized = JSON.stringify(newGrades);
@@ -671,6 +788,11 @@ export function useGradebookSync({
 
   const handleApplyMultiImport = (payload: any) => {
     const isTarget2c = payload.term === '2c';
+    syncDispositionColumnToAttendance(
+      isTarget2c ? '2c' : '1c',
+      payload.updatedCategories,
+      payload.updatedGradesMap
+    );
     if (isTarget2c) {
       setCategories2c(payload.updatedCategories);
       setGradesMap2c(payload.updatedGradesMap);

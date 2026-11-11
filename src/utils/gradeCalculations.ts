@@ -15,19 +15,12 @@ export const CATEGORY_COLORS = [
   { name: 'Rosa', border: 'border-rose-500', headerBg: 'bg-rose-500/10 text-rose-700 dark:text-rose-300 dark:bg-rose-950/40', badge: 'bg-rose-500' },
 ];
 
-export function calculateFinalScoreForStudent(
+export function calculateCategoryAverageForStudent(
   termCats: GradeCategory[],
   termGrades: StudentGradesMap,
-  termCalc: 'average_of_categories' | 'manual_final',
   studentId: string
 ): { scoreStr: string; num: number | null } {
   const stGrades = termGrades[studentId] || {};
-  if (termCalc === 'manual_final') {
-    const val = stGrades['__final__'] || '';
-    const num = val !== '' && !isNaN(Number(val)) ? Number(val) : null;
-    return { scoreStr: val, num };
-  }
-
   const numericScores: number[] = [];
   termCats.forEach((cat) => {
     if (cat.subcategories.length === 0) {
@@ -51,6 +44,71 @@ export function calculateFinalScoreForStudent(
     scoreStr: avg.toFixed(1).replace('.0', ''),
     num: avg,
   };
+}
+
+export function calculateFinalScoreForStudent(
+  termCats: GradeCategory[],
+  termGrades: StudentGradesMap,
+  termCalc: 'average_of_categories' | 'manual_final',
+  studentId: string
+): { scoreStr: string; num: number | null } {
+  const stGrades = termGrades[studentId] || {};
+  if (termCalc === 'manual_final') {
+    const val = stGrades['__final__'] || '';
+    const num = val !== '' && !isNaN(Number(val)) ? Number(val) : null;
+    return { scoreStr: val, num };
+  }
+
+  // En modo 'average_of_categories' (Promedio), si el docente modificó manualmente la nota final de este alumno, se respeta esa modificación
+  const avgOverride =
+    stGrades['__final_avg_override__'] !== undefined
+      ? String(stGrades['__final_avg_override__']).trim()
+      : '';
+  if (avgOverride !== '') {
+    const num = !isNaN(Number(avgOverride)) ? Number(avgOverride) : null;
+    return { scoreStr: avgOverride, num };
+  }
+
+  return calculateCategoryAverageForStudent(termCats, termGrades, studentId);
+}
+
+export function findDispositionColumnKey(
+  categories: GradeCategory[],
+  customDispositionLabel?: string
+): string | null {
+  const dispLabelNorm = (customDispositionLabel || 'Disposición').trim().toLowerCase();
+  const isDispositionName = (name: string) => {
+    const n = (name || '').trim().toLowerCase();
+    return (
+      n === dispLabelNorm ||
+      n.includes('disposición') ||
+      n.includes('disposicion') ||
+      n.includes('conducta') ||
+      n.includes('concepto') ||
+      (dispLabelNorm.length >= 3 && n.includes(dispLabelNorm))
+    );
+  };
+
+  // 1ra prioridad: cualquier subcolumna cuyo nombre coincida con Disposición
+  for (const cat of categories) {
+    const foundSub = cat.subcategories.find((s) => isDispositionName(s.name));
+    if (foundSub) {
+      return foundSub.id;
+    }
+  }
+
+  // 2da prioridad: cualquier Categoría Mayor cuyo nombre coincida con Disposición
+  const dispCat = categories.find((c) => isDispositionName(c.name));
+  if (dispCat) {
+    if (dispCat.subcategories.length === 0) {
+      return dispCat.id;
+    }
+    if (dispCat.subcategories.length === 1) {
+      return dispCat.subcategories[0].id;
+    }
+  }
+
+  return null;
 }
 
 export function computeTermScoresMap(

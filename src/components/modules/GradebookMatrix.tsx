@@ -1412,53 +1412,33 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     <th
                       key={cat.id}
                       colSpan={colSpan}
-                      className={`p-2.5 text-center font-bold border-r border-b-2 transition-colors ${
+                      className={`p-2.5 text-center font-bold border-r border-b-2 transition-colors min-w-[140px] ${
                         colorTheme.border
                       } ${colorTheme.headerBg}`}
                     >
-                      <div className="flex items-center justify-between px-2 gap-2">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${colorTheme.badge}`} />
-                          <span className="truncate text-xs uppercase tracking-wide font-bold">{cat.name}</span>
-                        </div>
+                      <div className="flex items-center justify-center px-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCategoryToEdit(cat);
+                            setEditCatName(cat.name);
+                            setEditCatColor(cat.color);
+                          }}
+                          className="text-xs uppercase tracking-wide font-extrabold whitespace-nowrap hover:underline cursor-pointer transition-opacity hover:opacity-80"
+                          title={`Hacé clic para editar o eliminar "${cat.name}"`}
+                        >
+                          {cat.name}
+                        </button>
 
-                        <div className="flex items-center gap-1 shrink-0">
-                          {/* Add Subcategory / Column button */}
-                          <button
-                            type="button"
-                            onClick={() => setAddingSubcatForCatId(cat.id)}
-                            className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-xs flex items-center gap-0.5 cursor-pointer"
-                            title={`Agregar columna de evaluación a ${cat.name}`}
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline text-[10px] font-semibold">+ Col</span>
-                          </button>
-
-                          {/* Edit Category button */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCategoryToEdit(cat);
-                              setEditCatName(cat.name);
-                              setEditCatColor(cat.color);
-                            }}
-                            className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-xs flex items-center gap-0.5 cursor-pointer transition-colors"
-                            title={`Editar nombre u opciones de categoría "${cat.name}"`}
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-blue-500" />
-                            <span className="hidden sm:inline text-[10px] font-semibold">Editar</span>
-                          </button>
-
-                          {/* Delete category */}
-                          <button
-                            type="button"
-                            onClick={() => setCategoryToDelete(cat)}
-                            className="p-1 rounded hover:bg-red-500/20 text-red-500 transition-colors cursor-pointer"
-                            title={`Eliminar categoría "${cat.name}"`}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
+                        {/* Add Subcategory / Column button (+ solamente) */}
+                        <button
+                          type="button"
+                          onClick={() => setAddingSubcatForCatId(cat.id)}
+                          className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                          title={`Agregar columna a "${cat.name}"`}
+                        >
+                          <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                        </button>
                       </div>
                     </th>
                   );
@@ -1514,18 +1494,30 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     return (
                       <th
                         key={`${cat.id}-empty`}
-                        className={`p-2 text-center font-medium border-r text-[11px] min-w-[110px] ${
+                        className={`p-2 text-center font-medium border-r text-[11px] min-w-[120px] ${
                           isDarkMode ? 'border-slate-800 text-slate-400' : 'border-neutral-200 text-neutral-500'
                         }`}
                       >
-                        <div className="flex items-center justify-center gap-1">
-                          <span>Nota General</span>
+                        <div className="flex items-center justify-center gap-1 text-center">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCategoryToEdit(cat);
+                              setEditCatName(cat.name);
+                              setEditCatColor(cat.color);
+                            }}
+                            className="hover:underline cursor-pointer transition-opacity hover:opacity-80"
+                            title={`Hacé clic para editar o eliminar "${cat.name}"`}
+                          >
+                            Nota General
+                          </button>
                           <button
                             type="button"
                             onClick={() => setAddingSubcatForCatId(cat.id)}
-                            className="text-blue-500 hover:underline text-[10px]"
+                            className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer"
+                            title={`Agregar subcolumna a "${cat.name}"`}
                           >
-                            (+sub)
+                            <Plus className="w-3 h-3 stroke-[2.5]" />
                           </button>
                         </div>
                       </th>
@@ -1537,38 +1529,25 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                       {cat.subcategories.map((sub) => (
                         <th
                           key={sub.id}
-                          className={`p-2 text-center font-medium border-r text-[11px] min-w-[120px] max-w-[160px] group ${
+                          className={`p-2 text-center font-medium border-r text-[11px] min-w-[115px] ${
                             isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-1 px-1">
-                            <span className="truncate font-semibold flex items-center gap-1" title={sub.name}>
+                          <div className="flex items-center justify-center px-1 text-center">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
+                                setEditSubcatName(sub.name);
+                              }}
+                              className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors"
+                              title={`Hacé clic para editar o eliminar "${sub.name}"`}
+                            >
                               {(sub.name.toLowerCase().includes('disposición') || sub.name.toLowerCase().includes('disposicion')) && (
                                 <Award className="w-3 h-3 text-amber-500 shrink-0" />
                               )}
-                              <span className="truncate">{sub.name}</span>
-                            </span>
-                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
-                                  setEditSubcatName(sub.name);
-                                }}
-                                className="p-0.5 text-neutral-400 hover:text-blue-500 cursor-pointer"
-                                title={`Editar nombre de "${sub.name}"`}
-                              >
-                                <Edit2 className="w-2.5 h-2.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteSubcategory(cat.id, sub.id)}
-                                className="p-0.5 text-neutral-400 hover:text-red-500 cursor-pointer"
-                                title={`Eliminar columna ${sub.name}`}
-                              >
-                                <X className="w-3 h-3" />
-                              </button>
-                            </div>
+                              <span>{sub.name}</span>
+                            </button>
                           </div>
                         </th>
                       ))}
@@ -1661,6 +1640,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         editSubcatName={editSubcatName}
         setEditSubcatName={setEditSubcatName}
         handleSaveEditSubcategory={handleSaveEditSubcategory}
+        handleDeleteSubcategory={handleDeleteSubcategory}
       />
       {/* Modal: Generar Valoración Preliminar (TEA / TEP) */}
       {isPreliminaryModalOpen && (

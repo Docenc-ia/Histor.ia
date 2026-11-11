@@ -31,6 +31,7 @@ export interface GradebookCategoryModalsProps {
   editSubcatName: string;
   setEditSubcatName: (val: string) => void;
   handleSaveEditSubcategory: () => void;
+  handleDeleteSubcategory: (catId: string, subId: string) => void;
 }
 
 export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = ({
@@ -56,6 +57,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   editSubcatName,
   setEditSubcatName,
   handleSaveEditSubcategory,
+  handleDeleteSubcategory,
 }) => {
   return (
     <>
@@ -135,7 +137,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                 <div>
                   <h3 className="text-base font-bold">Editar Categoría Mayor</h3>
                   <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Modifica el nombre o color distintivo de esta categoría.
+                    Modifica el nombre, el color o elimina esta categoría.
                   </p>
                 </div>
               </div>
@@ -208,7 +210,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                   setCategoryToEdit(null);
                   setCategoryToDelete(cat);
                 }}
-                className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1 cursor-pointer"
+                className="text-xs text-red-500 hover:text-red-600 font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Eliminar categoría</span>
@@ -356,16 +358,21 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
       {subcatToEdit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <div
-            className={`w-full max-w-sm rounded-2xl border shadow-2xl p-5 space-y-4 ${
+            className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4 ${
               isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2.5">
                 <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
                   <Edit2 className="w-4 h-4" />
                 </div>
-                <h3 className="text-sm font-bold">Editar Columna de Evaluación</h3>
+                <div>
+                  <h3 className="text-base font-bold">Editar Columna / Evaluación</h3>
+                  <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    Cambia el nombre de la columna o elimínala de la tabla.
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
@@ -378,7 +385,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
 
             <div className="space-y-1">
               <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
-                Nombre de la columna
+                Nombre de la columna o evaluación
               </label>
               <input
                 type="text"
@@ -392,24 +399,39 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
               />
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex items-center justify-between pt-2 border-t border-neutral-100 dark:border-slate-800">
               <button
                 type="button"
-                onClick={() => setSubcatToEdit(null)}
-                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
-                  isDarkMode ? 'border-slate-700 text-slate-300' : 'border-neutral-200 text-neutral-700'
-                }`}
+                onClick={() => {
+                  handleDeleteSubcategory(subcatToEdit.catId, subcatToEdit.subId);
+                  setSubcatToEdit(null);
+                }}
+                className="text-xs text-red-500 hover:text-red-600 font-semibold flex items-center gap-1 cursor-pointer"
               >
-                Cancelar
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Eliminar columna</span>
               </button>
-              <button
-                type="button"
-                disabled={!editSubcatName.trim()}
-                onClick={handleSaveEditSubcategory}
-                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer"
-              >
-                Guardar
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSubcatToEdit(null)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
+                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={!editSubcatName.trim()}
+                  onClick={handleSaveEditSubcategory}
+                  className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Guardar Cambios</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -632,50 +632,67 @@ export function useManualDispositionAndAbsenceEditor({
     }
 
     const { dispositionLabel } = getTerminologySettings();
-    const customDispLower = dispositionLabel.toLowerCase();
+    const norm = (str: string) =>
+      (str || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim();
+    const customDispNorm = norm(dispositionLabel);
     const desiredSubName = `Nota de ${dispositionLabel}`;
+
+    const isDispositionName = (raw: string) => {
+      const n = norm(raw);
+      return (
+        n.includes('disposicion') ||
+        n.includes('conducta') ||
+        n.includes('concepto') ||
+        n.includes('actitud') ||
+        (customDispNorm.length >= 3 && n.includes(customDispNorm))
+      );
+    };
 
     let targetSubId: string | null = null;
     let categoriesModified = false;
 
+    // 1. First priority: Look for any subcolumn (subcategoría) across all categories whose visible name matches "Disposición"
     for (const cat of categories) {
-      const foundSub = cat.subcategories?.find((s) => {
-        const lower = s.name.toLowerCase();
-        return (
-          s.id.startsWith('sub-disp-') ||
-          lower.includes('disposición') ||
-          lower.includes('disposicion') ||
-          lower.includes('conducta') ||
-          lower.includes('concepto') ||
-          lower.includes(customDispLower)
-        );
-      });
-      if (foundSub) {
-        targetSubId = foundSub.id;
-        if (foundSub.name !== desiredSubName && (foundSub.id.startsWith('sub-disp-') || foundSub.name === 'Nota de Disposición')) {
-          foundSub.name = desiredSubName;
-          categoriesModified = true;
-        }
+      const foundSubByName = cat.subcategories?.find((s) => isDispositionName(s.name));
+      if (foundSubByName) {
+        targetSubId = foundSubByName.id;
         break;
       }
     }
 
+    // 2. Second priority: Look for a Major Category (Categoría Mayor) whose visible name matches "Disposición"
     if (!targetSubId) {
-      let parentCat = categories.find((c) => {
-        const lower = c.name.toLowerCase();
-        return (
-          lower.includes('desempeño') ||
-          lower.includes('desempeno') ||
-          lower.includes('participación') ||
-          lower.includes('participacion') ||
-          lower.includes('concepto') ||
-          lower.includes('tareas')
-        );
-      });
-
-      if (!parentCat && categories.length > 0) {
-        parentCat = categories[categories.length - 1];
+      const dispMajorCat = categories.find((c) => isDispositionName(c.name));
+      if (dispMajorCat) {
+        if (!dispMajorCat.subcategories || dispMajorCat.subcategories.length === 0) {
+          // Major Category "Disposición" uses its general column (keyed by dispMajorCat.id)
+          targetSubId = dispMajorCat.id;
+        } else if (dispMajorCat.subcategories.length === 1) {
+          targetSubId = dispMajorCat.subcategories[0].id;
+        } else {
+          const newSubId = `sub-disp-${term}-${Date.now()}`;
+          dispMajorCat.subcategories.push({
+            id: newSubId,
+            name: dispositionLabel,
+            maxScore: 10,
+            date: new Date().toLocaleDateString('es-AR'),
+          });
+          targetSubId = newSubId;
+          categoriesModified = true;
+        }
       }
+    }
+
+    // 3. Third priority: If no column or category named "Disposición" exists yet, create it (NEVER overwrite an unrelated category or general column like "Construcción")
+    if (!targetSubId) {
+      const parentCat = categories.find((c) => {
+        const catNorm = norm(c.name);
+        return catNorm.includes('desempeno') || catNorm.includes('participacion');
+      });
 
       const newSubId = `sub-disp-${term}-${Date.now()}`;
       const newSub: GradeSubcategory = {
@@ -685,19 +702,19 @@ export function useManualDispositionAndAbsenceEditor({
         date: new Date().toLocaleDateString('es-AR'),
       };
 
-      if (parentCat) {
-        if (!parentCat.subcategories) parentCat.subcategories = [];
+      if (parentCat && Array.isArray(parentCat.subcategories) && parentCat.subcategories.length > 0) {
         parentCat.subcategories.push(newSub);
+        targetSubId = newSubId;
       } else {
         const newCat: GradeCategory = {
           id: `cat-disp-${term}-${Date.now()}`,
-          name: `Desempeño y ${dispositionLabel}`,
+          name: dispositionLabel,
           color: 'bg-purple-500',
           subcategories: [newSub],
         };
         categories.push(newCat);
+        targetSubId = newSubId;
       }
-      targetSubId = newSubId;
       categoriesModified = true;
     }
 

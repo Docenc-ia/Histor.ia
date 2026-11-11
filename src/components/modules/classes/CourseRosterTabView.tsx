@@ -723,55 +723,28 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     </th>
                     <th className="py-3 px-4">Estudiante</th>
                     <th className="py-3 px-3 text-center">
-                      <div className="inline-flex flex-col items-center gap-1">
-                        <div className="inline-flex items-center gap-1">
-                          <span>{attendanceLabel}</span>
-                          <button
-                            type="button"
-                            onClick={() => setIsManageConductModalOpen(true)}
-                            className="p-0.5 rounded text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
-                            title="Cambiar el nombre de esta columna (ej: Presentismo, Asistencia)"
-                          >
-                            <Pencil className="w-3 h-3" />
-                          </button>
-                        </div>
-                        {onOpenImportDisposition && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              try {
-                                sessionStorage.setItem(
-                                  'docencia_import_attendance_target_mode',
-                                  'absences'
-                                );
-                              } catch {}
-                              onOpenImportDisposition('sheets');
-                            }}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 hover:bg-amber-200 text-amber-800 dark:bg-amber-950/80 dark:hover:bg-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-800 transition-all cursor-pointer shadow-2xs"
-                            title={`Importar o actualizar ${attendanceLabel.toLowerCase()} (cantidad de faltas) desde un documento (Sheets, Docs, Excel, Word, CSV) o pegando un link`}
-                          >
-                            <Upload className="w-2.5 h-2.5 text-amber-600 dark:text-amber-400" />
-                            <span>Importar</span>
-                          </button>
-                        )}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsManageConductModalOpen(true)}
+                        className="hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
+                        title="Hacé clic para cambiar el nombre de esta columna (ej: Presentismo, Asistencia)"
+                      >
+                        {attendanceLabel}
+                      </button>
                     </th>
                     <th className="py-3 px-4 text-center">
                       <span>Registrar {attendanceLabel.toLowerCase()}</span>
                     </th>
                     <th className="py-3 px-4 text-center">
                       <div className="inline-flex flex-col items-center gap-1">
-                        <div className="inline-flex items-center gap-1">
-                          <span>{dispositionLabel}</span>
-                          <button
-                            type="button"
-                            onClick={() => setIsManageConductModalOpen(true)}
-                            className="p-0.5 rounded text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
-                            title="Cambiar el nombre (ej: Concepto, Participación en clase, Disposición)"
-                          >
-                            <Pencil className="w-3 h-3" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsManageConductModalOpen(true)}
+                          className="hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
+                          title="Hacé clic para cambiar el nombre (ej: Concepto, Participación en clase, Disposición)"
+                        >
+                          {dispositionLabel}
+                        </button>
                         <div className="flex flex-wrap items-center justify-center gap-1">
                           <button
                             type="button"
@@ -782,25 +755,6 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                             <Award className="w-3 h-3 text-amber-500" />
                             <span>Mandar a Calificaciones</span>
                           </button>
-                          {onOpenImportDisposition && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                try {
-                                  sessionStorage.setItem(
-                                    'docencia_import_attendance_target_mode',
-                                    'disposition'
-                                  );
-                                } catch {}
-                                onOpenImportDisposition('sheets');
-                              }}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 hover:bg-emerald-200 text-emerald-800 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 dark:text-emerald-200 border border-emerald-300 dark:border-emerald-800 transition-all cursor-pointer shadow-2xs"
-                              title={`Importar notas de ${dispositionLabel.toLowerCase()} desde un documento (Sheets, Docs, Excel, Word, CSV) o pegando un link, y elegir los nombres para verificar que esté todo bien`}
-                            >
-                              <Upload className="w-2.5 h-2.5 text-emerald-600 dark:text-emerald-400" />
-                              <span>Importar</span>
-                            </button>
-                          )}
                         </div>
                       </div>
                     </th>

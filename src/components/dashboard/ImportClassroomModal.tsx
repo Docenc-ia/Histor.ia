@@ -83,15 +83,15 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
     setScanMessage(null);
 
     try {
-      let activeToken = token || getCachedAccessToken();
+      let activeToken = forceAuthPopup ? null : (token || getCachedAccessToken());
 
-      // If user is not authorized or explicitly requested reconnection, trigger Google OAuth
+      // If user is not authorized or explicitly requested reconnection, trigger Google OAuth with full Classroom scopes
       if (!activeToken || forceAuthPopup) {
         setScanMessage('Abriendo ventana de Google para autorizar acceso a Google Classroom...');
         try {
-          await loginWithGoogle(user?.email || undefined);
-          activeToken = getCachedAccessToken();
-          setIsGoogleAuthorized(true);
+          const freshToken = await loginWithGoogle(user?.email || undefined);
+          activeToken = freshToken || getCachedAccessToken();
+          setIsGoogleAuthorized(!!activeToken);
         } catch (authErr: any) {
           if (
             authErr?.message?.includes('cerrada') ||
@@ -107,10 +107,31 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
       }
 
       setScanMessage('Consultando tus clases en Google Classroom...');
-      const result = await classroomService.listClassroomCourses(activeToken || undefined, {
+      let result = await classroomService.listClassroomCourses(activeToken || undefined, {
         fetchStudentCounts: false,
         forceFresh: true,
       });
+
+      // If the cached token lacked Classroom scopes, prompt once for full Classroom permissions
+      if (
+        !result.success &&
+        !forceAuthPopup &&
+        (result.errorDetail?.toLowerCase().includes('insufficient') ||
+          result.errorDetail?.toLowerCase().includes('scope') ||
+          result.message?.includes('expirado'))
+      ) {
+        setScanMessage('Solicitando permisos de Google Classroom...');
+        const refreshedToken = await loginWithGoogle(user?.email || undefined);
+        if (refreshedToken) {
+          activeToken = refreshedToken;
+          setIsGoogleAuthorized(true);
+          result = await classroomService.listClassroomCourses(activeToken, {
+            fetchStudentCounts: false,
+            forceFresh: true,
+          });
+        }
+      }
+
       setHasScanned(true);
 
       if (result.success && result.courses.length > 0) {

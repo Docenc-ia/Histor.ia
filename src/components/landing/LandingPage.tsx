@@ -114,28 +114,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
   };
 
   const handleGoogleLogin = async (customEmail?: string) => {
-    const emailToUse =
+    const emailHint =
       typeof customEmail === 'string' && customEmail.trim()
         ? customEmail.trim()
-        : emailInput.trim();
-    if (!emailToUse || !emailToUse.includes('@')) {
-      setAuthError(
-        'Escribí tu correo de Google o institucional en el campo de abajo (ej: nombre.apellido@fds-esc.edu.ar) para ingresar a tu cuenta.'
-      );
-      const emailEl = document.getElementById('teacher-email-input') as HTMLInputElement | null;
-      if (emailEl) {
-        emailEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        emailEl.focus();
-      }
-      return;
-    }
+        : emailInput.trim() || undefined;
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
-      await loginWithEmail(emailToUse, passwordInput.trim(), nameInput.trim() || undefined);
+      await loginWithGoogle(emailHint);
       onLoginSuccess();
     } catch (err: any) {
-      setAuthError(err?.message || 'Error al iniciar sesión con tu cuenta.');
+      setAuthError(
+        err?.message ||
+          'No se pudo completar el inicio de sesión con Google. Podés volver a intentar o ingresar con tu correo y contraseña abajo.'
+      );
     } finally {
       setIsSubmittingAccount(false);
     }

@@ -480,11 +480,7 @@ function getCachedStoredProfile(): { id?: string; email?: string } | null {
 export function getActiveUserEmail(): string {
   if (typeof window !== 'undefined') {
     try {
-      const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
-      const isSessionActive =
-        !isExplicitLogout &&
-        (sessionStorage.getItem('docencia_session_active') === 'true' ||
-          localStorage.getItem('docencia_session_active') === 'true');
+      const isSessionActive = sessionStorage.getItem('docencia_session_active') === 'true';
       if (!isSessionActive) {
         return '';
       }
@@ -494,10 +490,6 @@ export function getActiveUserEmail(): string {
       }
       const parsed = getCachedStoredProfile();
       if (parsed?.email) return String(parsed.email).trim().toLowerCase();
-      const localEmail = localStorage.getItem('docencia_teacher_email');
-      if (localEmail && localEmail.trim()) {
-        return localEmail.trim().toLowerCase();
-      }
     } catch (_) {
       return '';
     }

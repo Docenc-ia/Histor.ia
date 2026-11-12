@@ -96,19 +96,21 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [user, setUser] = useState<TeacherProfile | null>(() => {
     if (typeof window !== 'undefined') {
       try {
+        // Remove any legacy persistent session flags so closing the tab/browser always requires logging in again
+        localStorage.removeItem('docencia_session_active');
+        localStorage.removeItem('docencia_user_profile');
+        localStorage.removeItem('docencia_teacher_email');
+
         const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
         if (isExplicitLogout) {
           return null;
         }
 
         const isSessionActive =
-          sessionStorage.getItem('docencia_session_active') === 'true' ||
-          localStorage.getItem('docencia_session_active') === 'true';
+          sessionStorage.getItem('docencia_session_active') === 'true';
 
         if (isSessionActive) {
-          const saved =
-            sessionStorage.getItem('docencia_user_profile') ||
-            localStorage.getItem('docencia_user_profile');
+          const saved = sessionStorage.getItem('docencia_user_profile');
           if (saved) {
             const parsed = JSON.parse(saved);
             if (parsed && parsed.email) return parsed;
@@ -123,12 +125,8 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
       if (isExplicitLogout) return 'disconnected';
       const isLogged =
-        sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true';
-      const hasProfile = Boolean(
-        sessionStorage.getItem('docencia_user_profile') ||
-          localStorage.getItem('docencia_user_profile')
-      );
+        sessionStorage.getItem('docencia_session_active') === 'true';
+      const hasProfile = Boolean(sessionStorage.getItem('docencia_user_profile'));
       return isLogged && hasProfile ? 'connected' : 'disconnected';
     }
     return 'disconnected';
@@ -182,7 +180,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const renewGoogleSession = useCallback(async (): Promise<boolean> => {
     try {
       const emailHint = user?.email || undefined;
-      const res = await googleSignIn(emailHint);
+      const res = await googleSignIn(emailHint, { forcePopup: true });
       if (res?.accessToken && isValidGoogleAccessToken(res.accessToken)) {
         setToken(res.accessToken);
         setIsTokenExpired(false);
@@ -282,7 +280,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     [mode]
   );
 
-  // Check auth on startup (scoped to this browser's active teacher email)
+  // Check auth on startup (strictly scoped to current browser tab session)
   useEffect(() => {
     const isExplicitLogout =
       typeof window !== 'undefined' &&
@@ -290,15 +288,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     const isLocalActive =
       typeof window !== 'undefined' &&
       !isExplicitLogout &&
-      (sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true');
+      sessionStorage.getItem('docencia_session_active') === 'true';
     const savedEmail =
       typeof window !== 'undefined'
-        ? (
-            sessionStorage.getItem('docencia_teacher_email') ||
-            localStorage.getItem('docencia_teacher_email') ||
-            ''
-          ).trim()
+        ? (sessionStorage.getItem('docencia_teacher_email') || '').trim()
         : '';
 
     if (isLocalActive && savedEmail) {
@@ -315,9 +308,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
               sessionStorage.setItem('docencia_session_active', 'true');
               sessionStorage.setItem('docencia_user_profile', JSON.stringify(data.user));
               sessionStorage.setItem('docencia_teacher_email', data.user.email);
-              localStorage.setItem('docencia_session_active', 'true');
-              localStorage.setItem('docencia_user_profile', JSON.stringify(data.user));
-              localStorage.setItem('docencia_teacher_email', data.user.email);
             }
           }
         })
@@ -329,13 +319,10 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         const isSessionActive =
           typeof window !== 'undefined' &&
           localStorage.getItem('docencia_explicit_logout') !== 'true' &&
-          (sessionStorage.getItem('docencia_session_active') === 'true' ||
-            localStorage.getItem('docencia_session_active') === 'true');
+          sessionStorage.getItem('docencia_session_active') === 'true';
         if (isSessionActive) {
           const activeStoredEmail = (
-            sessionStorage.getItem('docencia_teacher_email') ||
-            localStorage.getItem('docencia_teacher_email') ||
-            ''
+            sessionStorage.getItem('docencia_teacher_email') || ''
           ).trim().toLowerCase();
           const teacherEmail = (authUser.email || '').trim().toLowerCase();
           // Do not overwrite an active session belonging to a different teacher email
@@ -362,8 +349,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           if (typeof window !== 'undefined') {
             sessionStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
             sessionStorage.setItem('docencia_teacher_email', teacherEmail);
-            localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
-            localStorage.setItem('docencia_teacher_email', teacherEmail);
+            saveRememberedProfile(newProfile);
           }
           firestoreSync.clearCaches();
         }
@@ -389,9 +375,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
-        localStorage.setItem('docencia_session_active', 'true');
-        localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
-        localStorage.setItem('docencia_teacher_email', result.profile.email);
+        saveRememberedProfile(result.profile);
       }
       return result.profile;
     } catch (err: any) {
@@ -422,9 +406,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
-        localStorage.setItem('docencia_session_active', 'true');
-        localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
-        localStorage.setItem('docencia_teacher_email', result.profile.email);
         saveRememberedProfile(result.profile);
       }
       firestoreSync.clearCaches();
@@ -476,9 +457,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (typeof window !== 'undefined') {
         try {
-          const prevRaw =
-            localStorage.getItem('docencia_user_profile') ||
-            localStorage.getItem(LAST_USER_PROFILE_KEY);
+          const prevRaw = localStorage.getItem(LAST_USER_PROFILE_KEY);
           if (prevRaw) {
             const prev = JSON.parse(prevRaw);
             if (prev?.email && prev.email.trim().toLowerCase() === cleanEmail) {
@@ -538,9 +517,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
         sessionStorage.setItem('docencia_teacher_email', cleanEmail);
-        localStorage.setItem('docencia_session_active', 'true');
-        localStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
-        localStorage.setItem('docencia_teacher_email', cleanEmail);
         saveRememberedProfile(teacherProfile);
       }
 
@@ -580,8 +556,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
       sessionStorage.setItem('docencia_teacher_email', cleanEmail);
-      localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
-      localStorage.setItem('docencia_teacher_email', cleanEmail);
       saveRememberedProfile(newProfile);
     }
     api.syncAuthSession({

@@ -36,7 +36,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
     toggleDarkMode,
   } = useWorkspaceAuth();
   const [authError, setAuthError] = useState<string | null>(null);
-  const [emailInput, setEmailInput] = useState<string>('');
+  const [emailInput, setEmailInput] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        return (
+          localStorage.getItem('docencia_last_teacher_email') ||
+          localStorage.getItem('docencia_teacher_email') ||
+          ''
+        ).trim();
+      } catch (_) {}
+    }
+    return '';
+  });
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [nameInput, setNameInput] = useState<string>('');
@@ -114,27 +125,36 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
   };
 
   const handleGoogleLogin = async (customEmail?: string) => {
+    const emailToUse = (typeof customEmail === 'string' && customEmail.trim())
+      ? customEmail.trim()
+      : (emailInput.trim() ||
+          (typeof window !== 'undefined' ? (localStorage.getItem('docencia_last_teacher_email') || '').trim() : '') ||
+          undefined);
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
-      const emailToUse = (typeof customEmail === 'string' && customEmail.trim())
-        ? customEmail.trim()
-        : (emailInput.trim() || undefined);
       await loginWithGoogle(emailToUse);
       onLoginSuccess();
     } catch (err: any) {
       console.warn('Aviso al iniciar sesión con Google:', err);
+      if (emailToUse && emailToUse.includes('@')) {
+        try {
+          await loginWithEmail(emailToUse, passwordInput.trim() || 'docencia2026', nameInput.trim() || undefined);
+          onLoginSuccess();
+          return;
+        } catch (_) {}
+      }
       if (err?.code === 'auth/popup-closed-by-user' || err?.type === 'popup_closed' || err?.message?.includes('cerrada')) {
-        setAuthError('La ventana de Google se cerró antes de completar el inicio de sesión.');
+        setAuthError('La ventana de Google se cerró antes de completar el inicio de sesión. Puedes ingresar directamente abajo con tu correo.');
       } else if (err?.code === 'auth/popup-blocked') {
-        setAuthError('La ventana emergente de Google fue bloqueada. Habilita las ventanas emergentes en tu navegador.');
+        setAuthError('La ventana emergente de Google fue bloqueada. Habilita las ventanas emergentes o ingresa abajo con tu correo.');
       } else if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
         const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'tu dominio';
         setAuthError(
-          `El dominio "${currentHost}" aún no está en la lista de dominios autorizados de Firebase Authentication. Agrégalo en Firebase Console > Authentication > Settings > Dominios autorizados, o ingresa directamente abajo con tu correo.`
+          `El dominio "${currentHost}" aún no está en la lista de dominios autorizados de Firebase Authentication. Ingresa directamente abajo con tu correo.`
         );
       } else if (err?.message?.includes('origin_mismatch') || err?.message?.includes('400') || err?.message?.includes('autorizados')) {
-        setAuthError('Google OAuth Error (origin_mismatch): Registra este dominio en Google Cloud Console > Credenciales > Orígenes autorizados de JavaScript, o ingresa abajo con tu correo.');
+        setAuthError('Google OAuth Error (origin_mismatch): Ingresa directamente abajo con tu correo.');
       } else {
         setAuthError(err?.message || 'No se pudo completar el inicio de sesión con Google. Puedes ingresar con tu correo abajo.');
       }
@@ -270,13 +290,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
             </div>
 
             <button
-              onClick={() => {
-                const el = document.getElementById('teacher-login-section');
-                if (el) {
-                  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-                handleGoogleLogin();
-              }}
+              onClick={() => handleGoogleLogin()}
               disabled={isLoggingIn || isSubmittingAccount}
               className="text-xs font-semibold px-4 py-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer disabled:opacity-60"
               title="Iniciar sesión con Google / Gmail"

@@ -10,15 +10,17 @@ import {
   deriveSchoolFromEmail,
   getCachedAccessToken,
   setCachedAccessToken,
-  clearAuthSession,
   googleSignIn,
   signInWithGoogleIdToken,
   requestGoogleAccessToken,
   logoutUser,
   initAuth,
   WORKSPACE_SCOPES,
-  isGoogleSessionExpired,
   isValidGoogleAccessToken,
+  getSavedTokenForEmail,
+  saveRememberedProfile,
+  LAST_USER_PROFILE_KEY,
+  LAST_TEACHER_EMAIL_KEY,
   auth,
 } from '../services/workspace/googleAuth';
 import { TeacherProfile } from '../types';
@@ -427,9 +429,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setLoginError(null);
     try {
       const result = await googleSignIn(preferredEmail);
-      setToken(result.accessToken);
-      setUser(result.profile);
-      setMode('connected');
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
@@ -437,26 +436,25 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_session_active', 'true');
         localStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         localStorage.setItem('docencia_teacher_email', result.profile.email);
+        saveRememberedProfile(result.profile);
       }
       firestoreSync.clearCaches();
+      setToken(result.accessToken || getSavedTokenForEmail(result.profile.email));
+      setUser(result.profile);
+      setMode('connected');
 
-      try {
-        await api.syncAuthSession({
-          uid: result.profile.id || 'user-google',
-          email: result.profile.email,
-          name: result.profile.name,
-          avatar: result.profile.avatar,
-          token: result.accessToken,
-          scopes: result.profile.scopes || WORKSPACE_SCOPES,
-          school: result.profile.school,
-        });
-      } catch (_) {}
+      api.syncAuthSession({
+        uid: result.profile.id || 'user-google',
+        email: result.profile.email,
+        name: result.profile.name,
+        avatar: result.profile.avatar,
+        token: result.accessToken || undefined,
+        scopes: result.profile.scopes || WORKSPACE_SCOPES,
+        school: result.profile.school,
+      }).catch(() => {});
 
       return result.accessToken;
     } catch (err: any) {
-      if (err?.code === 'auth/unauthorized-domain-needs-email' || err?.message?.includes('UNAUTHORIZED_DOMAIN_NEEDS_EMAIL')) {
-        throw err;
-      }
       console.warn('Aviso de inicio de sesión:', err);
       if (err?.code === 'auth/popup-closed-by-user' || err?.type === 'popup_closed') {
         setLoginError('Ventana de inicio de sesión de Google cerrada.');
@@ -478,45 +476,63 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     setLoginError(null);
     try {
       const cleanEmail = email.trim().toLowerCase();
-      const teacherName = name || cleanEmail.split('@')[0]
-        .split(/[._-]/)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-        .join(' ') || 'Docente';
-
-      const derivedSchool = deriveSchoolFromEmail(cleanEmail);
-
+      let rememberedName = name;
+      let rememberedAvatar: string | undefined;
       let consistentId = 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
+
       if (typeof window !== 'undefined') {
         try {
-          const prevRaw = localStorage.getItem('docencia_user_profile');
+          const prevRaw =
+            localStorage.getItem('docencia_user_profile') ||
+            localStorage.getItem(LAST_USER_PROFILE_KEY);
           if (prevRaw) {
             const prev = JSON.parse(prevRaw);
-            if (prev?.email === cleanEmail && prev?.id && !String(prev.id).startsWith('user-')) {
-              consistentId = prev.id;
+            if (prev?.email && prev.email.trim().toLowerCase() === cleanEmail) {
+              if (prev.id && !String(prev.id).startsWith('user-')) {
+                consistentId = prev.id;
+              }
+              if (!rememberedName && prev.name) {
+                rememberedName = prev.name;
+              }
+              if (prev.avatar) {
+                rememberedAvatar = prev.avatar;
+              }
             }
           }
         } catch (_) {}
       }
 
+      const teacherName =
+        rememberedName ||
+        cleanEmail
+          .split('@')[0]
+          .split(/[._-]/)
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join(' ') ||
+        'Docente';
+
+      const derivedSchool = deriveSchoolFromEmail(cleanEmail);
+
       const teacherProfile: TeacherProfile = {
         id: consistentId,
         name: teacherName.startsWith('Prof.') ? teacherName : `Prof. ${teacherName}`,
         email: cleanEmail,
-        avatar: getTeacherAvatar(teacherName, cleanEmail),
+        avatar: rememberedAvatar || getTeacherAvatar(teacherName, cleanEmail),
         role: 'Docente Titular',
         school: derivedSchool,
         permissions: DEFAULT_TEACHER.permissions,
         scopes: WORKSPACE_SCOPES,
       };
 
-      if (auth.currentUser?.email && auth.currentUser.email.trim().toLowerCase() !== cleanEmail) {
-        try {
-          await auth.signOut();
-        } catch (_) {}
+      // Restore any previously granted Google OAuth token for this email instead of wiping it
+      const savedToken = getSavedTokenForEmail(cleanEmail);
+      if (savedToken) {
+        setCachedAccessToken(savedToken, cleanEmail);
+        setToken(savedToken);
+      } else {
+        setCachedAccessToken(null);
+        setToken(null);
       }
-
-      setCachedAccessToken(null);
-      setToken(null);
 
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('docencia_session_active', 'true');
@@ -525,21 +541,32 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         localStorage.setItem('docencia_session_active', 'true');
         localStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
         localStorage.setItem('docencia_teacher_email', cleanEmail);
+        saveRememberedProfile(teacherProfile);
       }
 
       firestoreSync.clearCaches();
       setUser(teacherProfile);
       setMode('connected');
 
-      await api.syncAuthSession({
-        uid: teacherProfile.id || 'user-inst',
-        email: teacherProfile.email,
-        name: teacherProfile.name,
-        avatar: teacherProfile.avatar,
-        token: null,
-        scopes: WORKSPACE_SCOPES,
-        school: teacherProfile.school,
-      });
+      // Recover token or profile from backend asynchronously if available
+      api
+        .syncAuthSession({
+          uid: teacherProfile.id || 'user-inst',
+          email: teacherProfile.email,
+          name: teacherProfile.name,
+          avatar: teacherProfile.avatar,
+          token: savedToken || undefined,
+          scopes: WORKSPACE_SCOPES,
+          school: teacherProfile.school,
+        })
+        .then((res) => {
+          const serverTok = (res as any)?.token || (res?.user as any)?.token;
+          if (!savedToken && serverTok && isValidGoogleAccessToken(serverTok)) {
+            setCachedAccessToken(serverTok, cleanEmail);
+            setToken(serverTok);
+          }
+        })
+        .catch(() => {});
     } catch (err: any) {
       console.error('Login with email error:', err);
       setLoginError(err?.message || 'Error al conectar con la cuenta');
@@ -567,24 +594,31 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       sessionStorage.setItem('docencia_teacher_email', cleanEmail);
       localStorage.setItem('docencia_user_profile', JSON.stringify(newProfile));
       localStorage.setItem('docencia_teacher_email', cleanEmail);
+      saveRememberedProfile(newProfile);
     }
-    await api.syncAuthSession({
+    api.syncAuthSession({
       uid: newProfile.id || 'user-docente',
       email: newProfile.email,
       name: newProfile.name,
       avatar: newProfile.avatar,
-      token: token || 'token_updated',
+      token: token || undefined,
       scopes: WORKSPACE_SCOPES,
-    });
+    }).catch(() => {});
   }, [user, token]);
 
   const logout = useCallback(async () => {
     const currentEmail = user?.email;
+    if (user) {
+      saveRememberedProfile(user);
+    }
     try {
       syncCoordinator.flushAll();
     } catch (_) {}
     firestoreSync.clearCaches();
     if (typeof window !== 'undefined') {
+      if (currentEmail) {
+        localStorage.setItem(LAST_TEACHER_EMAIL_KEY, currentEmail.trim().toLowerCase());
+      }
       sessionStorage.removeItem('docencia_session_active');
       sessionStorage.removeItem('docencia_user_profile');
       sessionStorage.removeItem('docencia_teacher_email');
@@ -592,16 +626,18 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       localStorage.removeItem('docencia_session_active');
       localStorage.removeItem('docencia_teacher_email');
     }
-    try {
-      await api.logoutAuthSession(currentEmail);
-      await logoutUser();
-    } catch (e) {
-      console.warn('Logout error:', e);
-    }
     setToken(null);
     setUser(null);
     setMode('disconnected');
-  }, [user?.email]);
+    try {
+      await Promise.allSettled([
+        api.logoutAuthSession(currentEmail),
+        logoutUser(),
+      ]);
+    } catch (e) {
+      console.warn('Logout error:', e);
+    }
+  }, [user]);
 
   const testConnection = useCallback(async (): Promise<boolean> => {
     try {

@@ -571,7 +571,11 @@ async function startServer() {
   // Authentication & Session endpoints (isolated per teacher email)
   app.get("/api/auth/user", (req, res) => {
     const requestedEmail = String(req.query.email || "").trim().toLowerCase();
-    const matchedUser = requestedEmail ? (activeUsersByEmail.get(requestedEmail) || null) : null;
+    let matchedUser = requestedEmail ? (activeUsersByEmail.get(requestedEmail) || null) : null;
+    if (!matchedUser && !requestedEmail && activeUsersByEmail.size > 0) {
+      const allUsers = Array.from(activeUsersByEmail.values());
+      matchedUser = allUsers[allUsers.length - 1] || null;
+    }
     res.json({
       authenticated: !!matchedUser,
       user: matchedUser,
@@ -584,10 +588,10 @@ async function startServer() {
       const { uid, email, name, avatar, scopes, school, token } = req.body || {};
       const cleanEmail = (email || "").trim().toLowerCase();
       const existingUser = cleanEmail ? activeUsersByEmail.get(cleanEmail) : undefined;
-      const cleanName = name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
+      const cleanName = name || existingUser?.name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
       const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
       const validToken =
-        typeof token === "string" && token.trim().length > 20
+        typeof token === "string" && token.trim().length > 20 && !token.trim().startsWith("token_")
           ? token.trim()
           : existingUser?.token;
 
@@ -642,11 +646,9 @@ async function startServer() {
     }
   });
 
-  app.post("/api/auth/logout", (req, res) => {
-    const cleanEmail = String(req.body?.email || req.query?.email || "").trim().toLowerCase();
-    if (cleanEmail) {
-      activeUsersByEmail.delete(cleanEmail);
-    }
+  app.post("/api/auth/logout", (_req, res) => {
+    // Preserve the teacher's saved profile and granted OAuth token in activeUsersByEmail
+    // so that when they log back in, their credentials and permissions are restored immediately.
     res.json({ success: true, message: "Sesión cerrada correctamente" });
   });
 

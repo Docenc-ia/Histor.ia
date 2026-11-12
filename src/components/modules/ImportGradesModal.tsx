@@ -921,23 +921,43 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
             .replace(/\(responses.*?\)/gi, '')
             .trim() || 'Evaluación Forms';
 
-        const colConfigs: DetectedColumnConfig[] = fHeaders
-          .filter((h) => h !== nameCol && h !== secondaryNameCol && h !== emailCol)
-          .map((h) => ({
-            colKey: h,
-            isIncluded: h === scoreCol,
-            kind: h === scoreCol ? 'grade' : 'ignore',
+        // Keep strictly the identity columns and the score column, discarding all individual question columns
+        const filteredHeaders = [nameCol];
+        if (secondaryNameCol && secondaryNameCol !== nameCol) {
+          filteredHeaders.push(secondaryNameCol);
+        }
+        if (emailCol && emailCol !== nameCol && emailCol !== secondaryNameCol) {
+          filteredHeaders.push(emailCol);
+        }
+        if (scoreCol && !filteredHeaders.includes(scoreCol)) {
+          filteredHeaders.push(scoreCol);
+        }
+
+        const filteredRows = fRows.map((r) => {
+          const rowObj: Record<string, any> = {};
+          filteredHeaders.forEach((h) => {
+            rowObj[h] = r[h] !== undefined ? r[h] : '';
+          });
+          return rowObj;
+        });
+
+        const colConfigs: DetectedColumnConfig[] = [
+          {
+            colKey: scoreCol || 'Puntuación',
+            isIncluded: true,
+            kind: 'grade',
             targetCategoryMode: 'existing',
             targetCategoryId: evalCat.id,
             newCategoryName: '',
             targetSubcategoryMode: 'new',
             targetSubcategoryId: '',
-            subcategoryName: h === scoreCol ? cleanEvalTitle : h,
-          }));
+            subcategoryName: cleanEvalTitle,
+          },
+        ];
 
         const raw2D = [
-          fHeaders,
-          ...fRows.map((r) => fHeaders.map((h) => String(r[h] ?? ''))),
+          filteredHeaders,
+          ...filteredRows.map((r) => filteredHeaders.map((h) => String(r[h] ?? ''))),
         ];
 
         setActiveRemoteSpreadsheetId('');
@@ -949,9 +969,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         setSelectedHeaderRowIndex(0);
 
         processLoadedTableData(
-          fRows,
-          fHeaders,
-          `Google Forms: ${formResult.title}`,
+          filteredRows,
+          filteredHeaders,
+          `Google Forms: ${cleanEvalTitle}`,
           true,
           {
             nameCol,

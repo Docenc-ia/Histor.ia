@@ -898,12 +898,19 @@ export const requestGoogleAccessToken = async (
   }
 
   // Request OAuth token with full Workspace scopes via Google Identity Services for any teacher
+  // Debounce popup calls so rapid consecutive requests (like creating subfolders) never trigger overlapping popups
+  const now = Date.now();
+  if (now - lastPopupRequestTime < 4000) {
+    return '';
+  }
+
   if (
     (forceRefresh || hasRecentUserGesture()) &&
     typeof window !== 'undefined' &&
     (window as any).google?.accounts?.oauth2 &&
     getEffectiveOAuthClientId()
   ) {
+    lastPopupRequestTime = now;
     try {
       const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined, {
         prompt: activeEmail ? '' : 'select_account',
@@ -1046,9 +1053,12 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
   return recovered || null;
 };
 
+let isRefreshingToken = false;
+let lastPopupRequestTime = 0;
+
 /**
  * Universal fetch wrapper for Google Workspace APIs (Sheets, Drive, Calendar, Classroom, Gmail, Docs, Forms)
- * Automatically injects the active Google OAuth token and refreshes on 401 or 403 insufficient scopes.
+ * Automatically injects the active Google OAuth token.
  */
 export const fetchGoogleApiWithRetry = async (
   input: RequestInfo | URL,
@@ -1071,19 +1081,30 @@ export const fetchGoogleApiWithRetry = async (
   });
 
   // Intercept 401 Unauthorized (token expired) or 403 insufficient_scope:
-  // Invalidate the token immediately and request a fresh Workspace token with all permissions.
+  // Invalidate expired token in cache.
+  // CRITICAL: NEVER automatically trigger an interactive popup in background/sub-requests,
+  // to completely prevent infinite popup opening/closing loops.
   const wwwAuth = (response.headers.get('www-authenticate') || '').toLowerCase();
   if (response.status === 401 || (response.status === 403 && wwwAuth.includes('insufficient_scope'))) {
     invalidateExpiredAccessToken(activeToken);
-    try {
-      const freshToken = await requestGoogleAccessToken(true);
-      if (freshToken && isValidGoogleAccessToken(freshToken)) {
-        return await fetch(input, {
-          ...init,
-          headers: buildHeaders(freshToken, true),
-        });
+
+    // Only attempt recovery silently without triggering interactive popups inside loop
+    if (!isRefreshingToken) {
+      isRefreshingToken = true;
+      try {
+        const saved = getSavedTokenForEmail(getActiveTeacherEmail());
+        if (saved && saved !== activeToken && isValidGoogleAccessToken(saved)) {
+          setCachedAccessToken(saved);
+          return await fetch(input, {
+            ...init,
+            headers: buildHeaders(saved, true),
+          });
+        }
+      } catch (_) {
+      } finally {
+        isRefreshingToken = false;
       }
-    } catch (_) {}
+    }
   }
 
   return response;

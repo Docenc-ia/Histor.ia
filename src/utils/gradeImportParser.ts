@@ -228,12 +228,14 @@ export function autoDetectColumnsConfiguration(
 
     const clean = col.trim();
     const lower = normalizeImportText(clean);
-
-    // Ignore obvious non-data or calculated summary columns by default (teacher can still enable them)
+    // Ignore non-data, survey questions, long prompts, or calculated summary columns by default (teacher can still enable them)
     const isSummaryOrMeta =
-      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|marca temporal|timestamp|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora/i.test(
+      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|marca temporal|timestamp|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora|pregunta|consigna|observacion|comentario|devolucion|feedback|descripcion|respuesta/i.test(
         lower
-      );
+      ) ||
+      clean.length > 50 || // Column header is a long question text
+      clean.endsWith('?') ||
+      clean.startsWith('¿');
 
     // Check if it's an Attendance or Disposition column
     if (/ausencia|falta|inasistencia|ausentes/i.test(lower) && !/justificada/i.test(lower)) {

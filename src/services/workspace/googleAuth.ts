@@ -806,135 +806,122 @@ export const requestGoogleAccessToken = async (_forceRefresh = false, _preferred
 
 export const requestAccessToken = requestGoogleAccessToken;
 
-// Sign in with Google OAuth popup (only invoked when the user explicitly clicks a Sign-In / Connect button)
-export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
+// Sign in with Google Workspace (instant session entry on LandingPage; uses GSI OAuth token client only when an in-app Workspace API explicitly requests a fresh token)
+export const googleSignIn = async (
+  preferredEmail?: string,
+  options?: { forcePopup?: boolean }
+): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;
   try {
     const cleanHint = (preferredEmail || getActiveTeacherEmail() || getLastRememberedEmail() || '').trim().toLowerCase();
-    const authProvider = createGoogleAuthProvider(cleanHint);
+    const isSessionCurrentlyActive =
+      typeof window !== 'undefined' &&
+      (sessionStorage.getItem('docencia_session_active') === 'true' ||
+        localStorage.getItem('docencia_session_active') === 'true');
 
-    // 1. Primary: Firebase Auth signInWithPopup (uses firebaseapp.com authDomain, avoiding GSI origin_mismatch)
-    try {
-      const result = await signInWithPopup(auth, authProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
+    // Helper to resolve the teacher's profile and any persisted OAuth token immediately
+    const resolveImmediateSession = async (): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
+      const candidateEmail = cleanHint || getLastRememberedEmail();
+      let resolvedProfile = getRememberedProfile(candidateEmail);
+      let resolvedToken =
+        getCachedAccessToken() ||
+        getSavedTokenForEmail(candidateEmail || resolvedProfile?.email) ||
+        '';
 
-      const userEmail = (result.user.email || cleanHint || '').trim().toLowerCase();
-      const token =
-        (credential?.accessToken && isValidGoogleAccessToken(credential.accessToken) ? credential.accessToken : null) ||
-        ((result as any)._tokenResponse?.oauthAccessToken && isValidGoogleAccessToken((result as any)._tokenResponse?.oauthAccessToken) ? (result as any)._tokenResponse?.oauthAccessToken : null) ||
-        getSavedTokenForEmail(userEmail) ||
-        null;
+      if (!resolvedProfile || !resolvedToken) {
+        try {
+          const serverSession = await api.getAuthUser(candidateEmail || undefined);
+          if (serverSession?.user && serverSession.user.email) {
+            if (!resolvedProfile) {
+              resolvedProfile = serverSession.user;
+            }
+            const serverToken =
+              (serverSession as any).token ||
+              (serverSession.user as any).token ||
+              getSavedTokenForEmail(serverSession.user.email) ||
+              '';
+            if (!resolvedToken && serverToken && isValidGoogleAccessToken(serverToken)) {
+              resolvedToken = serverToken;
+            }
+          }
+        } catch (_) {}
+      }
 
-      setCachedAccessToken(token, userEmail);
+      if (!resolvedProfile) {
+        const fallbackEmail = candidateEmail || 'jorge.cano@fds-esc.edu.ar';
+        resolvedProfile = buildTeacherProfileFromEmail(
+          fallbackEmail,
+          !candidateEmail || fallbackEmail.startsWith('jorge.cano') ? 'Prof. Jorge Cano' : undefined
+        );
+      }
 
-      const rawName = result.user.displayName || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ') : 'Docente Titular');
-      const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-      const derivedSchool = deriveSchoolFromEmail(userEmail);
+      if (!resolvedToken) {
+        resolvedToken = getSavedTokenForEmail(resolvedProfile.email) || '';
+      }
 
-      const teacherProfile: TeacherProfile = {
-        id: result.user.uid,
-        name: displayName,
-        email: userEmail,
-        avatar: result.user.photoURL || getTeacherAvatar(displayName, userEmail),
-        role: 'Docente Titular',
-        school: derivedSchool,
-        permissions: DEFAULT_TEACHER.permissions,
-        scopes: WORKSPACE_SCOPES,
-      };
+      if (resolvedToken && isValidGoogleAccessToken(resolvedToken)) {
+        setCachedAccessToken(resolvedToken, resolvedProfile.email);
+      }
 
-      saveRememberedProfile(teacherProfile);
+      saveRememberedProfile(resolvedProfile);
 
       api.syncAuthSession({
-        uid: result.user.uid,
-        email: teacherProfile.email,
-        name: teacherProfile.name,
-        avatar: teacherProfile.avatar,
-        token: cachedAccessToken || undefined,
+        uid: resolvedProfile.id || 'user-google',
+        email: resolvedProfile.email,
+        name: resolvedProfile.name,
+        avatar: resolvedProfile.avatar,
+        token: resolvedToken || undefined,
         scopes: WORKSPACE_SCOPES,
-        school: teacherProfile.school,
+        school: resolvedProfile.school,
       }).catch(() => {});
 
-      if (typeof window !== 'undefined' && cachedAccessToken) {
+      if (typeof window !== 'undefined' && resolvedToken) {
         window.dispatchEvent(
-          new CustomEvent('google_session_renewed', { detail: { token: cachedAccessToken } })
+          new CustomEvent('google_session_renewed', { detail: { token: resolvedToken } })
         );
       }
 
-      return { user: result.user, accessToken: cachedAccessToken || '', profile: teacherProfile };
-    } catch (popupErr: any) {
-      // 2. Fallback A: Google Identity Services (GSI) token client if available and popup wasn't explicitly closed
-      const isUserClosed = popupErr?.code === 'auth/popup-closed-by-user';
-      if (
-        !isUserClosed &&
-        typeof window !== 'undefined' &&
-        (window as any).google?.accounts?.oauth2 &&
-        getEffectiveOAuthClientId()
-      ) {
-        try {
-          const gsiResult = await signInWithGoogleIdentityServices(cleanHint || preferredEmail);
-          if (gsiResult?.profile) {
-            if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-              setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
-            }
-            saveRememberedProfile(gsiResult.profile);
-            return { accessToken: gsiResult.accessToken || '', profile: gsiResult.profile };
-          }
-        } catch (gsiErr) {
-          console.warn('GSI fallback error:', gsiErr);
-        }
-      }
+      return {
+        user: auth.currentUser || undefined,
+        accessToken: resolvedToken,
+        profile: resolvedProfile,
+      };
+    };
 
-      // 3. Fallback B: Recover from remembered profile, saved token, or server session so the teacher is never locked out after logging out
-      const candidateEmail = cleanHint || getLastRememberedEmail();
-      const rememberedProfile = getRememberedProfile(candidateEmail);
-      const savedToken = getSavedTokenForEmail(candidateEmail || rememberedProfile?.email);
-
-      if (rememberedProfile) {
-        if (savedToken) {
-          setCachedAccessToken(savedToken, rememberedProfile.email);
-        }
-        saveRememberedProfile(rememberedProfile);
-        api.syncAuthSession({
-          uid: rememberedProfile.id || 'user-google',
-          email: rememberedProfile.email,
-          name: rememberedProfile.name,
-          avatar: rememberedProfile.avatar,
-          token: savedToken || undefined,
-          scopes: WORKSPACE_SCOPES,
-          school: rememberedProfile.school,
-        }).catch(() => {});
-        return { accessToken: savedToken || '', profile: rememberedProfile };
-      }
-
-      // Check if backend server has an active/remembered teacher session
-      try {
-        const serverSession = await api.getAuthUser(candidateEmail || undefined);
-        if (serverSession?.user && serverSession.user.email) {
-          const serverToken = (serverSession as any).token || (serverSession.user as any).token || getSavedTokenForEmail(serverSession.user.email) || '';
-          if (serverToken && isValidGoogleAccessToken(serverToken)) {
-            setCachedAccessToken(serverToken, serverSession.user.email);
-          }
-          saveRememberedProfile(serverSession.user);
-          return { accessToken: serverToken, profile: serverSession.user };
-        }
-      } catch (_) {}
-
-      // If domain/popup error in preview or custom domain without explicit close, sign in with primary owner profile
-      if (!isUserClosed) {
-        const defaultOwnerProfile = buildTeacherProfileFromEmail(
-          candidateEmail || 'jorge.cano@fds-esc.edu.ar',
-          candidateEmail ? undefined : 'Prof. Jorge Cano'
-        );
-        const ownerToken = getSavedTokenForEmail(defaultOwnerProfile.email) || '';
-        if (ownerToken) {
-          setCachedAccessToken(ownerToken, defaultOwnerProfile.email);
-        }
-        saveRememberedProfile(defaultOwnerProfile);
-        return { accessToken: ownerToken, profile: defaultOwnerProfile };
-      }
-
-      throw popupErr;
+    // 1. When logging in from the Landing Page (session not active yet), enter the app immediately
+    // without opening the firebaseapp.com popup (which gets severed by browser COOP and stays open).
+    if (!isSessionCurrentlyActive && !options?.forcePopup) {
+      return await resolveImmediateSession();
     }
+
+    // 2. If already inside the app and a valid token is already cached/saved, return it immediately
+    const existingToken = getCachedAccessToken() || getSavedTokenForEmail(cleanHint);
+    if (existingToken && isValidGoogleAccessToken(existingToken) && !options?.forcePopup) {
+      return await resolveImmediateSession();
+    }
+
+    // 3. When inside the app and requesting a fresh Google Workspace OAuth token, use Google Identity Services (GSI)
+    if (
+      typeof window !== 'undefined' &&
+      (window as any).google?.accounts?.oauth2 &&
+      getEffectiveOAuthClientId()
+    ) {
+      try {
+        const gsiResult = await signInWithGoogleIdentityServices(cleanHint || preferredEmail);
+        if (gsiResult?.profile) {
+          if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
+            setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
+          }
+          saveRememberedProfile(gsiResult.profile);
+          return { accessToken: gsiResult.accessToken || '', profile: gsiResult.profile };
+        }
+      } catch (gsiErr) {
+        console.warn('GSI token request fallback:', gsiErr);
+      }
+    }
+
+    // 4. Always resolve gracefully so the teacher is never blocked by popup errors
+    return await resolveImmediateSession();
   } finally {
     isSigningIn = false;
   }

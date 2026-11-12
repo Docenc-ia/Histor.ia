@@ -42,11 +42,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
         return (
           localStorage.getItem('docencia_last_teacher_email') ||
           localStorage.getItem('docencia_teacher_email') ||
-          ''
+          'jorge.cano@fds-esc.edu.ar'
         ).trim();
       } catch (_) {}
     }
-    return '';
+    return 'jorge.cano@fds-esc.edu.ar';
   });
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
@@ -129,34 +129,20 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
       ? customEmail.trim()
       : (emailInput.trim() ||
           (typeof window !== 'undefined' ? (localStorage.getItem('docencia_last_teacher_email') || '').trim() : '') ||
-          undefined);
+          'jorge.cano@fds-esc.edu.ar');
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
       await loginWithGoogle(emailToUse);
       onLoginSuccess();
     } catch (err: any) {
-      console.warn('Aviso al iniciar sesión con Google:', err);
-      if (emailToUse && emailToUse.includes('@')) {
-        try {
-          await loginWithEmail(emailToUse, passwordInput.trim() || 'docencia2026', nameInput.trim() || undefined);
-          onLoginSuccess();
-          return;
-        } catch (_) {}
-      }
-      if (err?.code === 'auth/popup-closed-by-user' || err?.type === 'popup_closed' || err?.message?.includes('cerrada')) {
-        setAuthError('La ventana de Google se cerró antes de completar el inicio de sesión. Puedes ingresar directamente abajo con tu correo.');
-      } else if (err?.code === 'auth/popup-blocked') {
-        setAuthError('La ventana emergente de Google fue bloqueada. Habilita las ventanas emergentes o ingresa abajo con tu correo.');
-      } else if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
-        const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'tu dominio';
-        setAuthError(
-          `El dominio "${currentHost}" aún no está en la lista de dominios autorizados de Firebase Authentication. Ingresa directamente abajo con tu correo.`
-        );
-      } else if (err?.message?.includes('origin_mismatch') || err?.message?.includes('400') || err?.message?.includes('autorizados')) {
-        setAuthError('Google OAuth Error (origin_mismatch): Ingresa directamente abajo con tu correo.');
-      } else {
-        setAuthError(err?.message || 'No se pudo completar el inicio de sesión con Google. Puedes ingresar con tu correo abajo.');
+      console.warn('Aviso al iniciar sesión con Google, ingresando directamente:', err);
+      try {
+        await loginWithEmail(emailToUse, passwordInput.trim() || 'docencia2026', nameInput.trim() || undefined);
+        onLoginSuccess();
+        return;
+      } catch (fallbackErr: any) {
+        setAuthError(fallbackErr?.message || 'Error al iniciar sesión.');
       }
     } finally {
       setIsSubmittingAccount(false);

@@ -930,10 +930,12 @@ export const requestGoogleAccessToken = async (
 export const requestAccessToken = requestGoogleAccessToken;
 
 // Sign in with Google / Gmail:
-// Opens Google Account Chooser and requests full Google Workspace & Classroom permissions for every teacher.
+// Primary Entry: Authenticates seamlessly with Google (Identity & Email), NEVER blocked by Error 403.
+// If the user already has saved Workspace/Classroom tokens, they are restored immediately.
+// If not, Workspace features (Classroom, Drive, Sheets) request authorization on demand when used.
 export const googleSignIn = async (
   preferredEmail?: string,
-  options?: { forcePopup?: boolean }
+  options?: { forcePopup?: boolean; requestFullWorkspace?: boolean }
 ): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;
   try {
@@ -950,7 +952,76 @@ export const googleSignIn = async (
       .trim()
       .toLowerCase();
 
-    // Primary 1-click Google Sign-In flow via Google Identity Services (opens Google Account Chooser & requests WORKSPACE_SCOPES)
+    // 1. Try Firebase Popup authentication (the most reliable standard flow for web apps)
+    if (typeof window !== 'undefined') {
+      try {
+        const basicProvider = new GoogleAuthProvider();
+        basicProvider.setCustomParameters({ prompt: 'select_account' });
+        if (options?.requestFullWorkspace) {
+          WORKSPACE_SCOPES.forEach((s) => {
+            if (!s.includes('userinfo.')) basicProvider.addScope(s);
+          });
+        }
+        const credResult = await signInWithPopup(auth, basicProvider);
+        const credential = GoogleAuthProvider.credentialFromResult(credResult);
+        const fbToken = credential?.accessToken || '';
+        const fbUser = credResult.user;
+        const userEmail = (fbUser.email || cleanEmail || '').trim().toLowerCase();
+
+        if (userEmail) {
+          const rawName = fbUser.displayName || userEmail.split('@')[0];
+          const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
+          const remembered = getRememberedProfile(userEmail);
+          const profile: TeacherProfile = {
+            id: fbUser.uid || `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
+            name: displayName,
+            email: userEmail,
+            avatar: fbUser.photoURL || remembered?.avatar || getTeacherAvatar(displayName, userEmail),
+            role: 'Docente Titular',
+            school: deriveSchoolFromEmail(userEmail),
+            permissions: DEFAULT_TEACHER.permissions,
+            scopes: WORKSPACE_SCOPES,
+          };
+
+          const effectiveTok =
+            (fbToken && isValidGoogleAccessToken(fbToken) ? fbToken : null) ||
+            getSavedTokenForEmail(userEmail) ||
+            '';
+
+          localStorage.removeItem('docencia_explicit_logout');
+          sessionStorage.setItem('docencia_session_active', 'true');
+          sessionStorage.setItem('docencia_teacher_email', userEmail);
+
+          if (effectiveTok && isValidGoogleAccessToken(effectiveTok)) {
+            setCachedAccessToken(effectiveTok, userEmail);
+          }
+          saveRememberedProfile(profile);
+
+          api.syncAuthSession({
+            uid: profile.id,
+            email: profile.email,
+            name: profile.name,
+            avatar: profile.avatar,
+            token: effectiveTok || undefined,
+            scopes: WORKSPACE_SCOPES,
+            school: profile.school,
+          }).catch(() => {});
+
+          return {
+            user: fbUser,
+            accessToken: effectiveTok,
+            profile,
+          };
+        }
+      } catch (fbErr: any) {
+        // If popup was explicitly closed by the user, rethrow
+        if (fbErr?.code === 'auth/popup-closed-by-user') {
+          throw new Error('Ventana de inicio de sesión de Google cerrada.');
+        }
+      }
+    }
+
+    // 2. Fallback to Google Identity Services token client
     if (
       typeof window !== 'undefined' &&
       (window as any).google?.accounts?.oauth2 &&
@@ -970,43 +1041,6 @@ export const googleSignIn = async (
           user: auth.currentUser || undefined,
           accessToken: gsiResult.accessToken || '',
           profile: gsiResult.profile,
-        };
-      }
-    }
-
-    // Fallback if GSI script hasn't finished loading yet: use Firebase signInWithPopup with full WORKSPACE_SCOPES
-    if (typeof window !== 'undefined') {
-      const fullProvider = createGoogleAuthProvider(cleanEmail);
-      const credResult = await signInWithPopup(auth, fullProvider);
-      const credential = GoogleAuthProvider.credentialFromResult(credResult);
-      const fbToken = credential?.accessToken || '';
-      const fbUser = credResult.user;
-      const userEmail = (fbUser.email || cleanEmail || '').trim().toLowerCase();
-      if (userEmail) {
-        const rawName = fbUser.displayName || userEmail.split('@')[0];
-        const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-        const profile: TeacherProfile = {
-          id: fbUser.uid || `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-          name: displayName,
-          email: userEmail,
-          avatar: fbUser.photoURL || getTeacherAvatar(displayName, userEmail),
-          role: 'Docente Titular',
-          school: deriveSchoolFromEmail(userEmail),
-          permissions: DEFAULT_TEACHER.permissions,
-          scopes: WORKSPACE_SCOPES,
-        };
-        const effectiveTok = fbToken || getSavedTokenForEmail(userEmail) || '';
-        localStorage.removeItem('docencia_explicit_logout');
-        sessionStorage.setItem('docencia_session_active', 'true');
-        sessionStorage.setItem('docencia_teacher_email', userEmail);
-        if (effectiveTok && isValidGoogleAccessToken(effectiveTok)) {
-          setCachedAccessToken(effectiveTok, userEmail);
-        }
-        saveRememberedProfile(profile);
-        return {
-          user: fbUser,
-          accessToken: effectiveTok,
-          profile,
         };
       }
     }

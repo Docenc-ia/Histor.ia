@@ -263,15 +263,9 @@ export const getSavedTokenForEmail = (email?: string): string | null => {
     const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
     if (!raw) return null;
     const map: Record<string, string> = JSON.parse(raw);
-    const cleanEmail = (email || getLastRememberedEmail() || '').trim().toLowerCase();
+    const cleanEmail = (email || getActiveTeacherEmail() || '').trim().toLowerCase();
     if (cleanEmail && map[cleanEmail]) {
       const decoded = decodeStoredToken(map[cleanEmail]);
-      if (decoded && isValidGoogleAccessToken(decoded)) return decoded;
-    }
-    const keys = Object.keys(map);
-    if (!cleanEmail && keys.length > 0) {
-      const lastKey = keys[keys.length - 1];
-      const decoded = decodeStoredToken(map[lastKey]);
       if (decoded && isValidGoogleAccessToken(decoded)) return decoded;
     }
   } catch (_) {}
@@ -412,15 +406,29 @@ if (typeof window !== 'undefined') {
 }
 
 export const getCachedAccessToken = (): string | null => {
+  if (typeof window !== 'undefined') {
+    try {
+      const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
+      const isSessionActive =
+        !isExplicitLogout &&
+        (sessionStorage.getItem('docencia_session_active') === 'true' ||
+          localStorage.getItem('docencia_session_active') === 'true');
+      if (!isSessionActive) {
+        return null;
+      }
+    } catch (_) {}
+  }
+
   // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
     return cachedAccessToken;
   }
 
-  // 2. sessionStorage + localStorage persistence (survives page reloads, new tabs, and browser restarts)
+  // 2. sessionStorage + localStorage persistence for the currently authenticated teacher
   if (typeof window !== 'undefined') {
     setupCrossTabTokenSync();
     try {
+      const activeEmail = getActiveTeacherEmail();
       const rawStored =
         sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
         localStorage.getItem(TOKEN_STORAGE_KEY);
@@ -435,14 +443,15 @@ export const getCachedAccessToken = (): string | null => {
           0
       );
 
-      const stored = decodeStoredToken(rawStored) || getSavedTokenForEmail(getActiveTeacherEmail());
+      const stored =
+        (activeEmail ? getSavedTokenForEmail(activeEmail) : null) ||
+        decodeStoredToken(rawStored);
 
       if (stored && isValidGoogleAccessToken(stored)) {
         const now = Date.now();
         cachedAccessToken = stored;
         tokenIssuedAt = storedIssued || now;
         tokenExpiresAt = storedExpiry || (now + TOKEN_LIFETIME_MS);
-        // Ensure both sessionStorage and localStorage stay synchronized
         const encoded = encodeStoredToken(stored);
         sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
         localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
@@ -521,16 +530,31 @@ export const clearAuthSession = (): void => {
   setCachedAccessToken(null);
 };
 
-// Listen to Firebase Auth state (never wipe a valid GIS OAuth token stored in localStorage/sessionStorage)
+// Listen to Firebase Auth state (only when session is active and not explicitly logged out)
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  const initialToken = getCachedAccessToken();
+  const isSessionActive =
+    typeof window !== 'undefined' &&
+    localStorage.getItem('docencia_explicit_logout') !== 'true' &&
+    (sessionStorage.getItem('docencia_session_active') === 'true' ||
+      localStorage.getItem('docencia_session_active') === 'true');
+
+  const initialToken = isSessionActive ? getCachedAccessToken() : null;
   if (initialToken && !auth.currentUser) {
     syncFirebaseAuthWithAccessToken(initialToken);
   }
   return onAuthStateChanged(auth, async (user: User | null) => {
+    const currentlyActive =
+      typeof window !== 'undefined' &&
+      localStorage.getItem('docencia_explicit_logout') !== 'true' &&
+      (sessionStorage.getItem('docencia_session_active') === 'true' ||
+        localStorage.getItem('docencia_session_active') === 'true');
+    if (!currentlyActive) {
+      if (!isSigningIn && onAuthFailure) onAuthFailure();
+      return;
+    }
     const activeToken = getCachedAccessToken();
     if (user && activeToken) {
       if (onAuthSuccess) onAuthSuccess(user, activeToken);
@@ -659,7 +683,7 @@ export const getEffectiveOAuthClientId = (): string => {
 
 let inFlightGsiAuthPromise: Promise<{ accessToken: string; profile: TeacherProfile }> | null = null;
 
-// Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser for ANY user
+// Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser for ANY teacher
 export const signInWithGoogleIdentityServices = (
   preferredEmail?: string,
   options?: { prompt?: string }
@@ -684,18 +708,19 @@ export const signInWithGoogleIdentityServices = (
     const google = (window as any).google;
     const clientId = getEffectiveOAuthClientId();
     if (!google?.accounts?.oauth2 || !clientId) {
-      return settleReject(new Error('Google Identity Services no está listo. Verifica tu conexión.'));
+      return settleReject(new Error('El servicio de inicio de sesión de Google se está cargando. Intentá nuevamente en un segundo.'));
     }
 
-    const cleanHint = (preferredEmail || getActiveTeacherEmail() || getLastRememberedEmail() || '').trim().toLowerCase() || undefined;
+    const cleanHint = (preferredEmail || getActiveTeacherEmail() || '').trim().toLowerCase() || undefined;
     const promptMode = options?.prompt !== undefined ? options.prompt : (cleanHint ? '' : 'select_account');
+    const useHint = promptMode !== 'select_account' && cleanHint ? cleanHint : undefined;
 
     try {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: WORKSPACE_SCOPES.join(' '),
         prompt: promptMode,
-        ...(cleanHint ? { hint: cleanHint } : {}),
+        ...(useHint ? { hint: useHint } : {}),
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
             return settleReject(new Error(tokenResponse.error_description || tokenResponse.error || 'Error en Google OAuth'));
@@ -712,14 +737,27 @@ export const signInWithGoogleIdentityServices = (
             });
             const userInfo = await res.json().catch(() => ({}));
             const userEmail = (userInfo.email || cleanHint || '').trim().toLowerCase();
+            if (!userEmail) {
+              return settleReject(new Error('No se pudo identificar el correo de la cuenta de Google seleccionada.'));
+            }
             const rawName = userInfo.name || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') : 'Docente');
             const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
             const derivedSchool = deriveSchoolFromEmail(userEmail);
 
+            if (typeof window !== 'undefined') {
+              try {
+                localStorage.removeItem('docencia_explicit_logout');
+                sessionStorage.setItem('docencia_session_active', 'true');
+                localStorage.setItem('docencia_session_active', 'true');
+                sessionStorage.setItem('docencia_teacher_email', userEmail);
+                localStorage.setItem('docencia_teacher_email', userEmail);
+              } catch (_) {}
+            }
+
             setCachedAccessToken(accessToken, userEmail, expiresIn);
 
             const profile: TeacherProfile = {
-              id: userInfo.sub || `google-${Date.now()}`,
+              id: userInfo.sub || `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
               name: displayName,
               email: userEmail,
               avatar: userInfo.picture || getTeacherAvatar(displayName, userEmail),
@@ -753,19 +791,21 @@ export const signInWithGoogleIdentityServices = (
           }
         },
         error_callback: (err: any) => {
-          const isBlocked = err?.type === 'popup_blocked' || err?.type === 'popup_closed' || String(err?.message || '').toLowerCase().includes('popup');
-          if (isBlocked) {
+          const errType = String(err?.type || '').toLowerCase();
+          if (errType === 'popup_closed') {
+            settleReject(new Error('Seleccioná tu cuenta de Google en la ventana emergente para completar el ingreso.'));
+          } else if (errType === 'popup_blocked') {
             notifyGoogleSessionExpired('popup_blocked');
-            settleReject(new Error('La ventana emergente de Google fue bloqueada o cerrada por el navegador.'));
+            settleReject(new Error('El navegador bloqueó la ventana de Google. Permití las ventanas emergentes o ingresá con tu correo y contraseña abajo.'));
           } else {
-            settleReject(err);
+            settleReject(new Error(err?.message || 'Cancelaste o cerraste el inicio de sesión de Google.'));
           }
         },
       });
 
       client.requestAccessToken({
         prompt: promptMode,
-        ...(cleanHint ? { hint: cleanHint } : {}),
+        ...(useHint ? { hint: useHint } : {}),
       });
     } catch (err) {
       settleReject(err);
@@ -787,7 +827,7 @@ export const invalidateExpiredAccessToken = (expiredToken?: string | null): void
       const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
       if (raw) {
         const map: Record<string, string> = JSON.parse(raw);
-        const activeEmail = (getActiveTeacherEmail() || getLastRememberedEmail()).trim().toLowerCase();
+        const activeEmail = getActiveTeacherEmail().trim().toLowerCase();
         if (activeEmail && map[activeEmail]) {
           const decoded = decodeStoredToken(map[activeEmail]);
           if (!tokenToClear || decoded === tokenToClear) {
@@ -814,8 +854,7 @@ export const requestGoogleAccessToken = async (
 ): Promise<string> => {
   const activeEmail = (
     preferredEmail ||
-    getActiveTeacherEmail() ||
-    getLastRememberedEmail()
+    getActiveTeacherEmail()
   )
     .trim()
     .toLowerCase();
@@ -828,10 +867,12 @@ export const requestGoogleAccessToken = async (
       return existing;
     }
 
-    const savedLocal = getSavedTokenForEmail(activeEmail);
-    if (savedLocal && isValidGoogleAccessToken(savedLocal)) {
-      setCachedAccessToken(savedLocal, activeEmail);
-      return savedLocal;
+    if (activeEmail) {
+      const savedLocal = getSavedTokenForEmail(activeEmail);
+      if (savedLocal && isValidGoogleAccessToken(savedLocal)) {
+        setCachedAccessToken(savedLocal, activeEmail);
+        return savedLocal;
+      }
     }
   }
 
@@ -844,7 +885,9 @@ export const requestGoogleAccessToken = async (
     getEffectiveOAuthClientId()
   ) {
     try {
-      const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined);
+      const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined, {
+        prompt: activeEmail ? '' : 'select_account',
+      });
       if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
         setCachedAccessToken(gsiResult.accessToken, gsiResult.profile?.email || activeEmail);
         return gsiResult.accessToken;
@@ -871,129 +914,84 @@ export const requestGoogleAccessToken = async (
 
 export const requestAccessToken = requestGoogleAccessToken;
 
-// Sign in with Google Workspace (instant session entry on LandingPage; uses GSI OAuth token client only when an in-app Workspace API explicitly requests a fresh token)
+// Sign in with Google Workspace:
+// - When called from LandingPage (logged out), ALWAYS authenticates via Google Identity Services account chooser so each teacher logs into their own account.
+// - When called while already logged in inside the app, reuses or refreshes the active teacher's OAuth token.
 export const googleSignIn = async (
   preferredEmail?: string,
   options?: { forcePopup?: boolean }
 ): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;
   try {
-    const cleanHint = (preferredEmail || getActiveTeacherEmail() || getLastRememberedEmail() || '').trim().toLowerCase();
+    const isExplicitLogout =
+      typeof window !== 'undefined' &&
+      localStorage.getItem('docencia_explicit_logout') === 'true';
     const isSessionCurrentlyActive =
       typeof window !== 'undefined' &&
+      !isExplicitLogout &&
       (sessionStorage.getItem('docencia_session_active') === 'true' ||
         localStorage.getItem('docencia_session_active') === 'true');
 
-    // Helper to resolve the teacher's profile and any persisted OAuth token immediately
-    const resolveImmediateSession = async (): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
-      const candidateEmail = cleanHint || getLastRememberedEmail();
-      let resolvedProfile = getRememberedProfile(candidateEmail);
-      let resolvedToken =
-        getCachedAccessToken() ||
-        getSavedTokenForEmail(candidateEmail || resolvedProfile?.email) ||
-        '';
+    const activeEmail = getActiveTeacherEmail();
+    const cleanHint = (preferredEmail || activeEmail || '').trim().toLowerCase();
 
-      if (!resolvedProfile || !resolvedToken) {
-        try {
-          const serverSession = await api.getAuthUser(candidateEmail || undefined);
-          if (serverSession?.user && serverSession.user.email) {
-            if (!resolvedProfile) {
-              resolvedProfile = serverSession.user;
-            }
-            const serverToken =
-              (serverSession as any).token ||
-              (serverSession.user as any).token ||
-              getSavedTokenForEmail(serverSession.user.email) ||
-              '';
-            if (!resolvedToken && serverToken && isValidGoogleAccessToken(serverToken)) {
-              resolvedToken = serverToken;
-            }
-          }
-        } catch (_) {}
+    // If the teacher is ALREADY logged in inside the app and has a valid token, return it without popping up a window
+    if (isSessionCurrentlyActive && !options?.forcePopup && activeEmail) {
+      const existingToken = getCachedAccessToken() || getSavedTokenForEmail(activeEmail);
+      const existingProfile = getRememberedProfile(activeEmail);
+      if (existingToken && isValidGoogleAccessToken(existingToken) && existingProfile) {
+        setCachedAccessToken(existingToken, activeEmail);
+        return {
+          user: auth.currentUser || undefined,
+          accessToken: existingToken,
+          profile: existingProfile,
+        };
       }
+    }
 
-      if (!resolvedProfile) {
-        const fallbackEmail = candidateEmail || 'jorge.cano@fds-esc.edu.ar';
-        resolvedProfile = buildTeacherProfileFromEmail(
-          fallbackEmail,
-          !candidateEmail || fallbackEmail.startsWith('jorge.cano') ? 'Prof. Jorge Cano' : undefined
-        );
+    // Authenticate with Google Identity Services (GSI)
+    // On LandingPage (!isSessionCurrentlyActive), use prompt: 'select_account' so the user actively selects their Google account
+    // Inside the app (session active), use prompt: '' with hint so token renewal doesn't nag for permissions again
+    const gsiResult = await signInWithGoogleIdentityServices(
+      isSessionCurrentlyActive ? (cleanHint || undefined) : undefined,
+      {
+        prompt: isSessionCurrentlyActive && !options?.forcePopup ? '' : 'select_account',
       }
+    );
 
-      if (!resolvedToken) {
-        resolvedToken = getSavedTokenForEmail(resolvedProfile.email) || '';
-      }
+    if (!gsiResult?.profile || !gsiResult.profile.email) {
+      throw new Error('No se pudo completar el inicio de sesión con Google.');
+    }
 
-      if (resolvedToken && isValidGoogleAccessToken(resolvedToken)) {
-        setCachedAccessToken(resolvedToken, resolvedProfile.email);
-      }
+    if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
+      setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
+    }
+    saveRememberedProfile(gsiResult.profile);
 
-      saveRememberedProfile(resolvedProfile);
-
-      api.syncAuthSession({
-        uid: resolvedProfile.id || 'user-google',
-        email: resolvedProfile.email,
-        name: resolvedProfile.name,
-        avatar: resolvedProfile.avatar,
-        token: resolvedToken || undefined,
-        scopes: WORKSPACE_SCOPES,
-        school: resolvedProfile.school,
-      }).catch(() => {});
-
-      if (typeof window !== 'undefined' && resolvedToken) {
-        window.dispatchEvent(
-          new CustomEvent('google_session_renewed', { detail: { token: resolvedToken } })
-        );
-      }
-
-      return {
-        user: auth.currentUser || undefined,
-        accessToken: resolvedToken,
-        profile: resolvedProfile,
-      };
+    return {
+      user: auth.currentUser || undefined,
+      accessToken: gsiResult.accessToken || '',
+      profile: gsiResult.profile,
     };
-
-    // 1. When logging in from the Landing Page (session not active yet), enter the app immediately
-    // without opening the firebaseapp.com popup (which gets severed by browser COOP and stays open).
-    if (!isSessionCurrentlyActive && !options?.forcePopup) {
-      return await resolveImmediateSession();
-    }
-
-    // 2. If already inside the app and a valid token is already cached/saved, return it immediately
-    const existingToken = getCachedAccessToken() || getSavedTokenForEmail(cleanHint);
-    if (existingToken && isValidGoogleAccessToken(existingToken) && !options?.forcePopup) {
-      return await resolveImmediateSession();
-    }
-
-    // 3. When inside the app and requesting a fresh Google Workspace OAuth token, use Google Identity Services (GSI)
-    if (
-      typeof window !== 'undefined' &&
-      (window as any).google?.accounts?.oauth2 &&
-      getEffectiveOAuthClientId()
-    ) {
-      try {
-        const gsiResult = await signInWithGoogleIdentityServices(cleanHint || preferredEmail);
-        if (gsiResult?.profile) {
-          if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-            setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
-          }
-          saveRememberedProfile(gsiResult.profile);
-          return { accessToken: gsiResult.accessToken || '', profile: gsiResult.profile };
-        }
-      } catch (gsiErr) {
-        console.warn('GSI token request fallback:', gsiErr);
-      }
-    }
-
-    // 4. Always resolve gracefully so the teacher is never blocked by popup errors
-    return await resolveImmediateSession();
   } finally {
     isSigningIn = false;
   }
 };
 
-// Sign out of active session while preserving remembered email and per-email OAuth tokens for 1-click re-login
+// Sign out of active session: requires the user to log in again (with Google or password) on next entry,
+// while keeping their granted per-email OAuth token in localStorage for once they authenticate again.
 export const logoutUser = async (): Promise<void> => {
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem('docencia_explicit_logout', 'true');
+      sessionStorage.removeItem('docencia_session_active');
+      sessionStorage.removeItem('docencia_user_profile');
+      sessionStorage.removeItem('docencia_teacher_email');
+      localStorage.removeItem('docencia_session_active');
+      localStorage.removeItem('docencia_user_profile');
+      localStorage.removeItem('docencia_teacher_email');
+    } catch (_) {}
+  }
   clearAuthSession();
   try {
     await signOut(auth);

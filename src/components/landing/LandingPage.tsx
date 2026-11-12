@@ -42,11 +42,11 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
         return (
           localStorage.getItem('docencia_last_teacher_email') ||
           localStorage.getItem('docencia_teacher_email') ||
-          'jorge.cano@fds-esc.edu.ar'
+          ''
         ).trim();
       } catch (_) {}
     }
-    return 'jorge.cano@fds-esc.edu.ar';
+    return '';
   });
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
@@ -125,43 +125,41 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
   };
 
   const handleGoogleLogin = async (customEmail?: string) => {
-    const emailToUse = (typeof customEmail === 'string' && customEmail.trim())
-      ? customEmail.trim()
-      : (emailInput.trim() ||
-          (typeof window !== 'undefined' ? (localStorage.getItem('docencia_last_teacher_email') || '').trim() : '') ||
-          'jorge.cano@fds-esc.edu.ar');
+    const emailToUse =
+      typeof customEmail === 'string' && customEmail.trim()
+        ? customEmail.trim()
+        : emailInput.trim() || undefined;
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
       await loginWithGoogle(emailToUse);
       onLoginSuccess();
     } catch (err: any) {
-      console.warn('Aviso al iniciar sesión con Google, ingresando directamente:', err);
-      try {
-        await loginWithEmail(emailToUse, passwordInput.trim() || 'docencia2026', nameInput.trim() || undefined);
-        onLoginSuccess();
-        return;
-      } catch (fallbackErr: any) {
-        setAuthError(fallbackErr?.message || 'Error al iniciar sesión.');
-      }
+      setAuthError(
+        err?.message ||
+          'No se completó el inicio de sesión con Google. Seleccioná tu cuenta en la ventana emergente o ingresá con tu correo y contraseña.'
+      );
     } finally {
       setIsSubmittingAccount(false);
     }
   };
 
-
   const handleTeacherLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = emailInput.trim();
     if (!cleanEmail) {
-      setAuthError('Por favor ingresa tu correo electrónico para ingresar');
+      setAuthError('Por favor ingresá tu correo electrónico para iniciar sesión.');
       return;
     }
     if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setAuthError('Por favor ingresa un correo electrónico válido (ej: docente@colegio.edu.ar o tu.cuenta@gmail.com)');
+      setAuthError('Por favor ingresá un correo electrónico válido (ej: docente@colegio.edu.ar o tu.cuenta@gmail.com).');
       return;
     }
-    const cleanPassword = passwordInput.trim() || 'docencia2026';
+    const cleanPassword = passwordInput.trim();
+    if (!cleanPassword || cleanPassword.length < 4) {
+      setAuthError('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
+      return;
+    }
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
@@ -560,16 +558,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                 >
                   <span className="flex items-center gap-1.5">
                     <Lock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-                    <span>Contraseña (opcional para acceso)</span>
+                    <span>Contraseña de acceso</span>
                   </span>
                 </label>
                 <div className="relative flex items-center">
                   <input
                     id="teacher-password-input"
                     type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={4}
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
-                    placeholder="Contraseña o dejar en blanco"
+                    placeholder="Ingresá tu clave (mín. 4 caracteres)"
                     className={`w-full px-3.5 py-2.5 pr-10 text-xs sm:text-sm rounded-xl border outline-none transition-all font-normal ${
                       isDarkMode
                         ? 'bg-slate-800/90 border-slate-700 text-white placeholder-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500'

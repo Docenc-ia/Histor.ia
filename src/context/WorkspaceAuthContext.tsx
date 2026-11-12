@@ -96,13 +96,14 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const [user, setUser] = useState<TeacherProfile | null>(() => {
     if (typeof window !== 'undefined') {
       try {
-        const urlParams = new URLSearchParams(window.location.search);
-        const urlAuthEmail = urlParams.get('authEmail');
+        const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
+        if (isExplicitLogout) {
+          return null;
+        }
 
         const isSessionActive =
           sessionStorage.getItem('docencia_session_active') === 'true' ||
-          localStorage.getItem('docencia_session_active') === 'true' ||
-          Boolean(urlAuthEmail);
+          localStorage.getItem('docencia_session_active') === 'true';
 
         if (isSessionActive) {
           const saved =
@@ -110,30 +111,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
             localStorage.getItem('docencia_user_profile');
           if (saved) {
             const parsed = JSON.parse(saved);
-            if (parsed && (parsed.email || parsed.id)) return parsed;
-          }
-
-          if (urlAuthEmail) {
-            const cleanEmail = urlAuthEmail.trim().toLowerCase();
-            const teacherName = cleanEmail.split('@')[0]
-              .split(/[._-]/)
-              .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-              .join(' ') || 'Docente';
-            const fallbackProfile: TeacherProfile = {
-              id: `user-${cleanEmail}`,
-              name: `Prof. ${teacherName}`,
-              email: cleanEmail,
-              avatar: getTeacherAvatar(teacherName, cleanEmail),
-              role: 'Docente Titular',
-              school: deriveSchoolFromEmail(cleanEmail),
-              permissions: DEFAULT_TEACHER.permissions,
-              scopes: WORKSPACE_SCOPES,
-            };
-            sessionStorage.setItem('docencia_session_active', 'true');
-            sessionStorage.setItem('docencia_user_profile', JSON.stringify(fallbackProfile));
-            localStorage.setItem('docencia_session_active', 'true');
-            localStorage.setItem('docencia_user_profile', JSON.stringify(fallbackProfile));
-            return fallbackProfile;
+            if (parsed && parsed.email) return parsed;
           }
         }
       } catch (_) {}
@@ -142,12 +120,16 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   });
   const [mode, setMode] = useState<'connected' | 'disconnected'>(() => {
     if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search);
+      const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
+      if (isExplicitLogout) return 'disconnected';
       const isLogged =
         sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true' ||
-        Boolean(urlParams.get('authEmail'));
-      return isLogged ? 'connected' : 'disconnected';
+        localStorage.getItem('docencia_session_active') === 'true';
+      const hasProfile = Boolean(
+        sessionStorage.getItem('docencia_user_profile') ||
+          localStorage.getItem('docencia_user_profile')
+      );
+      return isLogged && hasProfile ? 'connected' : 'disconnected';
     }
     return 'disconnected';
   });
@@ -302,8 +284,12 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Check auth on startup (scoped to this browser's active teacher email)
   useEffect(() => {
+    const isExplicitLogout =
+      typeof window !== 'undefined' &&
+      localStorage.getItem('docencia_explicit_logout') === 'true';
     const isLocalActive =
       typeof window !== 'undefined' &&
+      !isExplicitLogout &&
       (sessionStorage.getItem('docencia_session_active') === 'true' ||
         localStorage.getItem('docencia_session_active') === 'true');
     const savedEmail =
@@ -342,6 +328,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       (authUser, accessToken) => {
         const isSessionActive =
           typeof window !== 'undefined' &&
+          localStorage.getItem('docencia_explicit_logout') !== 'true' &&
           (sessionStorage.getItem('docencia_session_active') === 'true' ||
             localStorage.getItem('docencia_session_active') === 'true');
         if (isSessionActive) {
@@ -398,6 +385,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       setUser(result.profile);
       setMode('connected');
       if (typeof window !== 'undefined') {
+        localStorage.removeItem('docencia_explicit_logout');
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
@@ -430,6 +418,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     try {
       const result = await googleSignIn(preferredEmail);
       if (typeof window !== 'undefined') {
+        localStorage.removeItem('docencia_explicit_logout');
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(result.profile));
         sessionStorage.setItem('docencia_teacher_email', result.profile.email);
@@ -471,11 +460,19 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   }, []);
 
-  const loginWithEmail = useCallback(async (email: string, _password?: string, name?: string) => {
+  const loginWithEmail = useCallback(async (email: string, password?: string, name?: string) => {
     setIsLoggingIn(true);
     setLoginError(null);
     try {
       const cleanEmail = email.trim().toLowerCase();
+      const cleanPassword = (password || '').trim();
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        throw new Error('Por favor ingresá un correo electrónico docente válido.');
+      }
+      if (!cleanPassword || cleanPassword.length < 4) {
+        throw new Error('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
+      }
+
       let rememberedName = name;
       let rememberedAvatar: string | undefined;
       let consistentId = 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
@@ -502,8 +499,19 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         } catch (_) {}
       }
 
+      const savedToken = getSavedTokenForEmail(cleanEmail);
+
+      // Verify password against server / stored credentials
+      const authResult = await api.loginWithEmailCredentials({
+        email: cleanEmail,
+        password: cleanPassword,
+        name: rememberedName,
+        token: savedToken || undefined,
+      });
+
       const teacherName =
         rememberedName ||
+        authResult.user?.name ||
         cleanEmail
           .split('@')[0]
           .split(/[._-]/)
@@ -511,30 +519,25 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
           .join(' ') ||
         'Docente';
 
-      const derivedSchool = deriveSchoolFromEmail(cleanEmail);
+      const derivedSchool = authResult.user?.school || deriveSchoolFromEmail(cleanEmail);
 
       const teacherProfile: TeacherProfile = {
-        id: consistentId,
+        id: authResult.user?.id || consistentId,
         name: teacherName.startsWith('Prof.') ? teacherName : `Prof. ${teacherName}`,
         email: cleanEmail,
-        avatar: rememberedAvatar || getTeacherAvatar(teacherName, cleanEmail),
+        avatar: rememberedAvatar || authResult.user?.avatar || getTeacherAvatar(teacherName, cleanEmail),
         role: 'Docente Titular',
         school: derivedSchool,
         permissions: DEFAULT_TEACHER.permissions,
         scopes: WORKSPACE_SCOPES,
       };
 
-      // Restore any previously granted Google OAuth token for this email instead of wiping it
-      const savedToken = getSavedTokenForEmail(cleanEmail);
-      if (savedToken) {
-        setCachedAccessToken(savedToken, cleanEmail);
-        setToken(savedToken);
-      } else {
-        setCachedAccessToken(null);
-        setToken(null);
-      }
+      const resolvedToken =
+        savedToken ||
+        (authResult.token && isValidGoogleAccessToken(authResult.token) ? authResult.token : null);
 
       if (typeof window !== 'undefined') {
+        localStorage.removeItem('docencia_explicit_logout');
         sessionStorage.setItem('docencia_session_active', 'true');
         sessionStorage.setItem('docencia_user_profile', JSON.stringify(teacherProfile));
         sessionStorage.setItem('docencia_teacher_email', cleanEmail);
@@ -544,29 +547,17 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
         saveRememberedProfile(teacherProfile);
       }
 
+      if (resolvedToken) {
+        setCachedAccessToken(resolvedToken, cleanEmail);
+        setToken(resolvedToken);
+      } else {
+        setCachedAccessToken(null);
+        setToken(null);
+      }
+
       firestoreSync.clearCaches();
       setUser(teacherProfile);
       setMode('connected');
-
-      // Recover token or profile from backend asynchronously if available
-      api
-        .syncAuthSession({
-          uid: teacherProfile.id || 'user-inst',
-          email: teacherProfile.email,
-          name: teacherProfile.name,
-          avatar: teacherProfile.avatar,
-          token: savedToken || undefined,
-          scopes: WORKSPACE_SCOPES,
-          school: teacherProfile.school,
-        })
-        .then((res) => {
-          const serverTok = (res as any)?.token || (res?.user as any)?.token;
-          if (!savedToken && serverTok && isValidGoogleAccessToken(serverTok)) {
-            setCachedAccessToken(serverTok, cleanEmail);
-            setToken(serverTok);
-          }
-        })
-        .catch(() => {});
     } catch (err: any) {
       console.error('Login with email error:', err);
       setLoginError(err?.message || 'Error al conectar con la cuenta');
@@ -616,15 +607,18 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     } catch (_) {}
     firestoreSync.clearCaches();
     if (typeof window !== 'undefined') {
+      localStorage.setItem('docencia_explicit_logout', 'true');
       if (currentEmail) {
         localStorage.setItem(LAST_TEACHER_EMAIL_KEY, currentEmail.trim().toLowerCase());
       }
       sessionStorage.removeItem('docencia_session_active');
       sessionStorage.removeItem('docencia_user_profile');
       sessionStorage.removeItem('docencia_teacher_email');
+      sessionStorage.removeItem('docencia_session_secret');
       localStorage.removeItem('docencia_user_profile');
       localStorage.removeItem('docencia_session_active');
       localStorage.removeItem('docencia_teacher_email');
+      localStorage.removeItem('docencia_session_secret');
     }
     setToken(null);
     setUser(null);

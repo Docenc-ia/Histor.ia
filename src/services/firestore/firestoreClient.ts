@@ -480,9 +480,11 @@ function getCachedStoredProfile(): { id?: string; email?: string } | null {
 export function getActiveUserEmail(): string {
   if (typeof window !== 'undefined') {
     try {
+      const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
       const isSessionActive =
-        sessionStorage.getItem('docencia_session_active') === 'true' ||
-        localStorage.getItem('docencia_session_active') === 'true';
+        !isExplicitLogout &&
+        (sessionStorage.getItem('docencia_session_active') === 'true' ||
+          localStorage.getItem('docencia_session_active') === 'true');
       if (!isSessionActive) {
         return '';
       }
@@ -496,9 +498,10 @@ export function getActiveUserEmail(): string {
       if (localEmail && localEmail.trim()) {
         return localEmail.trim().toLowerCase();
       }
-    } catch (_) {}
+    } catch (_) {
+      return '';
+    }
   }
-  if (auth.currentUser?.email) return auth.currentUser.email.trim().toLowerCase();
   return '';
 }
 
@@ -515,40 +518,18 @@ export function isPrimaryOwnerAccount(email?: string): boolean {
         .filter(Boolean)
     : DEFAULT_LINKED_OWNER_EMAILS;
 
-  return linkedList.some((ownerEmail) => {
-    const prefix = ownerEmail.split('@')[0];
-    return e === ownerEmail || (prefix && e.startsWith(`${prefix}@`));
-  });
+  return linkedList.some((ownerEmail) => e === ownerEmail);
 }
 
 export function getActiveUserId(): string {
   const email = getActiveUserEmail();
-  if (email && !isPrimaryOwnerAccount(email)) {
+  if (!email) {
+    return '';
+  }
+  if (!isPrimaryOwnerAccount(email)) {
     return 'teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_');
   }
-  if (email && isPrimaryOwnerAccount(email)) {
-    return GLOBAL_WORKSPACE_ID;
-  }
-  if (typeof window !== 'undefined') {
-    try {
-      const parsed = getCachedStoredProfile();
-      if (parsed?.email) {
-        const cleanEmail = String(parsed.email).trim().toLowerCase();
-        if (isPrimaryOwnerAccount(cleanEmail)) {
-          return GLOBAL_WORKSPACE_ID;
-        }
-        return 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_');
-      }
-      if (parsed?.id && !String(parsed.id).startsWith('user-')) {
-        return String(parsed.id);
-      }
-    } catch (_) {}
-  }
-  if (auth.currentUser?.email && isPrimaryOwnerAccount(auth.currentUser.email)) {
-    return GLOBAL_WORKSPACE_ID;
-  }
-  if (auth.currentUser?.uid) return auth.currentUser.uid;
-  return '';
+  return GLOBAL_WORKSPACE_ID;
 }
 
 export function getDeletedHistoryIdsSet(): Set<string> {

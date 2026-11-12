@@ -86,11 +86,52 @@ function canUseExpressBackend(requireOwner = true): boolean {
   return requireOwner ? isPrimaryOwnerAccount() : true;
 }
 
+async function computeClientPasswordDigest(email: string, password: string): Promise<string> {
+  const payload = `docencia_v1:${email.trim().toLowerCase()}:${password.trim()}`;
+  if (typeof window !== 'undefined' && window.crypto?.subtle) {
+    try {
+      const encoded = new TextEncoder().encode(payload);
+      const buf = await window.crypto.subtle.digest('SHA-256', encoded);
+      return Array.from(new Uint8Array(buf))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch (_) {}
+  }
+  return btoa(encodeURIComponent(payload));
+}
+
+function getStoredSessionSecret(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return (
+      sessionStorage.getItem('docencia_session_secret') ||
+      localStorage.getItem('docencia_session_secret') ||
+      ''
+    ).trim();
+  } catch {
+    return '';
+  }
+}
+
+function saveStoredSessionSecret(secret?: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (secret && secret.trim()) {
+      sessionStorage.setItem('docencia_session_secret', secret.trim());
+      localStorage.setItem('docencia_session_secret', secret.trim());
+    } else {
+      sessionStorage.removeItem('docencia_session_secret');
+      localStorage.removeItem('docencia_session_secret');
+    }
+  } catch (_) {}
+}
+
 async function fetchExpressJson<T = any>(url: string, init?: RequestInit): Promise<T | null> {
   if (!expressBackendAvailable) return null;
   try {
     const activeUserId = getActiveUserId() || '';
     const activeEmail = getActiveUserEmail() || '';
+    const sessionSecret = getStoredSessionSecret();
     const mergedHeaders: Record<string, string> = {
       ...(init?.headers ? (init.headers as Record<string, string>) : {}),
     };
@@ -99,6 +140,9 @@ async function fetchExpressJson<T = any>(url: string, init?: RequestInit): Promi
     }
     if (activeEmail && !mergedHeaders['X-User-Email']) {
       mergedHeaders['X-User-Email'] = activeEmail;
+    }
+    if (sessionSecret && !mergedHeaders['X-Session-Secret']) {
+      mergedHeaders['X-Session-Secret'] = sessionSecret;
     }
     const res = await fetch(url, {
       ...init,
@@ -119,15 +163,109 @@ async function fetchExpressJson<T = any>(url: string, init?: RequestInit): Promi
 
 export const api = {
   // Auth API
-  async getAuthUser(email?: string): Promise<{ authenticated: boolean; user: TeacherProfile }> {
+  async getAuthUser(email?: string): Promise<{ authenticated: boolean; user: TeacherProfile; token?: string | null }> {
     const targetEmail = (email || '').trim().toLowerCase();
-    if (!targetEmail || !canUseExpressBackend(false)) {
-      return { authenticated: false, user: null as any };
+    const sessionSecret = getStoredSessionSecret();
+    if (!targetEmail || !sessionSecret || !canUseExpressBackend(false)) {
+      return { authenticated: false, user: null as any, token: null };
     }
-    const data = await fetchExpressJson<{ authenticated: boolean; user: TeacherProfile }>(
+    const data = await fetchExpressJson<{ authenticated: boolean; user: TeacherProfile; token?: string | null }>(
       `/api/auth/user?email=${encodeURIComponent(targetEmail)}`
     );
-    return data || { authenticated: false, user: null as any };
+    return data || { authenticated: false, user: null as any, token: null };
+  },
+
+  async loginWithEmailCredentials(params: {
+    email: string;
+    password: string;
+    name?: string;
+    token?: string;
+  }): Promise<{ success: boolean; user: TeacherProfile; token?: string | null }> {
+    const cleanEmail = params.email.trim().toLowerCase();
+    const rawPassword = params.password.trim();
+    if (!rawPassword || rawPassword.length < 4) {
+      throw new Error('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
+    }
+
+    // 1. Verify against Express backend if available
+    if (canUseExpressBackend(false)) {
+      try {
+        const res = await fetch('/api/auth/login-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: cleanEmail,
+            password: rawPassword,
+            name: params.name,
+            token: params.token,
+          }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const payload = await res.json();
+          if (!res.ok || payload?.success === false) {
+            throw new Error(
+              payload?.error ||
+                'Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.'
+            );
+          }
+          if (payload?.sessionSecret) {
+            saveStoredSessionSecret(payload.sessionSecret);
+          }
+          if (typeof window !== 'undefined') {
+            try {
+              const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
+              const rawMap = localStorage.getItem('docencia_credentials_by_email');
+              const map: Record<string, string> = rawMap ? JSON.parse(rawMap) : {};
+              map[cleanEmail] = digest;
+              localStorage.setItem('docencia_credentials_by_email', JSON.stringify(map));
+            } catch (_) {}
+          }
+          return {
+            success: true,
+            user: payload.user,
+            token: payload.token || null,
+          };
+        }
+      } catch (err: any) {
+        if (err?.message && (err.message.includes('Contraseña') || err.message.includes('contraseña'))) {
+          throw err;
+        }
+      }
+    }
+
+    // 2. Client-side / static fallback password verification
+    if (typeof window !== 'undefined') {
+      const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
+      try {
+        const rawMap = localStorage.getItem('docencia_credentials_by_email');
+        const map: Record<string, string> = rawMap ? JSON.parse(rawMap) : {};
+        if (map[cleanEmail] && map[cleanEmail] !== digest) {
+          throw new Error(
+            'Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.'
+          );
+        }
+        map[cleanEmail] = digest;
+        localStorage.setItem('docencia_credentials_by_email', JSON.stringify(map));
+      } catch (err: any) {
+        if (err?.message && err.message.includes('Contraseña incorrecta')) {
+          throw err;
+        }
+      }
+    }
+
+    const synced = await this.syncAuthSession({
+      uid: 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_'),
+      email: cleanEmail,
+      name: params.name || '',
+      avatar: '',
+      token: params.token,
+    });
+    return {
+      success: true,
+      user: synced.user,
+      token: params.token || null,
+    };
   },
 
   async syncAuthSession(userData: {
@@ -138,7 +276,7 @@ export const api = {
     token?: string;
     scopes?: string[];
     school?: string;
-  }): Promise<{ success: boolean; user: TeacherProfile }> {
+  }): Promise<{ success: boolean; user: TeacherProfile; token?: string | null }> {
     // Persist teacher profile in Firestore globally across accounts
     firestoreSync
       .saveTeacherProfile({
@@ -151,11 +289,22 @@ export const api = {
       .catch(() => {});
 
     if (canUseExpressBackend(false)) {
-      const serverData = await fetchExpressJson<{ success: boolean; user: TeacherProfile }>('/api/auth/session', {
+      const serverData = await fetchExpressJson<{
+        success: boolean;
+        user: TeacherProfile;
+        sessionSecret?: string;
+        token?: string | null;
+      }>('/api/auth/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData),
+        body: JSON.stringify({
+          ...userData,
+          sessionSecret: getStoredSessionSecret() || undefined,
+        }),
       });
+      if (serverData?.sessionSecret) {
+        saveStoredSessionSecret(serverData.sessionSecret);
+      }
       if (serverData?.user) return serverData;
     }
 
@@ -180,7 +329,7 @@ export const api = {
         'grades.manage',
       ],
     };
-    return { success: true, user: fallbackProfile };
+    return { success: true, user: fallbackProfile, token: userData.token || null };
   },
 
   async logoutAuth(email?: string): Promise<void> {
@@ -192,6 +341,7 @@ export const api = {
         body: JSON.stringify({ email }),
       });
     }
+    saveStoredSessionSecret(null);
   },
 
   async logoutAuthSession(email?: string): Promise<void> {

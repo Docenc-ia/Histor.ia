@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import crypto from "crypto";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 
@@ -159,10 +160,64 @@ interface AuthUser {
   permissions: string[];
   lastLogin: string;
   token?: string;
+  sessionSecret?: string;
+}
+
+interface StoredTeacherAccount {
+  email: string;
+  passwordHash: string;
+  name: string;
+  school: string;
+  updatedAt: string;
 }
 
 // Active user sessions isolated by email so multiple teachers do not share or leak sessions
 const activeUsersByEmail = new Map<string, AuthUser>();
+const savedOAuthTokensByEmail = new Map<string, string>();
+const teacherAccountsByEmail = new Map<string, StoredTeacherAccount>();
+const TEACHER_ACCOUNTS_FILE = path.join(process.cwd(), "data", "users", "teacher-accounts.json");
+
+function hashTeacherPassword(password: string, email: string): string {
+  const cleanEmail = email.trim().toLowerCase();
+  return crypto
+    .createHash("sha256")
+    .update(`docencia_v1:${cleanEmail}:${password}`)
+    .digest("hex");
+}
+
+function loadTeacherAccountsFromDisk(): void {
+  try {
+    if (fs.existsSync(TEACHER_ACCOUNTS_FILE)) {
+      const raw = fs.readFileSync(TEACHER_ACCOUNTS_FILE, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        for (const [emailKey, acc] of Object.entries(parsed.accounts || parsed)) {
+          if (acc && typeof acc === "object" && (acc as any).passwordHash) {
+            teacherAccountsByEmail.set(emailKey.trim().toLowerCase(), acc as StoredTeacherAccount);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to load teacher accounts from disk:", e);
+  }
+}
+
+function saveTeacherAccountsToDisk(): void {
+  try {
+    const dir = path.dirname(TEACHER_ACCOUNTS_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const accountsObj: Record<string, StoredTeacherAccount> = {};
+    for (const [k, v] of teacherAccountsByEmail.entries()) {
+      accountsObj[k] = v;
+    }
+    fs.writeFileSync(TEACHER_ACCOUNTS_FILE, JSON.stringify({ accounts: accountsObj }, null, 2), "utf-8");
+  } catch (e) {
+    console.warn("Failed to save teacher accounts to disk:", e);
+  }
+}
+
+loadTeacherAccountsFromDisk();
 
 // Primary owner accounts that use the root data/*.json files for backward compatibility
 const PRIMARY_OWNER_IDENTIFIERS = new Set([
@@ -775,32 +830,203 @@ async function startServer() {
     }
   });
 
-  // Authentication & Session endpoints (isolated per teacher email)
+  // Authentication & Session endpoints (strictly isolated per teacher email & sessionSecret)
   app.get("/api/auth/user", (req, res) => {
-    const requestedEmail = String(req.query.email || "").trim().toLowerCase();
-    let matchedUser = requestedEmail ? (activeUsersByEmail.get(requestedEmail) || null) : null;
-    if (!matchedUser && !requestedEmail && activeUsersByEmail.size > 0) {
-      const allUsers = Array.from(activeUsersByEmail.values());
-      matchedUser = allUsers[allUsers.length - 1] || null;
+    const requestedEmail = String(req.query.email || req.headers["x-user-email"] || "")
+      .trim()
+      .toLowerCase();
+    const providedSecret = String(
+      req.headers["x-session-secret"] || req.query.sessionSecret || ""
+    ).trim();
+
+    if (!requestedEmail) {
+      return res.json({
+        authenticated: false,
+        user: null,
+        token: null,
+      });
     }
+
+    const matchedUser = activeUsersByEmail.get(requestedEmail) || null;
+    if (!matchedUser || !matchedUser.sessionSecret || matchedUser.sessionSecret !== providedSecret) {
+      return res.json({
+        authenticated: false,
+        user: null,
+        token: null,
+      });
+    }
+
+    const { sessionSecret: _hiddenSecret, ...safeUser } = matchedUser;
     res.json({
-      authenticated: !!matchedUser,
-      user: matchedUser,
-      token: matchedUser?.token || null,
+      authenticated: true,
+      user: safeUser,
+      token: matchedUser.token || savedOAuthTokensByEmail.get(requestedEmail) || null,
     });
+  });
+
+  app.post("/api/auth/login-email", (req, res) => {
+    try {
+      const { email, password, name, token } = req.body || {};
+      const cleanEmail = String(email || "").trim().toLowerCase();
+      const rawPassword = String(password || "").trim();
+
+      if (!cleanEmail || !cleanEmail.includes("@")) {
+        return res.status(400).json({
+          success: false,
+          error: "Por favor ingresá un correo electrónico docente válido.",
+        });
+      }
+
+      if (!rawPassword || rawPassword.length < 4) {
+        return res.status(400).json({
+          success: false,
+          error: "Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.",
+        });
+      }
+
+      const incomingHash = hashTeacherPassword(rawPassword, cleanEmail);
+      const existingAccount = teacherAccountsByEmail.get(cleanEmail);
+
+      if (existingAccount && existingAccount.passwordHash) {
+        if (existingAccount.passwordHash !== incomingHash) {
+          return res.status(401).json({
+            success: false,
+            error: "Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.",
+          });
+        }
+      } else {
+        // First-time password registration for this email
+        const cleanNameForAccount =
+          name ||
+          (cleanEmail
+            ? cleanEmail
+                .split("@")[0]
+                .replace(/[._-]/g, " ")
+            : "Docente Titular");
+        const displayNameForAccount = cleanNameForAccount.startsWith("Prof.")
+          ? cleanNameForAccount
+          : `Prof. ${cleanNameForAccount}`;
+        const derivedSchool = cleanEmail.includes("fds-esc.edu.ar")
+          ? "FDS - Educación Secundaria"
+          : cleanEmail.includes("@")
+          ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}`
+          : "Institución Educativa";
+
+        teacherAccountsByEmail.set(cleanEmail, {
+          email: cleanEmail,
+          passwordHash: incomingHash,
+          name: displayNameForAccount,
+          school: derivedSchool,
+          updatedAt: new Date().toISOString(),
+        });
+        saveTeacherAccountsToDisk();
+      }
+
+      const existingUser = activeUsersByEmail.get(cleanEmail);
+      const storedAccount = teacherAccountsByEmail.get(cleanEmail);
+      const cleanName =
+        name ||
+        existingUser?.name ||
+        storedAccount?.name ||
+        (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
+      const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
+      const validToken =
+        typeof token === "string" && token.trim().length > 20 && !token.trim().startsWith("token_")
+          ? token.trim()
+          : existingUser?.token || savedOAuthTokensByEmail.get(cleanEmail);
+
+      if (validToken) {
+        savedOAuthTokensByEmail.set(cleanEmail, validToken);
+      }
+
+      const sessionSecret = crypto.randomBytes(24).toString("hex");
+      const sessionUser: AuthUser = {
+        id: existingUser?.id || `teacher_${cleanEmail.replace(/[^a-zA-Z0-9]/g, "_")}`,
+        email: cleanEmail,
+        name: displayName,
+        avatar:
+          existingUser?.avatar ||
+          `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
+        role: "Docente Titular",
+        school:
+          existingUser?.school ||
+          storedAccount?.school ||
+          (cleanEmail.includes("fds-esc.edu.ar")
+            ? "FDS - Educación Secundaria"
+            : cleanEmail.includes("@")
+            ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}`
+            : "Institución Educativa"),
+        scopes: existingUser?.scopes || [
+          "https://www.googleapis.com/auth/classroom.courses.readonly",
+          "https://www.googleapis.com/auth/classroom.rosters.readonly",
+          "https://www.googleapis.com/auth/classroom.coursework.students",
+          "https://www.googleapis.com/auth/classroom.announcements",
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive.file",
+          "https://www.googleapis.com/auth/calendar.readonly",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/forms.body.readonly",
+          "https://www.googleapis.com/auth/forms.responses.readonly",
+          "https://www.googleapis.com/auth/userinfo.email",
+          "https://www.googleapis.com/auth/userinfo.profile",
+        ],
+        permissions: [
+          "tasks.create",
+          "tasks.assign",
+          "tasks.grade",
+          "tasks.delete",
+          "drive.read",
+          "drive.attach",
+          "classroom.sync",
+          "students.view",
+          "grades.manage",
+        ],
+        lastLogin: new Date().toISOString(),
+        sessionSecret,
+        ...(validToken ? { token: validToken } : {}),
+      };
+
+      activeUsersByEmail.set(cleanEmail, sessionUser);
+      const { sessionSecret: _hidden, ...safeUser } = sessionUser;
+
+      return res.json({
+        success: true,
+        user: safeUser,
+        sessionSecret,
+        token: sessionUser.token || null,
+      });
+    } catch (err: any) {
+      console.error("Error in /api/auth/login-email:", err);
+      return res.status(500).json({
+        success: false,
+        error: err?.message || "Error al iniciar sesión con correo y contraseña",
+      });
+    }
   });
 
   app.post("/api/auth/session", (req, res) => {
     try {
       const { uid, email, name, avatar, scopes, school, token } = req.body || {};
       const cleanEmail = (email || "").trim().toLowerCase();
-      const existingUser = cleanEmail ? activeUsersByEmail.get(cleanEmail) : undefined;
+      if (!cleanEmail) {
+        return res.status(400).json({ success: false, error: "Email requerido para sincronizar sesión" });
+      }
+      const existingUser = activeUsersByEmail.get(cleanEmail);
       const cleanName = name || existingUser?.name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
       const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
       const validToken =
         typeof token === "string" && token.trim().length > 20 && !token.trim().startsWith("token_")
           ? token.trim()
-          : existingUser?.token;
+          : existingUser?.token || savedOAuthTokensByEmail.get(cleanEmail);
+
+      if (validToken) {
+        savedOAuthTokensByEmail.set(cleanEmail, validToken);
+      }
+
+      const providedSecret = String(req.headers["x-session-secret"] || req.body?.sessionSecret || "").trim();
+      const sessionSecret =
+        providedSecret || existingUser?.sessionSecret || crypto.randomBytes(24).toString("hex");
 
       const sessionUser: AuthUser = {
         id: uid || existingUser?.id || `user-${Date.now()}`,
@@ -818,8 +1044,11 @@ async function startServer() {
           "https://www.googleapis.com/auth/classroom.announcements",
           "https://www.googleapis.com/auth/gmail.send",
           "https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/calendar.readonly",
           "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/forms.body.readonly",
+          "https://www.googleapis.com/auth/forms.responses.readonly",
           "https://www.googleapis.com/auth/userinfo.email",
           "https://www.googleapis.com/auth/userinfo.profile",
         ],
@@ -835,16 +1064,17 @@ async function startServer() {
           "grades.manage",
         ],
         lastLogin: new Date().toISOString(),
+        sessionSecret,
         ...(validToken ? { token: validToken } : {}),
       };
 
-      if (cleanEmail) {
-        activeUsersByEmail.set(cleanEmail, sessionUser);
-      }
+      activeUsersByEmail.set(cleanEmail, sessionUser);
+      const { sessionSecret: _hidden, ...safeUser } = sessionUser;
 
       res.json({
         success: true,
-        user: sessionUser,
+        user: safeUser,
+        sessionSecret,
         token: sessionUser.token || null,
       });
     } catch (err: any) {
@@ -853,9 +1083,23 @@ async function startServer() {
     }
   });
 
-  app.post("/api/auth/logout", (_req, res) => {
-    // Preserve the teacher's saved profile and granted OAuth token in activeUsersByEmail
-    // so that when they log back in, their credentials and permissions are restored immediately.
+  app.post("/api/auth/logout", (req, res) => {
+    const cleanEmail = String(req.body?.email || req.headers["x-user-email"] || "")
+      .trim()
+      .toLowerCase();
+    if (cleanEmail) {
+      const existing = activeUsersByEmail.get(cleanEmail);
+      if (existing) {
+        if (existing.token) {
+          savedOAuthTokensByEmail.set(cleanEmail, existing.token);
+        }
+        // Invalidate active sessionSecret so logged-out browsers must authenticate again
+        activeUsersByEmail.set(cleanEmail, {
+          ...existing,
+          sessionSecret: undefined,
+        });
+      }
+    }
     res.json({ success: true, message: "Sesión cerrada correctamente" });
   });
 

@@ -12,7 +12,9 @@ import {
   getCachedAccessToken,
   requestGoogleAccessToken,
   fetchGoogleApiWithRetry,
+  isValidGoogleAccessToken,
 } from './googleAuth';
+import { fetchArbitrarySpreadsheetDataHelper } from './sheetsHelpers';
 
 export interface GoogleFormListItem {
   id: string;
@@ -29,22 +31,42 @@ export interface DirectGoogleFormDataResult {
   rows: Array<Record<string, any>>;
 }
 
+function normalizeFormTitle(text: string): string {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\(respuestas.*?\)/gi, '')
+    .replace(/\(responses.*?\)/gi, '')
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export const formsService = {
   /**
    * Extracts a clean Google Form ID from a URL or raw ID string.
    * Supports:
    * - https://docs.google.com/forms/d/1abc123.../edit
-   * - https://docs.google.com/forms/d/1abc123.../viewform
+   * - https://docs.google.com/forms/d/e/1FAIpQL.../viewform
+   * - https://forms.gle/...
    * - Raw ID: 1abc123...
    */
   extractFormId(idOrUrl: string): { formId: string; isPublicResponderUrl: boolean } {
     const trimmed = idOrUrl.trim();
 
-    // Detect /forms/d/e/{responderId}/viewform (public responder link, which uses a different ID than the editor formId)
-    if (/\/forms\/d\/e\/([a-zA-Z0-9_-]+)/i.test(trimmed)) {
-      const m = trimmed.match(/\/forms\/d\/e\/([a-zA-Z0-9_-]+)/i);
+    // Detect /forms/d/e/{responderId}/viewform (public responder link)
+    if (/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9_-]+)/i.test(trimmed)) {
+      const m = trimmed.match(/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9_-]+)/i);
       return {
         formId: m ? m[1] : trimmed,
+        isPublicResponderUrl: true,
+      };
+    }
+
+    if (/forms\.gle\//i.test(trimmed)) {
+      return {
+        formId: trimmed,
         isPublicResponderUrl: true,
       };
     }
@@ -60,7 +82,7 @@ export const formsService = {
 
     return {
       formId: trimmed,
-      isPublicResponderUrl: false,
+      isPublicResponderUrl: trimmed.startsWith('1FAIpQL'),
     };
   },
 
@@ -69,9 +91,15 @@ export const formsService = {
    */
   async listUserGoogleForms(
     searchQuery?: string,
-    providedToken?: string
+    providedToken?: string,
+    interactive = false
   ): Promise<GoogleFormListItem[]> {
-    const token = providedToken || getCachedAccessToken();
+    let token = providedToken || getCachedAccessToken();
+    if (!token || !isValidGoogleAccessToken(token)) {
+      try {
+        token = await requestGoogleAccessToken(interactive);
+      } catch {}
+    }
     if (!token) return [];
 
     try {
@@ -101,6 +129,148 @@ export const formsService = {
   },
 
   /**
+   * Resolves a public responder URL (/forms/d/e/1FAIpQL.../viewform or forms.gle/...)
+   * by extracting its public title via server proxy and matching against the teacher's
+   * Google Forms (`responderUri` or title) or linked Google Sheets in Drive.
+   */
+  async resolvePublicResponderForm(
+    rawInputUrl: string,
+    responderIdHint: string,
+    token: string
+  ): Promise<
+    | { kind: 'form'; formId: string; preloadedFormData?: any }
+    | { kind: 'sheet'; spreadsheetId: string; title: string }
+    | null
+  > {
+    let extractedTitle = '';
+    let resolvedResponderId = responderIdHint;
+
+    try {
+      const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: rawInputUrl.startsWith('http')
+            ? rawInputUrl
+            : `https://docs.google.com/forms/d/e/${encodeURIComponent(responderIdHint)}/viewform`,
+        }),
+      });
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (proxyData?.ok) {
+          if (proxyData.formId && !proxyData.responderId) {
+            return { kind: 'form', formId: proxyData.formId };
+          }
+          if (proxyData.responderId) {
+            resolvedResponderId = proxyData.responderId;
+          }
+          if (
+            proxyData.title &&
+            proxyData.title !== 'Evaluación de Google Forms' &&
+            proxyData.title !== 'Google Forms'
+          ) {
+            extractedTitle = String(proxyData.title).trim();
+          }
+        }
+      }
+    } catch {}
+
+    const normTargetTitle = normalizeFormTitle(extractedTitle);
+
+    // 1. Search the teacher's Google Forms in Drive and check responderUri / title
+    try {
+      const [matchingForms, recentForms] = await Promise.all([
+        extractedTitle ? this.listUserGoogleForms(extractedTitle, token) : Promise.resolve([]),
+        this.listUserGoogleForms(undefined, token),
+      ]);
+
+      const seenIds = new Set<string>();
+      const candidateForms: GoogleFormListItem[] = [];
+      for (const f of [...matchingForms, ...recentForms]) {
+        if (!seenIds.has(f.id)) {
+          seenIds.add(f.id);
+          candidateForms.push(f);
+        }
+      }
+
+      if (normTargetTitle) {
+        candidateForms.sort((a, b) => {
+          const aMatch = normalizeFormTitle(a.name) === normTargetTitle ? 0 : 1;
+          const bMatch = normalizeFormTitle(b.name) === normTargetTitle ? 0 : 1;
+          return aMatch - bMatch;
+        });
+      }
+
+      const toInspect = candidateForms.slice(0, 12);
+      for (const cand of toInspect) {
+        try {
+          const fRes = await fetchGoogleApiWithRetry(
+            `https://forms.googleapis.com/v1/forms/${encodeURIComponent(cand.id)}`,
+            {},
+            token
+          );
+          if (fRes.ok) {
+            const fData = await fRes.json();
+            const respUri = String(fData?.responderUri || '');
+            const fTitle = normalizeFormTitle(
+              fData?.info?.title || fData?.info?.documentTitle || cand.name
+            );
+            if (
+              (resolvedResponderId && respUri.includes(resolvedResponderId)) ||
+              (normTargetTitle && fTitle && fTitle === normTargetTitle)
+            ) {
+              return { kind: 'form', formId: cand.id, preloadedFormData: fData };
+            }
+          }
+        } catch {}
+      }
+    } catch {}
+
+    // 2. Search the teacher's Google Spreadsheets in Drive for a linked Response Sheet ("{Title} (Respuestas)")
+    try {
+      const queries: string[] = [];
+      if (extractedTitle) {
+        const safeTitle = extractedTitle.replace(/'/g, "\\'");
+        queries.push(
+          `mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and name contains '${safeTitle}'`
+        );
+      }
+      queries.push(
+        `mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false and (name contains 'Respuestas' or name contains 'Responses' or name contains 'Formulario')`
+      );
+
+      for (const q of queries) {
+        const sRes = await fetchGoogleApiWithRetry(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+            q
+          )}&fields=files(id,name,modifiedTime)&orderBy=modifiedTime desc&pageSize=10`,
+          {},
+          token
+        );
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          const files: any[] = sData.files || [];
+          if (files.length > 0) {
+            if (normTargetTitle) {
+              const exactSheet = files.find((f) => {
+                const n = normalizeFormTitle(f.name);
+                return n === normTargetTitle || n.includes(normTargetTitle) || normTargetTitle.includes(n);
+              });
+              if (exactSheet) {
+                return { kind: 'sheet', spreadsheetId: exactSheet.id, title: exactSheet.name };
+              }
+            } else {
+              return { kind: 'sheet', spreadsheetId: files[0].id, title: files[0].name };
+            }
+          }
+        }
+      }
+    } catch {}
+
+    return null;
+  },
+
+  /**
    * Fetches a Google Form's structure and its responses directly via the Google Forms API v1,
    * extracting student identifiers (name/email) and their final score.
    */
@@ -108,58 +278,102 @@ export const formsService = {
     idOrUrl: string,
     providedToken?: string
   ): Promise<DirectGoogleFormDataResult> {
-    const { formId, isPublicResponderUrl } = this.extractFormId(idOrUrl);
+    const extracted = this.extractFormId(idOrUrl);
+    let formId = extracted.formId;
+    const isPublicResponderUrl = extracted.isPublicResponderUrl;
+
     if (!formId) {
       throw new Error('Ingresa un enlace o ID válido de Google Forms.');
     }
 
-    if (isPublicResponderUrl) {
+    let token = providedToken || getCachedAccessToken();
+    if (!token || !isValidGoogleAccessToken(token)) {
+      token = await requestGoogleAccessToken(true);
+    }
+    if (!token || !isValidGoogleAccessToken(token)) {
       throw new Error(
-        'Pegaste el enlace de vista pública (/forms/d/e/.../viewform). Por favor, copia el enlace de edición del formulario (el que ves arriba en tu navegador al editar el Forms: docs.google.com/forms/d/.../edit).'
+        'Para cargar las respuestas de Google Forms, inicia sesión con tu cuenta de Google cuando se abra la ventana de autorización.'
       );
     }
 
-    let token = providedToken || getCachedAccessToken();
-    if (!token) {
-      token = await requestGoogleAccessToken();
-    }
-    if (!token) {
-      throw new Error('Debes conectar tu cuenta de Google para leer el formulario directamente.');
+    let preloadedFormData: any = null;
+
+    if (isPublicResponderUrl) {
+      const resolved = await this.resolvePublicResponderForm(idOrUrl, formId, token);
+      if (resolved?.kind === 'sheet') {
+        const sheetData = await fetchArbitrarySpreadsheetDataHelper(
+          resolved.spreadsheetId,
+          undefined,
+          token
+        );
+        return {
+          formId: resolved.spreadsheetId,
+          title: sheetData.title || resolved.title,
+          maxScore: 10,
+          headers: sheetData.headers,
+          rows: sheetData.rows,
+        };
+      }
+      if (resolved?.kind === 'form') {
+        formId = resolved.formId;
+        preloadedFormData = resolved.preloadedFormData || null;
+      } else {
+        throw new Error(
+          'Pegaste el enlace de vista pública (/forms/d/e/.../viewform) y no encontramos ese formulario ni su planilla de respuestas en tu Google Drive. Pegá el enlace de edición del formulario (docs.google.com/forms/d/.../edit) o el de su hoja de respuestas.'
+        );
+      }
     }
 
     const safeFormId = encodeURIComponent(formId.trim());
 
     // 1. Fetch Form Metadata & Questions (to get title, question titles, and total quiz points)
-    const formRes = await fetchGoogleApiWithRetry(
-      `https://forms.googleapis.com/v1/forms/${safeFormId}`,
-      {},
-      token
-    );
+    let formData = preloadedFormData;
+    if (!formData) {
+      const formRes = await fetchGoogleApiWithRetry(
+        `https://forms.googleapis.com/v1/forms/${safeFormId}`,
+        {},
+        token
+      );
 
-    if (!formRes.ok) {
-      if (formRes.status === 401 || formRes.status === 403) {
-        // Request fresh token with Forms scopes if needed
-        const freshToken = await requestGoogleAccessToken();
-        if (freshToken) {
-          return this.fetchGoogleFormEvaluations(idOrUrl, freshToken);
+      if (!formRes.ok) {
+        try {
+          const sheetFallback = await fetchArbitrarySpreadsheetDataHelper(formId, undefined, token);
+          if (sheetFallback.rows.length > 0 && sheetFallback.headers.length > 0) {
+            return {
+              formId: sheetFallback.spreadsheetId,
+              title: sheetFallback.title,
+              maxScore: 10,
+              headers: sheetFallback.headers,
+              rows: sheetFallback.rows,
+            };
+          }
+        } catch {}
+
+        if (formRes.status === 401 || formRes.status === 403) {
+          const freshToken = await requestGoogleAccessToken(true);
+          if (freshToken && freshToken !== token) {
+            return this.fetchGoogleFormEvaluations(idOrUrl, freshToken);
+          }
+          throw new Error(
+            'No tienes permisos para leer este Google Forms o necesitas autorizar el acceso a Google Forms.'
+          );
         }
-        throw new Error(
-          'No tienes permisos para leer este Google Forms o necesitas autorizar el acceso a Google Forms.'
-        );
+        if (formRes.status === 404) {
+          throw new Error(
+            'No se encontró el formulario de Google Forms. Asegúrate de pegar el enlace de edición (docs.google.com/forms/d/.../edit).'
+          );
+        }
+        throw new Error(`Error al leer el formulario de Google Forms (Código ${formRes.status}).`);
       }
-      if (formRes.status === 404) {
-        throw new Error(
-          'No se encontró el formulario de Google Forms. Asegúrate de pegar el enlace de edición (docs.google.com/forms/d/.../edit).'
-        );
-      }
-      throw new Error(`Error al leer el formulario de Google Forms (Código ${formRes.status}).`);
+
+      formData = await formRes.json();
     }
 
-    const formData = await formRes.json();
     const formTitle =
       formData?.info?.title ||
       formData?.info?.documentTitle ||
       'Evaluación de Google Forms';
+    const linkedSheetId = formData?.linkedSheetId ? String(formData.linkedSheetId).trim() : '';
 
     // Map questionId -> question title, and calculate total possible points in the Quiz
     const questionIdToTitle: Record<string, string> = {};
@@ -192,13 +406,32 @@ export const formsService = {
     });
 
     // 2. Fetch Form Responses (submissions & scores)
+    const activeToken = getCachedAccessToken() || token;
     const responsesRes = await fetchGoogleApiWithRetry(
       `https://forms.googleapis.com/v1/forms/${safeFormId}/responses`,
       {},
-      token
+      activeToken
     );
 
     if (!responsesRes.ok) {
+      if (linkedSheetId) {
+        try {
+          const linkedSheetData = await fetchArbitrarySpreadsheetDataHelper(
+            linkedSheetId,
+            undefined,
+            activeToken
+          );
+          if (linkedSheetData.rows.length > 0) {
+            return {
+              formId,
+              title: formTitle,
+              maxScore: totalQuizPoints > 0 ? totalQuizPoints : 10,
+              headers: linkedSheetData.headers,
+              rows: linkedSheetData.rows,
+            };
+          }
+        } catch {}
+      }
       throw new Error(
         `No se pudieron obtener las respuestas del Google Forms (Código ${responsesRes.status}).`
       );
@@ -210,6 +443,24 @@ export const formsService = {
       : [];
 
     if (responsesList.length === 0) {
+      if (linkedSheetId) {
+        try {
+          const linkedSheetData = await fetchArbitrarySpreadsheetDataHelper(
+            linkedSheetId,
+            undefined,
+            activeToken
+          );
+          if (linkedSheetData.rows.length > 0) {
+            return {
+              formId,
+              title: formTitle,
+              maxScore: totalQuizPoints > 0 ? totalQuizPoints : 10,
+              headers: linkedSheetData.headers,
+              rows: linkedSheetData.rows,
+            };
+          }
+        } catch {}
+      }
       throw new Error('Este formulario de Google Forms aún no tiene respuestas enviadas.');
     }
 

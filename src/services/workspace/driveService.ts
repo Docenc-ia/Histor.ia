@@ -1005,13 +1005,14 @@ export const driveService = {
   },
 
   /**
-   * List existing Google Spreadsheets (and optionally Google Docs) from the teacher's Google Drive
-   * so they can import grades or disposition from any existing sheet or document.
+   * List existing Google Spreadsheets (and optionally Google Docs and Google Forms) from the teacher's Google Drive
+   * so they can import grades or disposition from any existing sheet, document, or form.
    */
   async listUserSpreadsheets(
     searchQuery?: string,
     providedToken?: string,
-    includeDocs: boolean = true
+    includeDocs: boolean = true,
+    interactive: boolean = false
   ): Promise<
     Array<{
       id: string;
@@ -1019,20 +1020,20 @@ export const driveService = {
       modifiedTime?: string;
       url: string;
       mimeType?: string;
-      docType?: 'sheet' | 'doc';
+      docType?: 'sheet' | 'doc' | 'form';
     }>
   > {
     let token = providedToken || getCachedAccessToken();
     if (!token) {
       try {
-        token = await requestGoogleAccessToken();
+        token = await requestGoogleAccessToken(interactive);
       } catch {}
     }
     if (!token) return [];
 
     try {
       const mimeFilter = includeDocs
-        ? "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.google-apps.document')"
+        ? "(mimeType = 'application/vnd.google-apps.spreadsheet' or mimeType = 'application/vnd.google-apps.document' or mimeType = 'application/vnd.google-apps.form')"
         : "mimeType = 'application/vnd.google-apps.spreadsheet'";
       let query = `${mimeFilter} and trashed = false`;
       if (searchQuery && searchQuery.trim()) {
@@ -1040,23 +1041,28 @@ export const driveService = {
         query += ` and name contains '${safeQ}'`;
       }
       const res = await fetchGoogleApiWithRetry(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=30`,
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=35`,
         {},
         token
       );
       if (res.ok) {
         const data = await res.json();
         return (data.files || []).map((f: any) => {
-          const isDoc = String(f.mimeType || '').includes('document');
+          const mime = String(f.mimeType || '');
+          const isDoc = mime.includes('document');
+          const isForm = mime.includes('form');
+          const docType: 'sheet' | 'doc' | 'form' = isForm ? 'form' : isDoc ? 'doc' : 'sheet';
           return {
             id: f.id,
             name: f.name,
             mimeType: f.mimeType,
-            docType: isDoc ? 'doc' : 'sheet',
+            docType,
             modifiedTime: f.modifiedTime,
             url:
               f.webViewLink ||
-              (isDoc
+              (isForm
+                ? `https://docs.google.com/forms/d/${f.id}/edit`
+                : isDoc
                 ? `https://docs.google.com/document/d/${f.id}/edit`
                 : `https://docs.google.com/spreadsheets/d/${f.id}/edit`),
           };
@@ -1100,10 +1106,11 @@ export const driveService = {
           if (meta.name) title = meta.name;
         }
 
+        const activeTok = getCachedAccessToken() || token;
         const htmlRes = await fetchGoogleApiWithRetry(
           `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/html`,
           {},
-          token
+          activeTok
         );
         if (htmlRes.ok) {
           const html = await htmlRes.text();
@@ -1113,7 +1120,7 @@ export const driveService = {
         const txtRes = await fetchGoogleApiWithRetry(
           `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/plain`,
           {},
-          token
+          activeTok
         );
         if (txtRes.ok) {
           const text = await txtRes.text();
@@ -1124,7 +1131,28 @@ export const driveService = {
       }
     }
 
-    // Fallback for public/link-shared Google Docs
+    // Fallback 1: Server-side proxy (bypasses browser CORS on docs.google.com)
+    try {
+      const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: `https://docs.google.com/document/d/${encodeURIComponent(cleanId)}/edit`,
+        }),
+      });
+      if (proxyRes.ok) {
+        const proxyData = await proxyRes.json();
+        if (proxyData?.ok && (proxyData.html || proxyData.text)) {
+          return {
+            title: proxyData.title || title,
+            html: proxyData.html,
+            text: proxyData.text,
+          };
+        }
+      }
+    } catch {}
+
+    // Fallback 2: Direct browser fetch for public/link-shared Google Docs
     try {
       const pubTxtRes = await fetch(
         `https://docs.google.com/document/d/${encodeURIComponent(cleanId)}/export?format=txt`

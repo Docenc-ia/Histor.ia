@@ -309,7 +309,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   headerRowIndex: number;
 }> {
   const trimmed = spreadsheetIdOrUrl.trim();
-  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  const match = trimmed.match(/\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
   const spreadsheetId = match ? match[1] : trimmed;
 
   if (!spreadsheetId || spreadsheetId.length < 10) {
@@ -324,50 +324,93 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   }
 
   if (token && isValidGoogleAccessToken(token)) {
-    const metaRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties.title`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    );
-
-    if (metaRes.ok) {
-      const meta = await metaRes.json();
-      const title = meta.properties?.title || 'Documento de Google Sheets';
-      const sheetNames: string[] = (meta.sheets || [])
-        .map((s: any) => s.properties?.title)
-        .filter(Boolean);
-      const selectedSheet =
-        targetSheetTitle && sheetNames.includes(targetSheetTitle)
-          ? targetSheetTitle
-          : sheetNames[0] || 'Hoja 1';
-
-      const range = encodeURIComponent(`'${selectedSheet}'!A1:ZZ500`);
-      const valRes = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
-        {
-          headers: { Authorization: `Bearer ${token}` },
-        }
+    try {
+      const metaRes = await fetchGoogleApiWithRetry(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties.title`,
+        {},
+        token
       );
 
-      if (valRes.ok) {
-        const valData = await valRes.json();
-        const rawValues: any[][] = valData.values || [];
-        const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
-        return {
-          spreadsheetId,
-          title,
-          sheetNames,
-          selectedSheet,
-          headers,
-          rows,
-          raw2D: rawValues,
-          headerRowIndex,
-        };
+      if (metaRes.ok) {
+        const meta = await metaRes.json();
+        const title = meta.properties?.title || 'Documento de Google Sheets';
+        const sheetNames: string[] = (meta.sheets || [])
+          .map((s: any) => s.properties?.title)
+          .filter(Boolean);
+        const selectedSheet =
+          targetSheetTitle && sheetNames.includes(targetSheetTitle)
+            ? targetSheetTitle
+            : sheetNames[0] || 'Hoja 1';
+
+        const range = encodeURIComponent(`'${selectedSheet}'!A1:ZZ500`);
+        const valRes = await fetchGoogleApiWithRetry(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+          {},
+          getCachedAccessToken() || token
+        );
+
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          const rawValues: any[][] = valData.values || [];
+          const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
+          return {
+            spreadsheetId,
+            title,
+            sheetNames,
+            selectedSheet,
+            headers,
+            rows,
+            raw2D: rawValues,
+            headerRowIndex,
+          };
+        }
       }
+    } catch (apiErr) {
+      console.warn('Sheets API v4 fallback notice:', apiErr);
     }
   }
 
+  // Fallback 1: Server-side proxy (bypasses browser CORS on docs.google.com)
+  try {
+    const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: trimmed.startsWith('http')
+          ? trimmed
+          : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`,
+        sheetName: targetSheetTitle || '',
+      }),
+    });
+    if (proxyRes.ok) {
+      const proxyData = await proxyRes.json();
+      if (proxyData?.ok && (proxyData.csvText || proxyData.htmlText)) {
+        const XLSX = await import('xlsx');
+        const contentStr = proxyData.csvText || proxyData.htmlText;
+        const wb = XLSX.read(contentStr, { type: 'string' });
+        const firstSheet = wb.SheetNames[0];
+        if (firstSheet && wb.Sheets[firstSheet]) {
+          const rawValues: any[][] = XLSX.utils.sheet_to_json(wb.Sheets[firstSheet], {
+            header: 1,
+            defval: '',
+          });
+          const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
+          return {
+            spreadsheetId,
+            title: proxyData.title || 'Hoja de Google Sheets',
+            sheetNames: [targetSheetTitle || 'Hoja 1'],
+            selectedSheet: targetSheetTitle || 'Hoja 1',
+            headers,
+            rows,
+            raw2D: rawValues,
+            headerRowIndex,
+          };
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Fallback 2: Direct browser CSV export
   const csvUrl = targetSheetTitle
     ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(targetSheetTitle)}`
     : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`;
@@ -375,11 +418,17 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   const csvRes = await fetch(csvUrl);
   if (!csvRes.ok) {
     throw new Error(
-      'No se pudo acceder a la hoja de Google Sheets. Asegúrate de haber iniciado sesión con tu cuenta de Google o que el documento sea accesible.'
+      'No se pudo acceder a la hoja de Google Sheets. Asegúrate de haber iniciado sesión con tu cuenta de Google o que el documento tenga acceso por enlace.'
     );
   }
 
   const csvText = await csvRes.text();
+  if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.includes('accounts.google.com')) {
+    throw new Error(
+      'La hoja de Google Sheets es privada. Pulsa "Buscar" abajo para conectar tu Google Drive o habilita el acceso por enlace.'
+    );
+  }
+
   const XLSX = await import('xlsx');
   const wb = XLSX.read(csvText, { type: 'string' });
   const firstSheet = wb.SheetNames[0];

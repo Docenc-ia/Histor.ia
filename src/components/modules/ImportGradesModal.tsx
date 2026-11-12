@@ -37,8 +37,10 @@ import {
 } from '../../utils/excelExport';
 import { driveService } from '../../services/workspace/driveService';
 import { sheetsService } from '../../services/workspace/sheetsService';
+import { formsService } from '../../services/workspace/formsService';
 import {
   normalizeImportText,
+  findBestStudentMatchInRoster,
   autoDetectIdentityColumns,
   autoDetectColumnsConfiguration,
   computeMultiVerificationRows,
@@ -237,7 +239,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       modifiedTime?: string;
       url: string;
       mimeType?: string;
-      docType?: 'sheet' | 'doc';
+      docType?: 'sheet' | 'doc' | 'form';
     }>
   >([]);
   const [isLoadingDriveSheets, setIsLoadingDriveSheets] = useState<boolean>(false);
@@ -294,12 +296,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load teacher's Google Spreadsheets when switching to 'sheets' tab
-  const handleLoadDriveSpreadsheets = async (query?: string) => {
+  // Load teacher's Google Spreadsheets, Docs & Forms when switching to 'sheets' tab or clicking "Buscar"
+  const handleLoadDriveSpreadsheets = async (query?: string, interactive = false) => {
     setIsLoadingDriveSheets(true);
     setRemoteSheetError(null);
     try {
-      const list = await driveService.listUserSpreadsheets(query);
+      const list = await driveService.listUserSpreadsheets(query, undefined, true, interactive);
       setDriveSpreadsheets(list);
     } catch (err: any) {
       console.warn('Error loading Drive spreadsheets:', err);
@@ -310,7 +312,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
   useEffect(() => {
     if (isOpen && sourceType === 'sheets' && driveSpreadsheets.length === 0) {
-      handleLoadDriveSpreadsheets();
+      handleLoadDriveSpreadsheets(undefined, false);
     }
   }, [isOpen, sourceType]);
 
@@ -816,20 +818,153 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   };
 
   /**
-   * Handle loading a Google Sheet, Google Doc, or direct CSV/web link by URL/ID or from Drive list
+   * Handle loading a Google Sheet, Google Doc, Google Form, or direct CSV/web link by URL/ID or from Drive list
    */
   const handleLoadRemoteGoogleSheet = async (
     idOrUrl: string,
     targetTab?: string,
-    explicitDocType?: 'sheet' | 'doc'
+    explicitDocType?: 'sheet' | 'doc' | 'form'
   ) => {
     const trimmed = idOrUrl.trim();
     if (!trimmed) return;
     setIsLoadingRemoteSheet(true);
     setRemoteSheetError(null);
     try {
+      // 0. Check if it's a Google Forms link (/forms/d/... or /forms/d/e/... or forms.gle/...) or explicit Form from Drive
+      const isFormsUrl =
+        explicitDocType === 'form' ||
+        /\/forms\/(?:u\/\d+\/)?d\//i.test(trimmed) ||
+        /forms\.gle\//i.test(trimmed) ||
+        trimmed.startsWith('1FAIpQL');
+
+      if (isFormsUrl) {
+        const formResult = await formsService.fetchGoogleFormEvaluations(trimmed);
+        const fHeaders = formResult.headers;
+        const fRows = formResult.rows;
+        if (!fHeaders.length || !fRows.length) {
+          setRemoteSheetError('El formulario de Google Forms no contiene respuestas de alumnos.');
+          return;
+        }
+
+        // Smartly detect student name column, email column, and score column from the Form responses
+        const timestampCol =
+          fHeaders.find((h) => /marca temporal|timestamp/i.test(normalizeImportText(h))) || '';
+        const emailCol =
+          fHeaders.find((h) =>
+            /direccion de correo|correo electronico|email|mail/i.test(normalizeImportText(h))
+          ) || '';
+        const scoreCol =
+          fHeaders.find((h) =>
+            /^puntuacion$|^score$|^puntaje$|^nota$|^calificacion$/i.test(normalizeImportText(h))
+          ) ||
+          fHeaders.find((h) => /puntuacion|score|puntaje/i.test(normalizeImportText(h))) ||
+          '';
+
+        const candidateCols = fHeaders.filter(
+          (h) => h !== timestampCol && h !== emailCol && h !== scoreCol
+        );
+
+        let nameCol = '';
+        let secondaryNameCol = '';
+        const lastCol = candidateCols.find((h) => /^apellido(s)?$/i.test(normalizeImportText(h)));
+        const firstCol = candidateCols.find(
+          (h) => h !== lastCol && /^nombre(s)?$/i.test(normalizeImportText(h))
+        );
+
+        if (lastCol && firstCol) {
+          nameCol = lastCol;
+          secondaryNameCol = firstCol;
+        } else {
+          let bestMatchCol = '';
+          let bestMatchCount = 0;
+          if (students.length > 0) {
+            for (const col of candidateCols) {
+              let matches = 0;
+              for (const r of fRows.slice(0, 40)) {
+                const val = String(r[col] ?? '').trim();
+                if (!val || val.length < 3) continue;
+                const { student, score } = findBestStudentMatchInRoster(students, val);
+                if (student && score >= 0.6) matches++;
+              }
+              if (matches > bestMatchCount) {
+                bestMatchCount = matches;
+                bestMatchCol = col;
+              }
+            }
+          }
+          nameCol =
+            bestMatchCol ||
+            candidateCols.find((h) =>
+              /apellido y nombre|nombre y apellido|nombre completo|alumno|estudiante|selecciona tu nombre|tu nombre|nombre|apellido/i.test(
+                normalizeImportText(h)
+              )
+            ) ||
+            candidateCols[0] ||
+            emailCol ||
+            fHeaders[0];
+        }
+
+        const evalCat =
+          activeCategories.find((c) =>
+            /evaluacion|examen|prueba|forms/i.test(normalizeImportText(c.name))
+          ) ||
+          activeCategories[0] || {
+            id: 'cat-default',
+            name: 'Evaluaciones',
+            weight: 100,
+            subcategories: [],
+          };
+
+        const cleanEvalTitle =
+          formResult.title
+            .replace(/\(respuestas.*?\)/gi, '')
+            .replace(/\(responses.*?\)/gi, '')
+            .trim() || 'Evaluación Forms';
+
+        const colConfigs: DetectedColumnConfig[] = fHeaders
+          .filter((h) => h !== nameCol && h !== secondaryNameCol && h !== emailCol)
+          .map((h) => ({
+            colKey: h,
+            isIncluded: h === scoreCol,
+            kind: h === scoreCol ? 'grade' : 'ignore',
+            targetCategoryMode: 'existing',
+            targetCategoryId: evalCat.id,
+            newCategoryName: '',
+            targetSubcategoryMode: 'new',
+            targetSubcategoryId: '',
+            subcategoryName: h === scoreCol ? cleanEvalTitle : h,
+          }));
+
+        const raw2D = [
+          fHeaders,
+          ...fRows.map((r) => fHeaders.map((h) => String(r[h] ?? ''))),
+        ];
+
+        setActiveRemoteSpreadsheetId('');
+        setSheetUrlInput(trimmed);
+        setSheetNames(['Google Forms']);
+        setSelectedSheetName('Google Forms');
+        setRawWorkbook(null);
+        setRaw2DGrid(raw2D);
+        setSelectedHeaderRowIndex(0);
+
+        processLoadedTableData(
+          fRows,
+          fHeaders,
+          `Google Forms: ${formResult.title}`,
+          true,
+          {
+            nameCol,
+            secondaryNameCol,
+            emailCol,
+            colConfigs,
+          }
+        );
+        return;
+      }
+
       // 1. Check if it's a Google Docs link or explicit Google Doc from Drive
-      const docUrlMatch = trimmed.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+      const docUrlMatch = trimmed.match(/\/document\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
       if (docUrlMatch || explicitDocType === 'doc') {
         const docId = docUrlMatch ? docUrlMatch[1] : trimmed;
         const exported = await driveService.exportGoogleDocContent(docId);
@@ -867,9 +1002,29 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         !trimmed.includes('drive.google.com')
       ) {
         try {
-          const resp = await fetch(trimmed);
-          if (resp.ok) {
-            const text = await resp.text();
+          let text = '';
+          try {
+            const resp = await fetch(trimmed);
+            if (resp.ok) {
+              text = await resp.text();
+            }
+          } catch {}
+
+          if (!text) {
+            const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: trimmed }),
+            });
+            if (proxyRes.ok) {
+              const proxyData = await proxyRes.json();
+              if (proxyData?.ok && proxyData.text) {
+                text = proxyData.text;
+              }
+            }
+          }
+
+          if (text) {
             const raw2D =
               trimmed.toLowerCase().endsWith('.csv')
                 ? ensureHeaderRowIn2DGrid(parseCsvTextTo2D(text))
@@ -922,7 +1077,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       // If a generic Drive link was pasted and it's actually a Google Doc, try exporting as Google Doc
       try {
         const genericDriveMatch = trimmed.match(/[-\w]{25,}/);
-        if (genericDriveMatch) {
+        if (genericDriveMatch && !/\/forms\//i.test(trimmed)) {
           const docFallback = await driveService.exportGoogleDocContent(genericDriveMatch[0]);
           if (docFallback && (docFallback.html || docFallback.text)) {
             const raw2D = parseHtmlOrTextDocumentTo2DGrid(docFallback.html || docFallback.text || '');
@@ -943,7 +1098,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
       setRemoteSheetError(
         err?.message ||
-          'No se pudo leer el documento desde el enlace. Verificá que el link sea de Google Sheets o Google Docs y que tengas acceso.'
+          'No se pudo leer el documento desde el enlace. Verificá que el link sea de Google Sheets, Google Docs o Google Forms y que tengas acceso.'
       );
     } finally {
       setIsLoadingRemoteSheet(false);
@@ -2138,7 +2293,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
             {/* MODO 2: PEGAR UN LINK (GOOGLE SHEETS, GOOGLE DOCS, CSV) O ELEGIR DE GOOGLE DRIVE */}
             {sourceType === 'sheets' && (
               <div className="space-y-5">
-                {/* Opción A: Pegar enlace o ID de Google Sheets, Google Docs o Web */}
+                {/* Opción A: Pegar enlace o ID de Google Sheets, Google Docs, Google Forms o Web */}
                 <div
                   className={`p-4 rounded-2xl border space-y-3 ${
                     isDarkMode ? 'bg-slate-850/60 border-slate-750' : 'bg-blue-50/40 border-blue-200'
@@ -2147,11 +2302,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <div className="flex items-center gap-2">
                     <Link2 className="w-4 h-4 text-blue-500" />
                     <h4 className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                      Opción 1: Pegar un Link de Google Sheets, Google Docs o Documento
+                      Opción 1: Pegar un Link de Google Sheets, Google Docs, Forms o Documento
                     </h4>
                   </div>
                   <p className={`text-xs ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                    Pegá el link de tu <strong>Google Sheet</strong>, <strong>Google Doc</strong> (con tabla o lista de nombres y notas) o archivo compartido. En el paso siguiente podrás <strong>elegir los nombres</strong> y ver si está todo bien antes de guardar:
+                    Pegá el link de tu <strong>Google Sheet</strong>, <strong>Google Doc</strong>, <strong>Google Forms</strong> o archivo compartido. En el paso siguiente podrás <strong>elegir los nombres</strong> y ver si está todo bien antes de guardar:
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2">
                     <input
@@ -2163,7 +2318,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           handleLoadRemoteGoogleSheet(sheetUrlInput);
                         }
                       }}
-                      placeholder="Pegá acá el link (https://docs.google.com/spreadsheets/d/... o https://docs.google.com/document/d/...)"
+                      placeholder="Pegá acá el link (Google Sheets, Google Docs o Google Forms)..."
                       className={`flex-1 px-3.5 py-2 text-xs rounded-xl border outline-hidden ${
                         isDarkMode
                           ? 'bg-slate-800 border-slate-700 text-white placeholder:text-slate-500'
@@ -2193,7 +2348,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   )}
                 </div>
 
-                {/* Opción B: Elegir un Google Sheet o Google Doc directamente de Google Drive */}
+                {/* Opción B: Elegir un Google Sheet, Google Doc o Google Form directamente de Google Drive */}
                 <div
                   className={`p-4 rounded-2xl border space-y-3 ${
                     isDarkMode ? 'bg-slate-850/40 border-slate-750' : 'bg-white border-neutral-200'
@@ -2203,7 +2358,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     <div className="flex items-center gap-2">
                       <FolderOpen className="w-4 h-4 text-emerald-500" />
                       <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                        Opción 2: Elegir un Google Sheet o Google Doc de tu Google Drive
+                        Opción 2: Elegir un Google Sheet, Google Doc o Forms de tu Google Drive
                       </h4>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2214,9 +2369,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           value={driveSearchQuery}
                           onChange={(e) => setDriveSearchQuery(e.target.value)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter') handleLoadDriveSpreadsheets(driveSearchQuery);
+                            if (e.key === 'Enter') handleLoadDriveSpreadsheets(driveSearchQuery, true);
                           }}
-                          placeholder="Buscar hoja o doc en Drive..."
+                          placeholder="Buscar hoja, doc o form..."
                           className={`pl-8 pr-3 py-1.5 text-xs rounded-xl border outline-hidden ${
                             isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-50 border-neutral-300'
                           }`}
@@ -2224,7 +2379,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleLoadDriveSpreadsheets(driveSearchQuery)}
+                        onClick={() => handleLoadDriveSpreadsheets(driveSearchQuery, true)}
                         disabled={isLoadingDriveSheets}
                         className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
                           isDarkMode
@@ -2241,7 +2396,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   {isLoadingDriveSheets ? (
                     <div className="py-8 text-center text-xs text-neutral-500 flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-emerald-500" />
-                      <span>Buscando hojas de cálculo y documentos en tu Google Drive...</span>
+                      <span>Buscando hojas de cálculo, documentos y formularios en tu Google Drive...</span>
                     </div>
                   ) : driveSpreadsheets.length === 0 ? (
                     <div className="py-6 text-center text-xs text-neutral-500 dark:text-slate-400">
@@ -2251,6 +2406,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
                       {driveSpreadsheets.map((sheet) => {
                         const isDoc = sheet.docType === 'doc';
+                        const isForm = sheet.docType === 'form';
                         return (
                           <button
                             key={sheet.id}
@@ -2266,7 +2422,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             }`}
                           >
                             <div className="flex items-center gap-2.5 min-w-0">
-                              {isDoc ? (
+                              {isForm ? (
+                                <FileCheck className="w-4 h-4 text-purple-500 shrink-0" />
+                              ) : isDoc ? (
                                 <FileText className="w-4 h-4 text-blue-500 shrink-0" />
                               ) : (
                                 <FileSpreadsheet className="w-4 h-4 text-emerald-500 shrink-0" />
@@ -2276,12 +2434,14 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                   <span className="text-xs font-bold truncate">{sheet.name}</span>
                                   <span
                                     className={`text-[9px] font-bold px-1.5 py-0.2 rounded shrink-0 ${
-                                      isDoc
+                                      isForm
+                                        ? 'bg-purple-500/15 text-purple-600 dark:text-purple-400'
+                                        : isDoc
                                         ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
                                         : 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
                                     }`}
                                   >
-                                    {isDoc ? 'Docs' : 'Sheets'}
+                                    {isForm ? 'Forms' : isDoc ? 'Docs' : 'Sheets'}
                                   </span>
                                 </div>
                                 {sheet.modifiedTime && (

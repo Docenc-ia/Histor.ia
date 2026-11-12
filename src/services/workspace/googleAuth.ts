@@ -98,11 +98,11 @@ export const hasRecentUserGesture = (): boolean => {
   if (
     typeof navigator !== 'undefined' &&
     'userActivation' in navigator &&
-    (navigator as any).userActivation
+    (navigator as any).userActivation?.isActive
   ) {
-    return Boolean((navigator as any).userActivation.isActive);
+    return true;
   }
-  return Date.now() - lastUserGestureTime < 1200;
+  return Date.now() - lastUserGestureTime < 10000;
 };
 
 export const getActiveTeacherEmail = (): string => {
@@ -775,22 +775,87 @@ export const signInWithGoogleIdentityServices = (
   return inFlightGsiAuthPromise;
 };
 
-// Requests or returns a valid Google OAuth access token for Workspace APIs without popping up login windows automatically
-export const requestGoogleAccessToken = async (_forceRefresh = false, _preferredEmail?: string): Promise<string> => {
-  const existing = getCachedAccessToken();
-  if (existing && isValidGoogleAccessToken(existing)) {
-    return existing;
+export const invalidateExpiredAccessToken = (expiredToken?: string | null): void => {
+  const tokenToClear = expiredToken || cachedAccessToken;
+  cachedAccessToken = null;
+  tokenIssuedAt = null;
+  tokenExpiresAt = null;
+  lastLinkedFirebaseToken = null;
+  clearPersistedStorageTokens();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
+      if (raw) {
+        const map: Record<string, string> = JSON.parse(raw);
+        const activeEmail = (getActiveTeacherEmail() || getLastRememberedEmail()).trim().toLowerCase();
+        if (activeEmail && map[activeEmail]) {
+          const decoded = decodeStoredToken(map[activeEmail]);
+          if (!tokenToClear || decoded === tokenToClear) {
+            delete map[activeEmail];
+          }
+        }
+        if (tokenToClear) {
+          for (const key of Object.keys(map)) {
+            if (decodeStoredToken(map[key]) === tokenToClear) {
+              delete map[key];
+            }
+          }
+        }
+        localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(map));
+      }
+    } catch (_) {}
+  }
+};
+
+// Requests or returns a valid Google OAuth access token for Workspace APIs
+export const requestGoogleAccessToken = async (
+  forceRefresh = false,
+  preferredEmail?: string
+): Promise<string> => {
+  const activeEmail = (
+    preferredEmail ||
+    getActiveTeacherEmail() ||
+    getLastRememberedEmail()
+  )
+    .trim()
+    .toLowerCase();
+
+  if (forceRefresh) {
+    invalidateExpiredAccessToken(cachedAccessToken);
+  } else {
+    const existing = getCachedAccessToken();
+    if (existing && isValidGoogleAccessToken(existing)) {
+      return existing;
+    }
+
+    const savedLocal = getSavedTokenForEmail(activeEmail);
+    if (savedLocal && isValidGoogleAccessToken(savedLocal)) {
+      setCachedAccessToken(savedLocal, activeEmail);
+      return savedLocal;
+    }
   }
 
-  const activeEmail = (_preferredEmail || getActiveTeacherEmail() || getLastRememberedEmail()).trim().toLowerCase();
-  const savedLocal = getSavedTokenForEmail(activeEmail);
-  if (savedLocal && isValidGoogleAccessToken(savedLocal)) {
-    setCachedAccessToken(savedLocal, activeEmail);
-    return savedLocal;
+  // If triggered by a user gesture (e.g. clicking "Cargar desde Link", "Buscar", or "Importar") or explicit refresh,
+  // invoke Google Identity Services (GSI) synchronously BEFORE any await so the browser never blocks the token flow.
+  if (
+    (forceRefresh || hasRecentUserGesture()) &&
+    typeof window !== 'undefined' &&
+    (window as any).google?.accounts?.oauth2 &&
+    getEffectiveOAuthClientId()
+  ) {
+    try {
+      const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined);
+      if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
+        setCachedAccessToken(gsiResult.accessToken, gsiResult.profile?.email || activeEmail);
+        return gsiResult.accessToken;
+      }
+    } catch (err) {
+      console.warn('GSI on-demand token acquisition notice:', err);
+    }
   }
 
-  // Try recovering from backend session if active teacher email is known
-  if (activeEmail) {
+  // Try recovering from backend session if not in forceRefresh mode
+  if (!forceRefresh && activeEmail) {
     try {
       const data = await api.getAuthUser(activeEmail);
       const serverToken = (data as any)?.token || (data?.user as any)?.token;
@@ -952,8 +1017,8 @@ export const renewGoogleSessionSilently = async (userEmail?: string): Promise<st
 };
 
 /**
- * Universal fetch wrapper for Google Workspace APIs (Sheets, Drive, Calendar, Classroom, Gmail, Docs)
- * Automatically injects the active Google OAuth token and notifies the session banner on 401.
+ * Universal fetch wrapper for Google Workspace APIs (Sheets, Drive, Calendar, Classroom, Gmail, Docs, Forms)
+ * Automatically injects the active Google OAuth token and refreshes on 401.
  */
 export const fetchGoogleApiWithRetry = async (
   input: RequestInfo | URL,
@@ -962,9 +1027,9 @@ export const fetchGoogleApiWithRetry = async (
 ): Promise<Response> => {
   const activeToken = providedToken || getCachedAccessToken();
 
-  const buildHeaders = (tok: string | null): Headers => {
+  const buildHeaders = (tok: string | null, forceOverwrite = false): Headers => {
     const headers = new Headers(init.headers || {});
-    if (tok && !headers.has('Authorization')) {
+    if (tok && (forceOverwrite || !headers.has('Authorization'))) {
       headers.set('Authorization', `Bearer ${tok}`);
     }
     return headers;
@@ -975,10 +1040,19 @@ export const fetchGoogleApiWithRetry = async (
     headers: buildHeaders(activeToken),
   });
 
-  // Intercept 401 Unauthorized (Google token expired or revoked) and show the non-intrusive reconnect banner
+  // Intercept 401 Unauthorized (Google token expired after 1h or revoked):
+  // Invalidate the dead token immediately and attempt a fresh token request when possible.
   if (response.status === 401) {
-    console.warn('Google API returned 401 Unauthorized.');
-    notifyGoogleSessionExpired('http_401_token_expired');
+    invalidateExpiredAccessToken(activeToken);
+    try {
+      const freshToken = await requestGoogleAccessToken(true);
+      if (freshToken && isValidGoogleAccessToken(freshToken)) {
+        return await fetch(input, {
+          ...init,
+          headers: buildHeaders(freshToken, true),
+        });
+      }
+    } catch (_) {}
   }
 
   return response;

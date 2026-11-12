@@ -451,13 +451,13 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   /**
    * Loads both native Google Forms and response Google Sheets from the teacher's Drive
    */
-  const loadDriveFormsAndSheets = async (query?: string) => {
+  const loadDriveFormsAndSheets = async (query?: string, interactive = false) => {
     setIsLoadingDriveList(true);
     setRemoteError(null);
     try {
       const [formsList, sheetsList] = await Promise.all([
-        formsService.listUserGoogleForms(query),
-        driveService.listUserSpreadsheets(query),
+        formsService.listUserGoogleForms(query, undefined, interactive),
+        driveService.listUserSpreadsheets(query, undefined, false, interactive),
       ]);
 
       const merged: Array<{
@@ -1356,7 +1356,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           type="text"
                           value={driveSearch}
                           onChange={(e) => setDriveSearch(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && loadDriveFormsAndSheets(driveSearch)}
+                          onKeyDown={(e) => e.key === 'Enter' && loadDriveFormsAndSheets(driveSearch, true)}
                           placeholder="Buscar evaluación..."
                           className={`px-2.5 py-1 text-xs rounded-lg border ${
                             isDarkMode
@@ -1366,7 +1366,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                         />
                         <button
                           type="button"
-                          onClick={() => loadDriveFormsAndSheets(driveSearch)}
+                          onClick={() => loadDriveFormsAndSheets(driveSearch, true)}
                           className="p-1.5 rounded-lg border border-neutral-300 dark:border-slate-700 hover:bg-neutral-100 dark:hover:bg-slate-800 cursor-pointer"
                           title="Actualizar lista"
                         >

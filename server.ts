@@ -568,6 +568,213 @@ async function startServer() {
     res.json(WORKSPACE_INTEGRATION);
   });
 
+  // Server-side proxy for fetching Google Sheets CSV/HTML, Google Docs HTML/TXT, and Google Forms metadata without browser CORS restrictions
+  app.post("/api/workspace/fetch-remote-document", async (req, res) => {
+    try {
+      const rawUrl = String(req.body?.url || "").trim();
+      const targetSheet = String(req.body?.sheetName || "").trim();
+      if (!rawUrl) {
+        return res.status(400).json({ ok: false, error: "URL requerida" });
+      }
+
+      const decodeHtmlEntities = (str: string): string =>
+        str
+          .replace(/&amp;/g, "&")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&nbsp;/g, " ")
+          .trim();
+
+      const extractTitleFromHtml = (html: string, fallback: string): string => {
+        const ogMatch = html.match(/<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i);
+        const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        const rawTitle = decodeHtmlEntities((ogMatch && ogMatch[1]) || (titleMatch && titleMatch[1]) || "");
+        const cleaned = rawTitle
+          .replace(/\s*-\s*Formularios de Google$/i, "")
+          .replace(/\s*-\s*Google Forms$/i, "")
+          .replace(/\s*-\s*Hojas de cálculo de Google$/i, "")
+          .replace(/\s*-\s*Google Sheets$/i, "")
+          .replace(/\s*-\s*Documentos de Google$/i, "")
+          .replace(/\s*-\s*Google Docs$/i, "")
+          .trim();
+        return cleaned || fallback;
+      };
+
+      const isGoogleSignInPage = (text: string, finalUrl = ""): boolean => {
+        if (finalUrl.includes("accounts.google.com")) return true;
+        const head = text.slice(0, 2500);
+        return (
+          head.includes("accounts.google.com/ServiceLogin") ||
+          head.includes("accounts.google.com/v3/signin")
+        );
+      };
+
+      const fetchHeaders = {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+      };
+
+      // 1. Check if it's a Google Forms link (or forms.gle shortlink)
+      if (/\/forms\/(?:u\/\d+\/)?d\//i.test(rawUrl) || /forms\.gle\//i.test(rawUrl)) {
+        const resp = await fetch(rawUrl, { headers: fetchHeaders, redirect: "follow" });
+        const finalUrl = resp.url || rawUrl;
+        const html = resp.ok ? await resp.text() : "";
+        const responderMatch = finalUrl.match(/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9-_]+)/i);
+        const editorMatch = !responderMatch
+          ? finalUrl.match(/\/forms\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i)
+          : null;
+        const title = html ? extractTitleFromHtml(html, "Evaluación de Google Forms") : "Evaluación de Google Forms";
+
+        return res.json({
+          ok: true,
+          kind: "form",
+          resolvedUrl: finalUrl,
+          title,
+          responderId: responderMatch ? responderMatch[1] : null,
+          formId: editorMatch ? editorMatch[1] : null,
+        });
+      }
+
+      // 2. Check if it's a Google Docs link
+      const docMatch = rawUrl.match(/\/document\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
+      if (docMatch) {
+        const docId = docMatch[1];
+        let title = "Documento de Google Docs";
+
+        try {
+          const pubHtmlRes = await fetch(
+            `https://docs.google.com/document/d/${encodeURIComponent(docId)}/export?format=html`,
+            { headers: fetchHeaders, redirect: "follow" }
+          );
+          if (pubHtmlRes.ok) {
+            const htmlText = await pubHtmlRes.text();
+            if (htmlText && !isGoogleSignInPage(htmlText, pubHtmlRes.url)) {
+              title = extractTitleFromHtml(htmlText, title);
+              return res.json({ ok: true, kind: "doc", title, html: htmlText });
+            }
+          }
+        } catch {}
+
+        try {
+          const pubTxtRes = await fetch(
+            `https://docs.google.com/document/d/${encodeURIComponent(docId)}/export?format=txt`,
+            { headers: fetchHeaders, redirect: "follow" }
+          );
+          if (pubTxtRes.ok) {
+            const txt = await pubTxtRes.text();
+            if (txt && !txt.trim().startsWith("<!DOCTYPE html") && !isGoogleSignInPage(txt, pubTxtRes.url)) {
+              return res.json({ ok: true, kind: "doc", title, text: txt });
+            }
+          }
+        } catch {}
+
+        try {
+          const mobileRes = await fetch(
+            `https://docs.google.com/document/d/${encodeURIComponent(docId)}/mobilebasic`,
+            { headers: fetchHeaders, redirect: "follow" }
+          );
+          if (mobileRes.ok) {
+            const mobileHtml = await mobileRes.text();
+            if (mobileHtml && !isGoogleSignInPage(mobileHtml, mobileRes.url)) {
+              title = extractTitleFromHtml(mobileHtml, title);
+              return res.json({ ok: true, kind: "doc", title, html: mobileHtml });
+            }
+          }
+        } catch {}
+
+        return res.status(403).json({
+          ok: false,
+          error: "El documento de Google Docs es privado. Inicia sesión con tu cuenta de Google o habilita el acceso por enlace.",
+        });
+      }
+
+      // 3. Check if it's a Google Sheets link (or spreadsheet ID)
+      const sheetMatch = rawUrl.match(/\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
+      const gidMatch = rawUrl.match(/[#?&]gid=(\d+)/i);
+      const spreadsheetId = sheetMatch ? sheetMatch[1] : (!rawUrl.includes("/") && rawUrl.length >= 15 ? rawUrl : "");
+
+      if (spreadsheetId) {
+        const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : "";
+        const sheetParam = targetSheet ? `&sheet=${encodeURIComponent(targetSheet)}` : gidParam;
+
+        const candidateCsvUrls = [
+          `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/gviz/tq?tqx=out:csv${sheetParam}`,
+          `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/export?format=csv${gidParam}`,
+        ];
+
+        for (const csvUrl of candidateCsvUrls) {
+          try {
+            const csvRes = await fetch(csvUrl, { headers: fetchHeaders, redirect: "follow" });
+            if (csvRes.ok) {
+              const text = await csvRes.text();
+              if (
+                text &&
+                !text.trim().startsWith("<!DOCTYPE html") &&
+                !text.trim().startsWith("<html") &&
+                !isGoogleSignInPage(text, csvRes.url)
+              ) {
+                return res.json({
+                  ok: true,
+                  kind: "sheet",
+                  spreadsheetId,
+                  title: "Hoja de Google Sheets",
+                  csvText: text,
+                });
+              }
+            }
+          } catch {}
+        }
+
+        // Try htmlview fallback for public/shared sheets
+        try {
+          const htmlViewRes = await fetch(
+            `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/htmlview`,
+            { headers: fetchHeaders, redirect: "follow" }
+          );
+          if (htmlViewRes.ok) {
+            const htmlText = await htmlViewRes.text();
+            if (htmlText && !isGoogleSignInPage(htmlText, htmlViewRes.url) && htmlText.includes("<table")) {
+              const title = extractTitleFromHtml(htmlText, "Hoja de Google Sheets");
+              return res.json({
+                ok: true,
+                kind: "sheet",
+                spreadsheetId,
+                title,
+                htmlText,
+              });
+            }
+          }
+        } catch {}
+
+        return res.status(403).json({
+          ok: false,
+          error: "La hoja de Google Sheets requiere permisos de lectura.",
+        });
+      }
+
+      // 4. Generic web URL fallback
+      if (/^https?:\/\//i.test(rawUrl)) {
+        const webRes = await fetch(rawUrl, { headers: fetchHeaders, redirect: "follow" });
+        if (webRes.ok) {
+          const text = await webRes.text();
+          return res.json({
+            ok: true,
+            kind: "web",
+            title: extractTitleFromHtml(text, "Documento desde Enlace"),
+            text,
+          });
+        }
+      }
+
+      return res.status(400).json({ ok: false, error: "No se pudo leer el enlace proporcionado." });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || "Error al consultar documento remoto." });
+    }
+  });
+
   // Authentication & Session endpoints (isolated per teacher email)
   app.get("/api/auth/user", (req, res) => {
     const requestedEmail = String(req.query.email || "").trim().toLowerCase();

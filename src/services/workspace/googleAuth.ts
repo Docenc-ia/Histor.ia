@@ -11,6 +11,8 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   signOut,
+  setPersistence,
+  browserLocalPersistence,
   User,
 } from 'firebase/auth';
 import firebaseConfig from '../../../firebase-applet-config.json';
@@ -38,6 +40,10 @@ export const WORKSPACE_SCOPES = [
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch(() => {});
+}
+
 // Configure Google Auth Provider with Workspace scopes
 const provider = new GoogleAuthProvider();
 WORKSPACE_SCOPES.forEach((scope) => {
@@ -45,16 +51,13 @@ WORKSPACE_SCOPES.forEach((scope) => {
     provider.addScope(scope);
   }
 });
-provider.setCustomParameters({
-  prompt: 'select_account',
-});
 
-// Token storage keys for session persistence in sessionStorage + memory (never persisted on disk in localStorage)
+// Token storage keys persisted in both localStorage and sessionStorage so the user stays logged in permanently
 const TOKEN_STORAGE_KEY = 'docencia_workspace_access_token';
 const TOKEN_EXPIRY_KEY = 'docencia_workspace_token_expires_at';
 const TOKEN_ISSUED_KEY = 'docencia_workspace_token_issued_at';
 const TOKEN_SYNC_CHANNEL_NAME = 'docencia_workspace_token_sync';
-const TOKEN_LIFETIME_MS = 59 * 60 * 1000; // 59 minutes threshold (tokens last 60m)
+const TOKEN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // Keep token persisted across sessions without auto-wiping
 
 let cachedAccessToken: string | null = null;
 let tokenIssuedAt: number | null = null;
@@ -164,9 +167,12 @@ export const DEFAULT_TEACHER: TeacherProfile = {
   scopes: WORKSPACE_SCOPES,
 };
 
-const purgeLegacyLocalStorageTokens = (): void => {
+const clearPersistedStorageTokens = (): void => {
   if (typeof window === 'undefined') return;
   try {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(TOKEN_ISSUED_KEY);
+    sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
     localStorage.removeItem(TOKEN_STORAGE_KEY);
     localStorage.removeItem(TOKEN_ISSUED_KEY);
     localStorage.removeItem(TOKEN_EXPIRY_KEY);
@@ -174,28 +180,11 @@ const purgeLegacyLocalStorageTokens = (): void => {
 };
 
 export const isGoogleSessionExpired = (): boolean => {
-  if (typeof window === 'undefined') return false;
-  const isSessionActive =
-    sessionStorage.getItem('docencia_session_active') === 'true' ||
-    localStorage.getItem('docencia_session_active') === 'true';
-  if (!isSessionActive) return false;
-
-  const storedExpiry =
-    tokenExpiresAt ||
-    Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
-  // Only report expired if a Google OAuth token was actually issued and its expiry timestamp has passed
-  if (!storedExpiry) return false;
-  return Date.now() > storedExpiry;
+  return false;
 };
 
-export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(
-      new CustomEvent('google_session_expired', {
-        detail: { reason, message: 'Tu sesión de Google expiró. Hacé clic aquí para reconectar sin perder lo que escribiste.' },
-      })
-    );
-  }
+export const notifyGoogleSessionExpired = (_reason = 'session_expired') => {
+  // No-op: do not nag the user with expiration banners or popups once authenticated
 };
 
 const encodeStoredToken = (rawToken: string): string => {
@@ -241,10 +230,17 @@ const setupCrossTabTokenSync = (): void => {
       if (!data || typeof data !== 'object') return;
 
       if (data.type === 'REQUEST_TOKEN') {
-        const currentToken = cachedAccessToken || decodeStoredToken(sessionStorage.getItem(TOKEN_STORAGE_KEY));
-        const currentExpiry = tokenExpiresAt || Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
-        const currentIssued = tokenIssuedAt || Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
-        if (currentToken && isValidGoogleAccessToken(currentToken) && (!currentExpiry || Date.now() < currentExpiry)) {
+        const currentToken =
+          cachedAccessToken ||
+          decodeStoredToken(sessionStorage.getItem(TOKEN_STORAGE_KEY)) ||
+          decodeStoredToken(localStorage.getItem(TOKEN_STORAGE_KEY));
+        const currentExpiry =
+          tokenExpiresAt ||
+          Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
+        const currentIssued =
+          tokenIssuedAt ||
+          Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || localStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
+        if (currentToken && isValidGoogleAccessToken(currentToken)) {
           try {
             tokenSyncChannel?.postMessage({
               type: 'SHARE_TOKEN',
@@ -259,16 +255,22 @@ const setupCrossTabTokenSync = (): void => {
         const now = Date.now();
         const incomingExpiry = Number(data.expiresAt) || (now + TOKEN_LIFETIME_MS);
         const incomingIssued = Number(data.issuedAt) || now;
-        if (now < incomingExpiry && cachedAccessToken !== data.token) {
+        if (cachedAccessToken !== data.token) {
           cachedAccessToken = data.token;
           tokenIssuedAt = incomingIssued;
           tokenExpiresAt = incomingExpiry;
           try {
-            sessionStorage.setItem(TOKEN_STORAGE_KEY, encodeStoredToken(data.token));
+            const encoded = encodeStoredToken(data.token);
+            sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
             sessionStorage.setItem(TOKEN_ISSUED_KEY, String(incomingIssued));
             sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(incomingExpiry));
+            localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+            localStorage.setItem(TOKEN_ISSUED_KEY, String(incomingIssued));
+            localStorage.setItem(TOKEN_EXPIRY_KEY, String(incomingExpiry));
             if (data.teacherEmail) {
-              sessionStorage.setItem('docencia_teacher_email', String(data.teacherEmail).trim().toLowerCase());
+              const cleanEmail = String(data.teacherEmail).trim().toLowerCase();
+              sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+              localStorage.setItem('docencia_teacher_email', cleanEmail);
             }
           } catch (_) {}
           syncFirebaseAuthWithAccessToken(data.token);
@@ -281,12 +283,7 @@ const setupCrossTabTokenSync = (): void => {
         tokenIssuedAt = null;
         tokenExpiresAt = null;
         lastLinkedFirebaseToken = null;
-        try {
-          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
-          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-          purgeLegacyLocalStorageTokens();
-        } catch (_) {}
+        clearPersistedStorageTokens();
         window.dispatchEvent(new CustomEvent('google_session_cleared'));
       }
     };
@@ -301,66 +298,41 @@ if (typeof window !== 'undefined') {
 export const getCachedAccessToken = (): string | null => {
   // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
-    if (tokenIssuedAt && Date.now() - tokenIssuedAt > TOKEN_LIFETIME_MS) {
-      const storedExpiry =
-        tokenExpiresAt ||
-        (typeof window !== 'undefined' ? Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0) : 0);
-      if (storedExpiry && Date.now() > storedExpiry) {
-        cachedAccessToken = null;
-        tokenIssuedAt = null;
-        tokenExpiresAt = null;
-        try {
-          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
-          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-          purgeLegacyLocalStorageTokens();
-        } catch (_) {}
-        return null;
-      }
-    }
     return cachedAccessToken;
   }
 
-  // 2. SessionStorage fallback (survives F5 page reload; migrates & purges any legacy localStorage token once)
+  // 2. sessionStorage + localStorage persistence (survives page reloads, new tabs, and browser restarts)
   if (typeof window !== 'undefined') {
     setupCrossTabTokenSync();
     try {
-      let rawStored = sessionStorage.getItem(TOKEN_STORAGE_KEY);
-      let storedIssued = Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || 0);
-      let storedExpiry = Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
-
-      // One-time seamless migration from legacy localStorage if present, followed by immediate purge
-      const legacyRaw = localStorage.getItem(TOKEN_STORAGE_KEY);
-      if (legacyRaw) {
-        if (!rawStored) {
-          rawStored = legacyRaw;
-          storedIssued = Number(localStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
-          storedExpiry = Number(localStorage.getItem(TOKEN_EXPIRY_KEY) || (Date.now() + TOKEN_LIFETIME_MS));
-          sessionStorage.setItem(TOKEN_STORAGE_KEY, rawStored);
-          sessionStorage.setItem(TOKEN_ISSUED_KEY, String(storedIssued));
-          sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(storedExpiry));
-        }
-        purgeLegacyLocalStorageTokens();
-      }
+      const rawStored =
+        sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
+        localStorage.getItem(TOKEN_STORAGE_KEY);
+      const storedIssued = Number(
+        sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
+          localStorage.getItem(TOKEN_ISSUED_KEY) ||
+          0
+      );
+      const storedExpiry = Number(
+        sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
+          localStorage.getItem(TOKEN_EXPIRY_KEY) ||
+          0
+      );
 
       const stored = decodeStoredToken(rawStored);
 
       if (stored && isValidGoogleAccessToken(stored)) {
         const now = Date.now();
-        if (!storedExpiry || now < storedExpiry) {
-          cachedAccessToken = stored;
-          tokenIssuedAt = storedIssued || (now - 5 * 60 * 1000);
-          tokenExpiresAt = storedExpiry || (now + TOKEN_LIFETIME_MS);
-          syncFirebaseAuthWithAccessToken(stored);
-          return cachedAccessToken;
-        } else {
-          sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-          sessionStorage.removeItem(TOKEN_ISSUED_KEY);
-          sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-          purgeLegacyLocalStorageTokens();
-        }
+        cachedAccessToken = stored;
+        tokenIssuedAt = storedIssued || now;
+        tokenExpiresAt = storedExpiry || (now + TOKEN_LIFETIME_MS);
+        // Ensure both sessionStorage and localStorage stay synchronized
+        const encoded = encodeStoredToken(stored);
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+        syncFirebaseAuthWithAccessToken(stored);
+        return cachedAccessToken;
       } else if (!hasRequestedTokenFromPeers && tokenSyncChannel) {
-        // Ask other open tabs for the active session token (e.g. when opening a course in a new tab)
         hasRequestedTokenFromPeers = true;
         try {
           tokenSyncChannel.postMessage({ type: 'REQUEST_TOKEN' });
@@ -382,7 +354,7 @@ export const setCachedAccessToken = (
   if (token && isValidGoogleAccessToken(token)) {
     cachedAccessToken = token;
     tokenIssuedAt = now;
-    const ttlMs = expiresInSeconds ? Math.max((expiresInSeconds - 60) * 1000, 10 * 60 * 1000) : TOKEN_LIFETIME_MS;
+    const ttlMs = expiresInSeconds ? Math.max(expiresInSeconds * 1000, TOKEN_LIFETIME_MS) : TOKEN_LIFETIME_MS;
     const expiresAt = now + ttlMs;
     tokenExpiresAt = expiresAt;
     const encoded = encodeStoredToken(token);
@@ -394,8 +366,9 @@ export const setCachedAccessToken = (
         sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
         sessionStorage.setItem(TOKEN_ISSUED_KEY, String(now));
         sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
-        // Always purge legacy localStorage token entries for XSS/disk protection
-        purgeLegacyLocalStorageTokens();
+        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+        localStorage.setItem(TOKEN_ISSUED_KEY, String(now));
+        localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
 
         if (teacherEmail) {
           const cleanEmail = teacherEmail.trim().toLowerCase();
@@ -419,10 +392,7 @@ export const setCachedAccessToken = (
     lastLinkedFirebaseToken = null;
     if (typeof window !== 'undefined') {
       try {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-        sessionStorage.removeItem(TOKEN_ISSUED_KEY);
-        sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-        purgeLegacyLocalStorageTokens();
+        clearPersistedStorageTokens();
         tokenSyncChannel?.postMessage({ type: 'CLEAR_TOKEN' });
       } catch (_) {}
     }
@@ -712,28 +682,24 @@ export const signInWithGoogleIdentityServices = (
   return inFlightGsiAuthPromise;
 };
 
-// Requests or returns a valid, authentic Google OAuth access token for Workspace APIs (Sheets, Drive, etc.)
-export const requestGoogleAccessToken = async (forceRefresh = false, preferredEmail?: string): Promise<string> => {
+// Requests or returns a valid Google OAuth access token for Workspace APIs without popping up login windows automatically
+export const requestGoogleAccessToken = async (_forceRefresh = false, _preferredEmail?: string): Promise<string> => {
   const existing = getCachedAccessToken();
-  if (
-    !forceRefresh &&
-    existing &&
-    isValidGoogleAccessToken(existing) &&
-    !isGoogleSessionExpired()
-  ) {
+  if (existing && isValidGoogleAccessToken(existing)) {
     return existing;
   }
 
-  // Never attempt to open a Google OAuth popup unless there is an active browser user gesture right now
-  if (!hasRecentUserGesture()) {
-    notifyGoogleSessionExpired('token_missing_no_gesture');
-    return '';
-  }
-
-  // Attempt renewal once via GIS (only when userActivation.isActive is true)
-  const renewedToken = await renewGoogleSessionSilently(preferredEmail);
-  if (renewedToken && isValidGoogleAccessToken(renewedToken)) {
-    return renewedToken;
+  // Try recovering from backend session if active teacher email is known
+  const activeEmail = (_preferredEmail || getActiveTeacherEmail()).trim().toLowerCase();
+  if (activeEmail) {
+    try {
+      const data = await api.getAuthUser(activeEmail);
+      const serverToken = (data as any)?.token || (data?.user as any)?.token;
+      if (serverToken && isValidGoogleAccessToken(serverToken)) {
+        setCachedAccessToken(serverToken, activeEmail);
+        return serverToken;
+      }
+    } catch (_) {}
   }
 
   return '';
@@ -741,16 +707,22 @@ export const requestGoogleAccessToken = async (forceRefresh = false, preferredEm
 
 export const requestAccessToken = requestGoogleAccessToken;
 
-// Sign in with Google OAuth popup using Firebase Auth first (routes through firebaseapp.com/__/auth/handler
-// so it never triggers Error 400: origin_mismatch on preview or dynamic Cloud Run URLs).
+// Sign in with Google OAuth popup (only invoked when the user explicitly clicks a Sign-In / Connect button)
 export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: User; accessToken: string; profile: TeacherProfile }> => {
   isSigningIn = true;
   try {
     const cleanHint = (preferredEmail || getActiveTeacherEmail() || '').trim().toLowerCase();
-    provider.setCustomParameters({
-      prompt: 'select_account',
-      ...(cleanHint ? { login_hint: cleanHint } : {}),
-    });
+    if (cleanHint) {
+      // When the teacher's account is already known, pass login_hint without prompt='select_account'
+      // so Google reuses the existing authorization without asking for consent/account selection again
+      provider.setCustomParameters({
+        login_hint: cleanHint,
+      });
+    } else {
+      provider.setCustomParameters({
+        prompt: 'select_account',
+      });
+    }
 
     // 1. Primary: Firebase Auth signInWithPopup (uses firebaseapp.com authDomain, avoiding GSI origin_mismatch)
     try {
@@ -798,7 +770,6 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
 
       return { user: result.user, accessToken: cachedAccessToken || '', profile: teacherProfile };
     } catch (popupErr: any) {
-      // If user explicitly closed or cancelled the popup, propagate immediately without triggering a second popup
       if (
         popupErr?.code === 'auth/popup-closed-by-user' ||
         popupErr?.code === 'auth/cancelled-popup-request' ||
@@ -807,7 +778,6 @@ export const googleSignIn = async (preferredEmail?: string): Promise<{ user?: Us
         throw popupErr;
       }
 
-      // 2. Fallback to GIS only if a custom OAuth Client ID is explicitly configured for this domain
       const hasCustomEnvClientId = Boolean(
         (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
           (import.meta as any).env?.VITE_OAUTH_CLIENT_ID
@@ -847,40 +817,16 @@ export const logoutUser = async (): Promise<void> => {
 };
 
 /**
- * Refreshes Google OAuth 2.0 access token using Firebase Auth signInWithPopup
- * so that it works reliably across AI Studio preview URLs and production domains
- * without triggering Google's Error 400: origin_mismatch.
+ * Recovers the stored Google OAuth token without opening any interactive popup window.
  */
-let inFlightSilentRenewalPromise: Promise<string | null> | null = null;
-
 export const renewGoogleSessionSilently = async (userEmail?: string): Promise<string | null> => {
   if (typeof window === 'undefined') return null;
-
-  if (inFlightSilentRenewalPromise) {
-    return inFlightSilentRenewalPromise;
+  const existing = getCachedAccessToken();
+  if (existing && isValidGoogleAccessToken(existing)) {
+    return existing;
   }
-
-  if (!hasRecentUserGesture()) {
-    return null;
-  }
-
-  const email = (userEmail || getActiveTeacherEmail()).trim().toLowerCase();
-
-  inFlightSilentRenewalPromise = (async () => {
-    try {
-      const res = await googleSignIn(email || undefined);
-      if (res?.accessToken && isValidGoogleAccessToken(res.accessToken)) {
-        return res.accessToken;
-      }
-      return null;
-    } catch {
-      return null;
-    } finally {
-      inFlightSilentRenewalPromise = null;
-    }
-  })();
-
-  return inFlightSilentRenewalPromise;
+  const recovered = await requestGoogleAccessToken(false, userEmail);
+  return recovered || null;
 };
 
 /**

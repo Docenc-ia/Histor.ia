@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FolderOpen,
   FileSpreadsheet,
@@ -10,9 +10,13 @@ import {
   Loader2,
   X,
   ChevronDown,
+  RefreshCw,
+  FilePlus2,
 } from 'lucide-react';
 import {
   CourseDriveCategory,
+  ExistingCategoryFileItem,
+  driveService,
   formatCourseDriveFolderName,
 } from '../../services/workspace/driveService';
 import { DriveSaveFormat, SavedDriveFileResult } from '../../utils/driveFormatExporters';
@@ -54,7 +58,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
   onSaveFormat,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
-  const [selectedFormat, setSelectedFormat] = useState<DriveSaveFormat>('gdoc');
+  const [selectedFormat, setSelectedFormat] = useState<DriveSaveFormat>('sheets');
   const initialScopeId = defaultScopeId || scopeOptions?.[0]?.id;
   const [selectedScopeId, setSelectedScopeId] = useState<string | undefined>(initialScopeId);
   const activeScope = scopeOptions?.find((s) => s.id === selectedScopeId) || scopeOptions?.[0];
@@ -66,8 +70,12 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
     : alsoShortcutInCategories;
 
   const [customTitle, setCustomTitle] = useState(effectiveDefaultTitle);
+  const [overwriteMode, setOverwriteMode] = useState<'overwrite' | 'create_new'>('overwrite');
+  const [existingFiles, setExistingFiles] = useState<ExistingCategoryFileItem[]>([]);
+  const [selectedExistingFileId, setSelectedExistingFileId] = useState<string>('');
+  const [isCheckingExisting, setIsCheckingExisting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [savedResult, setSavedResult] = useState<SavedDriveFileResult | null>(null);
+  const [savedResult, setSavedResult] = useState<(SavedDriveFileResult & { overwritten?: boolean }) | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const mainFolderLabel = formatCourseDriveFolderName(courseName);
@@ -75,6 +83,40 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
     effectiveShortcuts && effectiveShortcuts.length > 0
       ? `${effectiveCategory} (y acceso en ${effectiveShortcuts.join(', ')})`
       : effectiveCategory;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setIsCheckingExisting(true);
+    driveService
+      .findExistingFilesInCategoryByFormat({
+        courseName,
+        category: effectiveCategory,
+        format: selectedFormat,
+      })
+      .then((files) => {
+        if (cancelled) return;
+        setExistingFiles(files);
+        if (files.length > 0) {
+          setSelectedExistingFileId(files[0].id);
+        } else {
+          setSelectedExistingFileId('');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExistingFiles([]);
+          setSelectedExistingFileId('');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsCheckingExisting(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, courseName, effectiveCategory, selectedFormat]);
 
   const handleToggle = () => {
     if (!isOpen) {
@@ -98,17 +140,35 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
     }
   };
 
+  const selectedExistingFile = existingFiles.find((f) => f.id === selectedExistingFileId) || existingFiles[0];
+
   const handleExecuteSave = async () => {
     setIsSaving(true);
     setErrorMsg(null);
     try {
+      const willOverwrite = overwriteMode === 'overwrite';
+      const targetId = willOverwrite && selectedExistingFile ? selectedExistingFile.id : undefined;
+
+      driveService.setNextUploadOverwritePolicy({
+        mode: willOverwrite ? 'overwrite' : 'create_new',
+        targetFileId: targetId,
+      });
+
+      const titleToUse =
+        willOverwrite && selectedExistingFile && (!customTitle.trim() || customTitle.trim() === effectiveDefaultTitle)
+          ? selectedExistingFile.name
+          : customTitle.trim() || effectiveDefaultTitle;
+
       const res = await onSaveFormat(
         selectedFormat,
-        customTitle.trim() || effectiveDefaultTitle,
+        titleToUse,
         selectedScopeId
       );
       if (res) {
-        setSavedResult(res);
+        setSavedResult({
+          ...res,
+          overwritten: willOverwrite && Boolean(selectedExistingFile),
+        });
         setIsOpen(false);
       } else {
         setErrorMsg(
@@ -116,6 +176,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
         );
       }
     } catch (err: any) {
+      driveService.setNextUploadOverwritePolicy(null);
       setErrorMsg(err?.message || 'Error al guardar el archivo en Google Drive.');
     } finally {
       setIsSaving(false);
@@ -172,6 +233,8 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
     },
   ];
 
+  const activeFormatInfo = formatOptions.find((f) => f.id === selectedFormat);
+
   return (
     <div className="relative inline-block">
       <button
@@ -205,7 +268,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
           onClick={() => setIsOpen(false)}
         >
           <div
-            className="w-full max-w-lg rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden text-left"
+            className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-2xl bg-white border border-slate-200 shadow-2xl text-left"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between px-5 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white">
@@ -265,19 +328,6 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Nombre del archivo en Google Drive:
-                </label>
-                <input
-                  type="text"
-                  value={customTitle}
-                  onChange={(e) => setCustomTitle(e.target.value)}
-                  placeholder={effectiveDefaultTitle}
-                  className="w-full px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
-                />
-              </div>
-
-              <div>
                 <label className="block text-xs font-bold text-slate-700 mb-2">
                   ¿En qué formato querés guardarlo?
                 </label>
@@ -313,6 +363,97 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                 </div>
               </div>
 
+              {/* Opción de Sobreescribir vs Crear Nuevo cuando es el mismo tipo de archivo */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-slate-800">
+                    Si ya hay un archivo {activeFormatInfo?.label} ({activeFormatInfo?.badge}) en {effectiveCategory}:
+                  </span>
+                  {isCheckingExisting && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-medium text-slate-500">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Verificando...
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setOverwriteMode('overwrite')}
+                    className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      overwriteMode === 'overwrite'
+                        ? 'border-blue-600 bg-blue-50/90 text-blue-950 ring-1 ring-blue-600'
+                        : 'border-slate-200 bg-white hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <RefreshCw className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold">Sobreescribir archivo</div>
+                      <div className="text-[10px] opacity-80 leading-snug mt-0.5">
+                        Actualiza el archivo existente de este formato sin duplicarlo
+                      </div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setOverwriteMode('create_new')}
+                    className={`flex items-start gap-2 p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      overwriteMode === 'create_new'
+                        ? 'border-emerald-600 bg-emerald-50/90 text-emerald-950 ring-1 ring-emerald-600'
+                        : 'border-slate-200 bg-white hover:bg-slate-100 text-slate-700'
+                    }`}
+                  >
+                    <FilePlus2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold">No sobreescribir (Crear nuevo)</div>
+                      <div className="text-[10px] opacity-80 leading-snug mt-0.5">
+                        Guarda un archivo nuevo por separado en la carpeta
+                      </div>
+                    </div>
+                  </button>
+                </div>
+
+                {overwriteMode === 'overwrite' && existingFiles.length > 0 && (
+                  <div className="pt-1">
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Archivo {activeFormatInfo?.label} detectado que se actualizará:
+                    </label>
+                    {existingFiles.length === 1 ? (
+                      <div className="px-2.5 py-1.5 rounded-lg bg-white border border-blue-200 text-xs font-semibold text-blue-900 truncate">
+                        {existingFiles[0].name}
+                      </div>
+                    ) : (
+                      <select
+                        value={selectedExistingFileId}
+                        onChange={(e) => setSelectedExistingFileId(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-semibold bg-white border border-blue-200 rounded-lg text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        {existingFiles.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Nombre del archivo en Google Drive:
+                </label>
+                <input
+                  type="text"
+                  value={customTitle}
+                  onChange={(e) => setCustomTitle(e.target.value)}
+                  placeholder={effectiveDefaultTitle}
+                  className="w-full px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-800"
+                />
+              </div>
+
               {errorMsg && (
                 <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs font-medium text-rose-700">
                   {errorMsg}
@@ -343,8 +484,9 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                     <>
                       <FolderOpen className="w-3.5 h-3.5" />
                       <span>
-                        Guardar{activeScope ? ` ${activeScope.label}` : ''} como{' '}
-                        {formatOptions.find((f) => f.id === selectedFormat)?.label}
+                        {overwriteMode === 'overwrite' && existingFiles.length > 0
+                          ? `Sobreescribir en ${activeFormatInfo?.label}`
+                          : `Guardar como ${activeFormatInfo?.label}`}
                       </span>
                     </>
                   )}
@@ -355,7 +497,7 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
         </div>
       )}
 
-      {/* Modal/Toast de éxito con acceso directo al archivo recién creado */}
+      {/* Modal/Toast de éxito con acceso directo al archivo recién creado o actualizado */}
       {savedResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="w-full max-w-md rounded-2xl bg-white border border-emerald-200 shadow-2xl overflow-hidden text-left">
@@ -363,7 +505,9 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-5 h-5 text-emerald-100 shrink-0" />
                 <h4 className="text-sm font-bold">
-                  ¡Archivo guardado en Google Drive!
+                  {savedResult.overwritten
+                    ? '¡Archivo actualizado en Google Drive!'
+                    : '¡Archivo guardado en Google Drive!'}
                 </h4>
               </div>
               <button
@@ -380,7 +524,8 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
                   {savedResult.name}
                 </div>
                 <div className="text-[11px] font-medium text-emerald-800">
-                  Formato: <strong>{savedResult.formatLabel}</strong>
+                  Formato: <strong>{savedResult.formatLabel}</strong>{' '}
+                  {savedResult.overwritten ? '(Sobreescrito)' : '(Nuevo archivo)'}
                 </div>
                 <div className="text-[11px] text-emerald-700">
                   Ubicación: <strong>{mainFolderLabel}</strong> &rarr;{' '}
@@ -418,3 +563,4 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
     </div>
   );
 };
+

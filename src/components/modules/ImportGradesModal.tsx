@@ -168,6 +168,7 @@ export interface ImportGradesModalProps {
   }) => void;
   onApplyMultiImport?: (payload: MultiImportApplyPayload) => void;
   historyEntries?: GradeHistoryEntry[];
+  onSwitchToForms?: () => void;
 }
 
 function getColLetter(colIndex: number): string {
@@ -199,6 +200,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   onApplyGrades,
   onApplyMultiImport,
   historyEntries = [],
+  onSwitchToForms,
 }) => {
   const [activeStep, setActiveStep] = useState<'upload' | 'verify' | 'history'>('upload');
   const [sourceType, setSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>(initialSourceType);
@@ -1734,14 +1736,16 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="font-bold text-base leading-tight">
-                  Importar
+                  {importContext === 'grades' ? 'Importar Evaluación o Notas' : 'Importar'}
                 </h3>
                 <span className="px-2 py-0.5 text-[11px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                   {courseName}
                 </span>
               </div>
               <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                Subí un documento (Sheets, Docs, Excel, Word o CSV), pegá un link o pegá la lista para elegir los nombres y verificar todo
+                {importContext === 'grades'
+                  ? 'Importá una evaluación de Google Forms, un documento (Sheets, Docs, Excel, Word o CSV), un link o pegá la lista de notas'
+                  : 'Subí un documento (Sheets, Docs, Excel, Word o CSV), pegá un link o pegá la lista para elegir los nombres y verificar todo'}
               </p>
             </div>
           </div>
@@ -1908,8 +1912,32 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         {/* ========================================================================= */}
         {activeStep === 'upload' && (
           <div className="p-5 overflow-y-auto space-y-5 flex-1">
-            {/* 3 Tarjetas de origen estilo Subir Evaluación de Forms */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {/* Tarjetas de origen unificadas */}
+            <div
+              className={`grid grid-cols-1 ${
+                importContext === 'grades' && onSwitchToForms ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'
+              } gap-2.5`}
+            >
+              {importContext === 'grades' && onSwitchToForms && (
+                <button
+                  type="button"
+                  onClick={onSwitchToForms}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    isDarkMode
+                      ? 'bg-purple-950/40 border-purple-500/50 text-purple-200 hover:bg-purple-950/60'
+                      : 'bg-purple-50/70 border-purple-300 text-purple-900 hover:bg-purple-100/70'
+                  }`}
+                >
+                  <FileCheck className="w-5 h-5 text-purple-500 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="text-xs font-bold">Evaluación de Google Forms</div>
+                    <div className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
+                      Elegí un cuestionario de Forms o hoja de respuestas con puntaje
+                    </div>
+                  </div>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={() => setSourceType('sheets')}

@@ -158,6 +158,7 @@ interface AuthUser {
   scopes: string[];
   permissions: string[];
   lastLogin: string;
+  token?: string;
 }
 
 // Active user sessions isolated by email so multiple teachers do not share or leak sessions
@@ -574,25 +575,31 @@ async function startServer() {
     res.json({
       authenticated: !!matchedUser,
       user: matchedUser,
+      token: matchedUser?.token || null,
     });
   });
 
   app.post("/api/auth/session", (req, res) => {
     try {
-      const { uid, email, name, avatar, scopes, school } = req.body || {};
+      const { uid, email, name, avatar, scopes, school, token } = req.body || {};
       const cleanEmail = (email || "").trim().toLowerCase();
+      const existingUser = cleanEmail ? activeUsersByEmail.get(cleanEmail) : undefined;
       const cleanName = name || (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
       const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
+      const validToken =
+        typeof token === "string" && token.trim().length > 20
+          ? token.trim()
+          : existingUser?.token;
 
       const sessionUser: AuthUser = {
-        id: uid || `user-${Date.now()}`,
+        id: uid || existingUser?.id || `user-${Date.now()}`,
         email: cleanEmail,
         name: displayName,
         avatar: (avatar && !avatar.includes("photo-1534528741775"))
           ? avatar
-          : `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
+          : existingUser?.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(displayName)}&background=1d4ed8&color=ffffff&bold=true&size=150`,
         role: "Docente Titular",
-        school: school || (cleanEmail.includes("@") ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}` : "Institución Educativa"),
+        school: school || existingUser?.school || (cleanEmail.includes("@") ? `Institución ${cleanEmail.split("@")[1].split(".")[0].toUpperCase()}` : "Institución Educativa"),
         scopes: Array.isArray(scopes) ? scopes : [
           "https://www.googleapis.com/auth/classroom.courses.readonly",
           "https://www.googleapis.com/auth/classroom.rosters.readonly",
@@ -617,6 +624,7 @@ async function startServer() {
           "grades.manage",
         ],
         lastLogin: new Date().toISOString(),
+        ...(validToken ? { token: validToken } : {}),
       };
 
       if (cleanEmail) {
@@ -626,6 +634,7 @@ async function startServer() {
       res.json({
         success: true,
         user: sessionUser,
+        token: sessionUser.token || null,
       });
     } catch (err: any) {
       console.error("Error in /api/auth/session:", err);

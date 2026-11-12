@@ -77,6 +77,71 @@ const courseFolderStructureCache = new Map<
   { structure: CourseFolderStructure; expiresAt: number }
 >();
 
+export interface ExistingCategoryFileItem {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  url: string;
+}
+
+export interface UploadOverwritePolicy {
+  mode: 'overwrite' | 'create_new';
+  targetFileId?: string;
+}
+
+let nextUploadOverwritePolicy: UploadOverwritePolicy | null = null;
+
+const SAVED_DRIVE_FILES_REGISTRY_KEY = 'docencia_saved_drive_files_v1';
+
+interface SavedDriveRegistryEntry {
+  id: string;
+  name: string;
+  url: string;
+  courseName: string;
+  category: CourseDriveCategory;
+  mimeType: string;
+  updatedAt: string;
+}
+
+function readSavedDriveRegistry(): SavedDriveRegistryEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(SAVED_DRIVE_FILES_REGISTRY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSavedDriveRegistryEntry(entry: SavedDriveRegistryEntry): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const list = readSavedDriveRegistry().filter((item) => item.id !== entry.id);
+    list.unshift(entry);
+    localStorage.setItem(SAVED_DRIVE_FILES_REGISTRY_KEY, JSON.stringify(list.slice(0, 120)));
+  } catch {}
+}
+
+export function getTargetMimeTypeForDriveFormat(
+  format: 'sheets' | 'gdoc' | 'xlsx' | 'csv' | 'html'
+): string {
+  switch (format) {
+    case 'sheets':
+      return 'application/vnd.google-apps.spreadsheet';
+    case 'gdoc':
+      return 'application/vnd.google-apps.document';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'csv':
+      return 'text/csv';
+    case 'html':
+      return 'text/html';
+  }
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let binary = '';
@@ -89,6 +154,83 @@ function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
 }
 
 export const driveService = {
+  setNextUploadOverwritePolicy(policy: UploadOverwritePolicy | null): void {
+    nextUploadOverwritePolicy = policy;
+  },
+
+  async findExistingFilesInCategoryByFormat(options: {
+    courseName: string;
+    category: CourseDriveCategory;
+    format: 'sheets' | 'gdoc' | 'xlsx' | 'csv' | 'html';
+    existingMainFolderId?: string;
+    providedToken?: string;
+  }): Promise<ExistingCategoryFileItem[]> {
+    const targetMimeType = getTargetMimeTypeForDriveFormat(options.format);
+    const normalizedCourse = formatCourseDriveFolderName(options.courseName).toLowerCase();
+    const localMatches = readSavedDriveRegistry()
+      .filter(
+        (item) =>
+          formatCourseDriveFolderName(item.courseName).toLowerCase() === normalizedCourse &&
+          item.category === options.category &&
+          item.mimeType === targetMimeType &&
+          isRealDriveFolderId(item.id)
+      )
+      .map((item) => ({
+        id: item.id,
+        name: item.name,
+        mimeType: item.mimeType,
+        modifiedTime: item.updatedAt,
+        url: item.url,
+      }));
+
+    const token = options.providedToken || getCachedAccessToken();
+    if (!token) {
+      return localMatches;
+    }
+
+    try {
+      const { id: targetFolderId } = await this.getCategorySubfolder(
+        options.courseName,
+        options.category,
+        options.existingMainFolderId,
+        token
+      );
+      if (!isRealDriveFolderId(targetFolderId)) {
+        return localMatches;
+      }
+
+      const query = `'${targetFolderId}' in parents and mimeType = '${targetMimeType}' and trashed = false`;
+      const res = await fetchGoogleApiWithRetry(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          query
+        )}&orderBy=modifiedTime desc&pageSize=15&fields=files(id,name,mimeType,modifiedTime,webViewLink)`,
+        {},
+        token
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const remoteFiles: ExistingCategoryFileItem[] = (data.files || []).map((f: any) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType || targetMimeType,
+          modifiedTime: f.modifiedTime,
+          url:
+            f.webViewLink ||
+            (options.format === 'gdoc'
+              ? `https://docs.google.com/document/d/${f.id}/edit`
+              : options.format === 'sheets'
+              ? `https://docs.google.com/spreadsheets/d/${f.id}/edit`
+              : `https://drive.google.com/file/d/${f.id}/view`),
+        }));
+
+        if (remoteFiles.length > 0) {
+          return remoteFiles;
+        }
+      }
+    } catch {}
+
+    return localMatches;
+  },
   /**
    * Verify if a Google Drive file or spreadsheet still exists and is NOT in the trash (trashed = false).
    * Prevents stale localStorage / DB IDs from failing when a teacher deletes a file in Drive.
@@ -566,6 +708,8 @@ export const driveService = {
     convertToGoogleFormat?: 'doc' | 'sheet' | false;
     alsoShortcutInCategories?: CourseDriveCategory[];
     providedToken?: string;
+    overwriteMode?: 'overwrite' | 'create_new';
+    overwriteFileId?: string;
   }): Promise<{
     id: string;
     name: string;
@@ -573,7 +717,14 @@ export const driveService = {
     folderId: string;
     folderUrl: string;
     isLiveGoogle: boolean;
+    overwritten?: boolean;
   } | null> {
+    const consumedPolicy = nextUploadOverwritePolicy;
+    nextUploadOverwritePolicy = null;
+
+    const effectiveOverwriteMode = options.overwriteMode || consumedPolicy?.mode || 'create_new';
+    let effectiveOverwriteFileId = options.overwriteFileId || consumedPolicy?.targetFileId;
+
     let token = options.providedToken || getCachedAccessToken();
     if (!token) {
       try {
@@ -605,11 +756,24 @@ export const driveService = {
         finalName = finalName.replace(/\.(csv|xlsx|xls)$/i, '');
       }
 
-      const metadata: any = {
-        name: finalName,
-        mimeType: targetMimeType,
-        parents: [targetFolderId],
-      };
+      if (effectiveOverwriteMode === 'overwrite' && !isRealDriveFolderId(effectiveOverwriteFileId)) {
+        try {
+          const query = `'${targetFolderId}' in parents and mimeType = '${targetMimeType}' and trashed = false`;
+          const findRes = await fetchGoogleApiWithRetry(
+            `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+              query
+            )}&orderBy=modifiedTime desc&pageSize=1&fields=files(id,name)`,
+            {},
+            token
+          );
+          if (findRes.ok) {
+            const findData = await findRes.json();
+            if (Array.isArray(findData.files) && findData.files.length > 0) {
+              effectiveOverwriteFileId = findData.files[0].id;
+            }
+          }
+        } catch {}
+      }
 
       const boundary = '-------314159265358979323846';
       const delimiter = '\r\n--' + boundary + '\r\n';
@@ -624,25 +788,68 @@ export const driveService = {
           arrayBufferToBase64(options.content as ArrayBuffer | Uint8Array)
         : `Content-Type: ${options.mimeType}; charset=UTF-8\r\n\r\n` + (options.content as string);
 
-      const multipartRequestBody =
-        delimiter +
-        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-        JSON.stringify(metadata) +
-        delimiter +
-        bodyPart +
-        closeDelim;
+      let res: Response | null = null;
+      let wasOverwritten = false;
 
-      const res = await fetchGoogleApiWithRetry(
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': `multipart/related; boundary=${boundary}`,
+      if (effectiveOverwriteMode === 'overwrite' && isRealDriveFolderId(effectiveOverwriteFileId)) {
+        const patchMetadata: any = {
+          name: finalName,
+          mimeType: targetMimeType,
+        };
+        const patchBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(patchMetadata) +
+          delimiter +
+          bodyPart +
+          closeDelim;
+
+        const patchRes = await fetchGoogleApiWithRetry(
+          `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(
+            effectiveOverwriteFileId!
+          )}?uploadType=multipart&fields=id,name,webViewLink`,
+          {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': `multipart/related; boundary=${boundary}`,
+            },
+            body: patchBody,
           },
-          body: multipartRequestBody,
-        },
-        token
-      );
+          token
+        );
+
+        if (patchRes.ok) {
+          res = patchRes;
+          wasOverwritten = true;
+        }
+      }
+
+      if (!res) {
+        const postMetadata: any = {
+          name: finalName,
+          mimeType: targetMimeType,
+          parents: [targetFolderId],
+        };
+        const multipartRequestBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(postMetadata) +
+          delimiter +
+          bodyPart +
+          closeDelim;
+
+        res = await fetchGoogleApiWithRetry(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': `multipart/related; boundary=${boundary}`,
+            },
+            body: multipartRequestBody,
+          },
+          token
+        );
+      }
 
       if (res.ok) {
         const data = await res.json();
@@ -654,6 +861,16 @@ export const driveService = {
             : options.convertToGoogleFormat === 'sheet'
             ? `https://docs.google.com/spreadsheets/d/${fileId}/edit`
             : `https://drive.google.com/file/d/${fileId}/view`);
+
+        writeSavedDriveRegistryEntry({
+          id: fileId,
+          name: data.name || finalName,
+          url: liveUrl,
+          courseName: options.courseName,
+          category: options.category,
+          mimeType: targetMimeType,
+          updatedAt: new Date().toISOString(),
+        });
 
         if (options.alsoShortcutInCategories && options.alsoShortcutInCategories.length > 0) {
           const catMap: Record<CourseDriveCategory, string> = {
@@ -679,6 +896,7 @@ export const driveService = {
           folderId: targetFolderId,
           folderUrl: targetFolderUrl,
           isLiveGoogle: true,
+          overwritten: wasOverwritten,
         };
       }
     } catch (err) {

@@ -66,7 +66,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
         }`}
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {/* COLUMNA 1: Buscar estudiante, Agregar Alumno y Mensajes Preestablecidos */}
+          {/* COLUMNA 1: Buscar estudiante y Agregar Alumno */}
           <div className="flex flex-col gap-2 justify-center">
             <div className="relative flex items-center w-full">
               <Search className={`absolute left-3 w-3.5 h-3.5 ${isDarkMode ? 'text-slate-400' : 'text-neutral-400'}`} />
@@ -92,7 +92,10 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               <UserPlus className="w-3.5 h-3.5" />
               <span>+ Agregar Alumno</span>
             </button>
+          </div>
 
+          {/* COLUMNA 2: Mensajes Preestablecidos arriba de Avisos Pendientes / Seleccionados */}
+          <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:pl-3">
             <button
               type="button"
               onClick={onOpenNotifConfigModal}
@@ -106,10 +109,7 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
               <Bookmark className="w-3.5 h-3.5 text-blue-500" />
               <span className="truncate">Mensajes Preestablecidos</span>
             </button>
-          </div>
 
-          {/* COLUMNA 2: Avisos Pendientes / Seleccionados y Mandar a Calificaciones */}
-          <div className="flex flex-col gap-2 justify-center border-t sm:border-t-0 sm:border-l border-neutral-200 dark:border-slate-800 pt-2 sm:pt-0 sm:pl-3">
             {selectedStudentCount > 0 ? (
               <button
                 type="button"
@@ -138,16 +138,6 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
                 <span className="truncate">Avisos pendientes ({pendingCount})</span>
               </button>
             )}
-
-            <button
-              type="button"
-              onClick={onOpenSendDispositionModal}
-              className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg shadow-xs border border-indigo-200 dark:border-indigo-800/80 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white transition-all cursor-pointer"
-              title={`Mandar notas de ${dispositionLabel.toLowerCase()} a Calificaciones (${attendanceTerm === '2c' ? term2FullLabel : term1FullLabel})`}
-            >
-              <Award className="w-3.5 h-3.5 text-amber-300 shrink-0" />
-              <span className="truncate">Mandar a Calificaciones</span>
-            </button>
           </div>
 
           {/* COLUMNA 3: Guardar en Drive arriba de Importar */}

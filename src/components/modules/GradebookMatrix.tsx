@@ -766,7 +766,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         existingMainFolderId: driveFolderId,
         convertToGoogleFormat: 'sheet',
       });
-      handleSyncCuatrimestreWithSheets();
       if (!uploaded) return null;
       return {
         id: uploaded.id,
@@ -1117,108 +1116,48 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               </div>
             </div>
 
-            {/* Abajo de Planilla de Calificaciones: 2 Columnas de 3 Opciones */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full items-start">
-              {/* Columna 1: Subir Evaluación de Forms, Importar (desplegable) y Sincronizar Notas en Sheets */}
-              <div className="flex flex-col gap-1.5">
-                <button
-                  type="button"
-                  id="btn-subir-forms-calificaciones"
-                  onClick={() => setIsFormsModalOpen(true)}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer ring-2 ring-purple-500/20"
-                  title="Subir una evaluación de Google Forms (.csv, .xlsx o Hoja de respuestas) para detectar alumnos y puntajes, revisar bajo qué columna va y aceptar"
-                >
-                  <FileCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Subir Evaluación de Forms</span>
-                </button>
+            {/* Abajo de Planilla de Calificaciones: Opciones Unificadas */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 w-full items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setImportSourceType('sheets');
+                  setIsImportModalOpen(true);
+                }}
+                className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                title="Importar una evaluación o notas desde Google Forms, Google Sheets, Google Docs, Excel, Word, CSV o texto pegado"
+              >
+                <Upload className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">Importar Evaluación o Notas</span>
+              </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setImportSourceType('sheets');
-                    setIsImportModalOpen(true);
-                  }}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
-                  title="Abrir ventana para importar desde un link, Google Sheets, Google Docs, Excel, Word, CSV o texto pegado, eligiendo los nombres de los alumnos y verificando todo"
-                >
-                  <Upload className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Importar</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleSyncCuatrimestreWithSheets}
-                  disabled={isSavingSheets}
-                  className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
-                  title="Sincronizar notas con el documento de Calificaciones en la carpeta de Google Drive de la materia"
-                >
-                  {isSavingSheets ? (
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
-                  ) : (
-                    <RefreshCw className="w-3.5 h-3.5 text-white shrink-0" />
-                  )}
-                  <span className="truncate">
-                    {isSavingSheets ? 'Sincronizando...' : 'Sincronizar Notas en Sheets'}
-                  </span>
-                </button>
-
-                {sheetsSavedInfo && (
-                  <div className="flex items-center gap-1.5 flex-wrap text-[11px] mt-0.5">
-                    {sheetsSavedInfo.pulledCount && sheetsSavedInfo.pulledCount > 0 ? (
-                      <span
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 font-medium rounded-lg bg-purple-100 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-800 truncate"
-                        title="Notas importadas y actualizadas desde Google Sheets"
-                      >
-                        <RefreshCw className="w-2.5 h-2.5 text-purple-600 dark:text-purple-400 shrink-0" />
-                        <span>{sheetsSavedInfo.pulledCount} sincronizada(s)</span>
-                      </span>
-                    ) : null}
-                    {sheetsSavedInfo.isLiveGoogle && sheetsSavedInfo.url ? (
-                      <a
-                        href={sheetsSavedInfo.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 px-1.5 py-0.5 font-semibold rounded-lg bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 hover:underline truncate"
-                        title="Abrir documento de Calificaciones en Google Sheets"
-                      >
-                        <ExternalLink className="w-2.5 h-2.5 shrink-0" />
-                        <span>Ver Sheet</span>
-                      </a>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-
-              {/* Columna 2: Generar Valoración Preliminar y Guardar en Drive */}
-              <div className="flex flex-col gap-1.5 sm:border-l sm:pl-3 border-neutral-200 dark:border-slate-800">
-                <button
-                  type="button"
-                  id="btn-generar-valoracion-preliminar"
-                  onClick={() => setIsPreliminaryModalOpen(true)}
-                  className="w-full inline-flex items-center justify-between gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all cursor-pointer ring-2 ring-amber-500/20"
-                  title={`Generar Valoración Preliminar para ${currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'} con selección de notas y escala TEA / TEP`}
-                >
-                  <div className="inline-flex items-center gap-1.5 truncate">
-                    <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">Generar Valoración Preliminar</span>
-                  </div>
-                  {activePreliminaryValuation && (
-                    <span className="px-1 py-0.2 rounded-full text-[9px] bg-white text-amber-800 font-extrabold shadow-2xs shrink-0">
-                      TEA/TEP ✓
-                    </span>
-                  )}
-                </button>
-
-                <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
-                  <DriveSaveFormatSelector
-                    courseName={courseName}
-                    category="Calificaciones"
-                    defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
-                    buttonLabel="Guardar en Drive"
-                    compact
-                    onSaveFormat={handleSaveGradesInFormat}
-                  />
+              <button
+                type="button"
+                id="btn-generar-valoracion-preliminar"
+                onClick={() => setIsPreliminaryModalOpen(true)}
+                className="w-full inline-flex items-center justify-between gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all cursor-pointer ring-2 ring-amber-500/20"
+                title={`Generar Valoración Preliminar para ${currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'} con selección de notas y escala TEA / TEP`}
+              >
+                <div className="inline-flex items-center gap-1.5 truncate">
+                  <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Generar Valoración Preliminar</span>
                 </div>
+                {activePreliminaryValuation && (
+                  <span className="px-1 py-0.2 rounded-full text-[9px] bg-white text-amber-800 font-extrabold shadow-2xs shrink-0">
+                    TEA/TEP ✓
+                  </span>
+                )}
+              </button>
+
+              <div className="w-full [&>div]:w-full [&>div>button]:w-full [&>div>button]:py-2 [&>div>button]:justify-center sm:[&>div>button]:justify-start">
+                <DriveSaveFormatSelector
+                  courseName={courseName}
+                  category="Calificaciones"
+                  defaultTitle={`Calificaciones (${currentTerm === '1c' ? '1C' : '2C'}) - ${courseName} (${new Date().toISOString().slice(0, 10)})`}
+                  buttonLabel="Guardar en Drive"
+                  compact
+                  onSaveFormat={handleSaveGradesInFormat}
+                />
               </div>
             </div>
           </div>
@@ -1715,7 +1654,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         </Suspense>
       )}
 
-      {/* Modal: Importar y Registrar Notas desde Excel o Sheets con Verificación Previa */}
+      {/* Modal: Importar Evaluación o Notas con Verificación Previa */}
       {isImportModalOpen && (
         <Suspense fallback={null}>
           <ImportGradesModal
@@ -1735,6 +1674,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             onApplyGrades={handleApplyImportedGrades}
             onApplyMultiImport={handleApplyMultiImport}
             historyEntries={gradeHistory}
+            onSwitchToForms={() => {
+              setIsImportModalOpen(false);
+              setIsFormsModalOpen(true);
+            }}
           />
         </Suspense>
       )}

@@ -607,18 +607,8 @@ export const calendarService = {
         if (checkRes.ok) {
           const primaryData = await checkRes.json();
           const primaryEmail = String(primaryData?.id || '').toLowerCase();
-          if (primaryEmail === 'canomorenojj@gmail.com') {
-            const { requestAccessToken } = await import('./googleAuth');
-            const schoolToken = await requestAccessToken(true, 'jorge.cano@fds-esc.edu.ar');
-            if (schoolToken) {
-              token = schoolToken;
-            } else {
-              return {
-                success: false,
-                createdCount: 0,
-                message: 'Para no modificar tu calendario personal, selecciona tu cuenta del colegio en la ventana de Google.',
-              };
-            }
+          if (primaryEmail && targetCalendarId === 'jorge.cano@fds-esc.edu.ar' && primaryEmail !== 'jorge.cano@fds-esc.edu.ar') {
+            targetCalendarId = 'primary';
           }
         }
       } catch (_) {}
@@ -835,14 +825,12 @@ export const calendarService = {
     try {
       let attempt = await fetchSlotsWithToken(token);
       if (attempt.unauthorized) {
-        // Token expired -> clear and request a fresh one automatically
-        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
-        setCachedAccessToken(null);
-        token = await requestAccessToken(false, activeEmail || undefined);
-        if (!token) {
-          return { success: false, slots: [], message: 'Tu sesión de Google expiró. Vuelve a intentar para autorizar.' };
+        const { requestAccessToken } = await import('./googleAuth');
+        const recovered = await requestAccessToken(false, activeEmail || undefined);
+        if (recovered && recovered !== token) {
+          token = recovered;
+          attempt = await fetchSlotsWithToken(token);
         }
-        attempt = await fetchSlotsWithToken(token);
       }
 
       const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -994,13 +982,12 @@ export const calendarService = {
 
       let fetchAttempt = await fetchItemsFromSelectedCalendar(token);
       if (fetchAttempt.unauthorized) {
-        const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
-        setCachedAccessToken(null);
-        token = await requestAccessToken();
-        if (!token) {
-          throw new Error('La sesión de Google Calendar expiró. Intenta nuevamente.');
+        const { requestAccessToken } = await import('./googleAuth');
+        const recovered = await requestAccessToken(false);
+        if (recovered && recovered !== token) {
+          token = recovered;
+          fetchAttempt = await fetchItemsFromSelectedCalendar(token);
         }
-        fetchAttempt = await fetchItemsFromSelectedCalendar(token);
       }
 
       const rawItems: any[] = fetchAttempt.items || [];
@@ -1476,10 +1463,9 @@ export const calendarService = {
         try {
           let attempt = await fetchForCalendar(cal, token);
           if (attempt.unauthorized) {
-            const { setCachedAccessToken, requestAccessToken } = await import('./googleAuth');
-            setCachedAccessToken(null);
-            const fresh = await requestAccessToken();
-            if (fresh) {
+            const { requestAccessToken } = await import('./googleAuth');
+            const fresh = await requestAccessToken(false);
+            if (fresh && fresh !== token) {
               token = fresh;
               attempt = await fetchForCalendar(cal, fresh);
             }

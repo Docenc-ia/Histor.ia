@@ -9,6 +9,7 @@ import { GlobalDataContextProvider, useGlobalData } from './context/GlobalDataCo
 import { Header } from './components/layout/Header';
 import { Sidebar } from './components/layout/Sidebar';
 import { LandingPage } from './components/landing/LandingPage';
+import { PrivacyPolicyView } from './components/landing/PrivacyPolicyView';
 import { TeacherCoursesPanel } from './components/dashboard/TeacherCoursesPanel';
 import { Course } from './types';
 import { api } from './services/api';
@@ -531,6 +532,26 @@ function AppContent() {
 }
 
 export default function App() {
+  const [showPrivacyPage, setShowPrivacyPage] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const p = window.location.pathname.toLowerCase();
+    const qs = new URLSearchParams(window.location.search);
+    return p === '/privacidad' || p === '/privacidad/' || p === '/privacy' || qs.get('view') === 'privacy';
+  });
+
+  if (showPrivacyPage) {
+    return (
+      <PrivacyPolicyView
+        onBack={() => {
+          if (typeof window !== 'undefined') {
+            window.history.pushState({}, '', '/');
+          }
+          setShowPrivacyPage(false);
+        }}
+      />
+    );
+  }
+
   return (
     <ErrorBoundary fallbackTitle="Ocurrió un inconveniente inesperado en la aplicación">
       <WorkspaceAuthProvider>

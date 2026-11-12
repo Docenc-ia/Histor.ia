@@ -901,6 +901,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
             <span className="ml-2 opacity-80 font-normal">© 2026 • Asistente Pedagógico</span>
           </p>
           <div className="flex items-center gap-3 text-[11px]">
+            <a
+              href="/privacidad.html"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="hover:underline text-blue-600 dark:text-blue-400 font-medium"
+            >
+              Política de Privacidad
+            </a>
+            <span>•</span>
             <span>Seguridad y Privacidad Docente</span>
             <span>•</span>
             <span>Google Workspace for Education</span>

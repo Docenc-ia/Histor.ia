@@ -1220,7 +1220,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                 onClick={async () => {
                   try {
                     setIsSyncingClassroomRoster(true);
-                    await loginWithGoogle(user?.email);
+                    await loginWithGoogle(user?.email, { requestFullWorkspace: true });
                     setNeedsRosterPermission(false);
                     await handleSyncRoster();
                   } catch (e) {

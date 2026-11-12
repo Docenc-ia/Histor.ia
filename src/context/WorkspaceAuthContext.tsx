@@ -52,7 +52,10 @@ interface WorkspaceAuthContextType {
   dismissTokenExpiryBanner: () => void;
   renewGoogleSession: () => Promise<boolean>;
   toggleDarkMode: () => void;
-  loginWithGoogle: (email?: string) => Promise<string | null>;
+  loginWithGoogle: (
+    email?: string,
+    options?: { requestFullWorkspace?: boolean; forcePopup?: boolean }
+  ) => Promise<string | null>;
   requestAccessToken: () => Promise<string>;
   loginWithGoogleIdToken: (idToken: string) => Promise<TeacherProfile>;
   loginWithEmail: (email: string, password?: string, name?: string) => Promise<void>;
@@ -180,7 +183,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
   const renewGoogleSession = useCallback(async (): Promise<boolean> => {
     try {
       const emailHint = user?.email || undefined;
-      const res = await googleSignIn(emailHint, { forcePopup: true });
+      const res = await googleSignIn(emailHint, { forcePopup: true, requestFullWorkspace: true });
       if (res?.accessToken && isValidGoogleAccessToken(res.accessToken)) {
         setToken(res.accessToken);
         setIsTokenExpired(false);
@@ -396,11 +399,15 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
     return liveToken;
   }, []);
 
-  const loginWithGoogle = useCallback(async (preferredEmail?: string): Promise<string | null> => {
-    setIsLoggingIn(true);
-    setLoginError(null);
-    try {
-      const result = await googleSignIn(preferredEmail);
+  const loginWithGoogle = useCallback(
+    async (
+      preferredEmail?: string,
+      options?: { requestFullWorkspace?: boolean; forcePopup?: boolean }
+    ): Promise<string | null> => {
+      setIsLoggingIn(true);
+      setLoginError(null);
+      try {
+        const result = await googleSignIn(preferredEmail, options);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('docencia_explicit_logout');
         sessionStorage.setItem('docencia_session_active', 'true');

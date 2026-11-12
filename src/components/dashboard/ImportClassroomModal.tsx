@@ -89,7 +89,10 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
       if (!activeToken || forceAuthPopup) {
         setScanMessage('Abriendo ventana de Google para autorizar acceso a Google Classroom...');
         try {
-          const freshToken = await loginWithGoogle(user?.email || undefined);
+          const freshToken = await loginWithGoogle(user?.email || undefined, {
+            requestFullWorkspace: true,
+            forcePopup: forceAuthPopup,
+          });
           activeToken = freshToken || getCachedAccessToken();
           setIsGoogleAuthorized(!!activeToken);
         } catch (authErr: any) {
@@ -121,7 +124,10 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
           result.message?.includes('expirado'))
       ) {
         setScanMessage('Solicitando permisos de Google Classroom...');
-        const refreshedToken = await loginWithGoogle(user?.email || undefined);
+        const refreshedToken = await loginWithGoogle(user?.email || undefined, {
+          requestFullWorkspace: true,
+          forcePopup: true,
+        });
         if (refreshedToken) {
           activeToken = refreshedToken;
           setIsGoogleAuthorized(true);

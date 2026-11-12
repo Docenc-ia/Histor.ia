@@ -913,7 +913,7 @@ export const requestGoogleAccessToken = async (
     lastPopupRequestTime = now;
     try {
       const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined, {
-        prompt: activeEmail ? '' : 'select_account',
+        prompt: forceRefresh ? 'consent' : activeEmail ? '' : 'select_account',
       });
       if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
         setCachedAccessToken(gsiResult.accessToken, gsiResult.profile?.email || activeEmail);
@@ -952,7 +952,32 @@ export const googleSignIn = async (
       .trim()
       .toLowerCase();
 
-    // 1. Try Firebase Popup authentication (the most reliable standard flow for web apps)
+    // 0. If full Workspace scopes (Classroom/Drive/Sheets/Gmail) were explicitly requested,
+    // use Google Identity Services (which respects VITE_GOOGLE_CLIENT_ID) first
+    if (
+      options?.requestFullWorkspace &&
+      typeof window !== 'undefined' &&
+      (window as any).google?.accounts?.oauth2 &&
+      getEffectiveOAuthClientId()
+    ) {
+      const promptType = options?.forcePopup
+        ? 'select_account'
+        : cleanEmail
+        ? ''
+        : 'select_account';
+      const gsiResult = await signInWithGoogleIdentityServices(cleanEmail || undefined, {
+        prompt: promptType,
+      });
+      if (gsiResult?.profile) {
+        return {
+          user: auth.currentUser || undefined,
+          accessToken: gsiResult.accessToken || '',
+          profile: gsiResult.profile,
+        };
+      }
+    }
+
+    // 1. Try Firebase Popup authentication (the most reliable standard flow for basic sign-in)
     if (typeof window !== 'undefined') {
       try {
         const basicProvider = new GoogleAuthProvider();
@@ -984,7 +1009,7 @@ export const googleSignIn = async (
           };
 
           const effectiveTok =
-            (fbToken && isValidGoogleAccessToken(fbToken) ? fbToken : null) ||
+            (options?.requestFullWorkspace && fbToken && isValidGoogleAccessToken(fbToken) ? fbToken : null) ||
             getSavedTokenForEmail(userEmail) ||
             '';
 

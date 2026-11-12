@@ -70,7 +70,10 @@ export interface ClassesModuleModalsHostProps {
   filteredStudents: Student[];
   user: any;
   token: string | null;
-  loginWithGoogle: (email?: string) => Promise<string | null>;
+  loginWithGoogle: (
+    email?: string,
+    options?: { requestFullWorkspace?: boolean; forcePopup?: boolean }
+  ) => Promise<string | null>;
   isDarkMode: boolean;
   attendanceTerm: '1c' | '2c' | 'annual';
   activeConcreteTerm: '1c' | '2c';

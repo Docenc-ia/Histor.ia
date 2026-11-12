@@ -554,7 +554,7 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
             onClick={async () => {
               try {
                 setIsSyncingRoster(true);
-                await loginWithGoogle(user?.email);
+                await loginWithGoogle(user?.email, { requestFullWorkspace: true });
                 setNeedsRosterPermission(false);
                 await handleSyncRealClassroomStudents(true);
               } catch (e) {

@@ -847,6 +847,11 @@ export const invalidateExpiredAccessToken = (expiredToken?: string | null): void
   }
 };
 
+const isOwnerGoogleAccount = (email?: string): boolean => {
+  const clean = (email || getActiveTeacherEmail() || '').trim().toLowerCase();
+  return clean === 'jorge.cano@fds-esc.edu.ar' || clean === 'canomorenojj@gmail.com';
+};
+
 // Requests or returns a valid Google OAuth access token for Workspace APIs
 export const requestGoogleAccessToken = async (
   forceRefresh = false,
@@ -876,9 +881,22 @@ export const requestGoogleAccessToken = async (
     }
   }
 
-  // If triggered by a user gesture (e.g. clicking "Cargar desde Link", "Buscar", or "Importar") or explicit refresh,
-  // invoke Google Identity Services (GSI) synchronously BEFORE any await so the browser never blocks the token flow.
+  // Try recovering from backend session if not in forceRefresh mode
+  if (!forceRefresh && activeEmail) {
+    try {
+      const data = await api.getAuthUser(activeEmail);
+      const serverToken = (data as any)?.token || (data?.user as any)?.token;
+      if (serverToken && isValidGoogleAccessToken(serverToken)) {
+        setCachedAccessToken(serverToken, activeEmail);
+        return serverToken;
+      }
+    } catch (_) {}
+  }
+
+  // Only invoke interactive GSI popup if the account is an authorized Google Cloud verifier (owner)
+  // so colleague teachers never encounter Google's 403 "app in testing" block screen.
   if (
+    isOwnerGoogleAccount(activeEmail) &&
     (forceRefresh || hasRecentUserGesture()) &&
     typeof window !== 'undefined' &&
     (window as any).google?.accounts?.oauth2 &&
@@ -897,26 +915,15 @@ export const requestGoogleAccessToken = async (
     }
   }
 
-  // Try recovering from backend session if not in forceRefresh mode
-  if (!forceRefresh && activeEmail) {
-    try {
-      const data = await api.getAuthUser(activeEmail);
-      const serverToken = (data as any)?.token || (data?.user as any)?.token;
-      if (serverToken && isValidGoogleAccessToken(serverToken)) {
-        setCachedAccessToken(serverToken, activeEmail);
-        return serverToken;
-      }
-    } catch (_) {}
-  }
-
   return '';
 };
 
 export const requestAccessToken = requestGoogleAccessToken;
 
 // Sign in with Google Workspace:
-// - When called from LandingPage (logged out), ALWAYS authenticates via Google Identity Services account chooser so each teacher logs into their own account.
-// - When called while already logged in inside the app, reuses or refreshes the active teacher's OAuth token.
+// - Never opens the external Google 403 popup for colleague teachers (who would be blocked by GCP Testing mode).
+// - Requires an explicit teacher email (no hardcoded fallback to jorge.cano@fds-esc.edu.ar).
+// - Restores any persisted OAuth token for that specific email.
 export const googleSignIn = async (
   preferredEmail?: string,
   options?: { forcePopup?: boolean }
@@ -933,45 +940,71 @@ export const googleSignIn = async (
         localStorage.getItem('docencia_session_active') === 'true');
 
     const activeEmail = getActiveTeacherEmail();
-    const cleanHint = (preferredEmail || activeEmail || '').trim().toLowerCase();
+    const cleanEmail = (preferredEmail || (isSessionCurrentlyActive ? activeEmail : '') || '')
+      .trim()
+      .toLowerCase();
 
-    // If the teacher is ALREADY logged in inside the app and has a valid token, return it without popping up a window
-    if (isSessionCurrentlyActive && !options?.forcePopup && activeEmail) {
-      const existingToken = getCachedAccessToken() || getSavedTokenForEmail(activeEmail);
-      const existingProfile = getRememberedProfile(activeEmail);
-      if (existingToken && isValidGoogleAccessToken(existingToken) && existingProfile) {
-        setCachedAccessToken(existingToken, activeEmail);
-        return {
-          user: auth.currentUser || undefined,
-          accessToken: existingToken,
-          profile: existingProfile,
-        };
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new Error(
+        'Por favor ingresá tu correo electrónico docente y tu contraseña para iniciar sesión con tu cuenta.'
+      );
+    }
+
+    // If already inside the app and owner explicitly requested a fresh token popup, use GSI
+    if (
+      options?.forcePopup &&
+      isOwnerGoogleAccount(cleanEmail) &&
+      typeof window !== 'undefined' &&
+      (window as any).google?.accounts?.oauth2 &&
+      getEffectiveOAuthClientId()
+    ) {
+      try {
+        const gsiResult = await signInWithGoogleIdentityServices(cleanEmail, { prompt: '' });
+        if (gsiResult?.profile) {
+          if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
+            setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
+          }
+          saveRememberedProfile(gsiResult.profile);
+          return {
+            user: auth.currentUser || undefined,
+            accessToken: gsiResult.accessToken || '',
+            profile: gsiResult.profile,
+          };
+        }
+      } catch (gsiErr) {
+        console.warn('GSI token refresh fallback:', gsiErr);
       }
     }
 
-    // Authenticate with Google Identity Services (GSI)
-    // On LandingPage (!isSessionCurrentlyActive), use prompt: 'select_account' so the user actively selects their Google account
-    // Inside the app (session active), use prompt: '' with hint so token renewal doesn't nag for permissions again
-    const gsiResult = await signInWithGoogleIdentityServices(
-      isSessionCurrentlyActive ? (cleanHint || undefined) : undefined,
-      {
-        prompt: isSessionCurrentlyActive && !options?.forcePopup ? '' : 'select_account',
-      }
-    );
+    const resolvedProfile =
+      getRememberedProfile(cleanEmail) || buildTeacherProfileFromEmail(cleanEmail);
+    const resolvedToken =
+      getSavedTokenForEmail(cleanEmail) ||
+      (isSessionCurrentlyActive ? getCachedAccessToken() : null) ||
+      '';
 
-    if (!gsiResult?.profile || !gsiResult.profile.email) {
-      throw new Error('No se pudo completar el inicio de sesión con Google.');
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('docencia_explicit_logout');
+        sessionStorage.setItem('docencia_session_active', 'true');
+        localStorage.setItem('docencia_session_active', 'true');
+        sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+        localStorage.setItem('docencia_teacher_email', cleanEmail);
+      } catch (_) {}
     }
 
-    if (gsiResult.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
-      setCachedAccessToken(gsiResult.accessToken, gsiResult.profile.email);
+    if (resolvedToken && isValidGoogleAccessToken(resolvedToken)) {
+      setCachedAccessToken(resolvedToken, cleanEmail);
+    } else {
+      setCachedAccessToken(null);
     }
-    saveRememberedProfile(gsiResult.profile);
+
+    saveRememberedProfile(resolvedProfile);
 
     return {
       user: auth.currentUser || undefined,
-      accessToken: gsiResult.accessToken || '',
-      profile: gsiResult.profile,
+      accessToken: resolvedToken,
+      profile: resolvedProfile,
     };
   } finally {
     isSigningIn = false;

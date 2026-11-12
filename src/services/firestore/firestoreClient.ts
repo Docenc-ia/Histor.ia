@@ -548,17 +548,45 @@ export function getDeletedHistoryIdsSet(): Set<string> {
 
 export function getCandidateUserIds(primaryId?: string): string[] {
   const email = getActiveUserEmail();
+  if (!email) return [];
   const isOwner = isPrimaryOwnerAccount(email);
 
-  // For non-owner teachers: use a single canonical deterministic ID (75% fewer Firestore reads)
   if (!isOwner) {
-    if (email) {
-      return ['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')];
+    const teacherIds = new Set<string>(['teacher_' + email.replace(/[^a-zA-Z0-9]/g, '_')]);
+    if (
+      primaryId &&
+      primaryId !== GLOBAL_WORKSPACE_ID &&
+      primaryId !== 'teacher_jorge_cano_fds_esc_edu_ar' &&
+      primaryId !== 'teacher_canomorenojj_gmail_com'
+    ) {
+      teacherIds.add(primaryId);
     }
-    if (primaryId && primaryId !== GLOBAL_WORKSPACE_ID) {
-      return [primaryId];
+    if (
+      auth.currentUser?.uid &&
+      auth.currentUser?.email &&
+      auth.currentUser.email.trim().toLowerCase() === email
+    ) {
+      teacherIds.add(auth.currentUser.uid);
     }
-    return [];
+    if (typeof window !== 'undefined') {
+      try {
+        const saved =
+          sessionStorage.getItem('docencia_user_profile') ||
+          localStorage.getItem('docencia_user_profile');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (
+            parsed?.id &&
+            parsed?.email &&
+            String(parsed.email).trim().toLowerCase() === email &&
+            String(parsed.id) !== GLOBAL_WORKSPACE_ID
+          ) {
+            teacherIds.add(String(parsed.id));
+          }
+        }
+      } catch (_) {}
+    }
+    return Array.from(teacherIds).filter(Boolean);
   }
 
   const ids = new Set<string>([

@@ -877,25 +877,25 @@ async function startServer() {
         });
       }
 
-      if (!rawPassword || rawPassword.length < 4) {
-        return res.status(400).json({
-          success: false,
-          error: "Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.",
-        });
-      }
-
-      const incomingHash = hashTeacherPassword(rawPassword, cleanEmail);
       const existingAccount = teacherAccountsByEmail.get(cleanEmail);
 
       if (existingAccount && existingAccount.passwordHash) {
+        if (!rawPassword) {
+          return res.status(401).json({
+            success: false,
+            error: "Esta cuenta tiene clave registrada. Por favor ingresá tu contraseña para continuar.",
+          });
+        }
+        const incomingHash = hashTeacherPassword(rawPassword, cleanEmail);
         if (existingAccount.passwordHash !== incomingHash) {
           return res.status(401).json({
             success: false,
-            error: "Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.",
+            error: "Contraseña incorrecta para esta cuenta docente. Verificá tu clave.",
           });
         }
-      } else {
+      } else if (rawPassword) {
         // First-time password registration for this email
+        const incomingHash = hashTeacherPassword(rawPassword, cleanEmail);
         const cleanNameForAccount =
           name ||
           (cleanEmail

@@ -36,18 +36,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
     toggleDarkMode,
   } = useWorkspaceAuth();
   const [authError, setAuthError] = useState<string | null>(null);
-  const [emailInput, setEmailInput] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        return (
-          localStorage.getItem('docencia_last_teacher_email') ||
-          localStorage.getItem('docencia_teacher_email') ||
-          ''
-        ).trim();
-      } catch (_) {}
-    }
-    return '';
-  });
+  const [emailInput, setEmailInput] = useState<string>('');
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [nameInput, setNameInput] = useState<string>('');
@@ -128,17 +117,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
     const emailToUse =
       typeof customEmail === 'string' && customEmail.trim()
         ? customEmail.trim()
-        : emailInput.trim() || undefined;
+        : emailInput.trim();
+    if (!emailToUse || !emailToUse.includes('@')) {
+      setAuthError(
+        'Escribí tu correo de Google o institucional en el campo de abajo (ej: nombre.apellido@fds-esc.edu.ar) para ingresar a tu cuenta.'
+      );
+      const emailEl = document.getElementById('teacher-email-input') as HTMLInputElement | null;
+      if (emailEl) {
+        emailEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        emailEl.focus();
+      }
+      return;
+    }
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
-      await loginWithGoogle(emailToUse);
+      await loginWithEmail(emailToUse, passwordInput.trim(), nameInput.trim() || undefined);
       onLoginSuccess();
     } catch (err: any) {
-      setAuthError(
-        err?.message ||
-          'No se completó el inicio de sesión con Google. Seleccioná tu cuenta en la ventana emergente o ingresá con tu correo y contraseña.'
-      );
+      setAuthError(err?.message || 'Error al iniciar sesión con tu cuenta.');
     } finally {
       setIsSubmittingAccount(false);
     }
@@ -152,18 +149,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
       return;
     }
     if (!cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setAuthError('Por favor ingresá un correo electrónico válido (ej: docente@colegio.edu.ar o tu.cuenta@gmail.com).');
-      return;
-    }
-    const cleanPassword = passwordInput.trim();
-    if (!cleanPassword || cleanPassword.length < 4) {
-      setAuthError('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
+      setAuthError('Por favor ingresá un correo electrónico válido (ej: docente@fds-esc.edu.ar o tu.cuenta@gmail.com).');
       return;
     }
     try {
       setIsSubmittingAccount(true);
       setAuthError(null);
-      await loginWithEmail(cleanEmail, cleanPassword, nameInput.trim() || undefined);
+      await loginWithEmail(cleanEmail, passwordInput.trim(), nameInput.trim() || undefined);
       onLoginSuccess();
     } catch (err: any) {
       console.error('Error al iniciar sesión:', err);
@@ -565,11 +557,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                   <input
                     id="teacher-password-input"
                     type={showPassword ? 'text' : 'password'}
-                    required
-                    minLength={4}
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
-                    placeholder="Ingresá tu clave (mín. 4 caracteres)"
+                    placeholder="Tu clave docente (opcional si aún no creaste una)"
                     className={`w-full px-3.5 py-2.5 pr-10 text-xs sm:text-sm rounded-xl border outline-none transition-all font-normal ${
                       isDarkMode
                         ? 'bg-slate-800/90 border-slate-700 text-white placeholder-slate-500 focus:border-blue-500 focus:ring-1 focus:ring-blue-500'

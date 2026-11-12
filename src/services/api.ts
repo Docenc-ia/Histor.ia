@@ -177,15 +177,12 @@ export const api = {
 
   async loginWithEmailCredentials(params: {
     email: string;
-    password: string;
+    password?: string;
     name?: string;
     token?: string;
   }): Promise<{ success: boolean; user: TeacherProfile; token?: string | null }> {
     const cleanEmail = params.email.trim().toLowerCase();
-    const rawPassword = params.password.trim();
-    if (!rawPassword || rawPassword.length < 4) {
-      throw new Error('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
-    }
+    const rawPassword = (params.password || '').trim();
 
     // 1. Verify against Express backend if available
     if (canUseExpressBackend(false)) {
@@ -206,13 +203,13 @@ export const api = {
           if (!res.ok || payload?.success === false) {
             throw new Error(
               payload?.error ||
-                'Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.'
+                'Contraseña incorrecta para esta cuenta docente. Verificá tu clave.'
             );
           }
           if (payload?.sessionSecret) {
             saveStoredSessionSecret(payload.sessionSecret);
           }
-          if (typeof window !== 'undefined') {
+          if (typeof window !== 'undefined' && rawPassword) {
             try {
               const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
               const rawMap = localStorage.getItem('docencia_credentials_by_email');
@@ -228,7 +225,12 @@ export const api = {
           };
         }
       } catch (err: any) {
-        if (err?.message && (err.message.includes('Contraseña') || err.message.includes('contraseña'))) {
+        if (
+          err?.message &&
+          (err.message.includes('Contraseña') ||
+            err.message.includes('contraseña') ||
+            err.message.includes('clave'))
+        ) {
           throw err;
         }
       }
@@ -236,19 +238,24 @@ export const api = {
 
     // 2. Client-side / static fallback password verification
     if (typeof window !== 'undefined') {
-      const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
       try {
         const rawMap = localStorage.getItem('docencia_credentials_by_email');
         const map: Record<string, string> = rawMap ? JSON.parse(rawMap) : {};
-        if (map[cleanEmail] && map[cleanEmail] !== digest) {
-          throw new Error(
-            'Contraseña incorrecta para esta cuenta docente. Verificá tu clave o ingresá con Google Workspace.'
-          );
+        if (map[cleanEmail]) {
+          if (!rawPassword) {
+            throw new Error('Esta cuenta tiene clave registrada. Por favor ingresá tu contraseña para continuar.');
+          }
+          const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
+          if (map[cleanEmail] !== digest) {
+            throw new Error('Contraseña incorrecta para esta cuenta docente. Verificá tu clave.');
+          }
+        } else if (rawPassword) {
+          const digest = await computeClientPasswordDigest(cleanEmail, rawPassword);
+          map[cleanEmail] = digest;
+          localStorage.setItem('docencia_credentials_by_email', JSON.stringify(map));
         }
-        map[cleanEmail] = digest;
-        localStorage.setItem('docencia_credentials_by_email', JSON.stringify(map));
       } catch (err: any) {
-        if (err?.message && err.message.includes('Contraseña incorrecta')) {
+        if (err?.message && (err.message.includes('Contraseña') || err.message.includes('clave'))) {
           throw err;
         }
       }

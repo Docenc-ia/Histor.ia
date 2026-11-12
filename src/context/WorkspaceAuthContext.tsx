@@ -469,9 +469,6 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!cleanEmail || !cleanEmail.includes('@')) {
         throw new Error('Por favor ingresá un correo electrónico docente válido.');
       }
-      if (!cleanPassword || cleanPassword.length < 4) {
-        throw new Error('Por favor ingresá tu contraseña (mínimo 4 caracteres) o iniciá sesión con Google Workspace.');
-      }
 
       let rememberedName = name;
       let rememberedAvatar: string | undefined;

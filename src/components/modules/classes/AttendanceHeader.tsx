@@ -4,7 +4,6 @@ import {
   UserPlus,
   Send,
   Bell,
-  Award,
   Bookmark,
   Calendar,
   Smartphone,
@@ -22,7 +21,6 @@ interface AttendanceHeaderProps {
   pendingCount: number;
   onOpenBatchPending: () => void;
   onOpenAddStudentModal: () => void;
-  onOpenSendDispositionModal: () => void;
   onOpenNotifConfigModal: () => void;
   onOpenImportExcel?: () => void;
   onOpenImportSheets?: () => void;
@@ -45,7 +43,6 @@ export const AttendanceHeader: React.FC<AttendanceHeaderProps> = React.memo(({
   pendingCount,
   onOpenBatchPending,
   onOpenAddStudentModal,
-  onOpenSendDispositionModal,
   onOpenNotifConfigModal,
   onOpenImportExcel,
   onOpenImportSheets,

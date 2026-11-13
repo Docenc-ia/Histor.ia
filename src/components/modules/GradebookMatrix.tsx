@@ -2,15 +2,9 @@ import React, { useState, useMemo, useRef, useEffect, useCallback, Suspense, laz
 import {
   Plus,
   Trash2,
-  Edit2,
   Calculator,
-  FileSpreadsheet,
-  Download,
   Check,
   X,
-  AlertCircle,
-  HelpCircle,
-  TrendingUp,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -18,12 +12,8 @@ import {
   Award,
   Copy,
   ClipboardCheck,
-  ExternalLink,
   Upload,
-  History,
-  RefreshCw,
   Cloud,
-  FileCheck,
   GripVertical,
 } from 'lucide-react';
 import { Student } from '../../types';
@@ -412,8 +402,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     categories,
     gradesMap,
     overallCalculation,
-    isSavingSheets,
-    sheetsSavedInfo,
     cloudStatus,
     saveCategories,
     saveGrades,
@@ -423,7 +411,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     handleSavePreliminaryValuation,
     handleApplyImportedGrades,
     handleApplyMultiImport,
-    handleSyncCuatrimestreWithSheets,
   } = useGradebookSync({
     courseId,
     courseName,
@@ -979,8 +966,6 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       category: 'Calificaciones',
     };
   };
-
-  const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
 
   return (
     <div className="space-y-4">

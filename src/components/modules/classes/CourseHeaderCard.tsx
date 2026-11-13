@@ -22,7 +22,6 @@ import {
 export interface CourseHeaderCardProps {
   activeCourse: Course;
   isDarkMode: boolean;
-  userEmail?: string;
   isSettingUpDriveFolder: boolean;
   onOpenCalendarSyncModal: (course: Course) => void;
   onOpenEditCourseDetailsModal: (course: Course) => void;

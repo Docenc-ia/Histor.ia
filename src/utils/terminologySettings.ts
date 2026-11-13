@@ -39,8 +39,6 @@ export const PERIOD_NAME_PRESETS: string[] = [
   'Período',
 ];
 
-export const INITIAL_DISPOSITION_SCORE_PRESETS: number[] = [10, 0];
-
 const STORAGE_BASE_KEY = 'docencia_terminology_settings';
 const TERMINOLOGY_UPDATED_EVENT = 'docencia_terminology_updated';
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'react';
 import {
   Menu,
   Search,
@@ -16,6 +16,8 @@ import {
   Smartphone,
   Eye,
   EyeOff,
+  Users,
+  GraduationCap,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { useGlobalData } from '../../context/GlobalDataContext';
@@ -23,6 +25,8 @@ import { OwlLogoIcon } from '../common/OwlLogoIcon';
 import { CloudSyncStatusInfo } from '../../services/firestoreSync';
 import { syncCoordinator } from '../../services/syncCoordinator';
 import { subscribePiiMaskState, toggleManualPiiMask } from '../common/PiiPrivacyShield';
+import { getRemovedStudentIds } from '../../services/api';
+import { useNavigationService } from '../../services/navigationService';
 
 const HeaderSystemModals = lazy(() =>
   import('./HeaderSystemModals').then((m) => ({ default: m.HeaderSystemModals }))
@@ -56,15 +60,91 @@ export const Header: React.FC<HeaderProps> = ({
     loadData: refreshGlobalData,
   } = useGlobalData();
 
+  const { selectedCourseId } = useNavigationService();
   const [showAppsMenu, setShowAppsMenu] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [isSearchDropdownOpen, setIsSearchDropdownOpen] = useState(false);
   const appsMenuRef = useRef<HTMLDivElement | null>(null);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [isFullBackupOpen, setIsFullBackupOpen] = useState(false);
 
+  const normalizeSearch = (val: string) =>
+    (val || '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+
+  const cleanSearchQuery = useMemo(() => normalizeSearch(searchQuery), [searchQuery]);
+
+  const globalStudentMatches = useMemo(() => {
+    if (cleanSearchQuery.length < 2) return [];
+    const tokens = cleanSearchQuery.split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return [];
+
+    const courseById = new Map<string, (typeof globalCourses)[number]>();
+    for (const c of globalCourses) {
+      if (c?.id) courseById.set(c.id, c);
+      if (c?.classroomCourseId) courseById.set(c.classroomCourseId, c);
+    }
+
+    const removedCache = new Map<string, Set<string>>();
+    const seenKeys = new Set<string>();
+    const results: Array<{
+      student: (typeof globalStudents)[number];
+      course?: (typeof globalCourses)[number];
+    }> = [];
+
+    for (const st of globalStudents) {
+      if (!st) continue;
+      if (st.courseId) {
+        let removedSet = removedCache.get(st.courseId);
+        if (!removedSet) {
+          removedSet = getRemovedStudentIds(st.courseId);
+          removedCache.set(st.courseId, removedSet);
+        }
+        if (removedSet.has(st.id)) continue;
+      }
+
+      const fullText = normalizeSearch(
+        `${st.firstName || ''} ${st.lastName || ''} ${st.lastName || ''} ${st.firstName || ''} ${st.email || ''}`
+      );
+      const matchesAll = tokens.every((tk) => fullText.includes(tk));
+      if (!matchesAll) continue;
+
+      const matchedCourse = st.courseId ? courseById.get(st.courseId) : undefined;
+      const dedupKey = `${matchedCourse?.id || st.courseId || 'none'}::${st.id}`;
+      if (seenKeys.has(dedupKey)) continue;
+      seenKeys.add(dedupKey);
+
+      results.push({ student: st, course: matchedCourse });
+    }
+
+    results.sort((a, b) => {
+      const nameA = `${a.student.lastName || ''} ${a.student.firstName || ''}`.trim();
+      const nameB = `${b.student.lastName || ''} ${b.student.firstName || ''}`.trim();
+      return nameA.localeCompare(nameB, 'es', { sensitivity: 'base' });
+    });
+
+    return results;
+  }, [globalStudents, globalCourses, cleanSearchQuery]);
+
+  const globalCourseMatches = useMemo(() => {
+    if (cleanSearchQuery.length < 2) return [];
+    return globalCourses
+      .filter((c) => {
+        const hay = normalizeSearch(
+          `${c.name || ''} ${c.subject || ''} ${c.grade || ''} ${c.division || ''} ${c.section || ''}`
+        );
+        return hay.includes(cleanSearchQuery);
+      })
+      .slice(0, 6);
+  }, [globalCourses, cleanSearchQuery]);
+
   useEffect(() => {
-    if (!showAppsMenu && !showProfileMenu) return;
+    if (!showAppsMenu && !showProfileMenu && !isSearchDropdownOpen) return;
     const handlePointerDown = (e: MouseEvent) => {
       const target = e.target as Node | null;
       if (showAppsMenu && appsMenuRef.current && target && !appsMenuRef.current.contains(target)) {
@@ -78,11 +158,20 @@ export const Header: React.FC<HeaderProps> = ({
       ) {
         setShowProfileMenu(false);
       }
+      if (
+        isSearchDropdownOpen &&
+        searchContainerRef.current &&
+        target &&
+        !searchContainerRef.current.contains(target)
+      ) {
+        setIsSearchDropdownOpen(false);
+      }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowAppsMenu(false);
         setShowProfileMenu(false);
+        setIsSearchDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -91,7 +180,7 @@ export const Header: React.FC<HeaderProps> = ({
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [showAppsMenu, showProfileMenu]);
+  }, [showAppsMenu, showProfileMenu, isSearchDropdownOpen]);
 
   const [cloudStatus, setCloudStatus] = useState<CloudSyncStatusInfo>({
     state: 'synced',
@@ -247,15 +336,24 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Middle: Google Workspace Search Bar */}
+      {/* Middle: Global Student & Course Search Bar */}
       <div className="flex-1 max-w-2xl mx-4 hidden md:flex items-center">
-        <div className="relative flex items-center w-full">
+        <div className="relative flex items-center w-full" ref={searchContainerRef}>
           <Search className="absolute left-3.5 w-4 h-4 text-neutral-400 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="Buscar materia, planificación, tema o entrega..."
+            onFocus={() => {
+              if (cleanSearchQuery.length >= 2) {
+                setIsSearchDropdownOpen(true);
+              }
+            }}
+            onChange={(e) => {
+              const val = e.target.value;
+              onSearchChange(val);
+              setIsSearchDropdownOpen(normalizeSearch(val).length >= 2);
+            }}
+            placeholder="Buscar cualquier alumno cargado o materia..."
             className={`w-full h-10 pl-10 pr-10 text-xs rounded-xl border transition-all focus:outline-none ${
               isDarkMode
                 ? 'bg-slate-900/90 text-white placeholder-slate-400 border-slate-700 focus:border-blue-500 focus:bg-slate-900'
@@ -264,11 +362,166 @@ export const Header: React.FC<HeaderProps> = ({
           />
           {searchQuery && (
             <button
-              onClick={() => onSearchChange('')}
+              type="button"
+              onClick={() => {
+                onSearchChange('');
+                setIsSearchDropdownOpen(false);
+              }}
               className="absolute right-3 p-1 text-neutral-400 hover:text-neutral-600 rounded-full cursor-pointer"
+              title="Limpiar búsqueda"
             >
               <X className="w-3.5 h-3.5" />
             </button>
+          )}
+
+          {/* Dropdown de resultados globales de alumnos y materias */}
+          {isSearchDropdownOpen && cleanSearchQuery.length >= 2 && (
+            <div
+              className={`absolute left-0 right-0 top-full mt-2 rounded-2xl border shadow-2xl z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-100 ${
+                isDarkMode
+                  ? 'bg-slate-900 border-slate-700 text-white'
+                  : 'bg-white border-neutral-200 text-neutral-900'
+              }`}
+            >
+              <div className="max-h-96 overflow-y-auto divide-y divide-neutral-100 dark:divide-slate-800">
+                {/* Alumnos en todas las materias */}
+                <div className="p-2.5">
+                  <div className="px-2 py-1 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
+                    <span className="inline-flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-blue-500" />
+                      <span>Alumnos encontrados ({globalStudentMatches.length})</span>
+                    </span>
+                    <span className="normal-case font-normal text-[10px]">
+                      Todas tus materias
+                    </span>
+                  </div>
+
+                  {globalStudentMatches.length === 0 ? (
+                    <p className="px-2 py-3 text-xs text-neutral-500 dark:text-slate-400">
+                      No se encontraron alumnos que coincidan con &ldquo;{searchQuery.trim()}&rdquo;.
+                    </p>
+                  ) : (
+                    <div className="mt-1 space-y-1">
+                      {globalStudentMatches.slice(0, 25).map(({ student: st, course: matchedCourse }) => {
+                        const targetCourseId = matchedCourse?.id || st.courseId || '';
+                        const isCurrentCourse = Boolean(selectedCourseId && targetCourseId === selectedCourseId);
+                        return (
+                          <button
+                            key={`${targetCourseId || 'none'}::${st.id}`}
+                            type="button"
+                            onClick={() => {
+                              try {
+                                sessionStorage.setItem('docencia_focus_student_id', st.id);
+                                sessionStorage.setItem(
+                                  'docencia_focus_student_name',
+                                  `${st.lastName || ''} ${st.firstName || ''}`.trim()
+                                );
+                              } catch (_) {}
+                              setIsSearchDropdownOpen(false);
+                              onSearchChange('');
+                              if (targetCourseId) {
+                                onNavigate('course_detail', targetCourseId);
+                              }
+                              setTimeout(() => {
+                                window.dispatchEvent(
+                                  new CustomEvent('docencia_focus_student', {
+                                    detail: { studentId: st.id, courseId: targetCourseId },
+                                  })
+                                );
+                              }, 0);
+                            }}
+                            className={`w-full px-2.5 py-2 rounded-xl text-left flex items-center justify-between gap-3 transition-colors cursor-pointer ${
+                              isDarkMode
+                                ? 'hover:bg-slate-800 text-slate-100'
+                                : 'hover:bg-blue-50/70 text-neutral-900'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div
+                                data-pii="student"
+                                className="w-7 h-7 rounded-full bg-blue-600/15 text-blue-600 dark:text-blue-400 font-bold text-[11px] flex items-center justify-center shrink-0"
+                              >
+                                {(st.lastName?.[0] || st.firstName?.[0] || 'E').toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p data-pii="student" className="text-xs font-bold truncate">
+                                  {st.lastName ? `${st.lastName}, ${st.firstName}` : st.firstName}
+                                </p>
+                                {st.email && (
+                                  <p
+                                    data-pii="student"
+                                    className="text-[10px] text-neutral-500 dark:text-slate-400 truncate"
+                                  >
+                                    {st.email}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span
+                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border max-w-[180px] truncate ${
+                                  isCurrentCourse
+                                    ? isDarkMode
+                                      ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
+                                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : isDarkMode
+                                    ? 'bg-blue-950/60 text-blue-300 border-blue-800/60'
+                                    : 'bg-blue-50 text-blue-700 border-blue-200'
+                                }`}
+                              >
+                                <GraduationCap className="w-3 h-3 shrink-0" />
+                                <span className="truncate">
+                                  {matchedCourse ? matchedCourse.name : 'Materia asignada'}
+                                </span>
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                      {globalStudentMatches.length > 25 && (
+                        <p className="px-2 py-1 text-[10px] text-neutral-400 text-center">
+                          Mostrando 25 de {globalStudentMatches.length} alumnos. Escribí apellido y nombre para acotar.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Materias coincidentes */}
+                {globalCourseMatches.length > 0 && (
+                  <div className="p-2.5">
+                    <div className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-neutral-500 dark:text-slate-400 flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Materias ({globalCourseMatches.length})</span>
+                    </div>
+                    <div className="mt-1 space-y-1">
+                      {globalCourseMatches.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            setIsSearchDropdownOpen(false);
+                            onSearchChange('');
+                            onNavigate('course_detail', c.id);
+                          }}
+                          className={`w-full px-2.5 py-1.5 rounded-xl text-left flex items-center justify-between gap-2 transition-colors cursor-pointer text-xs ${
+                            isDarkMode
+                              ? 'hover:bg-slate-800 text-slate-200'
+                              : 'hover:bg-indigo-50/70 text-neutral-800'
+                          }`}
+                        >
+                          <span className="font-semibold truncate">{c.name}</span>
+                          {c.schedule && (
+                            <span className="text-[10px] text-neutral-400 shrink-0">{c.schedule}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
@@ -356,6 +609,7 @@ export const Header: React.FC<HeaderProps> = ({
         {/* ISO/IEC 27001 A.7.7 & A.8.11: Classroom Privacy / Projector Mode Toggle */}
         <button
           type="button"
+          data-pii-toggle="true"
           onClick={() => toggleManualPiiMask()}
           className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
             isPiiMasked
@@ -366,8 +620,8 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
           title={
             isPiiMasked
-              ? 'Modo Privacidad / Proyector activo: Datos de estudiantes ocultos. Clic para mostrar (Atajo: Alt + P)'
-              : 'Activar Modo Privacidad / Proyector: oculta nombres, correos y calificaciones de los alumnos (Atajo: Alt + P)'
+              ? 'Privacidad activa: Datos ocultos. Volvé a hacer clic aquí para desactivarla (Atajo: Alt + P)'
+              : 'Activar Privacidad: oculta nombres, correos y calificaciones hasta que vuelvas a hacer clic aquí (Atajo: Alt + P)'
           }
           aria-label="Alternar modo privacidad de estudiantes"
         >

@@ -14,8 +14,6 @@ import {
   areStudentListsEqual,
 } from '../../utils/entityEquality';
 
-export type CourseTabType = 'alumnos';
-
 const EMPTY_COURSES: Course[] = [];
 const EMPTY_STUDENTS: Student[] = [];
 const NOOP = () => {};
@@ -24,17 +22,14 @@ interface CourseWorkspaceViewProps {
   course: Course;
   courses?: Course[];
   students?: Student[];
-  activeTab?: string;
   initialSubTab?: 'roster' | 'libro_temas' | 'grades' | 'history';
   externalSearchQuery?: string;
   onExternalSearchChange?: (query: string) => void;
-  onTabChange?: (tab: CourseTabType) => void;
   onBackToCourses: () => void;
   onSelectCourse: (courseId: string) => void;
   onDeleteCourse?: (courseId: string) => Promise<void> | void;
   onRefreshData?: () => void;
   onNavigate?: (tab: string, filterCourseId?: string) => void;
-  onOpenNewModal?: (type: 'course' | 'plan' | 'task' | 'file') => void;
 }
 
 function areCourseWorkspaceViewPropsEqual(
@@ -42,17 +37,14 @@ function areCourseWorkspaceViewPropsEqual(
   next: CourseWorkspaceViewProps
 ): boolean {
   if (
-    prev.activeTab !== next.activeTab ||
     prev.initialSubTab !== next.initialSubTab ||
     prev.externalSearchQuery !== next.externalSearchQuery ||
     prev.onExternalSearchChange !== next.onExternalSearchChange ||
-    prev.onTabChange !== next.onTabChange ||
     prev.onBackToCourses !== next.onBackToCourses ||
     prev.onSelectCourse !== next.onSelectCourse ||
     prev.onDeleteCourse !== next.onDeleteCourse ||
     prev.onRefreshData !== next.onRefreshData ||
-    prev.onNavigate !== next.onNavigate ||
-    prev.onOpenNewModal !== next.onOpenNewModal
+    prev.onNavigate !== next.onNavigate
   ) {
     return false;
   }
@@ -95,9 +87,8 @@ const CourseWorkspaceViewInner: React.FC<CourseWorkspaceViewProps> = React.memo(
     onDeleteCourse,
     onRefreshData = NOOP,
     onNavigate = NOOP,
-    onOpenNewModal,
   }) => {
-    const { user, isDarkMode } = useWorkspaceAuth();
+    const { isDarkMode } = useWorkspaceAuth();
     const [isConfirmDeleteOpen, setIsConfirmDeleteOpen] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
 
@@ -105,9 +96,6 @@ const CourseWorkspaceViewInner: React.FC<CourseWorkspaceViewProps> = React.memo(
       () => sortCoursesByUpcomingSchedule(courses).map((item) => item.course),
       [courses]
     );
-
-  const schoolName = user?.school || 'Institución Educativa';
-  const schoolCycle = course.schoolYear || '2026';
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto">
@@ -181,7 +169,6 @@ const CourseWorkspaceViewInner: React.FC<CourseWorkspaceViewProps> = React.memo(
           onSelectCourse={onSelectCourse}
           onRefreshData={onRefreshData}
           onNavigate={onNavigate}
-          onOpenNewModal={onOpenNewModal}
         />
       </div>
 

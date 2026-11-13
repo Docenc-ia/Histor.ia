@@ -2,17 +2,12 @@ import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import {
   Users,
   CheckCircle2,
-  FileSpreadsheet,
-  Download,
   AlertCircle,
   RefreshCw,
   History,
   BookOpen,
-  Copy,
   ChevronRight,
   ExternalLink,
-  Loader2,
-  Settings,
   Award,
   FileText,
   Pencil,
@@ -82,7 +77,6 @@ interface ClassesModuleProps {
   onSelectCourse?: (id: string) => void;
   onRefreshData: () => void;
   onNavigate: (tab: string, filterCourseId?: string) => void;
-  onOpenNewModal?: (type: 'course' | 'plan' | 'task' | 'file') => void;
 }
 
 function areClassesModulePropsEqual(
@@ -96,8 +90,7 @@ function areClassesModulePropsEqual(
     prev.onExternalSearchChange !== next.onExternalSearchChange ||
     prev.onSelectCourse !== next.onSelectCourse ||
     prev.onRefreshData !== next.onRefreshData ||
-    prev.onNavigate !== next.onNavigate ||
-    prev.onOpenNewModal !== next.onOpenNewModal
+    prev.onNavigate !== next.onNavigate
   ) {
     return false;
   }
@@ -120,10 +113,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   initialSubTab,
   externalSearchQuery,
   onExternalSearchChange,
-  onSelectCourse,
   onRefreshData,
-  onNavigate,
-  onOpenNewModal,
 }) => {
   const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
   const { attendanceLabel, dispositionLabel, combinedTabLabel } = useTerminologySettings();
@@ -281,7 +271,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   });
 
   const {
-    removedStudentIds,
     setRemovedStudentIds,
     removedStudentsList,
     setRemovedStudentsList,
@@ -498,7 +487,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   // Permanent history controls (always visible in roster tab & history tab)
   const [permHistorySearch, setPermHistorySearch] = useState('');
   const [permHistoryCategory, setPermHistoryCategory] = useState<'all' | 'Ausencia' | 'Llegada tarde' | 'Disposición' | 'Calificación' | 'Sistema'>('all');
-  const [permHistoryDate, setPermHistoryDate] = useState<string>('all');
   const [isPermHistoryCollapsed, setIsPermHistoryCollapsed] = useState(false);
 
   // Course and Student report modal state
@@ -532,15 +520,48 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         if (target) {
           sessionStorage.removeItem('docencia_focus_student_id');
           sessionStorage.removeItem('docencia_focus_student_name');
+          setActiveTab('roster');
           setSelectedStudentForProfile(target);
         }
       }
     } catch (_) {}
-  }, [courseStudents, setSelectedStudentForProfile]);
+  }, [courseStudents, setSelectedStudentForProfile, setActiveTab]);
 
-  const filteredStudents = courseStudents.filter((s) =>
-    `${s.firstName} ${s.lastName} ${s.email}`.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleFocusStudentEvent = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ studentId?: string; courseId?: string }>).detail;
+      if (!detail?.studentId) return;
+      if (detail.courseId && activeCourse?.id && detail.courseId !== activeCourse.id && activeCourse.classroomCourseId !== detail.courseId) {
+        return;
+      }
+      const target =
+        courseStudents.find((s) => s.id === detail.studentId) ||
+        students.find((s) => s.id === detail.studentId && (!activeCourse?.id || s.courseId === activeCourse.id));
+      if (target) {
+        try {
+          sessionStorage.removeItem('docencia_focus_student_id');
+          sessionStorage.removeItem('docencia_focus_student_name');
+        } catch (_) {}
+        setActiveTab('roster');
+        setSelectedStudentForProfile(target);
+      }
+    };
+    window.addEventListener('docencia_focus_student', handleFocusStudentEvent);
+    return () => window.removeEventListener('docencia_focus_student', handleFocusStudentEvent);
+  }, [activeCourse?.id, activeCourse?.classroomCourseId, courseStudents, students, setActiveTab, setSelectedStudentForProfile]);
+
+  const filteredStudents = useMemo(() => {
+    const normalize = (val: string) =>
+      (val || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+    const clean = normalize(searchQuery);
+    if (!clean) return courseStudents;
+    const tokens = clean.split(/\s+/).filter(Boolean);
+    return courseStudents.filter((s) => {
+      const text = normalize(`${s.firstName} ${s.lastName} ${s.email}`);
+      return tokens.every((tk) => text.includes(tk));
+    });
+  }, [courseStudents, searchQuery]);
 
   // Course attendance summary and traffic light calculations
   const currentAttendanceSummary = useMemo(() => {
@@ -592,7 +613,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     editingDispositionScore,
     setEditingDispositionScore,
     editingDispositionTerm,
-    setEditingDispositionTerm,
     editingDispositionReason,
     setEditingDispositionReason,
     editingAbsenceStudent,
@@ -600,7 +620,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     editingAbsenceCount,
     setEditingAbsenceCount,
     editingAbsenceTerm,
-    setEditingAbsenceTerm,
     editingAbsenceDate,
     setEditingAbsenceDate,
     editingAbsenceReason,
@@ -706,14 +725,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   });
 
 
-  const distinctCourseDates = useMemo(() => {
-    const dates = new Set<string>();
-    courseHistory.forEach((h) => {
-      if (h.date) dates.add(h.date);
-    });
-    return Array.from(dates);
-  }, [courseHistory]);
-
   const filteredPendingMessages = useMemo(() => {
     return pendingAllItems.filter((item) => {
       if (permHistoryCategory !== 'all') {
@@ -730,29 +741,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
       return true;
     });
   }, [pendingAllItems, permHistoryCategory, permHistorySearch]);
-
-  const averageDisposition = useMemo(() => {
-    if (courseStudents.length === 0) return 10;
-    const sum = courseStudents.reduce((acc, st) => {
-      const metrics = getStudentMetrics(st.id);
-      return acc + metrics.totalDisposition;
-    }, 0);
-    return (sum / courseStudents.length).toFixed(1);
-  }, [courseStudents, dispositionMap]);
-
-  const totalCourseAbsences = useMemo(() => {
-    return courseStudents.reduce((acc, st) => {
-      const metrics = getStudentMetrics(st.id);
-      return acc + metrics.totalAbsences;
-    }, 0);
-  }, [courseStudents, dispositionMap]);
-
-  const totalCourseLates = useMemo(() => {
-    return courseStudents.reduce((acc, st) => {
-      const metrics = getStudentMetrics(st.id);
-      return acc + (metrics.totalLates || 0);
-    }, 0);
-  }, [courseStudents, dispositionMap]);
 
   const handleSaveAttendanceDispositionInFormat = async (
     format: DriveSaveFormat,
@@ -1171,7 +1159,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
           <CourseHeaderCard
             activeCourse={activeCourse}
             isDarkMode={isDarkMode}
-            userEmail={user?.email}
             isSettingUpDriveFolder={isSettingUpDriveFolder}
             onOpenCalendarSyncModal={handleOpenCalendarSyncModal}
             onOpenEditCourseDetailsModal={handleOpenEditCourseDetailsModal}
@@ -1366,7 +1353,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
               pendingCount={selectedStudentIds.length === 0 ? pendingAllItems.length : 0}
               onOpenBatchPending={() => handleOpenBatchFromPending('all')}
               onOpenAddStudentModal={handleOpenAddStudentModal}
-              onOpenSendDispositionModal={() => setIsSendDispositionModalOpen(true)}
               onOpenNotifConfigModal={() => setIsNotifConfigModalOpen(true)}
               onOpenImportExcel={() => {
                 setHeaderImportContext('attendance');

@@ -448,7 +448,6 @@ function AppContent() {
                       onSelectCourse={handleSelectCourse}
                       onDeleteCourse={handleDeleteCourse}
                       onNavigate={handleNavigate}
-                      onOpenNewModal={handleOpenCreateModal}
                     />
                   </Suspense>
                 </ErrorBoundary>

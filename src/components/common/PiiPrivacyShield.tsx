@@ -33,7 +33,16 @@ function applyDomMaskState(masked: boolean, reason: PiiMaskReason) {
 }
 
 export function toggleManualPiiMask(forceState?: boolean): boolean {
-  currentManualLock = typeof forceState === 'boolean' ? forceState : !currentManualLock;
+  if (typeof forceState === 'boolean') {
+    currentManualLock = forceState;
+  } else if (currentManualLock) {
+    currentManualLock = false;
+  } else if (currentMaskReason === 'idle' || currentMaskReason === 'hidden') {
+    // If privacy was active due to inactivity/hidden tab and user clicked the button, turn it off instead of locking it on
+    currentManualLock = false;
+  } else {
+    currentManualLock = true;
+  }
   applyDomMaskState(currentManualLock, currentManualLock ? 'manual' : null);
   return currentManualLock;
 }
@@ -71,39 +80,51 @@ export const PiiPrivacyShield: React.FC<{ isDarkMode?: boolean }> = ({ isDarkMod
   useEffect(() => {
     const unsubscribe = subscribePiiMaskState((masked, reason) => {
       setMaskState({ masked, reason });
+      if (!masked) {
+        lastActivityRef.current = Date.now();
+        scheduleIdleTimer();
+      }
     });
 
-    const handleUserActivity = () => {
+    const handleUserActivity = (ev?: Event) => {
+      // Manual Privacy Mode can ONLY be deactivated by clicking the Privacy button (or Alt+P), NEVER by mouse movement or other activity
+      if (currentManualLock || currentMaskReason === 'manual') {
+        return;
+      }
+
+      // Avoid race condition where pointerdown on the Privacy toggle button unmasks an idle lock 1ms before click runs
+      if (ev && ev.type === 'pointerdown') {
+        const target = ev.target as HTMLElement | null;
+        if (target?.closest?.('[data-pii-toggle="true"], [data-pii-unmask="true"]')) {
+          return;
+        }
+      }
+
       const now = Date.now();
-      // If currently masked due to inactivity or tab switch (NOT manual lock), unmask immediately in 0ms
+      // If currently masked due to inactivity or tab switch (NOT manual lock), unmask on mouse movement / activity
       if (currentMaskReason === 'idle' || currentMaskReason === 'hidden') {
         lastActivityRef.current = now;
         applyDomMaskState(false, null);
         scheduleIdleTimer();
         return;
       }
-      // Throttle timer resets during normal active work to zero CPU overhead
+      // Throttle timer resets during normal active work
       if (now - lastActivityRef.current < ACTIVITY_THROTTLE_MS) {
         return;
       }
       lastActivityRef.current = now;
-      if (!currentManualLock) {
-        scheduleIdleTimer();
-      }
+      scheduleIdleTimer();
     };
 
     const handleVisibilityChange = () => {
       if (typeof document === 'undefined') return;
+      if (currentManualLock) return;
       if (document.hidden) {
-        if (!currentManualLock) {
-          applyDomMaskState(true, 'hidden');
-        }
-      } else {
-        if (currentMaskReason === 'hidden' && !currentManualLock) {
-          lastActivityRef.current = Date.now();
-          applyDomMaskState(false, null);
-          scheduleIdleTimer();
-        }
+        applyDomMaskState(true, 'hidden');
+      } else if (currentMaskReason === 'hidden') {
+        lastActivityRef.current = Date.now();
+        applyDomMaskState(false, null);
+        scheduleIdleTimer();
       }
     };
 
@@ -119,13 +140,12 @@ export const PiiPrivacyShield: React.FC<{ isDarkMode?: boolean }> = ({ isDarkMod
     };
 
     const handleWindowFocus = () => {
-      if (currentMaskReason === 'idle' && !currentManualLock) {
+      if (currentManualLock) return;
+      if (currentMaskReason === 'idle') {
         lastActivityRef.current = Date.now();
         applyDomMaskState(false, null);
       }
-      if (!currentManualLock) {
-        scheduleIdleTimer();
-      }
+      scheduleIdleTimer();
     };
 
     const handleKeyDownShortcut = (e: KeyboardEvent) => {
@@ -135,7 +155,7 @@ export const PiiPrivacyShield: React.FC<{ isDarkMode?: boolean }> = ({ isDarkMod
         toggleManualPiiMask();
         return;
       }
-      handleUserActivity();
+      handleUserActivity(e);
     };
 
     scheduleIdleTimer();
@@ -186,12 +206,13 @@ export const PiiPrivacyShield: React.FC<{ isDarkMode?: boolean }> = ({ isDarkMod
           </span>
           <span className={`text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-slate-500'}`}>
             {maskState.reason === 'manual'
-              ? 'Modo Proyector activado manualmente. Nombres, correos y notas están ocultos.'
-              : 'Pantalla inactiva: mové el mouse o tocá una tecla para volver a ver los datos.'}
+              ? 'Activado por clic: volvé a hacer clic en "Datos Ocultos" o en "Mostrar datos" para desactivarlo.'
+              : 'Activado por inactividad: mové el mouse o tocá una tecla para volver a ver los datos.'}
           </span>
         </div>
         <button
           type="button"
+          data-pii-unmask="true"
           onClick={() => toggleManualPiiMask(false)}
           className="ml-2 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer shrink-0"
           title="Volver a mostrar los datos de los estudiantes (Atajo: Alt + P)"

@@ -42,6 +42,7 @@ import {
   parseFlexibleCellNumber,
   buildDocumentRowOptions,
 } from '../../utils/gradeImportParser';
+import { filterSheetToStudentAndGradeOnly } from '../../utils/googleFormsEvaluationHelper';
 import { buildGradeImportCommitPayload } from '../../utils/gradeImportCommitBuilder';
 import { ImportHistoryTab } from './gradeImport/ImportHistoryTab';
 import {
@@ -146,7 +147,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   const [rawWorkbook, setRawWorkbook] = useState<XLSXType.WorkBook | null>(null);
   const [raw2DGrid, setRaw2DGrid] = useState<any[][]>([]);
   const [selectedHeaderRowIndex, setSelectedHeaderRowIndex] = useState<number>(0);
-  const [showVisualSheetMapper, setShowVisualSheetMapper] = useState<boolean>(true);
+  const [showVisualSheetMapper, setShowVisualSheetMapper] = useState<boolean>(false);
   const [availableColumns, setAvailableColumns] = useState<string[]>([]);
   const [selectedNameColumn, setSelectedNameColumn] = useState<string>('');
   const [selectedSecondaryNameColumn, setSelectedSecondaryNameColumn] = useState<string>('');
@@ -307,7 +308,8 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         activeCategories,
         selectedSecondaryNameColumn,
         importContext,
-        nextMode
+        nextMode,
+        rawTableRows
       );
       let finalCols = reDetected;
       // If user explicitly chose 'absences' or 'disposition' and there is a single active column, force its kind so switching in Step 2 is immediate
@@ -350,44 +352,77 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       colConfigs?: DetectedColumnConfig[];
     }
   ) => {
-    setRawTableRows(rows);
-    setAvailableColumns(cols);
+    let effectiveRows = rows;
+    let effectiveCols = cols;
+    let effectiveOverride = overridePreset;
+
+    if (importContext === 'grades' && !overridePreset && cols.length > 2) {
+      const reduced = filterSheetToStudentAndGradeOnly({
+        headers: cols,
+        rows,
+        students,
+      });
+      if (reduced.filteredHeaders.length > 0 && reduced.scoreCol) {
+        effectiveCols = reduced.filteredHeaders;
+        effectiveRows = reduced.filteredRows;
+        effectiveOverride = {
+          nameCol: reduced.nameCol || reduced.emailCol,
+          secondaryNameCol: reduced.secondaryNameCol,
+          emailCol: reduced.emailCol,
+        };
+      }
+    }
+
+    setRawTableRows(effectiveRows);
+    setAvailableColumns(effectiveCols);
     setFileName(sourceTitle);
     setManualRowMatches({});
 
-    const detectedIdentity = autoDetectIdentityColumns(cols);
+    const detectedIdentity = autoDetectIdentityColumns(effectiveCols, effectiveRows);
     const nameCol =
-      overridePreset?.nameCol !== undefined ? overridePreset.nameCol : detectedIdentity.nameCol;
+      effectiveOverride?.nameCol !== undefined
+        ? effectiveOverride.nameCol
+        : detectedIdentity.nameCol;
     const secondaryNameCol =
-      overridePreset?.secondaryNameCol !== undefined
-        ? overridePreset.secondaryNameCol
+      effectiveOverride?.secondaryNameCol !== undefined
+        ? effectiveOverride.secondaryNameCol
         : detectedIdentity.secondaryNameCol;
     const emailCol =
-      overridePreset?.emailCol !== undefined ? overridePreset.emailCol : detectedIdentity.emailCol;
+      effectiveOverride?.emailCol !== undefined
+        ? effectiveOverride.emailCol
+        : detectedIdentity.emailCol;
 
     setSelectedNameColumn(nameCol);
     setSelectedSecondaryNameColumn(secondaryNameCol);
     setSelectedEmailColumn(emailCol);
 
     const detected =
-      overridePreset?.colConfigs ||
+      effectiveOverride?.colConfigs ||
       autoDetectColumnsConfiguration(
-        cols,
+        effectiveCols,
         nameCol,
         emailCol,
         activeCategories,
         secondaryNameCol,
         importContext,
-        attendanceTargetMode
+        attendanceTargetMode,
+        effectiveRows
       );
 
     setDetectedColumns(detected);
-    buildMultiVerificationRows(rows, nameCol, emailCol, detected, secondaryNameCol, {});
+    buildMultiVerificationRows(
+      effectiveRows,
+      nameCol,
+      emailCol,
+      detected,
+      secondaryNameCol,
+      {}
+    );
 
     if (autoAdvanceToVerify) {
       setActiveStep('verify');
       setInspectionMode('table');
-      setShowVisualSheetMapper(true);
+      setShowVisualSheetMapper(false);
     }
   };
 
@@ -566,6 +601,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         explicitDocType,
         students,
         activeCategories,
+        importContext,
       });
       applyLoadedDataset(dataset, true);
     } catch (err: any) {
@@ -849,7 +885,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
       <div
-        className={`w-full max-w-4xl max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
+        className={`w-full ${
+          activeStep === 'verify' && importContext === 'grades' && !showVisualSheetMapper
+            ? 'max-w-2xl'
+            : 'max-w-4xl'
+        } max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
           isDarkMode
             ? 'bg-slate-900 border-slate-750 text-slate-100'
             : 'bg-white border-neutral-200 text-neutral-800'
@@ -1708,25 +1748,27 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
             <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-5">
               {/* Barra de documento cargado y selector de Pestaña (si el Excel o Google Sheet tiene varias hojas) */}
               <div
-                className={`p-3.5 rounded-xl border flex flex-wrap items-center justify-between gap-3 ${
+                className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 ${
                   isDarkMode ? 'bg-slate-850 border-slate-750' : 'bg-emerald-50/60 border-emerald-200'
                 }`}
               >
-                <div className="flex items-center gap-2.5">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
-                  <div>
-                    <div className="text-xs font-bold">{fileName}</div>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold truncate">{fileName}</div>
                     <div className="text-[11px] text-neutral-500 dark:text-slate-400">
-                      Si tu planilla tiene otro formato o encabezados combinados, usá el Mapeador Visual de abajo para señalar qué es cada columna.
+                      {importContext === 'grades'
+                        ? 'Se detectaron automáticamente los alumnos del curso y su nota.'
+                        : 'Si tu planilla tiene otro formato, podés ajustar las columnas.'}
                     </div>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2">
                   {/* Selector de Pestaña / Hoja si hay múltiples */}
                   {sheetNames.length > 1 && (
                     <div className="flex items-center gap-1.5 text-xs">
-                      <span className="font-semibold">Pestaña del documento:</span>
+                      <span className="font-semibold">Pestaña:</span>
                       <select
                         value={selectedSheetName}
                         onChange={(e) => {
@@ -1738,7 +1780,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             handleLoadRemoteGoogleSheet(activeRemoteSpreadsheetId, nextTab);
                           }
                         }}
-                        className={`px-2.5 py-1 rounded-lg border font-bold outline-hidden ${
+                        className={`px-2 py-1 rounded-lg border font-bold outline-hidden ${
                           isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
                         }`}
                       >
@@ -1751,110 +1793,67 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                     </div>
                   )}
 
-                  {/* Selector de Columna Principal de Alumno */}
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span className="font-semibold">Columna Alumno:</span>
-                    <select
-                      value={selectedNameColumn}
-                      onChange={(e) => {
-                        const nextNameCol = e.target.value;
-                        setSelectedNameColumn(nextNameCol);
-                        const nextDetected = autoDetectColumnsConfiguration(
-                          availableColumns,
-                          nextNameCol,
-                          selectedEmailColumn,
-                          activeCategories,
-                          selectedSecondaryNameColumn,
-                          importContext,
-                          attendanceTargetMode
-                        );
-                        setDetectedColumns(nextDetected);
-                        buildMultiVerificationRows(
-                          rawTableRows,
-                          nextNameCol,
-                          selectedEmailColumn,
-                          nextDetected,
-                          selectedSecondaryNameColumn
-                        );
-                      }}
-                      className={`px-2.5 py-1 rounded-lg border font-bold outline-hidden ${
-                        isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
-                      }`}
-                    >
-                      <option value="__ORDER__">🔢 Sin columna de nombre (Seguir orden de lista)</option>
-                      {availableColumns.map((col) => (
-                        <option key={col} value={col}>
-                          {col}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Selector Opcional de 2° Columna de Nombre (si Apellido y Nombre vienen separados) */}
-                  {selectedNameColumn !== '__ORDER__' && availableColumns.length >= 2 && (
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <span className="font-semibold text-neutral-500 dark:text-slate-400">
-                        + 2° Columna Nombre:
-                      </span>
-                      <select
-                        value={selectedSecondaryNameColumn}
-                        onChange={(e) => {
-                          const nextSec = e.target.value;
-                          setSelectedSecondaryNameColumn(nextSec);
-                          const nextDetected = autoDetectColumnsConfiguration(
-                            availableColumns,
-                            selectedNameColumn,
-                            selectedEmailColumn,
-                            activeCategories,
-                            nextSec,
-                            importContext,
-                            attendanceTargetMode
-                          );
-                          setDetectedColumns(nextDetected);
-                          buildMultiVerificationRows(
-                            rawTableRows,
-                            selectedNameColumn,
-                            selectedEmailColumn,
-                            nextDetected,
-                            nextSec
-                          );
-                        }}
-                        className={`px-2 py-1 rounded-lg border font-semibold outline-hidden ${
-                          isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
-                        }`}
-                        title="Si tu planilla tiene el Apellido en una columna y el Nombre en otra, elegila aquí para unirlas"
-                      >
-                        <option value="">(En una sola columna)</option>
-                        {availableColumns
-                          .filter((c) => c !== selectedNameColumn)
-                          .map((col) => (
+                  {importContext === 'attendance' && (
+                    <>
+                      {/* Selector de Columna Principal de Alumno */}
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <span className="font-semibold">Columna Alumno:</span>
+                        <select
+                          value={selectedNameColumn}
+                          onChange={(e) => {
+                            const nextNameCol = e.target.value;
+                            setSelectedNameColumn(nextNameCol);
+                            const nextDetected = autoDetectColumnsConfiguration(
+                              availableColumns,
+                              nextNameCol,
+                              selectedEmailColumn,
+                              activeCategories,
+                              selectedSecondaryNameColumn,
+                              importContext,
+                              attendanceTargetMode,
+                              rawTableRows
+                            );
+                            setDetectedColumns(nextDetected);
+                            buildMultiVerificationRows(
+                              rawTableRows,
+                              nextNameCol,
+                              selectedEmailColumn,
+                              nextDetected,
+                              selectedSecondaryNameColumn
+                            );
+                          }}
+                          className={`px-2.5 py-1 rounded-lg border font-bold outline-hidden max-w-[200px] truncate ${
+                            isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
+                          }`}
+                        >
+                          <option value="__ORDER__">🔢 Sin columna de nombre (Seguir orden de lista)</option>
+                          {availableColumns.map((col) => (
                             <option key={col} value={col}>
-                              Unir con: {col}
+                              {col}
                             </option>
                           ))}
-                      </select>
-                    </div>
-                  )}
+                        </select>
+                      </div>
 
-                  {raw2DGrid.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowVisualSheetMapper((v) => !v)}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                        showVisualSheetMapper
-                          ? 'bg-indigo-600 text-white border-indigo-600'
-                          : isDarkMode
-                          ? 'bg-slate-800 border-slate-700 text-indigo-300'
-                          : 'bg-indigo-50 border-indigo-200 text-indigo-700'
-                      }`}
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>
-                        {showVisualSheetMapper
-                          ? 'Ocultar Mapeador Visual'
-                          : 'Abrir Mapeador Visual de tu Planilla'}
-                      </span>
-                    </button>
+                      {raw2DGrid.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowVisualSheetMapper((v) => !v)}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                            showVisualSheetMapper
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : isDarkMode
+                              ? 'bg-slate-800 border-slate-700 text-indigo-300'
+                              : 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                          }`}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>
+                            {showVisualSheetMapper ? 'Ocultar Mapeador' : 'Mapeador Visual'}
+                          </span>
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -2054,9 +2053,9 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                 </div>
               )}
 
-              {/* 1. SECCIÓN DE CATEGORÍAS Y COLUMNAS DETECTADAS */}
+              {/* 1. SECCIÓN DE DESTINO DE LA NOTA / CATEGORÍA */}
               <div
-                className={`p-4 rounded-xl border space-y-3 ${
+                className={`p-3.5 rounded-xl border space-y-2.5 ${
                   isDarkMode ? 'bg-slate-850/70 border-slate-750' : 'bg-neutral-50/80 border-neutral-200'
                 }`}
               >
@@ -2064,16 +2063,27 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-blue-500" />
                     <h4 className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                      1. Categorías, Notas y Columnas Detectadas ({includedColumns.length} seleccionadas)
+                      {importContext === 'grades'
+                        ? 'Destino de la Calificación'
+                        : `1. Columnas Detectadas (${includedColumns.length} seleccionadas)`}
                     </h4>
                   </div>
                   <span className="text-[11px] text-neutral-500 dark:text-slate-400">
-                    Podés elegir a qué categoría va cada nota (o crear una categoría nueva) y editar su nombre.
+                    {importContext === 'grades'
+                      ? 'Elegí en qué categoría y con qué nombre guardar la evaluación.'
+                      : 'Podés elegir qué columnas importar.'}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {detectedColumns.map((colCfg) => (
+                <div
+                  className={`grid grid-cols-1 ${
+                    importContext === 'grades' ? '' : 'md:grid-cols-2'
+                  } gap-2.5`}
+                >
+                  {(importContext === 'grades'
+                    ? detectedColumns.filter((c) => c.isIncluded && c.kind === 'grade')
+                    : detectedColumns
+                  ).map((colCfg) => (
                     <div
                       key={colCfg.colKey}
                       className={`p-3 rounded-xl border transition-all flex flex-col gap-2 ${
@@ -2086,60 +2096,62 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           : 'bg-white border-blue-200 shadow-2xs'
                       }`}
                     >
-                      <div className="flex items-center justify-between gap-2">
-                        <label className="flex items-center gap-2 cursor-pointer font-bold text-xs">
-                          <input
-                            type="checkbox"
-                            checked={colCfg.isIncluded && colCfg.kind !== 'ignore'}
+                      {importContext !== 'grades' && (
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="flex items-center gap-2 cursor-pointer font-bold text-xs">
+                            <input
+                              type="checkbox"
+                              checked={colCfg.isIncluded && colCfg.kind !== 'ignore'}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                handleUpdateColumnConfig(colCfg.colKey, {
+                                  isIncluded: checked,
+                                  kind:
+                                    checked && colCfg.kind === 'ignore'
+                                      ? importContext === 'attendance'
+                                        ? attendanceTargetMode === 'absences'
+                                          ? 'absences'
+                                          : 'disposition'
+                                        : 'grade'
+                                      : colCfg.kind,
+                                });
+                              }}
+                              className="w-4 h-4 rounded text-blue-600 cursor-pointer"
+                            />
+                            <span className="truncate" title={colCfg.colKey}>
+                              Columna: "{colCfg.colKey}"
+                            </span>
+                          </label>
+
+                          {/* Tipo de dato detectado */}
+                          <select
+                            value={colCfg.kind}
                             onChange={(e) => {
-                              const checked = e.target.checked;
+                              const nextKind = e.target.value as DetectedColumnKind;
                               handleUpdateColumnConfig(colCfg.colKey, {
-                                isIncluded: checked,
-                                kind:
-                                  checked && colCfg.kind === 'ignore'
-                                    ? importContext === 'attendance'
-                                      ? attendanceTargetMode === 'absences'
-                                        ? 'absences'
-                                        : 'disposition'
-                                      : 'grade'
-                                    : colCfg.kind,
+                                kind: nextKind,
+                                isIncluded: nextKind !== 'ignore',
                               });
                             }}
-                            className="w-4 h-4 rounded text-blue-600 cursor-pointer"
-                          />
-                          <span className="truncate" title={colCfg.colKey}>
-                            Columna: "{colCfg.colKey}"
-                          </span>
-                        </label>
-
-                        {/* Tipo de dato detectado */}
-                        <select
-                          value={colCfg.kind}
-                          onChange={(e) => {
-                            const nextKind = e.target.value as DetectedColumnKind;
-                            handleUpdateColumnConfig(colCfg.colKey, {
-                              kind: nextKind,
-                              isIncluded: nextKind !== 'ignore',
-                            });
-                          }}
-                          className={`px-2 py-1 text-[11px] rounded-lg border font-bold outline-hidden ${
-                            colCfg.kind === 'grade'
-                              ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
-                              : colCfg.kind === 'ignore'
-                              ? 'bg-neutral-100 dark:bg-slate-800 text-neutral-500 border-neutral-300 dark:border-slate-700'
-                              : colCfg.kind === 'absences' || colCfg.kind === 'lates'
-                              ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                              : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
-                          }`}
-                        >
-                          <option value="absences">📅 Total Ausencias / Cantidad de Faltas</option>
-                          <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
-                          <option value="disposition">⭐ Nota de Disposición (1-10)</option>
-                          <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
-                          <option value="grade">📊 Nota / Calificación</option>
-                          <option value="ignore">🚫 Ignorar columna</option>
-                        </select>
-                      </div>
+                            className={`px-2 py-1 text-[11px] rounded-lg border font-bold outline-hidden ${
+                              colCfg.kind === 'grade'
+                                ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800'
+                                : colCfg.kind === 'ignore'
+                                ? 'bg-neutral-100 dark:bg-slate-800 text-neutral-500 border-neutral-300 dark:border-slate-700'
+                                : colCfg.kind === 'absences' || colCfg.kind === 'lates'
+                                ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                                : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                            }`}
+                          >
+                            <option value="absences">📅 Total Ausencias / Cantidad de Faltas</option>
+                            <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
+                            <option value="disposition">⭐ Nota de Disposición (1-10)</option>
+                            <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
+                            <option value="grade">📊 Nota / Calificación</option>
+                            <option value="ignore">🚫 Ignorar columna</option>
+                          </select>
+                        </div>
+                      )}
 
                       {importContext === 'attendance' && (
                         <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-neutral-100 dark:border-slate-700/60">
@@ -2204,7 +2216,13 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                       )}
 
                       {colCfg.isIncluded && colCfg.kind === 'grade' && (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-neutral-100 dark:border-slate-700/60 text-[11px]">
+                        <div
+                          className={`grid grid-cols-1 sm:grid-cols-2 gap-2.5 ${
+                            importContext === 'grades'
+                              ? ''
+                              : 'pt-1 border-t border-neutral-100 dark:border-slate-700/60'
+                          } text-[11px]`}
+                        >
                           {/* Categoría Mayor destino */}
                           <div>
                             <div className="flex items-center justify-between gap-1 mb-0.5">
@@ -2224,7 +2242,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                               >
                                 {colCfg.targetCategoryMode === 'new'
                                   ? 'Elegir existente'
-                                  : '+ Nueva categoría mayor'}
+                                  : '+ Nueva categoría'}
                               </button>
                             </div>
                             <select
@@ -2246,7 +2264,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                   });
                                 }
                               }}
-                              className={`w-full px-2 py-1 rounded-lg border font-medium outline-hidden ${
+                              className={`w-full px-2.5 py-1.5 rounded-lg border font-medium outline-hidden ${
                                 isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-neutral-50 border-neutral-300'
                               }`}
                             >
@@ -2268,7 +2286,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                   })
                                 }
                                 placeholder="Nombre de la nueva Categoría Mayor..."
-                                className={`mt-1 w-full px-2 py-1 rounded-lg border font-semibold ${
+                                className={`mt-1 w-full px-2.5 py-1.5 rounded-lg border font-semibold ${
                                   isDarkMode
                                     ? 'bg-slate-900 border-emerald-700 text-emerald-300'
                                     : 'bg-emerald-50/50 border-emerald-300 text-emerald-800'
@@ -2291,7 +2309,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                 })
                               }
                               placeholder="Ej. TP 1 / Parcial 1"
-                              className={`w-full px-2 py-1 rounded-lg border font-semibold ${
+                              className={`w-full px-2.5 py-1.5 rounded-lg border font-semibold ${
                                 isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-neutral-300'
                               }`}
                             />
@@ -2338,185 +2356,104 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
               {/* 2. SECCIÓN DE COMPROBACIÓN DE ALUMNOS Y VALORES ("¿ESTÁ TODO BIEN?") */}
               <div className="space-y-3">
-                {/* Banner de Verificación Rápida y Elección de Columnas */}
-                <div
-                  className={`p-3.5 rounded-2xl border flex flex-col lg:flex-row lg:items-center justify-between gap-3 ${
-                    isDarkMode
-                      ? 'bg-emerald-950/25 border-emerald-800/60 text-slate-100'
-                      : 'bg-emerald-50/60 border-emerald-200 text-neutral-900'
-                  }`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-                    <div>
-                      <div className="text-xs font-extrabold flex items-center gap-2 flex-wrap">
-                        <span>¿Está todo bien? Verificación de Nombres y Notas</span>
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
-                          {verifiedRows.filter((r) => !r.isNewStudent && r.matchedFromRaw).length} de{' '}
-                          {students.length} alumnos del curso vinculados
-                        </span>
+                {/* Banner de Verificación Rápida */}
+                {importContext === 'attendance' && (
+                  <div
+                    className={`p-3.5 rounded-2xl border flex flex-col lg:flex-row lg:items-center justify-between gap-3 ${
+                      isDarkMode
+                        ? 'bg-emerald-950/25 border-emerald-800/60 text-slate-100'
+                        : 'bg-emerald-50/60 border-emerald-200 text-neutral-900'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <div className="text-xs font-extrabold flex items-center gap-2 flex-wrap">
+                          <span>Verificación de Nombres y Datos</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                            {verifiedRows.filter((r) => !r.isNewStudent && r.matchedFromRaw).length} de{' '}
+                            {students.length} alumnos del curso vinculados
+                          </span>
+                        </div>
                       </div>
-                      <p className="text-[11px] text-neutral-600 dark:text-slate-300 mt-0.5">
-                        En la columna <strong>"Nombre en Documento (Elegir / Verificar)"</strong> podés desplegar la lista y elegir manualmente qué nombre del documento corresponde a cada alumno o corregir cualquier nota antes de guardar.
-                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      {availableColumns.length > 1 && (
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
+                            Columna Faltas:
+                          </span>
+                          <select
+                            value={
+                              detectedColumns.find(
+                                (c) => c.isIncluded && c.kind === 'absences'
+                              )?.colKey || ''
+                            }
+                            onChange={(e) => {
+                              const chosenAbsCol = e.target.value;
+                              if (!chosenAbsCol) return;
+                              handleVisualColumnRoleChange(chosenAbsCol, 'absences');
+                            }}
+                            className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-slate-800 border-slate-700 text-amber-300'
+                                : 'bg-white border-neutral-300 text-amber-800'
+                            }`}
+                          >
+                            <option value="">-- Elegir columna de Faltas --</option>
+                            {availableColumns
+                              .filter((col) => col !== selectedNameColumn)
+                              .map((col) => (
+                                <option key={col} value={col}>
+                                  📅 {col}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
+
+                      {availableColumns.length > 1 && (
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
+                            Columna Disposición:
+                          </span>
+                          <select
+                            value={
+                              detectedColumns.find(
+                                (c) =>
+                                  c.isIncluded &&
+                                  (c.kind === 'disposition' || c.kind === 'disposition_deduction')
+                              )?.colKey || ''
+                            }
+                            onChange={(e) => {
+                              const chosenDispCol = e.target.value;
+                              if (!chosenDispCol) return;
+                              handleVisualColumnRoleChange(chosenDispCol, 'disposition');
+                            }}
+                            className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-slate-800 border-slate-700 text-emerald-300'
+                                : 'bg-white border-neutral-300 text-emerald-800'
+                            }`}
+                          >
+                            <option value="">-- Elegir columna de Disposición --</option>
+                            {availableColumns
+                              .filter((col) => col !== selectedNameColumn)
+                              .map((col) => (
+                                <option key={col} value={col}>
+                                  ⭐ {col}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
                     </div>
                   </div>
+                )}
 
-                  {/* Selectores rápidos de Columna de Nombres y Columna de Disposición */}
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <div className="flex items-center gap-1.5 text-xs">
-                      <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
-                        Columna Nombres:
-                      </span>
-                      <select
-                        value={selectedNameColumn}
-                        onChange={(e) => {
-                          const nextNameCol = e.target.value;
-                          setSelectedNameColumn(nextNameCol);
-                          setManualRowMatches({});
-                          const nextDetected = autoDetectColumnsConfiguration(
-                            availableColumns,
-                            nextNameCol,
-                            selectedEmailColumn,
-                            activeCategories,
-                            selectedSecondaryNameColumn,
-                            importContext,
-                            attendanceTargetMode
-                          );
-                          setDetectedColumns(nextDetected);
-                          buildMultiVerificationRows(
-                            rawTableRows,
-                            nextNameCol,
-                            selectedEmailColumn,
-                            nextDetected,
-                            selectedSecondaryNameColumn,
-                            {}
-                          );
-                        }}
-                        className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
-                          isDarkMode
-                            ? 'bg-slate-800 border-slate-700 text-blue-300'
-                            : 'bg-white border-neutral-300 text-blue-800'
-                        }`}
-                      >
-                        <option value="__ORDER__">🔢 Por orden de lista</option>
-                        {availableColumns.map((col) => (
-                          <option key={col} value={col}>
-                            👤 {col}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {availableColumns.length > 1 && (
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
-                          Columna Faltas:
-                        </span>
-                        <select
-                          value={
-                            detectedColumns.find(
-                              (c) => c.isIncluded && c.kind === 'absences'
-                            )?.colKey || ''
-                          }
-                          onChange={(e) => {
-                            const chosenAbsCol = e.target.value;
-                            if (!chosenAbsCol) return;
-                            handleVisualColumnRoleChange(chosenAbsCol, 'absences');
-                          }}
-                          className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
-                            isDarkMode
-                              ? 'bg-slate-800 border-slate-700 text-amber-300'
-                              : 'bg-white border-neutral-300 text-amber-800'
-                          }`}
-                        >
-                          <option value="">-- Elegir columna de Faltas --</option>
-                          {availableColumns
-                            .filter((col) => col !== selectedNameColumn)
-                            .map((col) => (
-                              <option key={col} value={col}>
-                                📅 {col}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-
-                    {availableColumns.length > 1 && (
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span className="font-bold text-[11px] text-neutral-600 dark:text-slate-300">
-                          Columna Disposición:
-                        </span>
-                        <select
-                          value={
-                            detectedColumns.find(
-                              (c) =>
-                                c.isIncluded &&
-                                (c.kind === 'disposition' || c.kind === 'disposition_deduction')
-                            )?.colKey || ''
-                          }
-                          onChange={(e) => {
-                            const chosenDispCol = e.target.value;
-                            if (!chosenDispCol) return;
-                            handleVisualColumnRoleChange(chosenDispCol, 'disposition');
-                          }}
-                          className={`px-2.5 py-1 rounded-lg border text-xs font-bold outline-hidden cursor-pointer ${
-                            isDarkMode
-                              ? 'bg-slate-800 border-slate-700 text-emerald-300'
-                              : 'bg-white border-neutral-300 text-emerald-800'
-                          }`}
-                        >
-                          <option value="">-- Elegir columna de Disposición --</option>
-                          {availableColumns
-                            .filter((col) => col !== selectedNameColumn)
-                            .map((col) => (
-                              <option key={col} value={col}>
-                                ⭐ {col}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div
-                      className={`p-1 rounded-xl border flex items-center gap-1 ${
-                        isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-100 border-neutral-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setInspectionMode('table')}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          inspectionMode === 'table'
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'text-slate-400 hover:text-white'
-                            : 'text-neutral-600 hover:text-neutral-900'
-                        }`}
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>Vista Tabla de Comprobación ({displayedRows.length})</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setInspectionMode('individual')}
-                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                          inspectionMode === 'individual'
-                            ? 'bg-blue-600 text-white shadow-2xs'
-                            : isDarkMode
-                            ? 'text-slate-400 hover:text-white'
-                            : 'text-neutral-600 hover:text-neutral-900'
-                        }`}
-                      >
-                        <UserCheck className="w-3.5 h-3.5" />
-                        <span>Revisar Alumno por Alumno</span>
-                      </button>
-                    </div>
-
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <div className="flex items-center gap-1 text-xs flex-wrap">
                       <button
                         type="button"
@@ -2529,7 +2466,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             : 'bg-white border-neutral-200 text-neutral-700'
                         }`}
                       >
-                        Todos
+                        Todos ({verifiedRows.filter((r) => !r.isNewStudent || includeNewStudentsFromDoc).length})
                       </button>
                       <button
                         type="button"
@@ -2542,7 +2479,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             : 'bg-white border-neutral-200 text-neutral-700'
                         }`}
                       >
-                        Con datos a importar ({summaryMetrics.includedRowsCount})
+                        Con nota ({summaryMetrics.includedRowsCount})
                       </button>
                       <button
                         type="button"
@@ -2555,13 +2492,13 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             : 'bg-white border-neutral-200 text-neutral-700'
                         }`}
                       >
-                        Sin coincidencia ({verifiedRows.filter((r) => !r.isNewStudent && !r.matchedFromRaw).length})
+                        Sin nota ({verifiedRows.filter((r) => !r.isNewStudent && !r.matchedFromRaw).length})
                       </button>
                     </div>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <div className="relative flex-1 sm:w-52">
+                    <div className="relative flex-1 sm:w-48">
                       <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
                       <input
                         type="text"
@@ -2573,39 +2510,17 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                         }`}
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setVerifiedRows((prev) => prev.map((r) => ({ ...r, isIncluded: true })))
-                      }
-                      className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-lg border cursor-pointer ${
-                        isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-200'
-                      }`}
-                    >
-                      Marcar todos
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setVerifiedRows((prev) => prev.map((r) => ({ ...r, isIncluded: false })))
-                      }
-                      className={`px-2.5 py-1.5 text-[11px] font-semibold rounded-lg border cursor-pointer ${
-                        isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-200'
-                      }`}
-                    >
-                      Desmarcar
-                    </button>
                   </div>
                 </div>
 
-                {/* VISTA A: TABLA DE COMPROBACIÓN COMPLETA */}
+                {/* VISTA TABLA DE COMPROBACIÓN COMPACTA (ALUMNO Y NOTA JUNTOS SIN ESPACIO GRANDE) */}
                 {inspectionMode === 'table' && (
                   <div
                     className={`border rounded-xl overflow-hidden shadow-xs ${
                       isDarkMode ? 'border-slate-750 bg-slate-900' : 'border-neutral-200 bg-white'
                     }`}
                   >
-                    <div className="overflow-x-auto max-h-[46vh]">
+                    <div className="overflow-x-auto max-h-[48vh]">
                       <table className="w-full text-left text-xs border-collapse">
                         <thead className="sticky top-0 z-10">
                           <tr
@@ -2615,20 +2530,33 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                 : 'bg-neutral-100 border-neutral-200 text-neutral-700'
                             }`}
                           >
-                            <th className="py-2.5 px-3 w-10 text-center font-bold">Inc.</th>
-                            <th className="py-2.5 px-3 font-bold min-w-[190px]">Alumno en la App</th>
-                            <th className="py-2.5 px-3 font-bold min-w-[230px]">
-                              Nombre en Documento (Elegir / Verificar)
+                            <th className="py-2.5 px-2.5 w-10 text-center font-bold">
+                              <input
+                                type="checkbox"
+                                checked={
+                                  displayedRows.length > 0 &&
+                                  displayedRows.every((r) => r.isIncluded)
+                                }
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setVerifiedRows((prev) =>
+                                    prev.map((r) => ({ ...r, isIncluded: checked }))
+                                  );
+                                }}
+                                className="w-4 h-4 rounded text-blue-600 cursor-pointer"
+                                title="Seleccionar o desmarcar todos"
+                              />
                             </th>
+                            <th className="py-2.5 px-3 font-bold">Alumno</th>
                             {includedColumns.map((col) => (
-                              <th key={col.colKey} className="py-2.5 px-3 text-center font-bold min-w-[130px]">
-                                <div className="flex flex-col items-center">
+                              <th
+                                key={col.colKey}
+                                className="py-2.5 px-4 text-left font-bold w-36 whitespace-nowrap"
+                              >
+                                <div className="flex flex-col items-start">
                                   <span className="text-[10px] uppercase tracking-wider text-blue-600 dark:text-blue-400">
                                     {col.kind === 'grade'
-                                      ? col.targetCategoryMode === 'new'
-                                        ? `+ ${col.newCategoryName}`
-                                        : activeCategories.find((c) => c.id === col.targetCategoryId)?.name ||
-                                          'Calificación'
+                                      ? 'Nota'
                                       : col.kind === 'absences'
                                       ? 'Asistencia'
                                       : col.kind === 'lates'
@@ -2637,7 +2565,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                       ? 'Disposición (10 - Desc.)'
                                       : 'Disposición'}
                                   </span>
-                                  <span className="truncate max-w-[140px]">
+                                  <span className="truncate max-w-[130px]">
                                     {col.kind === 'grade' ? col.subcategoryName : col.colKey}
                                   </span>
                                 </div>
@@ -2649,7 +2577,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                           {displayedRows.length === 0 ? (
                             <tr>
                               <td
-                                colSpan={3 + includedColumns.length}
+                                colSpan={2 + includedColumns.length}
                                 className="py-8 text-center text-neutral-400"
                               >
                                 No hay filas para mostrar con el filtro actual.
@@ -2667,7 +2595,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                     : 'hover:bg-blue-50/20'
                                 }`}
                               >
-                                <td className="py-2 px-3 text-center">
+                                <td className="py-2 px-2.5 text-center w-10">
                                   <input
                                     type="checkbox"
                                     checked={row.isIncluded}
@@ -2683,13 +2611,53 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                 </td>
 
                                 <td className="py-2 px-3 font-semibold">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span>{row.studentName}</span>
-                                    {row.isNewStudent && (
-                                      <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
-                                        + Fila en doc sin vincular
-                                      </span>
-                                    )}
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="font-bold text-xs">{row.studentName}</span>
+                                      {row.matchedFromRaw ? (
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                          ✓ Detectado
+                                        </span>
+                                      ) : (
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-200/70 dark:bg-slate-800 text-neutral-500 dark:text-slate-400">
+                                          Sin nota en planilla
+                                        </span>
+                                      )}
+                                      {row.isNewStudent && (
+                                        <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300">
+                                          + Alumno nuevo
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {!row.isNewStudent &&
+                                      !row.matchedFromRaw &&
+                                      documentRowOptions.length > 0 && (
+                                        <select
+                                          value=""
+                                          onChange={(e) => {
+                                            const val = e.target.value;
+                                            handleSelectDocumentRowForStudent(
+                                              row.studentId,
+                                              val === '' ? null : Number(val)
+                                            );
+                                          }}
+                                          className={`text-[11px] px-2 py-0.5 rounded-lg border font-medium outline-hidden cursor-pointer max-w-[210px] truncate ${
+                                            isDarkMode
+                                              ? 'bg-slate-800 border-amber-700/60 text-amber-300'
+                                              : 'bg-amber-50/60 border-amber-300 text-amber-900'
+                                          }`}
+                                          title="Vincular manualmente con una fila de la planilla"
+                                        >
+                                          <option value="">Vincular fila...</option>
+                                          {documentRowOptions.map((opt) => (
+                                            <option key={opt.rawRowIndex} value={String(opt.rawRowIndex)}>
+                                              {opt.rawName}
+                                              {opt.summaryPreview ? ` (${opt.summaryPreview})` : ''}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      )}
                                   </div>
                                   {row.isNewStudent && students.length > 0 && (
                                     <select
@@ -2718,79 +2686,6 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                   )}
                                 </td>
 
-                                <td className="py-2 px-3">
-                                  {!row.isNewStudent && documentRowOptions.length > 0 ? (
-                                    <div className="flex flex-col gap-1">
-                                      <select
-                                        value={
-                                          typeof row.matchedRawRowIndex === 'number'
-                                            ? String(row.matchedRawRowIndex)
-                                            : ''
-                                        }
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          handleSelectDocumentRowForStudent(
-                                            row.studentId,
-                                            val === '' ? null : Number(val)
-                                          );
-                                        }}
-                                        className={`w-full text-[11px] px-2 py-1 rounded-lg border font-medium outline-hidden cursor-pointer ${
-                                          row.matchedFromRaw
-                                            ? isDarkMode
-                                              ? 'bg-slate-800 border-emerald-700/70 text-slate-100'
-                                              : 'bg-emerald-50/40 border-emerald-300 text-neutral-900'
-                                            : isDarkMode
-                                            ? 'bg-slate-800 border-amber-700/60 text-amber-300'
-                                            : 'bg-amber-50/50 border-amber-300 text-amber-900'
-                                        }`}
-                                        title="Elegí qué nombre del documento corresponde a este alumno"
-                                      >
-                                        <option value="">
-                                          — Sin vincular (elegir nombre del documento...) —
-                                        </option>
-                                        {documentRowOptions.map((opt) => (
-                                          <option key={opt.rawRowIndex} value={String(opt.rawRowIndex)}>
-                                            {opt.rawName}
-                                            {opt.summaryPreview ? ` (${opt.summaryPreview})` : ''}
-                                          </option>
-                                        ))}
-                                      </select>
-                                      <span
-                                        className={`text-[10px] font-semibold ${
-                                          manualRowMatches[row.studentId] !== undefined &&
-                                          manualRowMatches[row.studentId] !== null
-                                            ? 'text-blue-600 dark:text-blue-400'
-                                            : row.matchScore >= 0.9
-                                            ? 'text-emerald-600 dark:text-emerald-400'
-                                            : row.matchedFromRaw
-                                            ? 'text-amber-600 dark:text-amber-400'
-                                            : 'text-neutral-400'
-                                        }`}
-                                      >
-                                        {manualRowMatches[row.studentId] !== undefined &&
-                                        manualRowMatches[row.studentId] !== null
-                                          ? '✓ Nombre elegido manualmente'
-                                          : row.matchScore >= 0.9
-                                          ? '✓ Coincidencia exacta'
-                                          : row.matchedFromRaw
-                                          ? '~ Coincidencia aproximada (revisar)'
-                                          : 'Sin fila asignada — podés elegirla arriba'}
-                                      </span>
-                                    </div>
-                                  ) : row.matchedFromRaw ? (
-                                    <div className="flex flex-col">
-                                      <span className="font-mono text-[11px]">{row.matchedFromRaw}</span>
-                                      <span className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
-                                        Fila extra en documento (podés vincularla a la izquierda)
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    <span className="text-[11px] italic text-neutral-400">
-                                      Sin fila en documento
-                                    </span>
-                                  )}
-                                </td>
-
                                 {includedColumns.map((col) => {
                                   const cell = row.valuesByCol[col.colKey] || {
                                     currentVal: '',
@@ -2800,8 +2695,11 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                     status: 'empty',
                                   };
                                   return (
-                                    <td key={col.colKey} className="py-2 px-2.5 text-center">
-                                      <div className="flex flex-col items-center gap-1">
+                                    <td
+                                      key={col.colKey}
+                                      className="py-2 px-4 text-left w-36 whitespace-nowrap"
+                                    >
+                                      <div className="flex items-center gap-1.5">
                                         <input
                                           type="text"
                                           value={cell.editedVal}
@@ -2823,12 +2721,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                                         />
                                         {cell.currentVal !== '' && cell.status === 'update' && (
                                           <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
-                                            Antes: {cell.currentVal}
+                                            (era {cell.currentVal})
                                           </span>
                                         )}
                                         {!cell.isValid && (
                                           <span className="text-[10px] text-red-500 font-bold">
-                                            Valor inválido
+                                            Inválido
                                           </span>
                                         )}
                                       </div>

@@ -650,7 +650,9 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
       <div
-        className={`w-full max-w-4xl max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
+        className={`w-full ${
+          step === 'review' ? 'max-w-2xl' : 'max-w-4xl'
+        } max-h-[94vh] flex flex-col rounded-2xl shadow-2xl border overflow-hidden transition-all ${
           isDarkMode
             ? 'bg-slate-900 border-slate-700 text-slate-100'
             : 'bg-white border-neutral-200 text-neutral-800'
@@ -1414,12 +1416,11 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                             title="Seleccionar todos"
                           />
                         </th>
-                        <th className="p-2.5">Alumno de la Clase</th>
-                        <th className="p-2.5">Estado de Detección</th>
+                        <th className="p-2.5">Alumno</th>
                         {targetColumnMode === 'existing_sub' && (
-                          <th className="p-2.5 text-center">Nota Anterior</th>
+                          <th className="p-2.5 w-24 text-center whitespace-nowrap">Anterior</th>
                         )}
-                        <th className="p-2.5 text-center">Nota Final</th>
+                        <th className="p-2.5 w-28 text-left whitespace-nowrap">Nota Final</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-200 dark:divide-slate-800">
@@ -1438,7 +1439,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                             }`}
                           >
                             {/* Include Checkbox */}
-                            <td className="p-2.5 text-center">
+                            <td className="p-2.5 text-center w-10">
                               <input
                                 type="checkbox"
                                 checked={row.isIncluded}
@@ -1447,71 +1448,65 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                               />
                             </td>
 
-                            {/* Student in Course Roster */}
+                            {/* Student in Course Roster + Compact Status */}
                             <td className="p-2.5 font-semibold" data-pii="student">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] text-neutral-400 w-4">
-                                  {idx + 1}
-                                </span>
-                                <div>
-                                  <div className="text-xs font-bold">
-                                    {row.student.lastName}, {row.student.firstName}
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] text-neutral-400 w-4">
+                                    {idx + 1}
+                                  </span>
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-bold">
+                                      {row.student.lastName}, {row.student.firstName}
+                                    </span>
+                                    {isMatched ? (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                                        ✓ Detectado
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] text-neutral-400">
+                                        Sin entrega
+                                      </span>
+                                    )}
                                   </div>
-                                  {row.student.email && (
-                                    <div className="text-[10px] text-neutral-400">
-                                      {row.student.email}
-                                    </div>
-                                  )}
                                 </div>
-                              </div>
-                            </td>
 
-                            {/* Detection Status (or manual link if unmatched and there are leftover Form names) */}
-                            <td className="p-2.5" data-pii="student">
-                              {isMatched ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                  <CheckCircle2 className="w-3.5 h-3.5" />
-                                  Detectado en Forms
-                                </span>
-                              ) : unmatchedSubmissions.length > 0 ? (
-                                <select
-                                  value=""
-                                  onChange={(e) =>
-                                    handleAssignSubmissionToStudent(
-                                      row.student.id,
-                                      e.target.value
-                                    )
-                                  }
-                                  className={`px-2 py-1 rounded-lg border text-[11px] ${
-                                    isDarkMode
-                                      ? 'bg-slate-800 border-amber-700/60 text-amber-300'
-                                      : 'bg-amber-50 border-amber-300 text-amber-900'
-                                  }`}
-                                >
-                                  <option value="">Sin coincidencia (Vincular nombre...)</option>
-                                  {parsedSubmissions.map((sub, sIdx) => (
-                                    <option key={sIdx} value={String(sIdx)}>
-                                      {sub.rawName || sub.rawEmail || `Envío #${sIdx + 1}`} — Nota:{' '}
-                                      {formatConvertedFormsGrade(
-                                        sub.earnedPoints,
-                                        sub.maxPoints,
-                                        customMaxScore,
-                                        scaleMode,
-                                        roundingMode
-                                      )}
-                                    </option>
-                                  ))}
-                                </select>
-                              ) : (
-                                <span className="text-[11px] text-neutral-400">
-                                  No figura en el Forms
-                                </span>
-                              )}
+                                {!isMatched && unmatchedSubmissions.length > 0 && (
+                                  <select
+                                    value=""
+                                    onChange={(e) =>
+                                      handleAssignSubmissionToStudent(
+                                        row.student.id,
+                                        e.target.value
+                                      )
+                                    }
+                                    className={`px-2 py-0.5 rounded-lg border text-[11px] max-w-[200px] truncate ${
+                                      isDarkMode
+                                        ? 'bg-slate-800 border-amber-700/60 text-amber-300'
+                                        : 'bg-amber-50 border-amber-300 text-amber-900'
+                                    }`}
+                                  >
+                                    <option value="">Vincular envío...</option>
+                                    {parsedSubmissions.map((sub, sIdx) => (
+                                      <option key={sIdx} value={String(sIdx)}>
+                                        {sub.rawName || sub.rawEmail || `Envío #${sIdx + 1}`} — Nota:{' '}
+                                        {formatConvertedFormsGrade(
+                                          sub.earnedPoints,
+                                          sub.maxPoints,
+                                          customMaxScore,
+                                          scaleMode,
+                                          roundingMode
+                                        )}
+                                      </option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
                             </td>
 
                             {/* Previous Grade if updating existing column */}
                             {targetColumnMode === 'existing_sub' && (
-                              <td className="p-2.5 text-center font-semibold" data-pii="student">
+                              <td className="p-2.5 w-24 text-center font-semibold" data-pii="student">
                                 {row.currentGradeInCol ? (
                                   <span className="text-neutral-500 dark:text-slate-400">
                                     {row.currentGradeInCol}
@@ -1523,7 +1518,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                             )}
 
                             {/* Final Grade (Nota Final) */}
-                            <td className="p-2.5 text-center" data-pii="student">
+                            <td className="p-2.5 w-28 text-left" data-pii="student">
                               <input
                                 type="text"
                                 value={row.editedScore}

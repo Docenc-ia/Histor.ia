@@ -14,6 +14,7 @@ import {
 import {
   autoDetectGoogleFormsColumns,
   filterFormsToIdentityAndScoreOnly,
+  filterSheetToStudentAndGradeOnly,
 } from '../utils/googleFormsEvaluationHelper';
 
 const CSV_SAMPLE_LINES_COUNT = 5;
@@ -325,9 +326,11 @@ export async function parseUploadedImportFile(
 /**
  * Descarga e interpreta un documento remoto de Google Workspace (Google Forms, Google Docs, Google Sheets)
  * o un enlace web directo (`.csv`/`.html`) hacia un `LoadedImportDataset`.
+ * Cuando `importContext` es `'grades'`, filtra automáticamente las columnas intermedias o consignas
+ * para conservar únicamente al Alumno y la Nota.
  *
  * @param params URL o ID del recurso remoto, pestaña opcional y contexto del curso activo.
- * @returns El conjunto de datos cargado y preconfigurado para el mapeador visual.
+ * @returns El conjunto de datos cargado y preconfigurado.
  * @throws {Error} Con mensaje descriptivo en español si el enlace es inválido, privado o no contiene datos.
  */
 export async function loadRemoteImportDocument(params: {
@@ -336,6 +339,7 @@ export async function loadRemoteImportDocument(params: {
   explicitDocType?: 'sheet' | 'doc' | 'form';
   students: Student[];
   activeCategories: GradeCategory[];
+  importContext?: 'grades' | 'attendance';
 }): Promise<LoadedImportDataset> {
   const trimmedInputUrl = String(params?.idOrUrl ?? '').trim();
   if (!trimmedInputUrl) {
@@ -346,6 +350,18 @@ export async function loadRemoteImportDocument(params: {
   const explicitDocType = params?.explicitDocType;
   const safeStudents = Array.isArray(params?.students) ? params.students : [];
   const safeCategories = Array.isArray(params?.activeCategories) ? params.activeCategories : [];
+  const importContext = params?.importContext || 'grades';
+
+  const evaluationCategory =
+    safeCategories.find((category) =>
+      /evaluacion|examen|prueba|forms/i.test(normalizeImportText(category?.name || ''))
+    ) ||
+    safeCategories[0] || {
+      id: DEFAULT_CATEGORY_ID,
+      name: DEFAULT_EVALUATION_CATEGORY_NAME,
+      weight: DEFAULT_CATEGORY_WEIGHT,
+      subcategories: [],
+    };
 
   const isGoogleFormsUrl =
     explicitDocType === 'form' ||
@@ -370,17 +386,6 @@ export async function loadRemoteImportDocument(params: {
       formRows,
       detectedFormColumns
     );
-
-    const evaluationCategory =
-      safeCategories.find((category) =>
-        /evaluacion|examen|prueba|forms/i.test(normalizeImportText(category?.name || ''))
-      ) ||
-      safeCategories[0] || {
-        id: DEFAULT_CATEGORY_ID,
-        name: DEFAULT_EVALUATION_CATEGORY_NAME,
-        weight: DEFAULT_CATEGORY_WEIGHT,
-        subcategories: [],
-      };
 
     const cleanEvaluationTitle =
       String(formEvaluationResult?.title || '')
@@ -421,7 +426,7 @@ export async function loadRemoteImportDocument(params: {
       activeRemoteSpreadsheetId: '',
       sheetUrlInput: trimmedInputUrl,
       presetOverrides: {
-        nameCol,
+        nameCol: nameCol || emailCol,
         secondaryNameCol,
         emailCol,
         colConfigs: columnConfigs,
@@ -535,6 +540,70 @@ export async function loadRemoteImportDocument(params: {
 
     if (parsedTableData.rows.length === 0 && normalized2DGrid.length === 0) {
       throw new Error(`La pestaña "${spreadsheetResult.selectedSheet}" no contiene filas de datos.`);
+    }
+
+    if (importContext === 'grades') {
+      const reduced = filterSheetToStudentAndGradeOnly({
+        headers: parsedTableData.headers,
+        rows: parsedTableData.rows,
+        students: safeStudents,
+      });
+
+      const cleanSheetTitle =
+        String(spreadsheetResult.title || '')
+          .replace(/\(respuestas.*?\)/gi, '')
+          .replace(/\(responses.*?\)/gi, '')
+          .trim() ||
+        reduced.scoreCol ||
+        HEADER_GRADE;
+
+      const scoreColKey = reduced.scoreCol || HEADER_GRADE;
+      const columnConfigs: DetectedColumnConfig[] = reduced.scoreCol
+        ? [
+            {
+              colKey: scoreColKey,
+              isIncluded: true,
+              kind: 'grade',
+              targetCategoryMode: 'existing',
+              targetCategoryId: evaluationCategory.id,
+              newCategoryName: '',
+              targetSubcategoryMode: 'new',
+              targetSubcategoryId: '',
+              subcategoryName:
+                /^(puntuacion|puntaje|score|nota|nota final|calificacion)$/i.test(
+                  normalizeImportText(scoreColKey)
+                )
+                  ? cleanSheetTitle
+                  : scoreColKey,
+            },
+          ]
+        : undefined!;
+
+      const filtered2DGrid = [
+        reduced.filteredHeaders,
+        ...reduced.filteredRows.map((rowRecord) =>
+          reduced.filteredHeaders.map((headerName) => String(rowRecord?.[headerName] ?? ''))
+        ),
+      ];
+
+      return {
+        rawWorkbook: null,
+        sheetNames: spreadsheetResult.sheetNames || [spreadsheetResult.selectedSheet],
+        selectedSheetName: spreadsheetResult.selectedSheet,
+        raw2DGrid: filtered2DGrid,
+        headerRowIndex: 0,
+        headers: reduced.filteredHeaders,
+        rows: reduced.filteredRows,
+        sourceLabel: `Google Sheet: ${spreadsheetResult.title} (${spreadsheetResult.selectedSheet})`,
+        activeRemoteSpreadsheetId: spreadsheetResult.spreadsheetId,
+        sheetUrlInput: trimmedInputUrl,
+        presetOverrides: {
+          nameCol: reduced.nameCol || reduced.emailCol,
+          secondaryNameCol: reduced.secondaryNameCol,
+          emailCol: reduced.emailCol,
+          colConfigs: columnConfigs,
+        },
+      };
     }
 
     return {

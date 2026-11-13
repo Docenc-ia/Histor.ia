@@ -6,6 +6,8 @@ import { CATEGORY_COLORS } from './gradeCalculations';
 import {
   normalizeImportText,
   findBestStudentMatchInRoster,
+  isQuestionOrLongTextColumn,
+  parseFlexibleCellNumber,
 } from './gradeImportParser';
 
 const STANDARD_GRADE_SCALE_MAX = 10;
@@ -176,8 +178,9 @@ export function formatConvertedFormsGrade(
 }
 
 /**
- * Identifica la columna de puntuación dentro de las cabeceras de un Google Forms,
- * priorizando coincidencias exactas de nombre y recurriendo luego a inspección de patrones fraccionarios ("X / Y").
+ * Identifica la columna de puntuación dentro de las cabeceras de un Google Forms o Sheet,
+ * priorizando coincidencias exactas de nombre y recurriendo luego a inspección de patrones fraccionarios ("X / Y"),
+ * excluyendo siempre preguntas de examen o columnas de desarrollo extenso.
  *
  * @param headers Lista de encabezados disponibles en la tabla.
  * @param rows Filas de datos para muestreo heurístico en caso de encabezados personalizados.
@@ -192,20 +195,26 @@ function detectScoreColumn(
   if (!Array.isArray(headers) || headers.length === 0) return '';
   const safeRows = Array.isArray(rows) ? rows.filter((row) => row && typeof row === 'object') : [];
 
-  const exactScoreHeader = headers.find((headerName) =>
-    /^puntuacion$|^score$|^puntaje$|^calificacion$|^nota$|^nota final$|^puntos$|^total points$|^puntaje total$/i.test(
+  const nonQuestionHeaders = headers.filter(
+    (headerName) =>
+      headerName !== timestampColumnName && !isQuestionOrLongTextColumn(headerName, safeRows)
+  );
+
+  const exactScoreHeader = nonQuestionHeaders.find((headerName) =>
+    /^puntuacion$|^score$|^puntaje$|^calificacion$|^nota$|^nota final$|^puntos$|^total points$|^puntaje total$|^promedio$/i.test(
       normalizeImportText(headerName)
     )
   );
   if (exactScoreHeader) return exactScoreHeader;
 
-  const keywordScoreHeader = headers.find((headerName) =>
-    /puntuacion|score|puntaje|calificacion|nota final|nota/i.test(normalizeImportText(headerName))
+  const keywordScoreHeader = nonQuestionHeaders.find((headerName) =>
+    /\b(puntuacion|score|puntaje|calificacion|nota final|nota|promedio|evaluacion|parcial|tp)\b/i.test(
+      normalizeImportText(headerName)
+    )
   );
   if (keywordScoreHeader) return keywordScoreHeader;
 
-  for (const headerName of headers) {
-    if (headerName === timestampColumnName) continue;
+  for (const headerName of nonQuestionHeaders) {
     const sampleCellValues = safeRows
       .slice(0, SCORE_SAMPLE_ROWS_LIMIT)
       .map((rowRecord) => String(rowRecord?.[headerName] ?? '').trim())
@@ -228,7 +237,7 @@ function detectScoreColumn(
  * Evalúa qué columna candidata contiene la mayor cantidad de coincidencias reales contra el padrón de alumnos del curso.
  * Esto permite detectar la columna de identidad incluso cuando el docente tituló la pregunta como "Seleccioná tu nombre de la lista".
  *
- * @param candidateColumns Encabezados candidatos que no son ni fecha, ni email, ni puntuación.
+ * @param candidateColumns Encabezados candidatos que no son ni fecha, ni email, ni puntuación, ni preguntas de desarrollo.
  * @param rows Filas de respuestas del formulario.
  * @param students Lista oficial de estudiantes del curso.
  * @returns Nombre de la columna con mayor tasa de coincidencia contra el padrón o `''`.
@@ -251,12 +260,13 @@ function findBestRosterMatchingColumn(
   let highestMatchCount = 0;
 
   for (const columnName of candidateColumns) {
+    if (isQuestionOrLongTextColumn(columnName, rows)) continue;
     let matchedRowsCount = 0;
     for (const rowRecord of rows.slice(0, ROSTER_SAMPLE_ROWS_LIMIT)) {
       if (!rowRecord || typeof rowRecord !== 'object') continue;
       const cellText = String(rowRecord[columnName] ?? '').trim();
       if (!cellText || cellText.length < MIN_CANDIDATE_NAME_LENGTH) continue;
-      const { student, score } = findBestStudentMatchInRoster(students, cellText);
+      const { student, score } = findBestStudentMatchInRoster(students, cellText, cellText);
       if (student && score >= HIGH_CONFIDENCE_ROSTER_MATCH_THRESHOLD) {
         matchedRowsCount++;
       }
@@ -271,7 +281,8 @@ function findBestRosterMatchingColumn(
 
 /**
  * Detecta automáticamente las columnas de identidad (Nombre/Apellido, Nombre secundario, Email),
- * Marca temporal, Puntuación y el puntaje máximo de la evaluación en respuestas de Google Forms.
+ * Marca temporal, Puntuación y el puntaje máximo de la evaluación en respuestas de Google Forms o Sheets,
+ * descartando todas las preguntas intermedias del cuestionario.
  *
  * @param headers Lista de nombres de columnas provenientes de Google Forms o de su hoja de respuestas.
  * @param rows Filas de respuestas del cuestionario.
@@ -303,9 +314,17 @@ export function autoDetectGoogleFormsColumns(
   }
 
   const timestampCol =
-    safeHeaders.find((headerName) =>
-      /marca temporal|timestamp|fecha|enviado/i.test(normalizeImportText(headerName))
-    ) || '';
+    safeHeaders.find(
+      (headerName) =>
+        !isQuestionOrLongTextColumn(headerName, safeRows) &&
+        /^(marca temporal|timestamp|fecha|enviado)$/i.test(normalizeImportText(headerName))
+    ) ||
+    safeHeaders.find(
+      (headerName) =>
+        !isQuestionOrLongTextColumn(headerName, safeRows) &&
+        /\b(marca temporal|timestamp)\b/i.test(normalizeImportText(headerName))
+    ) ||
+    '';
 
   let scoreCol = detectScoreColumn(safeHeaders, safeRows, timestampCol);
 
@@ -314,12 +333,17 @@ export function autoDetectGoogleFormsColumns(
       (headerName) =>
         headerName !== scoreCol &&
         headerName !== timestampCol &&
-        /correo|email|mail|direccion de correo/i.test(normalizeImportText(headerName))
+        !isQuestionOrLongTextColumn(headerName, safeRows) &&
+        /\b(correo|email|mail)\b|direccion de correo/i.test(normalizeImportText(headerName))
     ) || '';
 
   const candidateColumns = safeHeaders.filter(
     (headerName) =>
-      headerName !== scoreCol && headerName !== timestampCol && headerName !== emailCol
+      headerName !== scoreCol &&
+      headerName !== timestampCol &&
+      headerName !== emailCol &&
+      !/^n$|^nro$|^numero$|^id$|^legajo$|^orden$|^dni$/i.test(normalizeImportText(headerName)) &&
+      !isQuestionOrLongTextColumn(headerName, safeRows)
   );
 
   const exactLastNameColumn = candidateColumns.find((headerName) =>
@@ -340,13 +364,12 @@ export function autoDetectGoogleFormsColumns(
     nameCol =
       findBestRosterMatchingColumn(candidateColumns, safeRows, safeStudents) ||
       candidateColumns.find((headerName) =>
-        /apellido y nombre|nombre y apellido|nombre completo|alumno|estudiante|selecciona tu nombre|tu nombre|nombre|apellido/i.test(
+        /apellido y nombre|nombre y apellido|nombre completo|\b(alumno|alumnos|estudiante|estudiantes|nombre|nombres|apellido|apellidos)\b|selecciona tu nombre|tu nombre/i.test(
           normalizeImportText(headerName)
         )
       ) ||
-      candidateColumns[0] ||
       emailCol ||
-      safeHeaders[0] ||
+      candidateColumns[0] ||
       '';
   }
 
@@ -367,7 +390,7 @@ export function autoDetectGoogleFormsColumns(
       );
       return numericCellCount > 0 && numericCellCount >= requiredNumericCount;
     });
-    scoreCol = numericColumn || remainingColumns[0] || '';
+    scoreCol = numericColumn || '';
   }
 
   let detectedMaxScore = STANDARD_GRADE_SCALE_MAX;
@@ -395,10 +418,10 @@ export function autoDetectGoogleFormsColumns(
 }
 
 /**
- * Filtra una tabla de Google Forms conservando únicamente las columnas de identidad del alumno y la de puntuación total.
- * Se descartan todas las preguntas individuales del examen para evitar que el importador cree decenas de subcategorías por cada consigna.
+ * Filtra una tabla de Google Forms o Google Sheets conservando únicamente las columnas de identidad del alumno y la de puntuación/nota final.
+ * Se descartan todas las preguntas individuales del examen y columnas intermedias para que el docente solo vea Alumno y Nota.
  *
- * @param rows Filas originales completas provenientes del formulario.
+ * @param rows Filas originales completas provenientes del formulario o planilla.
  * @param detectedColumns Columnas de identidad y puntaje identificadas previamente.
  * @returns Nuevo conjunto de encabezados (`filteredHeaders`) y filas proyectadas (`filteredRows`).
  */
@@ -407,7 +430,7 @@ export function filterFormsToIdentityAndScoreOnly(
   detectedColumns: Pick<
     DetectedGoogleFormsColumns,
     'nameCol' | 'secondaryNameCol' | 'emailCol' | 'scoreCol'
-  >
+  > & { detectedMaxScore?: number }
 ): {
   filteredHeaders: string[];
   filteredRows: Array<Record<string, any>>;
@@ -416,9 +439,14 @@ export function filterFormsToIdentityAndScoreOnly(
     return { filteredHeaders: [], filteredRows: [] };
   }
 
+  const safeRows = rows.filter((rawRow) => rawRow && typeof rawRow === 'object');
   const filteredHeaders: string[] = [];
   const appendUniqueColumn = (columnName?: string) => {
-    if (columnName && !filteredHeaders.includes(columnName)) {
+    if (
+      columnName &&
+      !filteredHeaders.includes(columnName) &&
+      !isQuestionOrLongTextColumn(columnName, safeRows)
+    ) {
       filteredHeaders.push(columnName);
     }
   };
@@ -426,19 +454,99 @@ export function filterFormsToIdentityAndScoreOnly(
   appendUniqueColumn(detectedColumns.nameCol);
   appendUniqueColumn(detectedColumns.secondaryNameCol);
   appendUniqueColumn(detectedColumns.emailCol);
-  appendUniqueColumn(detectedColumns.scoreCol);
+  if (detectedColumns.scoreCol && !filteredHeaders.includes(detectedColumns.scoreCol)) {
+    filteredHeaders.push(detectedColumns.scoreCol);
+  }
 
-  const filteredRows = rows
-    .filter((rawRow) => rawRow && typeof rawRow === 'object')
-    .map((rawRow) => {
-      const cleanRowObject: Record<string, any> = {};
-      filteredHeaders.forEach((headerName) => {
-        cleanRowObject[headerName] = rawRow[headerName] !== undefined ? rawRow[headerName] : '';
-      });
-      return cleanRowObject;
+  const maxScoreForConversion =
+    detectedColumns.detectedMaxScore && detectedColumns.detectedMaxScore > 0
+      ? detectedColumns.detectedMaxScore
+      : STANDARD_GRADE_SCALE_MAX;
+
+  const filteredRows = safeRows.map((rawRow) => {
+    const cleanRowObject: Record<string, any> = {};
+    filteredHeaders.forEach((headerName) => {
+      const rawCellVal = rawRow[headerName] !== undefined ? rawRow[headerName] : '';
+      if (headerName === detectedColumns.scoreCol) {
+        const parsedScore = parseGoogleFormsScoreCell(rawCellVal);
+        if (parsedScore.earned !== null) {
+          const converted = formatConvertedFormsGrade(
+            parsedScore.earned,
+            parsedScore.max,
+            maxScoreForConversion,
+            'scale_10',
+            'two_decimals'
+          );
+          cleanRowObject[headerName] = converted || rawCellVal;
+          return;
+        }
+      }
+      cleanRowObject[headerName] = rawCellVal;
     });
+    return cleanRowObject;
+  });
 
   return { filteredHeaders, filteredRows };
+}
+
+/**
+ * Reduce cualquier hoja de cálculo (Google Sheets, CSV o Excel) al importar en Calificaciones
+ * para conservar exclusivamente la identidad del alumno y la columna de Nota, eliminando
+ * preguntas intermedias, marcas temporales, legajos, asistencia o comentarios.
+ */
+export function filterSheetToStudentAndGradeOnly(params: {
+  headers: string[];
+  rows: Array<Record<string, any>>;
+  students: Student[];
+}): {
+  filteredHeaders: string[];
+  filteredRows: Array<Record<string, any>>;
+  nameCol: string;
+  secondaryNameCol: string;
+  emailCol: string;
+  scoreCol: string;
+} {
+  const { headers, rows, students } = params;
+  const detected = autoDetectGoogleFormsColumns(headers, rows, students);
+
+  let effectiveScoreCol = detected.scoreCol;
+  if (!effectiveScoreCol) {
+    const safeRows = Array.isArray(rows) ? rows.filter((r) => r && typeof r === 'object') : [];
+    const nonIdentityCandidates = (headers || []).filter(
+      (h) =>
+        h !== detected.nameCol &&
+        h !== detected.secondaryNameCol &&
+        h !== detected.emailCol &&
+        h !== detected.timestampCol &&
+        !/^n$|^nro$|^numero$|^id$|^legajo$|^orden$|^dni$|ausencia|falta|inasistencia|tardanza|disposicion|conducta/i.test(
+          normalizeImportText(h)
+        ) &&
+        !isQuestionOrLongTextColumn(h, safeRows)
+    );
+    effectiveScoreCol =
+      nonIdentityCandidates.find((col) =>
+        safeRows
+          .slice(0, 15)
+          .some((r) => parseFlexibleCellNumber(r?.[col], 'grade').isValid)
+      ) ||
+      nonIdentityCandidates[0] ||
+      '';
+  }
+
+  const finalDetected = {
+    ...detected,
+    scoreCol: effectiveScoreCol,
+  };
+
+  const { filteredHeaders, filteredRows } = filterFormsToIdentityAndScoreOnly(rows, finalDetected);
+  return {
+    filteredHeaders: filteredHeaders.length > 0 ? filteredHeaders : headers,
+    filteredRows: filteredRows.length > 0 ? filteredRows : rows,
+    nameCol: finalDetected.nameCol,
+    secondaryNameCol: finalDetected.secondaryNameCol,
+    emailCol: finalDetected.emailCol,
+    scoreCol: finalDetected.scoreCol,
+  };
 }
 
 /**

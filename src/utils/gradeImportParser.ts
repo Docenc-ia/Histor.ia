@@ -70,9 +70,86 @@ export function normalizeImportText(text: string): string {
     .trim();
 }
 
+const MAX_STUDENT_NAME_CHAR_LENGTH = 65;
+const MAX_STUDENT_NAME_WORD_COUNT = 6;
+const EMAIL_LOCAL_PART_MATCH_SCORE = 0.95;
+const MAX_SHORT_HEADER_LENGTH = 42;
+const QUESTION_SAMPLE_ROWS_LIMIT = 15;
+const MAX_AVERAGE_NAME_CELL_LENGTH = 45;
+const MAX_SINGLE_NAME_CELL_LENGTH = 70;
+
+/**
+ * Determina si una columna corresponde a una consigna de evaluación o respuesta de desarrollo extenso
+ * (por ejemplo, preguntas abiertas de Google Forms como "Explicar por qué..."), evitando que se confunda
+ * con una columna de nombre de alumno o de calificación numérica.
+ *
+ * @param headerName Título de la columna.
+ * @param sampleRows Filas opcionales de la tabla para inspeccionar la longitud del texto en las celdas.
+ * @returns `true` si el encabezado o el contenido de la columna corresponde a una pregunta o texto largo.
+ */
+export function isQuestionOrLongTextColumn(
+  headerName: string,
+  sampleRows?: Array<Record<string, any>>
+): boolean {
+  const trimmedHeader = String(headerName || '').trim();
+  if (!trimmedHeader) return false;
+
+  if (
+    trimmedHeader.length > MAX_SHORT_HEADER_LENGTH ||
+    trimmedHeader.includes('?') ||
+    trimmedHeader.includes('¿')
+  ) {
+    return true;
+  }
+
+  const normalizedHeader = normalizeImportText(trimmedHeader);
+  if (
+    /\b(explicar|explica|describir|describe|desarrollar|desarrolla|analizar|analiza|justificar|justifica|comparar|indicar|responder|mencionar|definir|caracterizar|relacionar|consigna|pregunta|fundamentar|elaborar|redactar|sintetizar)\b/i.test(
+      normalizedHeader
+    )
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(sampleRows) && sampleRows.length > 0) {
+    const nonEmptyCells = sampleRows
+      .slice(0, QUESTION_SAMPLE_ROWS_LIMIT)
+      .map((row) => String(row?.[headerName] ?? '').trim())
+      .filter((val) => val.length > 0 && !val.includes('@'));
+
+    if (nonEmptyCells.length > 0) {
+      const totalChars = nonEmptyCells.reduce((sum, val) => sum + val.length, 0);
+      const avgLength = totalChars / nonEmptyCells.length;
+      const longCellsCount = nonEmptyCells.filter(
+        (val) => val.length > MAX_SINGLE_NAME_CELL_LENGTH
+      ).length;
+      if (avgLength > MAX_AVERAGE_NAME_CELL_LENGTH || longCellsCount >= 2) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Extrae un nombre candidato a partir de la parte local de un correo electrónico institucional
+ * (por ejemplo, `"simon.kaplan@fds-escuela.edu.ar"` -> `"simon kaplan"`).
+ *
+ * @param emailText Dirección de correo electrónico.
+ * @returns Tokens alfanuméricos de nombre/apellido extraídos antes de `@`, o `''` si no es un correo.
+ */
+function extractNameCandidateFromEmail(emailText: string): string {
+  const trimmed = String(emailText || '').trim().toLowerCase();
+  if (!trimmed.includes('@')) return '';
+  const localPart = trimmed.split('@')[0] || '';
+  return normalizeImportText(localPart.replace(/\d+$/g, '').replace(/[._-]+/g, ' '));
+}
+
 /**
  * Busca la mejor coincidencia para un alumno dentro del padrón del curso utilizando
- * coincidencia exacta de correo electrónico, inversión de orden Apellido/Nombre y similitud por tokens.
+ * coincidencia exacta de correo electrónico, inferencia de nombre desde el usuario del correo (`nombre.apellido@...`),
+ * inversión de orden Apellido/Nombre y similitud por tokens, descartando respuestas de texto largo.
  *
  * @param students Lista oficial de alumnos del curso.
  * @param rawName Nombre completo o parcial leído desde la fila importada.
@@ -88,67 +165,108 @@ export function findBestStudentMatchInRoster(
     return { student: null, score: NO_MATCH_SCORE };
   }
 
-  const normalizedEmail = rawEmail ? String(rawEmail).trim().toLowerCase() : '';
-  if (normalizedEmail) {
+  const trimmedRawName = String(rawName || '').trim();
+  const effectiveEmail =
+    rawEmail && String(rawEmail).trim()
+      ? String(rawEmail).trim().toLowerCase()
+      : trimmedRawName.includes('@')
+      ? trimmedRawName.toLowerCase()
+      : '';
+
+  if (effectiveEmail) {
     const exactEmailStudent = students.find(
       (student) =>
-        student && student.email && student.email.trim().toLowerCase() === normalizedEmail
+        student && student.email && student.email.trim().toLowerCase() === effectiveEmail
     );
     if (exactEmailStudent) {
       return { student: exactEmailStudent, score: EXACT_EMAIL_MATCH_SCORE };
     }
   }
 
-  const normalizedRawName = normalizeImportText(rawName);
-  if (!normalizedRawName) return { student: null, score: NO_MATCH_SCORE };
+  const isRawNameAnEmail = trimmedRawName.includes('@');
+  const isRawNameTooLongForPerson =
+    !isRawNameAnEmail && trimmedRawName.length > MAX_STUDENT_NAME_CHAR_LENGTH;
+
+  const candidateSearchStrings: Array<{ text: string; isFromEmailPrefix: boolean }> = [];
+  if (!isRawNameTooLongForPerson && !isRawNameAnEmail) {
+    const normalizedName = normalizeImportText(trimmedRawName);
+    const wordCount = normalizedName ? normalizedName.split(/\s+/).filter(Boolean).length : 0;
+    if (normalizedName && wordCount <= MAX_STUDENT_NAME_WORD_COUNT) {
+      candidateSearchStrings.push({ text: normalizedName, isFromEmailPrefix: false });
+    }
+  }
+
+  if (effectiveEmail) {
+    const emailNameCandidate = extractNameCandidateFromEmail(effectiveEmail);
+    if (emailNameCandidate) {
+      candidateSearchStrings.push({ text: emailNameCandidate, isFromEmailPrefix: true });
+    }
+  }
+
+  if (candidateSearchStrings.length === 0) {
+    return { student: null, score: NO_MATCH_SCORE };
+  }
 
   let bestMatchedStudent: Student | null = null;
   let highestSimilarityScore = NO_MATCH_SCORE;
 
-  for (const student of students) {
-    if (!student) continue;
-    const normalizedLastName = normalizeImportText(student.lastName);
-    const normalizedFirstName = normalizeImportText(student.firstName);
-    const fullLastFirst = `${normalizedLastName} ${normalizedFirstName}`;
-    const fullFirstLast = `${normalizedFirstName} ${normalizedLastName}`;
-    const normalizedStudentEmail = student.email ? normalizeImportText(student.email) : '';
+  for (const candidate of candidateSearchStrings) {
+    const normalizedCandidate = candidate.text;
+    for (const student of students) {
+      if (!student) continue;
+      const normalizedLastName = normalizeImportText(student.lastName);
+      const normalizedFirstName = normalizeImportText(student.firstName);
+      const fullLastFirst = `${normalizedLastName} ${normalizedFirstName}`;
+      const fullFirstLast = `${normalizedFirstName} ${normalizedLastName}`;
+      const normalizedStudentEmail = student.email ? normalizeImportText(student.email) : '';
 
-    if (
-      normalizedStudentEmail &&
-      (normalizedRawName === normalizedStudentEmail ||
-        normalizedRawName.includes(normalizedStudentEmail))
-    ) {
-      return { student, score: EXACT_EMAIL_MATCH_SCORE };
-    }
-
-    if (normalizedRawName === fullLastFirst || normalizedRawName === fullFirstLast) {
-      return { student, score: EXACT_FULL_NAME_MATCH_SCORE };
-    }
-
-    if (
-      normalizedLastName &&
-      normalizedFirstName &&
-      normalizedRawName.includes(normalizedLastName) &&
-      normalizedRawName.includes(normalizedFirstName)
-    ) {
-      return { student, score: BOTH_NAMES_CONTAINED_SCORE };
-    }
-
-    const rawNameTokens = normalizedRawName.split(/\s+/).filter(Boolean);
-    const studentNameTokens = `${normalizedLastName} ${normalizedFirstName}`
-      .split(/\s+/)
-      .filter(Boolean);
-    let matchedTokenCount = 0;
-    for (const token of rawNameTokens) {
-      if (studentNameTokens.includes(token)) {
-        matchedTokenCount++;
+      if (
+        normalizedStudentEmail &&
+        (normalizedCandidate === normalizedStudentEmail ||
+          normalizedCandidate.includes(normalizedStudentEmail))
+      ) {
+        return { student, score: EXACT_EMAIL_MATCH_SCORE };
       }
-    }
-    const tokenSimilarityScore =
-      matchedTokenCount / Math.max(rawNameTokens.length, studentNameTokens.length, 1);
-    if (tokenSimilarityScore > highestSimilarityScore) {
-      highestSimilarityScore = tokenSimilarityScore;
-      bestMatchedStudent = student;
+
+      if (normalizedCandidate === fullLastFirst || normalizedCandidate === fullFirstLast) {
+        return {
+          student,
+          score: candidate.isFromEmailPrefix
+            ? EMAIL_LOCAL_PART_MATCH_SCORE
+            : EXACT_FULL_NAME_MATCH_SCORE,
+        };
+      }
+
+      if (
+        normalizedLastName &&
+        normalizedFirstName &&
+        normalizedCandidate.includes(normalizedLastName) &&
+        normalizedCandidate.includes(normalizedFirstName)
+      ) {
+        return {
+          student,
+          score: candidate.isFromEmailPrefix
+            ? EMAIL_LOCAL_PART_MATCH_SCORE
+            : BOTH_NAMES_CONTAINED_SCORE,
+        };
+      }
+
+      const rawNameTokens = normalizedCandidate.split(/\s+/).filter(Boolean);
+      const studentNameTokens = `${normalizedLastName} ${normalizedFirstName}`
+        .split(/\s+/)
+        .filter(Boolean);
+      let matchedTokenCount = 0;
+      for (const token of rawNameTokens) {
+        if (studentNameTokens.includes(token)) {
+          matchedTokenCount++;
+        }
+      }
+      const tokenSimilarityScore =
+        matchedTokenCount / Math.max(rawNameTokens.length, studentNameTokens.length, 1);
+      if (tokenSimilarityScore > highestSimilarityScore) {
+        highestSimilarityScore = tokenSimilarityScore;
+        bestMatchedStudent = student;
+      }
     }
   }
 
@@ -161,12 +279,17 @@ export function findBestStudentMatchInRoster(
 
 /**
  * Identifica automáticamente las columnas de identidad del estudiante (Apellido/Nombre principal,
- * Nombre separado secundario y Correo electrónico) a partir de los encabezados de la tabla.
+ * Nombre separado secundario y Correo electrónico) a partir de los encabezados de la tabla,
+ * excluyendo preguntas de examen y columnas de respuestas extensas.
  *
  * @param columnHeaders Lista de encabezados de la hoja o documento importado.
+ * @param sampleRows Filas opcionales para descartar columnas con texto largo de desarrollo.
  * @returns Nombres de las columnas asignadas a identidad (`nameCol`, `secondaryNameCol`, `emailCol`).
  */
-export function autoDetectIdentityColumns(columnHeaders: string[]): {
+export function autoDetectIdentityColumns(
+  columnHeaders: string[],
+  sampleRows?: Array<Record<string, any>>
+): {
   nameCol: string;
   secondaryNameCol: string;
   emailCol: string;
@@ -178,13 +301,27 @@ export function autoDetectIdentityColumns(columnHeaders: string[]): {
     return { nameCol: '', secondaryNameCol: '', emailCol: '' };
   }
 
+  const emailCol =
+    safeHeaders.find((columnName) =>
+      /\b(email|correo|mail)\b|direccion de correo/i.test(normalizeImportText(columnName))
+    ) || '';
+
+  const nonQuestionHeaders = safeHeaders.filter(
+    (columnName) =>
+      columnName !== emailCol &&
+      !/^(marca temporal|timestamp|puntuacion|score|puntaje|nota|calificacion|nota final)$/i.test(
+        normalizeImportText(columnName)
+      ) &&
+      !isQuestionOrLongTextColumn(columnName, sampleRows)
+  );
+
   let nameCol = '';
   let secondaryNameCol = '';
 
-  const exactLastNameColumn = safeHeaders.find((columnName) =>
+  const exactLastNameColumn = nonQuestionHeaders.find((columnName) =>
     /^apellido(s)?$/i.test(normalizeImportText(columnName))
   );
-  const exactFirstNameColumn = safeHeaders.find(
+  const exactFirstNameColumn = nonQuestionHeaders.find(
     (columnName) =>
       columnName !== exactLastNameColumn && /^nombre(s)?$/i.test(normalizeImportText(columnName))
   );
@@ -194,20 +331,16 @@ export function autoDetectIdentityColumns(columnHeaders: string[]): {
     secondaryNameCol = exactFirstNameColumn;
   } else {
     nameCol =
-      safeHeaders.find((columnName) =>
-        /alumno|nombre|estudiante|apellido|nom|ape|persona/i.test(columnName)
+      nonQuestionHeaders.find((columnName) =>
+        /\b(alumno|alumnos|nombre|nombres|estudiante|estudiantes|apellido|apellidos|nom|ape|persona)\b/i.test(
+          normalizeImportText(columnName)
+        )
       ) ||
+      emailCol ||
+      nonQuestionHeaders[0] ||
       safeHeaders[0] ||
       '';
   }
-
-  const emailCol =
-    safeHeaders.find(
-      (columnName) =>
-        columnName !== nameCol &&
-        columnName !== secondaryNameCol &&
-        /email|correo|mail/i.test(columnName)
-    ) || '';
 
   return { nameCol, secondaryNameCol, emailCol };
 }
@@ -354,7 +487,8 @@ export function autoDetectColumnsConfiguration(
   categories: GradeCategory[],
   secondaryNameCol = '',
   importContext: 'grades' | 'attendance' = 'grades',
-  attendanceDefaultKind: 'disposition' | 'absences' | 'both' = 'disposition'
+  attendanceDefaultKind: 'disposition' | 'absences' | 'both' = 'disposition',
+  sampleRows?: Array<Record<string, any>>
 ): DetectedColumnConfig[] {
   const columnConfigurations: DetectedColumnConfig[] = [];
   const defaultCategory = categories[0] || {
@@ -363,6 +497,8 @@ export function autoDetectColumnsConfiguration(
     weight: DEFAULT_CATEGORY_WEIGHT,
     subcategories: [],
   };
+
+  const includeAttendanceColumns = importContext === 'attendance';
 
   const createNonGradeConfig = (
     columnKey: string,
@@ -392,31 +528,51 @@ export function autoDetectColumnsConfiguration(
 
     const trimmedHeader = columnHeader.trim();
     const normalizedHeader = normalizeImportText(trimmedHeader);
-    // Los encabezados de más de 50 caracteres o con signos de interrogación suelen ser consignas de Google Forms y no columnas de notas.
+
+    const hasValidGradeSample =
+      !Array.isArray(sampleRows) || sampleRows.length === 0
+        ? true
+        : sampleRows
+            .slice(0, 20)
+            .some(
+              (rowRecord) =>
+                rowRecord &&
+                typeof rowRecord === 'object' &&
+                parseFlexibleCellNumber(rowRecord[columnHeader], 'grade').isValid
+            );
+
     const isSummaryOrMetadataColumn =
-      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|marca temporal|timestamp|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora|pregunta|consigna|observacion|comentario|devolucion|feedback|descripcion|respuesta/i.test(
+      /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|^dni$|^documento$|^curso$|^division$|marca temporal|timestamp|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora|pregunta|consigna|observacion|comentario|devolucion|feedback|descripcion|respuesta/i.test(
         normalizedHeader
       ) ||
-      trimmedHeader.length > MAX_HEADER_TEXT_LENGTH_BEFORE_QUESTION ||
-      trimmedHeader.endsWith('?') ||
-      trimmedHeader.startsWith('¿');
+      isQuestionOrLongTextColumn(trimmedHeader, sampleRows) ||
+      (importContext === 'grades' && !hasValidGradeSample);
 
     if (
       /ausencia|falta|inasistencia|ausentes/i.test(normalizedHeader) &&
       !/justificada/i.test(normalizedHeader)
     ) {
-      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'absences'));
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, 'absences', includeAttendanceColumns)
+      );
       return;
     }
 
     if (/tardanza|llegada tarde|tardes|\btarde\b|demora/i.test(normalizedHeader)) {
-      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'lates'));
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, 'lates', includeAttendanceColumns)
+      );
       return;
     }
 
     if (/descuento|puntos menos|resta|sancion|negativo/i.test(normalizedHeader)) {
       columnConfigurations.push(
-        createNonGradeConfig(columnHeader, trimmedHeader, 'disposition_deduction')
+        createNonGradeConfig(
+          columnHeader,
+          trimmedHeader,
+          'disposition_deduction',
+          includeAttendanceColumns
+        )
       );
       return;
     }
@@ -428,7 +584,9 @@ export function autoDetectColumnsConfiguration(
       (importContext === 'attendance' ||
         /disposicion|conducta|actitud|comportamiento|nota disp/i.test(normalizedHeader))
     ) {
-      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'disposition'));
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, 'disposition', includeAttendanceColumns)
+      );
       return;
     }
 
@@ -514,7 +672,7 @@ export function autoDetectColumnsConfiguration(
           /trabajo|practico|tp|actividad/i.test(normalizeImportText(category.name))
         );
       } else if (
-        /examen|parcial|evaluacion|prueba|recuperatorio|integrador|diagnostica/i.test(
+        /examen|parcial|evaluacion|prueba|recuperatorio|integrador|diagnostica|puntuacion|puntaje|score|nota/i.test(
           normalizedHeader
         )
       ) {
@@ -554,7 +712,7 @@ export function autoDetectColumnsConfiguration(
 
       columnConfigurations.push({
         colKey: columnHeader,
-        isIncluded: true,
+        isIncluded: importContext === 'grades',
         kind: 'grade',
         targetCategoryMode: 'existing',
         targetCategoryId: matchedCategory.id,
@@ -566,7 +724,7 @@ export function autoDetectColumnsConfiguration(
     } else if (parsedCategoryName) {
       columnConfigurations.push({
         colKey: columnHeader,
-        isIncluded: true,
+        isIncluded: importContext === 'grades',
         kind: 'grade',
         targetCategoryMode: 'new',
         targetCategoryId: defaultCategory.id,
@@ -578,7 +736,7 @@ export function autoDetectColumnsConfiguration(
     } else {
       columnConfigurations.push({
         colKey: columnHeader,
-        isIncluded: true,
+        isIncluded: importContext === 'grades',
         kind: 'grade',
         targetCategoryMode: categories.length > 0 ? 'existing' : 'new',
         targetCategoryId: defaultCategory.id,
@@ -589,6 +747,36 @@ export function autoDetectColumnsConfiguration(
       });
     }
   });
+
+  // En el contexto de Calificaciones, si hay múltiples columnas numéricas intermedias,
+  // se selecciona únicamente la columna principal de Nota/Puntuación por defecto para mostrar solo Alumno + Nota.
+  if (importContext === 'grades') {
+    const includedGradeConfigs = columnConfigurations.filter(
+      (config) => config.isIncluded && config.kind === 'grade'
+    );
+    if (includedGradeConfigs.length > 1) {
+      const explicitPrimaryGrade =
+        includedGradeConfigs.find((config) =>
+          /^(nota|nota final|calificacion|calificacion final|puntuacion|puntaje|puntaje total|score|promedio)$/i.test(
+            normalizeImportText(config.colKey)
+          )
+        ) ||
+        includedGradeConfigs.find((config) =>
+          /\b(nota|calificacion|puntuacion|puntaje|score|evaluacion|parcial|examen|tp)\b/i.test(
+            normalizeImportText(config.colKey)
+          )
+        ) ||
+        includedGradeConfigs[0];
+
+      return columnConfigurations.map((config) => {
+        if (config.kind !== 'grade') return { ...config, isIncluded: false };
+        return {
+          ...config,
+          isIncluded: config.colKey === explicitPrimaryGrade.colKey,
+        };
+      });
+    }
+  }
 
   return columnConfigurations;
 }

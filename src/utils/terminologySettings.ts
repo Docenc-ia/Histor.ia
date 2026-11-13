@@ -39,7 +39,7 @@ export const PERIOD_NAME_PRESETS: string[] = [
   'Período',
 ];
 
-export const INITIAL_DISPOSITION_SCORE_PRESETS: number[] = [10, 9, 8, 7, 6, 5];
+export const INITIAL_DISPOSITION_SCORE_PRESETS: number[] = [10, 0];
 
 const STORAGE_BASE_KEY = 'docencia_terminology_settings';
 const TERMINOLOGY_UPDATED_EVENT = 'docencia_terminology_updated';
@@ -51,10 +51,11 @@ function sanitizeLabel(value: unknown, fallback: string): string {
 }
 
 function sanitizeInitialScore(value: unknown, fallback = 10): number {
+  if (value === 0 || value === '0') return 0;
   const num = Number(value);
   if (!Number.isFinite(num)) return fallback;
   const rounded = Math.round(num);
-  if (rounded < 1 || rounded > 10) return fallback;
+  if (rounded < 0 || rounded > 10) return fallback;
   return rounded;
 }
 

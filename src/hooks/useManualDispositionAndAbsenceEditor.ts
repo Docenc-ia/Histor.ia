@@ -159,7 +159,8 @@ export function useManualDispositionAndAbsenceEditor({
 
     const baseMap = term === '2c' ? dispositionMap2c : dispositionMap;
     const current = baseMap[student.id] || getStudentMetrics(student.id, term);
-    const oldScore = current.totalDisposition ?? 10;
+    const baseInitial = getTerminologySettings().initialDispositionScore ?? 10;
+    const oldScore = current.totalDisposition ?? baseInitial;
 
     const updatedMap: Record<string, StudentDispositionData> = {
       ...baseMap,
@@ -167,7 +168,8 @@ export function useManualDispositionAndAbsenceEditor({
         ...current,
         courseId: activeCourse.id,
         totalDisposition: clampedScore,
-      },
+        manualDispositionOverride: true,
+      } as StudentDispositionData,
     };
 
     const now = new Date();

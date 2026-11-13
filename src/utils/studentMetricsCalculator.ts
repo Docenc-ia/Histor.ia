@@ -222,6 +222,7 @@ export function calculateStudentMetrics(params: {
 
   const baseInitialScore = getTerminologySettings().initialDispositionScore ?? 10;
   let calculatedDisp = baseInitialScore;
+  let hasDispositionHistory = false;
   if (studentHistory.length > 0) {
     const sortedStudentEvents =
       studentHistory.length > 1
@@ -237,9 +238,17 @@ export function calculateStudentMetrics(params: {
         calculatedDisp = baseInitialScore;
         continue;
       }
-      if (ev.pointsChange !== undefined) {
+      const manualMatch = ev.action?.match(/ajustada a (\d+(?:\.\d+)?)\/10/i);
+      if (manualMatch) {
+        hasDispositionHistory = true;
+        calculatedDisp = Math.min(10, Math.max(0, parseFloat(manualMatch[1])));
+        continue;
+      }
+      if (ev.pointsChange !== undefined && ev.pointsChange !== 0) {
+        hasDispositionHistory = true;
         calculatedDisp = Math.min(10, Math.max(0, calculatedDisp + ev.pointsChange));
       } else if (ev.category === 'Disposición') {
+        hasDispositionHistory = true;
         calculatedDisp = Math.max(0, calculatedDisp - 1);
       }
     }
@@ -255,10 +264,17 @@ export function calculateStudentMetrics(params: {
       ? Math.max(0, Number(fromMap.totalLates) || 0)
       : historyLates;
 
-  const totalDisposition =
-    fromMap?.totalDisposition !== undefined && fromMap?.totalDisposition !== null
-      ? Number(fromMap.totalDisposition)
-      : calculatedDisp;
+  const hasExplicitMapScore =
+    fromMap?.totalDisposition !== undefined &&
+    fromMap?.totalDisposition !== null &&
+    ((fromMap as any)?.manualDispositionOverride === true ||
+      (!hasDispositionHistory &&
+        Number(fromMap.totalDisposition) !== 10 &&
+        Number(fromMap.totalDisposition) !== 0));
+
+  const totalDisposition = hasExplicitMapScore
+    ? Number(fromMap!.totalDisposition)
+    : calculatedDisp;
 
   return {
     totalAbsences,

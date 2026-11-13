@@ -269,7 +269,8 @@ export function useGoogleSheetsAndDriveSync({
               totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
               totalDisposition:
                 upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
-            };
+              ...(upd.disposition !== undefined ? { manualDispositionOverride: true } : {}),
+            } as StudentDispositionData;
           });
 
           setDispositionMap2c(updatedMap2c);
@@ -302,7 +303,8 @@ export function useGoogleSheetsAndDriveSync({
               totalLates: upd.lates !== undefined ? upd.lates : current.totalLates || 0,
               totalDisposition:
                 upd.disposition !== undefined ? upd.disposition : current.totalDisposition,
-            };
+              ...(upd.disposition !== undefined ? { manualDispositionOverride: true } : {}),
+            } as StudentDispositionData;
           });
 
           setDispositionMap(updatedMap1c);

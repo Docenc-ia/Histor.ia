@@ -18,7 +18,13 @@ import {
 } from 'lucide-react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../../utils/attendanceCalculations';
-import { useTerminologySettings } from '../../../utils/terminologySettings';
+import {
+  useTerminologySettings,
+  getTerminologySettings,
+  DISPOSITION_LABEL_PRESETS,
+  ATTENDANCE_LABEL_PRESETS,
+  PERIOD_NAME_PRESETS,
+} from '../../../utils/terminologySettings';
 
 export interface ConductRecordModalState {
   isOpen: boolean;
@@ -55,7 +61,8 @@ export const ConductRecordModal: React.FC<ConductRecordModalProps> = React.memo(
   const currentStudent = conductRecordModal.student;
   const targetTerm: '1c' | '2c' = attendanceTerm === '2c' ? '2c' : '1c';
   const metrics = getStudentMetrics(currentStudent.id, targetTerm);
-  const curDisp = metrics.totalDisposition !== undefined ? metrics.totalDisposition : 10;
+  const defaultInitialDisp = getTerminologySettings().initialDispositionScore ?? 10;
+  const curDisp = metrics.totalDisposition !== undefined ? metrics.totalDisposition : defaultInitialDisp;
   const projectedDisp = isAdd
     ? Math.min(10, curDisp + currentPoints)
     : Math.max(0, curDisp - currentPoints);
@@ -397,7 +404,12 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
   isDarkMode,
 }) => {
   const {
+    attendanceLabel,
     dispositionLabel,
+    periodNameSingular,
+    initialDispositionScore,
+    updateTerminology,
+    resetTerminology,
   } = useTerminologySettings();
 
   if (!isOpen) return null;
@@ -405,14 +417,21 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div
-        className={`w-full max-w-lg rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
+        className={`w-full max-w-xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[90vh] ${
           isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
         }`}
       >
         <div className={`p-4 border-b flex items-center justify-between ${isDarkMode ? 'border-slate-800 bg-slate-850' : 'border-neutral-200 bg-neutral-50'}`}>
           <div className="flex items-center gap-2">
             <Settings className="w-4 h-4 text-blue-500" />
-            <h3 className="text-sm font-bold">Configurar opciones de {dispositionLabel}</h3>
+            <div>
+              <h3 className="text-sm font-bold">
+                Configurar Nombres de la Tabla, Escala y Opciones de {dispositionLabel}
+              </h3>
+              <p className="text-[11px] text-neutral-500 dark:text-slate-400">
+                Personalizá el nombre de {attendanceLabel}, {dispositionLabel}, la modalidad de puntaje y los motivos rápidos
+              </p>
+            </div>
           </div>
           <button
             type="button"
@@ -424,9 +443,220 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">
-          <p className="text-xs text-neutral-600 dark:text-slate-300 leading-relaxed">
-            Definí tus propios motivos habituales de <strong>{dispositionLabel.toLowerCase()}</strong> para asignarlos con un solo clic a cualquier alumno.
-          </p>
+          {/* 1. Configuración de Nombres de Columnas (Asistencia y Concepto / Disposición) */}
+          <div
+            className={`p-3.5 rounded-xl border space-y-3 ${
+              isDarkMode ? 'bg-slate-850/90 border-slate-800' : 'bg-indigo-50/40 border-indigo-200/80'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 flex items-center gap-1.5">
+                <Pencil className="w-3.5 h-3.5" />
+                Nombres de las columnas en la tabla
+              </span>
+              {(attendanceLabel !== 'Asistencia' ||
+                dispositionLabel !== 'Disposición' ||
+                periodNameSingular !== 'Cuatrimestre' ||
+                initialDispositionScore !== 10) && (
+                <button
+                  type="button"
+                  onClick={resetTerminology}
+                  className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                >
+                  Restaurar originales
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Nombre de Disposición / Concepto */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-700 dark:text-slate-300 block mb-1">
+                  Nombre del Concepto / Disposición:
+                </label>
+                <input
+                  type="text"
+                  value={dispositionLabel}
+                  onChange={(e) => updateTerminology({ dispositionLabel: e.target.value })}
+                  placeholder="Ej: Disposición, Concepto..."
+                  className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500/40 ${
+                    isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+                  }`}
+                />
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {DISPOSITION_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => updateTerminology({ dispositionLabel: preset })}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer transition-colors ${
+                        dispositionLabel === preset
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Nombre de Asistencia */}
+              <div>
+                <label className="text-[11px] font-semibold text-neutral-700 dark:text-slate-300 block mb-1">
+                  Nombre de Asistencia:
+                </label>
+                <input
+                  type="text"
+                  value={attendanceLabel}
+                  onChange={(e) => updateTerminology({ attendanceLabel: e.target.value })}
+                  placeholder="Ej: Asistencia, Presentismo..."
+                  className={`w-full px-2.5 py-1.5 rounded-lg border text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500/40 ${
+                    isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-300 text-neutral-900'
+                  }`}
+                />
+                <div className="flex flex-wrap gap-1 mt-1.5">
+                  {ATTENDANCE_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => updateTerminology({ attendanceLabel: preset })}
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer transition-colors ${
+                        attendanceLabel === preset
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : isDarkMode
+                          ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                          : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* 2. Modalidad de Puntaje de Disposición / Concepto: Empezar desde 10 y bajar vs Empezar desde 0 y sumar */}
+            <div className="pt-2.5 border-t border-neutral-200/70 dark:border-slate-700/70 space-y-2">
+              <label className="text-[11px] font-bold text-neutral-700 dark:text-slate-200 block">
+                Modalidad de puntaje de {dispositionLabel}:
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateTerminology({ initialDispositionScore: 10 });
+                    setNewConductType('subtract');
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    initialDispositionScore !== 0
+                      ? isDarkMode
+                        ? 'bg-rose-950/40 border-rose-500 text-white ring-1 ring-rose-500/40'
+                        : 'bg-rose-50/90 border-rose-500 text-rose-950 ring-1 ring-rose-500/30 shadow-2xs'
+                      : isDarkMode
+                      ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                      : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
+                  }`}
+                >
+                  <div
+                    className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs ${
+                      initialDispositionScore !== 0
+                        ? 'bg-rose-600 text-white'
+                        : isDarkMode
+                        ? 'bg-slate-800 text-slate-400'
+                        : 'bg-neutral-100 text-neutral-600'
+                    }`}
+                  >
+                    10↓
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1">
+                      <span>Empezar desde 10 y bajar</span>
+                      {initialDispositionScore !== 0 && <Check className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />}
+                    </div>
+                    <p className="text-[10px] opacity-80 leading-snug mt-0.5">
+                      Todos arrancan con 10 puntos y van bajando al restar llamadas de atención.
+                    </p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateTerminology({ initialDispositionScore: 0 });
+                    setNewConductType('add');
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
+                    initialDispositionScore === 0
+                      ? isDarkMode
+                        ? 'bg-emerald-950/40 border-emerald-500 text-white ring-1 ring-emerald-500/40'
+                        : 'bg-emerald-50/90 border-emerald-500 text-emerald-950 ring-1 ring-emerald-500/30 shadow-2xs'
+                      : isDarkMode
+                      ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                      : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
+                  }`}
+                >
+                  <div
+                    className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs ${
+                      initialDispositionScore === 0
+                        ? 'bg-emerald-600 text-white'
+                        : isDarkMode
+                        ? 'bg-slate-800 text-slate-400'
+                        : 'bg-neutral-100 text-neutral-600'
+                    }`}
+                  >
+                    0↑
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold flex items-center gap-1">
+                      <span>Empezar desde 0 y sumar</span>
+                      {initialDispositionScore === 0 && <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />}
+                    </div>
+                    <p className="text-[10px] opacity-80 leading-snug mt-0.5">
+                      Todos arrancan con 0 puntos y van sumando puntos por participación o logros.
+                    </p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* 3. Nombre del Período Lectivo */}
+            <div className="pt-2.5 border-t border-neutral-200/70 dark:border-slate-700/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-neutral-700 dark:text-slate-300">
+                Período lectivo:
+              </span>
+              <div className="flex flex-wrap items-center gap-1">
+                {PERIOD_NAME_PRESETS.map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => updateTerminology({ periodNameSingular: preset })}
+                    className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border cursor-pointer transition-colors ${
+                      periodNameSingular === preset
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                        : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50'
+                    }`}
+                  >
+                    1° y 2° {preset}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* 4. Motivos habituales para Registrar Disposición */}
+          <div className="space-y-1">
+            <h4 className="text-xs font-bold text-neutral-800 dark:text-slate-200">
+              Botones rápidos en &ldquo;Registrar {dispositionLabel.toLowerCase()}&rdquo;
+            </h4>
+            <p className="text-[11px] text-neutral-600 dark:text-slate-400 leading-relaxed">
+              Definí tus propios motivos habituales de <strong>{dispositionLabel.toLowerCase()}</strong> para asignarlos con un solo clic en la fila de cada alumno.
+            </p>
+          </div>
 
           <form
             onSubmit={(e) => {

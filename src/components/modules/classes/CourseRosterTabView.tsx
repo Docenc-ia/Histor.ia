@@ -181,6 +181,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
     term2FullLabel,
     term1ShortLabel,
     term2ShortLabel,
+    initialDispositionScore,
   } = useTerminologySettings();
 
   return (
@@ -361,16 +362,32 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                   <tr>
                     <th className="py-3 px-4">Estudiante</th>
                     <th className="py-3 px-3 text-center bg-blue-500/5 text-blue-700 dark:text-blue-300">
-                      <div className="flex flex-col items-center">
-                        <span>{term1FullLabel}</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsManageConductModalOpen(true)}
+                        className="flex flex-col items-center mx-auto hover:underline cursor-pointer"
+                        title="Hacé clic para configurar nombres de períodos, asistencia y concepto"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <span>{term1FullLabel}</span>
+                          <Pencil className="w-2.5 h-2.5 opacity-60" />
+                        </span>
                         <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / {dispositionLabel.slice(0, 5).toLowerCase()}.</span>
-                      </div>
+                      </button>
                     </th>
                     <th className="py-3 px-3 text-center bg-emerald-500/5 text-emerald-700 dark:text-emerald-300">
-                      <div className="flex flex-col items-center">
-                        <span>{term2FullLabel}</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsManageConductModalOpen(true)}
+                        className="flex flex-col items-center mx-auto hover:underline cursor-pointer"
+                        title="Hacé clic para configurar nombres de períodos, asistencia y concepto"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <span>{term2FullLabel}</span>
+                          <Pencil className="w-2.5 h-2.5 opacity-60" />
+                        </span>
                         <span className="text-[10px] font-normal lowercase opacity-70">faltas / tard. / {dispositionLabel.slice(0, 5).toLowerCase()}.</span>
-                      </div>
+                      </button>
                     </th>
                     <th className="py-3 px-3 text-center bg-purple-500/5 text-purple-700 dark:text-purple-300">
                       <div className="flex flex-col items-center">
@@ -379,10 +396,20 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                       </div>
                     </th>
                     <th className="py-3 px-3 text-center">
-                      <div className="flex flex-col items-center">
-                        <span>Promedio {dispositionLabel}</span>
-                        <span className="text-[10px] font-normal lowercase opacity-70">escala 10</span>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsManageConductModalOpen(true)}
+                        className="flex flex-col items-center mx-auto hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                        title="Hacé clic para cambiar el nombre y la modalidad de puntaje (desde 10 y bajar o desde 0 y sumar)"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <span>Promedio {dispositionLabel}</span>
+                          <Pencil className="w-2.5 h-2.5 opacity-60" />
+                        </span>
+                        <span className="text-[10px] font-normal lowercase opacity-70">
+                          {initialDispositionScore === 0 ? 'desde 0 y sumar' : 'desde 10 y bajar'}
+                        </span>
+                      </button>
                     </th>
                     <th className="py-3 px-3 text-center">Semáforo</th>
                     <th className="py-3 px-3 text-center">Condición</th>
@@ -726,24 +753,43 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setIsManageConductModalOpen(true)}
-                        className="hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
-                        title="Hacé clic para cambiar el nombre de esta columna (ej: Presentismo, Asistencia)"
+                        className="inline-flex items-center gap-1 hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
+                        title="Hacé clic para configurar el nombre de Asistencia y del Concepto / Disposición"
                       >
-                        {attendanceLabel}
+                        <span>{attendanceLabel}</span>
+                        <Pencil className="w-3 h-3 opacity-60" />
                       </button>
                     </th>
                     <th className="py-3 px-4 text-center">
-                      <span>Registrar {attendanceLabel.toLowerCase()}</span>
+                      <button
+                        type="button"
+                        onClick={() => setIsManageConductModalOpen(true)}
+                        className="inline-flex items-center gap-1 hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
+                        title="Hacé clic para cambiar el nombre de Asistencia y del Concepto / Disposición"
+                      >
+                        <span>Registrar {attendanceLabel.toLowerCase()}</span>
+                        <Pencil className="w-3 h-3 opacity-60" />
+                      </button>
                     </th>
                     <th className="py-3 px-4 text-center">
                       <div className="inline-flex flex-col items-center gap-1">
                         <button
                           type="button"
                           onClick={() => setIsManageConductModalOpen(true)}
-                          className="hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
-                          title="Hacé clic para cambiar el nombre (ej: Concepto, Participación en clase, Disposición)"
+                          className="inline-flex items-center gap-1 hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider"
+                          title="Hacé clic para cambiar el nombre (ej: Concepto, Disposición) y elegir si empieza desde 10 y baja o desde 0 y suma"
                         >
-                          {dispositionLabel}
+                          <span>{dispositionLabel}</span>
+                          <span
+                            className={`px-1.5 py-0.2 rounded text-[9px] font-bold normal-case tracking-normal ${
+                              initialDispositionScore === 0
+                                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/80 dark:text-emerald-300'
+                                : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300'
+                            }`}
+                          >
+                            {initialDispositionScore === 0 ? '0 ↑' : '10 ↓'}
+                          </span>
+                          <Pencil className="w-3 h-3 opacity-60" />
                         </button>
                         <div className="flex flex-wrap items-center justify-center gap-1">
                           <button
@@ -760,16 +806,24 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                     </th>
                     <th className="py-3 px-4">
                       <div className="flex items-center justify-between gap-2">
-                        <span>Registrar {dispositionLabel.toLowerCase()}</span>
                         <button
                           type="button"
                           onClick={() => setIsManageConductModalOpen(true)}
-                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-[11px] font-semibold transition-all cursor-pointer ${
+                          className="inline-flex items-center gap-1 hover:underline hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer uppercase font-semibold tracking-wider text-left"
+                          title="Hacé clic para cambiar el nombre de Disposición / Concepto, la escala (desde 10 o desde 0) y los motivos rápidos"
+                        >
+                          <span>Registrar {dispositionLabel.toLowerCase()}</span>
+                          <Pencil className="w-3 h-3 opacity-60 shrink-0" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsManageConductModalOpen(true)}
+                          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-[11px] font-semibold transition-all cursor-pointer normal-case tracking-normal ${
                             isDarkMode
                               ? 'bg-slate-800 border-slate-700 text-slate-200 hover:text-white hover:bg-slate-700'
                               : 'bg-white border-neutral-300 text-neutral-700 hover:text-blue-700 hover:border-blue-400 hover:bg-blue-50/50 shadow-2xs'
                           }`}
-                          title="Personalizar el nombre (Concepto, Participación, etc.) y tus motivos rápidos"
+                          title="Personalizar el nombre (Concepto, Participación, etc.), la escala (10↓ o 0↑) y tus motivos rápidos"
                         >
                           <Settings className="w-3.5 h-3.5 text-blue-500" />
                           <span>Nombre y opciones ({teacherConductOptions.length})</span>

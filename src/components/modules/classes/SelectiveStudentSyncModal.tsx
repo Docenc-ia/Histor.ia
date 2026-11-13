@@ -434,6 +434,48 @@ export const SelectiveStudentSyncModal: React.FC<SelectiveStudentSyncModalProps>
     }
   };
 
+  const handleSyncAllCandidates = async () => {
+    if (!activeTargetCourse || candidates.length === 0) return;
+    try {
+      setIsSavingSelection(true);
+      const res = await api.syncSelectedCourseStudents(
+        activeTargetCourse.id,
+        candidates.map((item) => ({
+          id: item.id,
+          courseId: activeTargetCourse.id,
+          firstName: item.firstName,
+          lastName: item.lastName,
+          email: item.email,
+          avatar: item.avatar,
+        })),
+        {
+          mode: 'merge',
+          allCandidates: candidates.map((c) => ({
+            id: c.id,
+            courseId: activeTargetCourse.id,
+            firstName: c.firstName,
+            lastName: c.lastName,
+            email: c.email,
+            avatar: c.avatar,
+          })),
+          realClassroomId,
+        }
+      );
+      onSyncCompleted(
+        `¡Sincronización completa en "${activeTargetCourse.name}"! Total en la materia: ${res.count} estudiantes.`
+      );
+      onClose();
+    } catch (err) {
+      console.warn('Error syncing all students:', err);
+      setStatusNotice({
+        type: 'warning',
+        text: 'Error al sincronizar los estudiantes. Intentá nuevamente.',
+      });
+    } finally {
+      setIsSavingSelection(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150">
       <div
@@ -465,14 +507,14 @@ export const SelectiveStudentSyncModal: React.FC<SelectiveStudentSyncModalProps>
             </div>
             <h3 className="text-lg sm:text-xl font-bold flex items-center gap-2">
               <Users className="w-5 h-5 text-blue-500 shrink-0" />
-              <span>Sincronización Selectiva de Estudiantes</span>
+              <span>Sincronizar Alumnos</span>
             </h3>
             <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
-              Elegí exactamente qué estudiantes de Google Classroom querés importar a{' '}
+              Podés sincronizar todos los alumnos o <strong>sincronizar selectivamente</strong> eligiendo quiénes importar a{' '}
               <strong className={isDarkMode ? 'text-white' : 'text-neutral-900'}>
                 {activeTargetCourse.name}
               </strong>
-              . Los cambios se aplican únicamente a esta materia.
+              .
             </p>
           </div>
 
@@ -897,7 +939,7 @@ export const SelectiveStudentSyncModal: React.FC<SelectiveStudentSyncModalProps>
             para <strong className="underline">{activeTargetCourse.name}</strong>
           </div>
 
-          <div className="flex items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
               type="button"
               onClick={onClose}
@@ -911,6 +953,19 @@ export const SelectiveStudentSyncModal: React.FC<SelectiveStudentSyncModalProps>
             </button>
             <button
               type="button"
+              onClick={handleSyncAllCandidates}
+              disabled={isSavingSelection || isLoadingCandidates || candidates.length === 0}
+              className={`px-3.5 py-2 rounded-xl border text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 disabled:opacity-50 ${
+                isDarkMode
+                  ? 'bg-emerald-950/60 hover:bg-emerald-900/70 text-emerald-300 border-emerald-700/70'
+                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-200'
+              }`}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSavingSelection ? 'animate-spin' : ''}`} />
+              <span>Sincronizar todos ({candidates.length})</span>
+            </button>
+            <button
+              type="button"
               onClick={handleApplySelectiveSync}
               disabled={isSavingSelection || isLoadingCandidates}
               className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold shadow-xs cursor-pointer transition-all flex items-center gap-1.5"
@@ -918,13 +973,13 @@ export const SelectiveStudentSyncModal: React.FC<SelectiveStudentSyncModalProps>
               {isSavingSelection ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Guardando en {activeTargetCourse.name}...</span>
+                  <span>Guardando...</span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-4 h-4" />
                   <span>
-                    Aplicar selección en {activeTargetCourse.name} ({selectedKeys.size})
+                    Sincronizar selectivamente ({selectedKeys.size})
                   </span>
                 </>
               )}

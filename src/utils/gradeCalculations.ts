@@ -480,3 +480,111 @@ export function buildAnnualSummaryCsvContent(
 
   return csv;
 }
+
+/**
+ * Reordena de forma pura e inmutable la lista de Categorías Mayores (y sus respectivas subcolumnas)
+ * moviendo la categoría desde `fromIndex` hacia `toIndex`.
+ */
+export function reorderCategoriesList(
+  categories: GradeCategory[],
+  fromIndex: number,
+  toIndex: number
+): GradeCategory[] {
+  if (
+    !Array.isArray(categories) ||
+    fromIndex < 0 ||
+    toIndex < 0 ||
+    fromIndex >= categories.length ||
+    toIndex >= categories.length ||
+    fromIndex === toIndex
+  ) {
+    return categories;
+  }
+  const nextCategories = [...categories];
+  const [movedCategory] = nextCategories.splice(fromIndex, 1);
+  nextCategories.splice(toIndex, 0, movedCategory);
+  return nextCategories;
+}
+
+/**
+ * Reordena de forma pura e inmutable las subcolumnas (evaluaciones) dentro de una Categoría Mayor
+ * moviendo la subcolumna desde `fromIndex` hacia `toIndex`.
+ */
+export function reorderSubcategoriesInCategory(
+  categories: GradeCategory[],
+  categoryId: string,
+  fromIndex: number,
+  toIndex: number
+): GradeCategory[] {
+  if (!Array.isArray(categories) || !categoryId) return categories;
+  return categories.map((category) => {
+    if (category.id !== categoryId) return category;
+    const subList = Array.isArray(category.subcategories) ? [...category.subcategories] : [];
+    if (
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= subList.length ||
+      toIndex >= subList.length ||
+      fromIndex === toIndex
+    ) {
+      return category;
+    }
+    const [movedSub] = subList.splice(fromIndex, 1);
+    subList.splice(toIndex, 0, movedSub);
+    return {
+      ...category,
+      subcategories: subList,
+    };
+  });
+}
+
+/**
+ * Mueve de forma pura e inmutable una subcolumna (evaluación) de una categoría a otra
+ * (o a una posición específica dentro de la categoría destino) conservando intacto su `id`
+ * para que todas las notas cargadas de los alumnos se mantengan vinculadas automáticamente.
+ */
+export function moveSubcategoryAcrossCategories(
+  categories: GradeCategory[],
+  sourceCategoryId: string,
+  subcategoryId: string,
+  targetCategoryId: string,
+  targetIndex?: number
+): GradeCategory[] {
+  if (!Array.isArray(categories) || !sourceCategoryId || !subcategoryId || !targetCategoryId) {
+    return categories;
+  }
+
+  const sourceCategory = categories.find((cat) => cat.id === sourceCategoryId);
+  if (!sourceCategory) return categories;
+  const sourceIndex = sourceCategory.subcategories.findIndex((sub) => sub.id === subcategoryId);
+  if (sourceIndex === -1) return categories;
+
+  if (sourceCategoryId === targetCategoryId) {
+    if (targetIndex === undefined || targetIndex === sourceIndex) return categories;
+    return reorderSubcategoriesInCategory(categories, sourceCategoryId, sourceIndex, targetIndex);
+  }
+
+  const movedSubcategory = sourceCategory.subcategories[sourceIndex];
+  return categories.map((cat) => {
+    if (cat.id === sourceCategoryId) {
+      return {
+        ...cat,
+        subcategories: cat.subcategories.filter((sub) => sub.id !== subcategoryId),
+      };
+    }
+    if (cat.id === targetCategoryId) {
+      const nextSubs = [...cat.subcategories];
+      const insertAt =
+        targetIndex !== undefined && targetIndex >= 0 && targetIndex <= nextSubs.length
+          ? targetIndex
+          : nextSubs.length;
+      nextSubs.splice(insertAt, 0, movedSubcategory);
+      return {
+        ...cat,
+        subcategories: nextSubs,
+      };
+    }
+    return cat;
+  });
+}
+

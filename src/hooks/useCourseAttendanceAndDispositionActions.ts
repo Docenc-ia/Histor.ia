@@ -24,6 +24,7 @@ import {
 } from './useCourseNotifications';
 import { useManualDispositionAndAbsenceEditor } from './useManualDispositionAndAbsenceEditor';
 import { useStudentProfileAndObservationsActions } from './useStudentProfileAndObservationsActions';
+import { getTerminologySettings } from '../utils/terminologySettings';
 
 interface UseCourseAttendanceAndDispositionActionsProps {
   activeCourse: Course;
@@ -1008,7 +1009,9 @@ export function useCourseAttendanceAndDispositionActions({
 
     const targetTerm: '1c' | '2c' = activeConcreteTerm;
     const current = getStudentMetrics(student.id, targetTerm);
-    const currentDisp = current.totalDisposition !== undefined ? current.totalDisposition : 10;
+    const baseInitialScore = getTerminologySettings().initialDispositionScore ?? 10;
+    const currentDisp =
+      current.totalDisposition !== undefined ? current.totalDisposition : baseInitialScore;
     const newDisposition = Math.min(10, Math.max(0, currentDisp + delta));
     const baseMap = targetTerm === '2c' ? dispositionMap2c : dispositionMap;
 
@@ -1195,7 +1198,8 @@ export function useCourseAttendanceAndDispositionActions({
         h.action?.toLowerCase().includes('tardanza')
     ).length;
 
-    let calculatedDisp = 10;
+    const baseInitialScore = getTerminologySettings().initialDispositionScore ?? 10;
+    let calculatedDisp = baseInitialScore;
     const sortedStudentEvents = [...studentRemainingHistory].sort(
       (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
     );
@@ -1205,7 +1209,12 @@ export function useCourseAttendanceAndDispositionActions({
         ev.action?.toLowerCase().includes('restablecid') ||
         ev.action?.toLowerCase().includes('reinicio');
       if (isReset) {
-        calculatedDisp = 10;
+        calculatedDisp = baseInitialScore;
+        continue;
+      }
+      const manualMatch = ev.action?.match(/ajustada a (\d+(?:\.\d+)?)\/10/i);
+      if (manualMatch) {
+        calculatedDisp = Math.min(10, Math.max(0, parseFloat(manualMatch[1])));
         continue;
       }
       if (ev.pointsChange !== undefined) {
@@ -1232,10 +1241,10 @@ export function useCourseAttendanceAndDispositionActions({
 
     const finalDisposition =
       isAbsence || isLate
-        ? (current.totalDisposition ?? 10)
+        ? (current.totalDisposition ?? baseInitialScore)
         : studentRemainingHistory.length > 0
           ? calculatedDisp
-          : Math.min(10, Math.max(0, (current.totalDisposition ?? 10) + pointsToReturn));
+          : Math.min(10, Math.max(0, (current.totalDisposition ?? baseInitialScore) + pointsToReturn));
 
     const updatedMap: Record<string, StudentDispositionData> = {
       ...baseMap,

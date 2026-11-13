@@ -24,6 +24,7 @@ import {
   RefreshCw,
   Cloud,
   FileCheck,
+  GripVertical,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
@@ -51,6 +52,9 @@ import {
   calculateFinalScoreForStudent,
   computeTermScoresMap,
   getScoreColorClass as computeScoreColorClass,
+  reorderCategoriesList,
+  reorderSubcategoriesInCategory,
+  moveSubcategoryAcrossCategories,
 } from '../../utils/gradeCalculations';
 import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
 import { GradebookCategoryModals } from './GradebookCategoryModals';
@@ -712,6 +716,58 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     saveCategories(updated);
   };
 
+  // Reorder Major Categories (moves the category along with all its subcolumns and grades)
+  const handleMoveCategory = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      const next = reorderCategoriesList(categories, fromIndex, toIndex);
+      if (next !== categories) {
+        saveCategories(next);
+      }
+    },
+    [categories, saveCategories]
+  );
+
+  // Reorder Subcategories / Evaluations within a Category
+  const handleMoveSubcategory = useCallback(
+    (catId: string, fromIndex: number, toIndex: number) => {
+      const next = reorderSubcategoriesInCategory(categories, catId, fromIndex, toIndex);
+      if (next !== categories) {
+        saveCategories(next);
+      }
+    },
+    [categories, saveCategories]
+  );
+
+  // Move a Subcategory / Evaluation to another Category (or specific position)
+  const handleMoveSubcategoryToCategory = useCallback(
+    (sourceCatId: string, subId: string, targetCatId: string, targetIndex?: number) => {
+      const next = moveSubcategoryAcrossCategories(
+        categories,
+        sourceCatId,
+        subId,
+        targetCatId,
+        targetIndex
+      );
+      if (next !== categories) {
+        saveCategories(next);
+      }
+    },
+    [categories, saveCategories]
+  );
+
+  // Drag & Drop state for categories and subcategories in the table header
+  const [draggedCatIdx, setDraggedCatIdx] = useState<number | null>(null);
+  const [dragOverCatIdx, setDragOverCatIdx] = useState<number | null>(null);
+  const [draggedSubcat, setDraggedSubcat] = useState<{
+    catId: string;
+    subId: string;
+    subIdx: number;
+  } | null>(null);
+  const [dragOverSubcat, setDragOverSubcat] = useState<{
+    catId: string;
+    subIdx: number;
+  } | null>(null);
+
   const calculateFinalForTerm = (
     term: '1c' | '2c',
     studentId: string
@@ -1086,6 +1142,20 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
+                  onClick={() => setIsManageCategoriesOpen(true)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                    isDarkMode
+                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
+                      : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-200'
+                  }`}
+                  title="Ordenar o administrar todas las Categorías Mayores y sus columnas"
+                >
+                  <Settings className="w-3.5 h-3.5 shrink-0" />
+                  <span>Ordenar Categorías</span>
+                </button>
+
+                <button
+                  type="button"
                   id="btn-agregar-categoria-mayor"
                   onClick={() => setIsAddCategoryOpen((prev) => !prev)}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
@@ -1369,16 +1439,79 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {categories.map((cat, catIdx) => {
                   const colSpan = Math.max(1, cat.subcategories.length);
                   const colorTheme = CATEGORY_COLORS[catIdx % CATEGORY_COLORS.length];
+                  const isDragOverCat =
+                    dragOverCatIdx === catIdx &&
+                    draggedCatIdx !== null &&
+                    draggedCatIdx !== catIdx;
 
                   return (
                     <th
                       key={cat.id}
                       colSpan={colSpan}
-                      className={`p-2.5 text-center font-bold border-r border-b-2 transition-colors min-w-[140px] ${
+                      draggable={categories.length > 1}
+                      onDragStart={(e) => {
+                        setDraggedCatIdx(catIdx);
+                        setDraggedSubcat(null);
+                        e.dataTransfer.effectAllowed = 'move';
+                        e.dataTransfer.setData('text/plain', `cat:${catIdx}`);
+                      }}
+                      onDragOver={(e) => {
+                        if (draggedCatIdx !== null && draggedCatIdx !== catIdx) {
+                          e.preventDefault();
+                          e.dataTransfer.dropEffect = 'move';
+                          if (dragOverCatIdx !== catIdx) {
+                            setDragOverCatIdx(catIdx);
+                          }
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverCatIdx === catIdx) {
+                          setDragOverCatIdx(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (draggedCatIdx !== null && draggedCatIdx !== catIdx) {
+                          handleMoveCategory(draggedCatIdx, catIdx);
+                        }
+                        setDraggedCatIdx(null);
+                        setDragOverCatIdx(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedCatIdx(null);
+                        setDragOverCatIdx(null);
+                      }}
+                      className={`group/cat p-2 text-center font-bold border-r border-b-2 transition-all min-w-[140px] ${
                         colorTheme.border
-                      } ${colorTheme.headerBg}`}
+                      } ${colorTheme.headerBg} ${
+                        draggedCatIdx === catIdx ? 'opacity-50' : ''
+                      } ${isDragOverCat ? 'ring-2 ring-inset ring-blue-500' : ''}`}
                     >
-                      <div className="flex items-center justify-center px-2 gap-1.5">
+                      <div className="flex items-center justify-center px-1.5 gap-1">
+                        {categories.length > 1 && (
+                          <button
+                            type="button"
+                            disabled={catIdx === 0}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveCategory(catIdx, catIdx - 1);
+                            }}
+                            className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-20 disabled:pointer-events-none text-current opacity-60 group-hover/cat:opacity-100 transition-opacity cursor-pointer shrink-0"
+                            title={`Mover categoría "${cat.name}" y sus subcolumnas hacia la izquierda`}
+                          >
+                            <ChevronLeft className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        {categories.length > 1 && (
+                          <span
+                            className="cursor-grab active:cursor-grabbing opacity-40 group-hover/cat:opacity-80 transition-opacity shrink-0"
+                            title="Arrastrá para cambiar de lugar esta Categoría Mayor con todas sus subcolumnas"
+                          >
+                            <GripVertical className="w-3 h-3" />
+                          </span>
+                        )}
+
                         <button
                           type="button"
                           onClick={() => {
@@ -1387,7 +1520,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             setEditCatColor(cat.color);
                           }}
                           className="text-xs uppercase tracking-wide font-extrabold whitespace-nowrap hover:underline cursor-pointer transition-opacity hover:opacity-80"
-                          title={`Hacé clic para editar o eliminar "${cat.name}"`}
+                          title={`Hacé clic para editar, ordenar subcolumnas o eliminar "${cat.name}"`}
                         >
                           {cat.name}
                         </button>
@@ -1401,6 +1534,21 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         >
                           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
                         </button>
+
+                        {categories.length > 1 && (
+                          <button
+                            type="button"
+                            disabled={catIdx === categories.length - 1}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMoveCategory(catIdx, catIdx + 1);
+                            }}
+                            className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-20 disabled:pointer-events-none text-current opacity-60 group-hover/cat:opacity-100 transition-opacity cursor-pointer shrink-0"
+                            title={`Mover categoría "${cat.name}" y sus subcolumnas hacia la derecha`}
+                          >
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </th>
                   );
@@ -1485,6 +1633,25 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     return (
                       <th
                         key={`${cat.id}-empty`}
+                        onDragOver={(e) => {
+                          if (draggedSubcat && draggedSubcat.catId !== cat.id) {
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (draggedSubcat && draggedSubcat.catId !== cat.id) {
+                            handleMoveSubcategoryToCategory(
+                              draggedSubcat.catId,
+                              draggedSubcat.subId,
+                              cat.id,
+                              0
+                            );
+                          }
+                          setDraggedSubcat(null);
+                          setDragOverSubcat(null);
+                        }}
                         className={`p-2 text-center font-medium border-r text-[11px] min-w-[120px] ${
                           isDarkMode ? 'border-slate-800 text-slate-400' : 'border-neutral-200 text-neutral-500'
                         }`}
@@ -1517,31 +1684,130 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
                   return (
                     <React.Fragment key={`${cat.id}-subs`}>
-                      {cat.subcategories.map((sub) => (
-                        <th
-                          key={sub.id}
-                          className={`p-2 text-center font-medium border-r text-[11px] min-w-[115px] ${
-                            isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
-                          }`}
-                        >
-                          <div className="flex items-center justify-center px-1 text-center">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
-                                setEditSubcatName(sub.name);
-                              }}
-                              className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors"
-                              title={`Hacé clic para editar o eliminar "${sub.name}"`}
-                            >
-                              {(sub.name.toLowerCase().includes('disposición') || sub.name.toLowerCase().includes('disposicion')) && (
-                                <Award className="w-3 h-3 text-amber-500 shrink-0" />
+                      {cat.subcategories.map((sub, subIdx) => {
+                        const isDraggingThisSub =
+                          draggedSubcat?.catId === cat.id && draggedSubcat?.subId === sub.id;
+                        const isDragOverThisSub =
+                          dragOverSubcat?.catId === cat.id &&
+                          dragOverSubcat?.subIdx === subIdx &&
+                          !isDraggingThisSub;
+
+                        return (
+                          <th
+                            key={sub.id}
+                            draggable
+                            onDragStart={(e) => {
+                              e.stopPropagation();
+                              setDraggedSubcat({ catId: cat.id, subId: sub.id, subIdx });
+                              setDraggedCatIdx(null);
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', `sub:${cat.id}:${sub.id}`);
+                            }}
+                            onDragOver={(e) => {
+                              if (draggedSubcat) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.dataTransfer.dropEffect = 'move';
+                                if (
+                                  dragOverSubcat?.catId !== cat.id ||
+                                  dragOverSubcat?.subIdx !== subIdx
+                                ) {
+                                  setDragOverSubcat({ catId: cat.id, subIdx });
+                                }
+                              }
+                            }}
+                            onDragLeave={() => {
+                              if (
+                                dragOverSubcat?.catId === cat.id &&
+                                dragOverSubcat?.subIdx === subIdx
+                              ) {
+                                setDragOverSubcat(null);
+                              }
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (draggedSubcat) {
+                                if (draggedSubcat.catId === cat.id) {
+                                  if (draggedSubcat.subIdx !== subIdx) {
+                                    handleMoveSubcategory(cat.id, draggedSubcat.subIdx, subIdx);
+                                  }
+                                } else {
+                                  handleMoveSubcategoryToCategory(
+                                    draggedSubcat.catId,
+                                    draggedSubcat.subId,
+                                    cat.id,
+                                    subIdx
+                                  );
+                                }
+                              }
+                              setDraggedSubcat(null);
+                              setDragOverSubcat(null);
+                            }}
+                            onDragEnd={() => {
+                              setDraggedSubcat(null);
+                              setDragOverSubcat(null);
+                            }}
+                            className={`group/sub p-1.5 text-center font-medium border-r text-[11px] min-w-[125px] transition-all ${
+                              isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
+                            } ${isDraggingThisSub ? 'opacity-45' : ''} ${
+                              isDragOverThisSub ? 'ring-2 ring-inset ring-blue-500 bg-blue-500/10' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-0.5 px-0.5 text-center">
+                              {cat.subcategories.length > 1 ? (
+                                <button
+                                  type="button"
+                                  disabled={subIdx === 0}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMoveSubcategory(cat.id, subIdx, subIdx - 1);
+                                  }}
+                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-55 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  title={`Mover "${sub.name}" hacia la izquierda (antes)`}
+                                >
+                                  <ChevronLeft className="w-3 h-3" />
+                                </button>
+                              ) : (
+                                <span className="w-3" />
                               )}
-                              <span>{sub.name}</span>
-                            </button>
-                          </div>
-                        </th>
-                      ))}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
+                                  setEditSubcatName(sub.name);
+                                }}
+                                className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0"
+                                title={`Hacé clic para editar, cambiar de lugar o eliminar "${sub.name}" (o arrastrá la columna)`}
+                              >
+                                {(sub.name.toLowerCase().includes('disposición') ||
+                                  sub.name.toLowerCase().includes('disposicion')) && (
+                                  <Award className="w-3 h-3 text-amber-500 shrink-0" />
+                                )}
+                                <span className="truncate">{sub.name}</span>
+                              </button>
+
+                              {cat.subcategories.length > 1 ? (
+                                <button
+                                  type="button"
+                                  disabled={subIdx === cat.subcategories.length - 1}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleMoveSubcategory(cat.id, subIdx, subIdx + 1);
+                                  }}
+                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-55 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  title={`Mover "${sub.name}" hacia la derecha (después)`}
+                                >
+                                  <ChevronRight className="w-3 h-3" />
+                                </button>
+                              ) : (
+                                <span className="w-3" />
+                              )}
+                            </div>
+                          </th>
+                        );
+                      })}
                     </React.Fragment>
                   );
                 })}
@@ -1633,6 +1899,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         setEditSubcatName={setEditSubcatName}
         handleSaveEditSubcategory={handleSaveEditSubcategory}
         handleDeleteSubcategory={handleDeleteSubcategory}
+        onMoveCategory={handleMoveCategory}
+        onMoveSubcategory={handleMoveSubcategory}
+        onMoveSubcategoryToCategory={handleMoveSubcategoryToCategory}
       />
       {/* Modal: Generar Valoración Preliminar (TEA / TEP) */}
       {isPreliminaryModalOpen && (

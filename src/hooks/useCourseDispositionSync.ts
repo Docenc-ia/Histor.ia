@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Course, Student, StudentDispositionData, StudentHistoryItem } from '../types';
 import {
   api,
@@ -35,6 +35,9 @@ export function useCourseDispositionSync({
   attendanceTerm,
   teacherEmail,
 }: UseCourseDispositionSyncOptions) {
+  const activeCourseIdRef = useRef<string | undefined>(activeCourse?.id);
+  activeCourseIdRef.current = activeCourse?.id;
+
   const courseStudents = useMemo(
     () =>
       explicitCourseStudents ||
@@ -263,20 +266,29 @@ export function useCourseDispositionSync({
   // Sync 2°C disposition map from Firestore scoped to activeCourse
   useEffect(() => {
     let isMounted = true;
+    const requestedCourseId = activeCourse?.id;
     const uid = getActiveUserId();
-    if (uid && activeCourse?.id) {
+    if (uid && requestedCourseId) {
       firestoreSync
         .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
         .then((cloud2c) => {
-          if (!isMounted || !cloud2c || typeof cloud2c !== 'object' || Object.keys(cloud2c).length === 0) return;
+          if (
+            !isMounted ||
+            activeCourseIdRef.current !== requestedCourseId ||
+            !cloud2c ||
+            typeof cloud2c !== 'object' ||
+            Object.keys(cloud2c).length === 0
+          ) {
+            return;
+          }
           const courseScopedCloud2c: Record<string, StudentDispositionData> = {};
-          const prefix = `${activeCourse.id}::`;
+          const prefix = `${requestedCourseId}::`;
           Object.entries(cloud2c).forEach(([k, val]: [string, any]) => {
             if (!val || typeof val !== 'object') return;
             if (k.startsWith(prefix)) {
               const stId = k.slice(prefix.length);
-              courseScopedCloud2c[stId] = { ...val, courseId: activeCourse.id };
-            } else if (!k.includes('::') && val.courseId === activeCourse.id) {
+              courseScopedCloud2c[stId] = { ...val, courseId: requestedCourseId };
+            } else if (!k.includes('::') && val.courseId === requestedCourseId) {
               courseScopedCloud2c[k] = { ...val };
             }
           });
@@ -386,12 +398,13 @@ export function useCourseDispositionSync({
   // Load from Compact v2 Cloud Engine / backend API and re-sync on live cross-device updates
   useEffect(() => {
     let isMounted = true;
+    const requestedCourseId = activeCourse?.id;
     const syncDispositionFromCloud = () => {
-      if (!activeCourse?.id) return;
+      if (!requestedCourseId || activeCourseIdRef.current !== requestedCourseId) return;
       api
-        .getDisposition(activeCourse.id)
+        .getDisposition(requestedCourseId)
         .then((res) => {
-          if (!isMounted) return;
+          if (!isMounted || activeCourseIdRef.current !== requestedCourseId) return;
           if (res.disposition && Object.keys(res.disposition).length > 0) {
             setDispositionMap((prev) => {
               const incoming = res.disposition;

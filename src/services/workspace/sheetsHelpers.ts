@@ -7,9 +7,20 @@ import {
 import { Student } from '../../types';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
+import { sanitizeSpreadsheetFormulaCell } from '../../utils/htmlEscape';
 
 /**
- * Export or synchronize Preliminary Valuation (Valoración Preliminar) with Google Sheets
+ * Crea o sincroniza en Google Sheets la planilla de Valoración Preliminar del cuatrimestre
+ * y la ubica dentro de la subcarpeta de Informes del curso en Google Drive.
+ *
+ * @param courseName Nombre del curso activo.
+ * @param termLabel Etiqueta legible del cuatrimestre (ej. "1° Cuatrimestre").
+ * @param students Lista de alumnos del curso.
+ * @param assessmentHeaders Columnas de evaluaciones que componen el promedio preliminar.
+ * @param gradesMap Mapa de calificaciones por alumno y subcategoría.
+ * @param valuations Valoraciones cualitativas (`TEA`, `TEP`, `TED`) y observaciones por alumno.
+ * @param existingSpreadsheetId ID opcional de una planilla previamente creada.
+ * @returns Metadatos de la planilla sincronizada (`spreadsheetId`, `url`, `isLiveGoogle`, `updatedAt`).
  */
 export async function syncPreliminaryValuationSheetHelper(
   courseName: string,
@@ -103,7 +114,7 @@ export async function syncPreliminaryValuationSheetHelper(
                   rowData: [
                     {
                       values: headers.map((h) => ({
-                        userEnteredValue: { stringValue: h },
+                        userEnteredValue: { stringValue: sanitizeSpreadsheetFormulaCell(h) },
                         userEnteredFormat: {
                           textFormat: { bold: true },
                           backgroundColor: { red: 0.95, green: 0.96, blue: 0.98 },
@@ -118,7 +129,7 @@ export async function syncPreliminaryValuationSheetHelper(
                         return {
                           userEnteredValue: isNum
                             ? { numberValue: Number(cell) }
-                            : { stringValue: String(cell) },
+                            : { stringValue: sanitizeSpreadsheetFormulaCell(cell) },
                         };
                       }),
                     })),
@@ -139,20 +150,28 @@ export async function syncPreliminaryValuationSheetHelper(
             token
           );
           const targetReportsFolderId = folders.reportsFolder?.id || folders.mainFolder.id;
+          const driveTasks: Promise<unknown>[] = [];
           if (targetReportsFolderId) {
-            await driveService.moveFileToFolder(
-              sheetData.spreadsheetId,
-              targetReportsFolderId,
-              token
+            driveTasks.push(
+              driveService.moveFileToFolder(
+                sheetData.spreadsheetId,
+                targetReportsFolderId,
+                token
+              )
             );
           }
           if (folders.gradesFolder?.id) {
-            await driveService.ensureShortcutInFolder(
-              sheetTitle,
-              sheetData.spreadsheetId,
-              folders.gradesFolder.id,
-              token
+            driveTasks.push(
+              driveService.ensureShortcutInFolder(
+                sheetTitle,
+                sheetData.spreadsheetId,
+                folders.gradesFolder.id,
+                token
+              )
             );
+          }
+          if (driveTasks.length > 0) {
+            await Promise.all(driveTasks);
           }
         } catch (_) {}
         return {
@@ -180,8 +199,10 @@ export async function syncPreliminaryValuationSheetHelper(
 }
 
 /**
- * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
- * and converts the subsequent rows into objects keyed by column header.
+ * Convierte un índice numérico de columna (base 0) en su letra equivalente de hoja de cálculo (`A`, `B`, ..., `Z`, `AA`).
+ *
+ * @param colIndex Índice de columna en base 0.
+ * @returns Letra o combinación de letras de columna estilo Excel/Sheets.
  */
 function getSpreadsheetColLetter(colIndex: number): string {
   let temp = colIndex;
@@ -194,9 +215,12 @@ function getSpreadsheetColLetter(colIndex: number): string {
 }
 
 /**
- * Smartly finds the header row in a 2D array (skipping empty rows or title banners)
- * or uses an explicit headerRowIndex chosen by the teacher in the visual mapper
- * (-1 means the sheet has no header row and data starts at row 0).
+ * Detecta la fila de encabezados en una matriz 2D (saltando filas vacías o membretes institucionales)
+ * y transforma las filas subsiguientes en diccionarios indexados por nombre de columna.
+ *
+ * @param rawValues Matriz 2D de celdas crudas.
+ * @param explicitHeaderRowIndex Índice de fila de encabezado elegido manualmente por el docente (`-1` si no tiene encabezados).
+ * @returns Los encabezados normalizados (`headers`), las filas como objetos (`rows`) y el índice de cabecera utilizado (`headerRowIndex`).
  */
 export function convert2DArrayToTableObjectsHelper(
   rawValues: any[][],
@@ -206,14 +230,13 @@ export function convert2DArrayToTableObjectsHelper(
   rows: Array<Record<string, any>>;
   headerRowIndex: number;
 } {
-  if (!rawValues || rawValues.length === 0) {
+  if (!Array.isArray(rawValues) || rawValues.length === 0) {
     return { headers: [], rows: [], headerRowIndex: 0 };
   }
 
-  // Find max column count across the first 30 rows
   let maxCols = 0;
   for (let i = 0; i < Math.min(30, rawValues.length); i++) {
-    const r = rawValues[i] || [];
+    const r = Array.isArray(rawValues[i]) ? rawValues[i] : [];
     if (r.length > maxCols) maxCols = r.length;
   }
   if (maxCols === 0) {
@@ -227,8 +250,8 @@ export function convert2DArrayToTableObjectsHelper(
   } else {
     let bestScore = -1;
     for (let i = 0; i < Math.min(15, rawValues.length); i++) {
-      const r = rawValues[i] || [];
-      const nonEmptyCells = r.filter((c) => String(c || '').trim() !== '');
+      const r = Array.isArray(rawValues[i]) ? rawValues[i] : [];
+      const nonEmptyCells = r.filter((c) => String(c ?? '').trim() !== '');
       if (nonEmptyCells.length < 2) continue;
 
       let score = nonEmptyCells.length;
@@ -249,8 +272,14 @@ export function convert2DArrayToTableObjectsHelper(
     }
   }
 
-  const rawHeaders = headerRowIndex >= 0 ? rawValues[headerRowIndex] || [] : [];
-  const prevRow = headerRowIndex > 0 ? rawValues[headerRowIndex - 1] || [] : [];
+  const rawHeaders =
+    headerRowIndex >= 0 && Array.isArray(rawValues[headerRowIndex])
+      ? rawValues[headerRowIndex]
+      : [];
+  const prevRow =
+    headerRowIndex > 0 && Array.isArray(rawValues[headerRowIndex - 1])
+      ? rawValues[headerRowIndex - 1]
+      : [];
 
   const seenHeaders = new Set<string>();
   const headers: string[] = [];
@@ -260,7 +289,7 @@ export function convert2DArrayToTableObjectsHelper(
     let clean = headerRowIndex >= 0 ? String(rawHeaders[idx] ?? '').trim() : '';
     const upperClean = headerRowIndex > 0 ? String(prevRow[idx] ?? '').trim() : '';
 
-    // If current header cell is empty, fall back to cell directly above (merged/multi-row header)
+    // En planillas escolares con celdas combinadas en dos filas de cabecera, si la celda inferior está vacía se hereda el título de la fila superior.
     if (!clean && upperClean && upperClean.length < 40) {
       clean = upperClean;
     }
@@ -276,7 +305,7 @@ export function convert2DArrayToTableObjectsHelper(
   const startDataRow = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
   const rows: Array<Record<string, any>> = [];
   for (let r = startDataRow; r < rawValues.length; r++) {
-    const rowArr = rawValues[r] || [];
+    const rowArr = Array.isArray(rawValues[r]) ? rawValues[r] : [];
     const nonEmpty = rowArr.some((cell) => String(cell ?? '').trim() !== '');
     if (!nonEmpty) continue;
 
@@ -291,8 +320,14 @@ export function convert2DArrayToTableObjectsHelper(
 }
 
 /**
- * Read an existing Google Spreadsheet (by URL or ID) so the teacher can import grades, categories,
- * or attendance/disposition data with pre-verification in the UI.
+ * Descarga y estructura los datos de una planilla de Google Sheets a partir de su URL o ID.
+ * Utiliza en cascada: (1) Google Sheets API v4 autenticada, (2) proxy backend para sortear CORS y (3) exportación CSV pública (`gviz/tq`).
+ *
+ * @param spreadsheetIdOrUrl URL completa o ID de la hoja de cálculo de Google Sheets.
+ * @param targetSheetTitle Nombre opcional de la pestaña a leer; si se omite, lee la primera pestaña.
+ * @param providedToken Token OAuth 2.0 explícito opcional.
+ * @returns Metadatos de la planilla, lista de pestañas, matriz 2D cruda y filas convertidas en objetos.
+ * @throws {Error} Con mensaje claro en español si la planilla es privada, inválida o hay un corte de red.
  */
 export async function fetchArbitrarySpreadsheetDataHelper(
   spreadsheetIdOrUrl: string,
@@ -308,7 +343,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   raw2D: any[][];
   headerRowIndex: number;
 }> {
-  const trimmed = spreadsheetIdOrUrl.trim();
+  const trimmed = String(spreadsheetIdOrUrl ?? '').trim();
   const match = trimmed.match(/\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
   const spreadsheetId = match ? match[1] : trimmed;
 
@@ -332,10 +367,10 @@ export async function fetchArbitrarySpreadsheetDataHelper(
       );
 
       if (metaRes.ok) {
-        const meta = await metaRes.json();
+        const meta = await metaRes.json().catch(() => ({}));
         const title = meta.properties?.title || 'Documento de Google Sheets';
         const sheetNames: string[] = (meta.sheets || [])
-          .map((s: any) => s.properties?.title)
+          .map((s: any) => s?.properties?.title)
           .filter(Boolean);
         const selectedSheet =
           targetSheetTitle && sheetNames.includes(targetSheetTitle)
@@ -350,8 +385,8 @@ export async function fetchArbitrarySpreadsheetDataHelper(
         );
 
         if (valRes.ok) {
-          const valData = await valRes.json();
-          const rawValues: any[][] = valData.values || [];
+          const valData = await valRes.json().catch(() => ({}));
+          const rawValues: any[][] = Array.isArray(valData.values) ? valData.values : [];
           const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
           return {
             spreadsheetId,
@@ -370,7 +405,6 @@ export async function fetchArbitrarySpreadsheetDataHelper(
     }
   }
 
-  // Fallback 1: Server-side proxy (bypasses browser CORS on docs.google.com)
   try {
     const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
       method: 'POST',
@@ -383,13 +417,13 @@ export async function fetchArbitrarySpreadsheetDataHelper(
       }),
     });
     if (proxyRes.ok) {
-      const proxyData = await proxyRes.json();
+      const proxyData = await proxyRes.json().catch(() => null);
       if (proxyData?.ok && (proxyData.csvText || proxyData.htmlText)) {
         const XLSX = await import('xlsx');
         const contentStr = proxyData.csvText || proxyData.htmlText;
         const wb = XLSX.read(contentStr, { type: 'string' });
-        const firstSheet = wb.SheetNames[0];
-        if (firstSheet && wb.Sheets[firstSheet]) {
+        const firstSheet = wb?.SheetNames?.[0];
+        if (firstSheet && wb.Sheets?.[firstSheet]) {
           const rawValues: any[][] = XLSX.utils.sheet_to_json(wb.Sheets[firstSheet], {
             header: 1,
             defval: '',
@@ -410,40 +444,57 @@ export async function fetchArbitrarySpreadsheetDataHelper(
     }
   } catch (_) {}
 
-  // Fallback 2: Direct browser CSV export
   const csvUrl = targetSheetTitle
     ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(targetSheetTitle)}`
     : `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv`;
 
-  const csvRes = await fetch(csvUrl);
-  if (!csvRes.ok) {
+  let csvText = '';
+  try {
+    const csvRes = await fetch(csvUrl);
+    if (!csvRes.ok) {
+      throw new Error(
+        'No se pudo acceder a la hoja de Google Sheets. Asegúrate de haber iniciado sesión con tu cuenta de Google o que el documento tenga acceso por enlace.'
+      );
+    }
+    csvText = await csvRes.text();
+  } catch (networkErr: any) {
     throw new Error(
-      'No se pudo acceder a la hoja de Google Sheets. Asegúrate de haber iniciado sesión con tu cuenta de Google o que el documento tenga acceso por enlace.'
+      networkErr?.message && !networkErr.message.includes('Failed to fetch')
+        ? networkErr.message
+        : 'No se pudo conectar con Google Sheets. Verificá tu conexión a internet, iniciá sesión con tu cuenta de Google o habilitá el acceso por enlace en la planilla.'
     );
   }
 
-  const csvText = await csvRes.text();
-  if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.includes('accounts.google.com')) {
+  // Cuando una planilla es privada, el endpoint `gviz/tq` devuelve un código 200 con la página HTML de inicio de sesión de Google en vez de un CSV.
+  if (
+    !csvText ||
+    csvText.trim().startsWith('<!DOCTYPE html') ||
+    csvText.includes('accounts.google.com')
+  ) {
     throw new Error(
       'La hoja de Google Sheets es privada. Pulsa "Buscar" abajo para conectar tu Google Drive o habilita el acceso por enlace.'
     );
   }
 
-  const XLSX = await import('xlsx');
-  const wb = XLSX.read(csvText, { type: 'string' });
-  const firstSheet = wb.SheetNames[0];
-  const ws = wb.Sheets[firstSheet];
-  const rawValues: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-  const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
+  try {
+    const XLSX = await import('xlsx');
+    const wb = XLSX.read(csvText, { type: 'string' });
+    const firstSheet = wb?.SheetNames?.[0];
+    const ws = firstSheet ? wb.Sheets?.[firstSheet] : null;
+    const rawValues: any[][] = ws ? XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' }) : [];
+    const { headers, rows, headerRowIndex } = convert2DArrayToTableObjectsHelper(rawValues);
 
-  return {
-    spreadsheetId,
-    title: 'Hoja de Google Sheets',
-    sheetNames: [targetSheetTitle || 'Hoja 1'],
-    selectedSheet: targetSheetTitle || 'Hoja 1',
-    headers,
-    rows,
-    raw2D: rawValues,
-    headerRowIndex,
-  };
+    return {
+      spreadsheetId,
+      title: 'Hoja de Google Sheets',
+      sheetNames: [targetSheetTitle || 'Hoja 1'],
+      selectedSheet: targetSheetTitle || 'Hoja 1',
+      headers,
+      rows,
+      raw2D: rawValues,
+      headerRowIndex,
+    };
+  } catch {
+    throw new Error('No se pudo interpretar el contenido de la hoja de Google Sheets.');
+  }
 }

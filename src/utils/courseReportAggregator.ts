@@ -156,6 +156,68 @@ export function extractStudentExamDetails(
   return items;
 }
 
+/**
+ * Filtra de forma pura un diccionario crudo de disposición áulica para asegurar que únicamente
+ * se conserven entradas pertenecientes al `courseId` indicado (o sin etiqueta de curso heredada).
+ *
+ * @param parsedDispositionData Objeto parseado desde almacenamiento o nube.
+ * @param courseId Identificador del curso activo.
+ * @returns Mapa de disposición filtrado por curso.
+ */
+export function filterCourseDispositionMap(
+  parsedDispositionData: unknown,
+  courseId: string
+): Record<string, any> {
+  if (!parsedDispositionData || typeof parsedDispositionData !== 'object') {
+    return {};
+  }
+  const filtered: Record<string, any> = {};
+  for (const [studentKey, entryValue] of Object.entries(
+    parsedDispositionData as Record<string, any>
+  )) {
+    if (!entryValue?.courseId || entryValue.courseId === courseId) {
+      filtered[studentKey] = entryValue;
+    }
+  }
+  return filtered;
+}
+
+/**
+ * Resuelve de forma pura el mapa efectivo de calificaciones finales de un cuatrimestre:
+ * utiliza el mapa precalculado si contiene datos, o lo calcula al vuelo para cada estudiante.
+ *
+ * @param providedScoreMap Mapa de notas recibido por props desde la matriz (puede estar vacío si se abre desde el tablero).
+ * @param students Lista de estudiantes del curso.
+ * @param categories Categorías de evaluación del cuatrimestre.
+ * @param gradesMap Mapa crudo de notas del cuatrimestre.
+ * @param calcMode Modo de cálculo final configurado para el cuatrimestre.
+ * @returns Mapa efectivo de calificaciones finales indexado por `studentId`.
+ */
+export function resolveEffectiveTermScoresMap(
+  providedScoreMap: Record<string, { scoreStr: string; num: number | null }> | undefined,
+  students: Student[],
+  categories: GradeCategory[],
+  gradesMap: StudentGradesMap,
+  calcMode: 'average_of_categories' | 'manual_final'
+): Record<string, { scoreStr: string; num: number | null }> {
+  if (providedScoreMap && Object.keys(providedScoreMap).length > 0) {
+    return providedScoreMap;
+  }
+  const computedMap: Record<string, { scoreStr: string; num: number | null }> = {};
+  students.forEach((student) => {
+    const calculatedScore = computeTermScoreForStudent(
+      student.id,
+      categories,
+      gradesMap,
+      calcMode
+    );
+    if (calculatedScore.scoreStr !== '') {
+      computedMap[student.id] = calculatedScore;
+    }
+  });
+  return computedMap;
+}
+
 export function buildConsolidatedReportStudents(params: {
   courseId: string;
   students: Student[];

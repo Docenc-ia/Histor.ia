@@ -167,9 +167,13 @@ export const backupService = {
       }
     }
 
+    const cloudRestorePromises: Promise<unknown>[] = [];
+
     if (Array.isArray(data.courses) && data.courses.length > 0) {
       saveLocalCourses(data.courses);
-      if (uid) await firestoreSync.saveCourses(uid, data.courses);
+      if (uid) {
+        cloudRestorePromises.push(firestoreSync.saveCourses(uid, data.courses));
+      }
     }
 
     if (Array.isArray(data.students) && data.students.length > 0) {
@@ -183,7 +187,7 @@ export const backupService = {
           byCourse.set(st.courseId, arr);
         });
         for (const [cid, list] of byCourse.entries()) {
-          await firestoreSync.saveStudents(uid, cid, list);
+          cloudRestorePromises.push(firestoreSync.saveStudents(uid, cid, list));
         }
       }
     }
@@ -191,15 +195,21 @@ export const backupService = {
     if (data.disposition2c && typeof data.disposition2c === 'object') {
       storageGateway.setScopedJson('fds_disposition_data_2c', data.disposition2c);
       if (uid) {
-        await firestoreSync.saveUserSetting(uid, 'disposition_map_2c', data.disposition2c);
+        cloudRestorePromises.push(
+          firestoreSync.saveUserSetting(uid, 'disposition_map_2c', data.disposition2c)
+        );
       }
     }
 
     if (data.disposition || data.history) {
       saveAllDispositionStorage(data.disposition || {}, data.history || []);
       if (uid && Array.isArray(data.history) && data.history.length > 0) {
-        await firestoreSync.saveDispositionBatch(uid, data.history);
+        cloudRestorePromises.push(firestoreSync.saveDispositionBatch(uid, data.history));
       }
+    }
+
+    if (cloudRestorePromises.length > 0) {
+      await Promise.all(cloudRestorePromises);
     }
 
     emitAppEvent('docencia_student_status_updated');

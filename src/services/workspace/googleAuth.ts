@@ -18,75 +18,98 @@ import {
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { api } from '../api';
 import { TeacherProfile } from '../../types';
+import {
+  WORKSPACE_SCOPES,
+  BASIC_IDENTITY_SCOPES,
+  LAST_TEACHER_EMAIL_KEY,
+  LAST_USER_PROFILE_KEY,
+  SESSION_ACTIVE_STORAGE_KEY,
+  USER_PROFILE_STORAGE_KEY,
+  TEACHER_EMAIL_STORAGE_KEY,
+  EXPLICIT_LOGOUT_STORAGE_KEY,
+  DEFAULT_TEACHER_NAME,
+  GENERIC_TEACHER_LABEL,
+  PROFESSOR_TITLE_PREFIX,
+  getActiveTeacherEmail,
+  getLastRememberedEmail,
+  getTeacherAvatar,
+  deriveSchoolFromEmail,
+  DEFAULT_TEACHER,
+  saveRememberedProfile,
+  buildTeacherProfileFromEmail,
+  getRememberedProfile,
+} from './teacherProfileMapper';
 
-// Desired Google Workspace & Identity scopes configured in OAuth
-export const WORKSPACE_SCOPES = [
-  'https://www.googleapis.com/auth/classroom.courses.readonly',
-  'https://www.googleapis.com/auth/classroom.rosters.readonly',
-  'https://www.googleapis.com/auth/classroom.coursework.students',
-  'https://www.googleapis.com/auth/classroom.announcements',
-  'https://www.googleapis.com/auth/gmail.send',
-  'https://www.googleapis.com/auth/spreadsheets',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/forms.body.readonly',
-  'https://www.googleapis.com/auth/forms.responses.readonly',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-];
-
-// Non-sensitive basic identity scopes that do not require Google sensitive-scope verification
-export const BASIC_IDENTITY_SCOPES = [
-  'openid',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-];
-
-// Initialize Firebase App
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-
-if (typeof window !== 'undefined') {
-  setPersistence(auth, browserLocalPersistence).catch(() => {});
-  try {
-    // Ensure closing the browser/tab always requires logging in again on next visit
-    localStorage.removeItem('docencia_session_active');
-    localStorage.removeItem('docencia_user_profile');
-    localStorage.removeItem('docencia_teacher_email');
-  } catch (_) {}
-}
-
-// Helper to create a fresh GoogleAuthProvider per sign-in attempt to prevent stale customParameters
-const createGoogleAuthProvider = (loginHint?: string): GoogleAuthProvider => {
-  const freshProvider = new GoogleAuthProvider();
-  WORKSPACE_SCOPES.forEach((scope) => {
-    if (!scope.includes('userinfo.email') && !scope.includes('userinfo.profile')) {
-      freshProvider.addScope(scope);
-    }
-  });
-  const cleanHint = (loginHint || '').trim().toLowerCase();
-  if (cleanHint) {
-    freshProvider.setCustomParameters({
-      login_hint: cleanHint,
-    });
-  } else {
-    freshProvider.setCustomParameters({
-      prompt: 'select_account',
-    });
-  }
-  return freshProvider;
+export {
+  WORKSPACE_SCOPES,
+  BASIC_IDENTITY_SCOPES,
+  LAST_TEACHER_EMAIL_KEY,
+  LAST_USER_PROFILE_KEY,
+  getActiveTeacherEmail,
+  getLastRememberedEmail,
+  getTeacherAvatar,
+  deriveSchoolFromEmail,
+  DEFAULT_TEACHER,
+  saveRememberedProfile,
+  buildTeacherProfileFromEmail,
+  getRememberedProfile,
 };
 
-// Token storage keys: active session is strictly per-tab (sessionStorage), while granted OAuth tokens per email are remembered in localStorage
 const TOKEN_STORAGE_KEY = 'docencia_workspace_access_token';
 const TOKEN_EXPIRY_KEY = 'docencia_workspace_token_expires_at';
 const TOKEN_ISSUED_KEY = 'docencia_workspace_token_issued_at';
 const SAVED_TOKENS_BY_EMAIL_KEY = 'docencia_saved_oauth_tokens_by_email';
-export const LAST_TEACHER_EMAIL_KEY = 'docencia_last_teacher_email';
-export const LAST_USER_PROFILE_KEY = 'docencia_last_user_profile';
 const TOKEN_SYNC_CHANNEL_NAME = 'docencia_workspace_token_sync';
-const TOKEN_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000;
+const ENCODED_TOKEN_PREFIX = 'enc1:';
+
+const DAYS_IN_YEAR = 365;
+const HOURS_IN_DAY = 24;
+const MINUTES_IN_HOUR = 60;
+const SECONDS_IN_MINUTE = 60;
+const MILLISECONDS_IN_SECOND = 1000;
+const TOKEN_LIFETIME_MS =
+  DAYS_IN_YEAR * HOURS_IN_DAY * MINUTES_IN_HOUR * SECONDS_IN_MINUTE * MILLISECONDS_IN_SECOND;
+const USER_GESTURE_VALIDITY_WINDOW_MS = 10000;
+const POPUP_DEBOUNCE_COOLDOWN_MS = 4000;
+const DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3540;
+const MIN_VALID_ACCESS_TOKEN_LENGTH = 20;
+const JWT_HEADER_PREFIX = 'eyJ';
+
+const INVALID_SYNTHETIC_TOKEN_PREFIXES = [
+  'google_workspace_token_',
+  'ya29.inst_',
+  'ya29.mock_',
+  'token_',
+];
+const INVALID_SYNTHETIC_TOKEN_VALUES = ['token_authenticated', 'default_token'];
+
+const EVENT_GOOGLE_SESSION_RENEWED = 'google_session_renewed';
+const EVENT_GOOGLE_SESSION_CLEARED = 'google_session_cleared';
+const SYNC_MESSAGE_REQUEST_TOKEN = 'REQUEST_TOKEN';
+const SYNC_MESSAGE_SHARE_TOKEN = 'SHARE_TOKEN';
+const SYNC_MESSAGE_CLEAR_TOKEN = 'CLEAR_TOKEN';
+
+const GOOGLE_USERINFO_ENDPOINT = 'https://www.googleapis.com/oauth2/v3/userinfo';
+const AI_STUDIO_PREVIEW_HOST_FRAGMENT = 'xanf7lgydk64d73ob33wqe';
+const AI_STUDIO_PREVIEW_OAUTH_CLIENT_ID =
+  '708929916247-j4j7vl4vipn2to5vlvh7us3jl7td29mi.apps.googleusercontent.com';
+const OAUTH_PROMPT_SELECT_ACCOUNT = 'select_account';
+const OAUTH_PROMPT_CONSENT = 'consent';
+const HTTP_STATUS_UNAUTHORIZED = 401;
+const HTTP_STATUS_FORBIDDEN = 403;
+
+const firebaseApp = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+export const auth = getAuth(firebaseApp);
+
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch(() => {});
+  try {
+    // Se limpian las banderas de sesión activa de `localStorage` para que la vigencia dependa exclusivamente de `sessionStorage` (obligando a re-autenticar al cerrar el navegador).
+    localStorage.removeItem(SESSION_ACTIVE_STORAGE_KEY);
+    localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+    localStorage.removeItem(TEACHER_EMAIL_STORAGE_KEY);
+  } catch (_) {}
+}
 
 let cachedAccessToken: string | null = null;
 let tokenIssuedAt: number | null = null;
@@ -94,18 +117,26 @@ let tokenExpiresAt: number | null = null;
 let isSigningIn = false;
 let hasRequestedTokenFromPeers = false;
 let tokenSyncChannel: BroadcastChannel | null = null;
+let lastLinkedFirebaseToken: string | null = null;
+let isRefreshingToken = false;
+let lastPopupRequestTime = 0;
 
-// User gesture tracking to prevent popup-blocked errors when calling GIS requestAccessToken
-let lastUserGestureTime = 0;
+let lastUserGestureTimestampMs = 0;
 if (typeof window !== 'undefined') {
-  const markGesture = () => {
-    lastUserGestureTime = Date.now();
+  const recordUserGesture = () => {
+    lastUserGestureTimestampMs = Date.now();
   };
-  window.addEventListener('pointerdown', markGesture, { capture: true, passive: true });
-  window.addEventListener('click', markGesture, { capture: true, passive: true });
-  window.addEventListener('keydown', markGesture, { capture: true, passive: true });
+  window.addEventListener('pointerdown', recordUserGesture, { capture: true, passive: true });
+  window.addEventListener('click', recordUserGesture, { capture: true, passive: true });
+  window.addEventListener('keydown', recordUserGesture, { capture: true, passive: true });
 }
 
+/**
+ * Determina si ocurrió una interacción física reciente del usuario (clic o teclado) en la ventana actual.
+ * Necesario porque los navegadores modernos bloquean `requestAccessToken` de Google Identity Services si se invoca fuera de un gesto de usuario.
+ *
+ * @returns `true` si el navegador registra activación de usuario vigente.
+ */
 export const hasRecentUserGesture = (): boolean => {
   if (typeof window === 'undefined') return false;
   if (
@@ -115,91 +146,29 @@ export const hasRecentUserGesture = (): boolean => {
   ) {
     return true;
   }
-  return Date.now() - lastUserGestureTime < 10000;
-};
-
-export const getActiveTeacherEmail = (): string => {
-  if (typeof window === 'undefined') return '';
-  if (sessionStorage.getItem('docencia_session_active') !== 'true') return '';
-  return (sessionStorage.getItem('docencia_teacher_email') || '').trim().toLowerCase();
-};
-
-export const getLastRememberedEmail = (): string => {
-  if (typeof window === 'undefined') return '';
-  return (
-    sessionStorage.getItem('docencia_teacher_email') ||
-    localStorage.getItem(LAST_TEACHER_EMAIL_KEY) ||
-    ''
-  ).trim().toLowerCase();
+  return Date.now() - lastUserGestureTimestampMs < USER_GESTURE_VALIDITY_WINDOW_MS;
 };
 
 /**
- * Validates whether a token string is a genuine Google OAuth 2.0 access token for Google APIs
- * (not an OpenID Connect JWT ID token, not a Firebase ID token, and not a dummy/mock token).
+ * Verifica que una cadena sea un token de acceso OAuth 2.0 real para las APIs de Google Workspace,
+ * descartando tokens JWT OpenID (`eyJ...`), tokens internos de Firebase o cadenas sintéticas de prueba.
+ *
+ * @param candidateToken Cadena de token a validar.
+ * @returns `true` si el formato corresponde a un `access_token` de Google OAuth 2.0 válido.
  */
-export const isValidGoogleAccessToken = (token?: string | null): boolean => {
-  if (!token || typeof token !== 'string') return false;
-  const t = token.trim();
-  if (t.length < 20) return false;
-  // JWT tokens start with "eyJ" (Base64url JSON header). They are ID tokens, NOT OAuth 2 access tokens.
-  if (t.startsWith('eyJ')) return false;
-  // Synthetic fallback tokens
-  if (
-    t.startsWith('google_workspace_token_') ||
-    t.startsWith('ya29.inst_') ||
-    t.startsWith('ya29.mock_') ||
-    t.startsWith('token_') ||
-    t === 'token_authenticated' ||
-    t === 'default_token'
-  ) {
+export const isValidGoogleAccessToken = (candidateToken?: string | null): boolean => {
+  if (!candidateToken || typeof candidateToken !== 'string') return false;
+  const trimmedToken = candidateToken.trim();
+  if (trimmedToken.length < MIN_VALID_ACCESS_TOKEN_LENGTH) return false;
+  if (trimmedToken.startsWith(JWT_HEADER_PREFIX)) return false;
+
+  const hasSyntheticPrefix = INVALID_SYNTHETIC_TOKEN_PREFIXES.some((prefix) =>
+    trimmedToken.startsWith(prefix)
+  );
+  if (hasSyntheticPrefix || INVALID_SYNTHETIC_TOKEN_VALUES.includes(trimmedToken)) {
     return false;
   }
   return true;
-};
-
-export const getTeacherAvatar = (name?: string, email?: string, avatarUrl?: string): string => {
-  if (avatarUrl && !avatarUrl.includes('photo-1534528741775') && avatarUrl.trim() !== '') {
-    return avatarUrl;
-  }
-  const cleanName = (name && name !== 'Docente Titular' && name !== 'Docente')
-    ? name.replace(/^Prof\.\s*/i, '').trim()
-    : '';
-  const seed = cleanName || (email ? email.split('@')[0].replace(/[._-]/g, ' ') : 'Docente');
-  return `https://ui-avatars.com/api/?name=${encodeURIComponent(seed)}&background=1d4ed8&color=ffffff&bold=true&size=150`;
-};
-
-export const deriveSchoolFromEmail = (email?: string): string => {
-  if (!email || !email.includes('@')) return 'Institución Educativa';
-  const domain = email.split('@')[1].toLowerCase();
-  if (domain.includes('fds-esc.edu.ar')) {
-    return 'FDS - Educación Secundaria';
-  }
-  if (domain.includes('gmail.') || domain.includes('hotmail.') || domain.includes('outlook.') || domain.includes('yahoo.')) {
-    return 'Institución Educativa';
-  }
-  const orgName = domain.split('.')[0];
-  return `Institución ${orgName.toUpperCase()}`;
-};
-
-export const DEFAULT_TEACHER: TeacherProfile = {
-  id: 'user-docente',
-  name: 'Docente Titular',
-  email: '',
-  avatar: getTeacherAvatar('Docente Titular'),
-  role: 'Docente Titular',
-  school: 'Institución Educativa',
-  permissions: [
-    'tasks.create',
-    'tasks.assign',
-    'tasks.grade',
-    'tasks.delete',
-    'drive.read',
-    'drive.attach',
-    'classroom.sync',
-    'students.view',
-    'grades.manage',
-  ],
-  scopes: WORKSPACE_SCOPES,
 };
 
 const clearPersistedStorageTokens = (): void => {
@@ -219,30 +188,28 @@ export const isGoogleSessionExpired = (): boolean => {
 };
 
 export const notifyGoogleSessionExpired = (_reason = 'session_expired') => {
-  // No-op: do not nag the user with expiration banners or popups once authenticated
+  // Intencionalmente vacío para no interrumpir la clase del docente con carteles de expiración cuando trabaja en modo local.
 };
 
 const encodeStoredToken = (rawToken: string): string => {
   try {
-    return 'enc1:' + btoa(encodeURIComponent(rawToken));
+    return ENCODED_TOKEN_PREFIX + btoa(encodeURIComponent(rawToken));
   } catch {
     return rawToken;
   }
 };
 
-const decodeStoredToken = (storedVal: string | null): string | null => {
-  if (!storedVal) return null;
-  if (storedVal.startsWith('enc1:')) {
+const decodeStoredToken = (storedValue: string | null): string | null => {
+  if (!storedValue) return null;
+  if (storedValue.startsWith(ENCODED_TOKEN_PREFIX)) {
     try {
-      return decodeURIComponent(atob(storedVal.slice(5)));
+      return decodeURIComponent(atob(storedValue.slice(ENCODED_TOKEN_PREFIX.length)));
     } catch {
       return null;
     }
   }
-  return storedVal;
+  return storedValue;
 };
-
-let lastLinkedFirebaseToken: string | null = null;
 
 const syncFirebaseAuthWithAccessToken = (accessToken: string): void => {
   if (!accessToken || !isValidGoogleAccessToken(accessToken)) return;
@@ -250,89 +217,50 @@ const syncFirebaseAuthWithAccessToken = (accessToken: string): void => {
   if (lastLinkedFirebaseToken === accessToken) return;
   lastLinkedFirebaseToken = accessToken;
   try {
-    const cred = GoogleAuthProvider.credential(null, accessToken);
-    signInWithCredential(auth, cred).catch(() => {});
+    const firebaseCredential = GoogleAuthProvider.credential(null, accessToken);
+    signInWithCredential(auth, firebaseCredential).catch(() => {});
   } catch (_) {}
 };
 
-export const saveTokenForEmail = (email: string, token: string): void => {
-  if (typeof window === 'undefined' || !email || !isValidGoogleAccessToken(token)) return;
-  try {
-    const cleanEmail = email.trim().toLowerCase();
-    const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
-    const map: Record<string, string> = raw ? JSON.parse(raw) : {};
-    map[cleanEmail] = encodeStoredToken(token);
-    localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(map));
-  } catch (_) {}
-};
-
-export const getSavedTokenForEmail = (email?: string): string | null => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
-    if (!raw) return null;
-    const map: Record<string, string> = JSON.parse(raw);
-    const cleanEmail = (email || getActiveTeacherEmail() || '').trim().toLowerCase();
-    if (cleanEmail && map[cleanEmail]) {
-      const decoded = decodeStoredToken(map[cleanEmail]);
-      if (decoded && isValidGoogleAccessToken(decoded)) return decoded;
-    }
-  } catch (_) {}
-  return null;
-};
-
-export const saveRememberedProfile = (profile: TeacherProfile): void => {
-  if (typeof window === 'undefined' || !profile?.email) return;
-  try {
-    const cleanEmail = profile.email.trim().toLowerCase();
-    localStorage.setItem(LAST_TEACHER_EMAIL_KEY, cleanEmail);
-    localStorage.setItem(LAST_USER_PROFILE_KEY, JSON.stringify(profile));
-  } catch (_) {}
-};
-
-export const buildTeacherProfileFromEmail = (email: string, name?: string): TeacherProfile => {
-  const cleanEmail = email.trim().toLowerCase();
-  const rawName =
-    name ||
-    cleanEmail
-      .split('@')[0]
-      .split(/[._-]/)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ') ||
-    'Docente Titular';
-  const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-  return {
-    id: 'teacher_' + cleanEmail.replace(/[^a-zA-Z0-9]/g, '_'),
-    name: displayName,
-    email: cleanEmail,
-    avatar: getTeacherAvatar(displayName, cleanEmail),
-    role: 'Docente Titular',
-    school: deriveSchoolFromEmail(cleanEmail),
-    permissions: DEFAULT_TEACHER.permissions,
-    scopes: WORKSPACE_SCOPES,
-  };
-};
-
-export const getRememberedProfile = (email?: string): TeacherProfile | null => {
-  if (typeof window === 'undefined') return null;
-  const targetEmail = (email || getLastRememberedEmail() || '').trim().toLowerCase();
-  try {
-    const raw =
-      sessionStorage.getItem('docencia_user_profile') ||
-      localStorage.getItem('docencia_user_profile') ||
-      localStorage.getItem(LAST_USER_PROFILE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as TeacherProfile;
-      if (parsed && parsed.email) {
-        if (!targetEmail || parsed.email.trim().toLowerCase() === targetEmail) {
-          return parsed;
-        }
-      }
-    }
-  } catch (_) {}
-  if (targetEmail && targetEmail.includes('@')) {
-    return buildTeacherProfileFromEmail(targetEmail);
+/**
+ * Guarda de forma codificada un token OAuth 2.0 asociado al correo del docente en `localStorage`.
+ *
+ * @param emailAddress Correo electrónico del docente propietario del token.
+ * @param accessToken Token de acceso OAuth 2.0 emitido por Google.
+ */
+export const saveTokenForEmail = (emailAddress: string, accessToken: string): void => {
+  if (typeof window === 'undefined' || !emailAddress || !isValidGoogleAccessToken(accessToken)) {
+    return;
   }
+  try {
+    const normalizedEmail = emailAddress.trim().toLowerCase();
+    const serializedTokenMap = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
+    const tokensByEmailMap: Record<string, string> = serializedTokenMap
+      ? JSON.parse(serializedTokenMap)
+      : {};
+    tokensByEmailMap[normalizedEmail] = encodeStoredToken(accessToken);
+    localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(tokensByEmailMap));
+  } catch (_) {}
+};
+
+/**
+ * Recupera el token OAuth 2.0 previamente guardado para un correo electrónico específico.
+ *
+ * @param emailAddress Correo del docente a consultar (o el del docente activo por defecto).
+ * @returns El token decodificado y validado, o `null` si no existe.
+ */
+export const getSavedTokenForEmail = (emailAddress?: string): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const serializedTokenMap = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
+    if (!serializedTokenMap) return null;
+    const tokensByEmailMap: Record<string, string> = JSON.parse(serializedTokenMap);
+    const normalizedEmail = (emailAddress || getActiveTeacherEmail() || '').trim().toLowerCase();
+    if (normalizedEmail && tokensByEmailMap[normalizedEmail]) {
+      const decodedToken = decodeStoredToken(tokensByEmailMap[normalizedEmail]);
+      if (decodedToken && isValidGoogleAccessToken(decodedToken)) return decodedToken;
+    }
+  } catch (_) {}
   return null;
 };
 
@@ -342,134 +270,145 @@ const setupCrossTabTokenSync = (): void => {
 
   try {
     tokenSyncChannel = new BroadcastChannel(TOKEN_SYNC_CHANNEL_NAME);
-    tokenSyncChannel.onmessage = (event: MessageEvent) => {
-      const data = event.data;
-      if (!data || typeof data !== 'object') return;
+    tokenSyncChannel.onmessage = (messageEvent: MessageEvent) => {
+      const messagePayload = messageEvent.data;
+      if (!messagePayload || typeof messagePayload !== 'object') return;
 
-      if (data.type === 'REQUEST_TOKEN') {
+      if (messagePayload.type === SYNC_MESSAGE_REQUEST_TOKEN) {
         const currentToken =
           cachedAccessToken ||
           decodeStoredToken(sessionStorage.getItem(TOKEN_STORAGE_KEY)) ||
           decodeStoredToken(localStorage.getItem(TOKEN_STORAGE_KEY));
         const currentExpiry =
           tokenExpiresAt ||
-          Number(sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0);
+          Number(
+            sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
+              localStorage.getItem(TOKEN_EXPIRY_KEY) ||
+              0
+          );
         const currentIssued =
           tokenIssuedAt ||
-          Number(sessionStorage.getItem(TOKEN_ISSUED_KEY) || localStorage.getItem(TOKEN_ISSUED_KEY) || Date.now());
+          Number(
+            sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
+              localStorage.getItem(TOKEN_ISSUED_KEY) ||
+              Date.now()
+          );
         if (currentToken && isValidGoogleAccessToken(currentToken)) {
           try {
             tokenSyncChannel?.postMessage({
-              type: 'SHARE_TOKEN',
+              type: SYNC_MESSAGE_SHARE_TOKEN,
               token: currentToken,
               issuedAt: currentIssued,
-              expiresAt: currentExpiry || (Date.now() + TOKEN_LIFETIME_MS),
+              expiresAt: currentExpiry || Date.now() + TOKEN_LIFETIME_MS,
               teacherEmail: getActiveTeacherEmail(),
             });
           } catch (_) {}
         }
-      } else if (data.type === 'SHARE_TOKEN' && data.token && isValidGoogleAccessToken(data.token)) {
-        const now = Date.now();
-        const incomingExpiry = Number(data.expiresAt) || (now + TOKEN_LIFETIME_MS);
-        const incomingIssued = Number(data.issuedAt) || now;
-        if (cachedAccessToken !== data.token) {
-          cachedAccessToken = data.token;
+      } else if (
+        messagePayload.type === SYNC_MESSAGE_SHARE_TOKEN &&
+        messagePayload.token &&
+        isValidGoogleAccessToken(messagePayload.token)
+      ) {
+        const currentTimeMs = Date.now();
+        const incomingExpiry =
+          Number(messagePayload.expiresAt) || currentTimeMs + TOKEN_LIFETIME_MS;
+        const incomingIssued = Number(messagePayload.issuedAt) || currentTimeMs;
+        if (cachedAccessToken !== messagePayload.token) {
+          cachedAccessToken = messagePayload.token;
           tokenIssuedAt = incomingIssued;
           tokenExpiresAt = incomingExpiry;
           try {
-            const encoded = encodeStoredToken(data.token);
-            sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+            const encodedToken = encodeStoredToken(messagePayload.token);
+            sessionStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
             sessionStorage.setItem(TOKEN_ISSUED_KEY, String(incomingIssued));
             sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(incomingExpiry));
-            localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
+            localStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
             localStorage.setItem(TOKEN_ISSUED_KEY, String(incomingIssued));
             localStorage.setItem(TOKEN_EXPIRY_KEY, String(incomingExpiry));
-            if (data.teacherEmail) {
-              const cleanEmail = String(data.teacherEmail).trim().toLowerCase();
-              if (sessionStorage.getItem('docencia_session_active') === 'true') {
-                sessionStorage.setItem('docencia_teacher_email', cleanEmail);
+            if (messagePayload.teacherEmail) {
+              const normalizedEmail = String(messagePayload.teacherEmail).trim().toLowerCase();
+              if (sessionStorage.getItem(SESSION_ACTIVE_STORAGE_KEY) === 'true') {
+                sessionStorage.setItem(TEACHER_EMAIL_STORAGE_KEY, normalizedEmail);
               }
-              localStorage.setItem(LAST_TEACHER_EMAIL_KEY, cleanEmail);
-              saveTokenForEmail(cleanEmail, data.token);
+              localStorage.setItem(LAST_TEACHER_EMAIL_KEY, normalizedEmail);
+              saveTokenForEmail(normalizedEmail, messagePayload.token);
             }
           } catch (_) {}
-          syncFirebaseAuthWithAccessToken(data.token);
+          syncFirebaseAuthWithAccessToken(messagePayload.token);
           window.dispatchEvent(
-            new CustomEvent('google_session_renewed', { detail: { token: data.token } })
+            new CustomEvent(EVENT_GOOGLE_SESSION_RENEWED, {
+              detail: { token: messagePayload.token },
+            })
           );
         }
-      } else if (data.type === 'CLEAR_TOKEN') {
+      } else if (messagePayload.type === SYNC_MESSAGE_CLEAR_TOKEN) {
         cachedAccessToken = null;
         tokenIssuedAt = null;
         tokenExpiresAt = null;
         lastLinkedFirebaseToken = null;
         clearPersistedStorageTokens();
-        window.dispatchEvent(new CustomEvent('google_session_cleared'));
+        window.dispatchEvent(new CustomEvent(EVENT_GOOGLE_SESSION_CLEARED));
       }
     };
   } catch (_) {}
 };
 
-// Initialize BroadcastChannel listener on module load in browser
 if (typeof window !== 'undefined') {
   setupCrossTabTokenSync();
 }
 
+/**
+ * Obtiene el token de acceso OAuth 2.0 activo desde la caché en memoria o el almacenamiento local de la sesión.
+ *
+ * @returns El token OAuth activo si la sesión está iniciada y no fue cerrada explícitamente, o `null`.
+ */
 export const getCachedAccessToken = (): string | null => {
   if (typeof window !== 'undefined') {
     try {
-      const isExplicitLogout = localStorage.getItem('docencia_explicit_logout') === 'true';
+      const isExplicitLogout = localStorage.getItem(EXPLICIT_LOGOUT_STORAGE_KEY) === 'true';
       const isSessionActive =
-        !isExplicitLogout &&
-        sessionStorage.getItem('docencia_session_active') === 'true';
+        !isExplicitLogout && sessionStorage.getItem(SESSION_ACTIVE_STORAGE_KEY) === 'true';
       if (!isSessionActive) {
         return null;
       }
     } catch (_) {}
   }
 
-  // 1. In-memory fast path
   if (cachedAccessToken && isValidGoogleAccessToken(cachedAccessToken)) {
     return cachedAccessToken;
   }
 
-  // 2. sessionStorage + per-email saved token persistence for the currently authenticated teacher
   if (typeof window !== 'undefined') {
     setupCrossTabTokenSync();
     try {
       const activeEmail = getActiveTeacherEmail();
-      const rawStored =
-        sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
-        localStorage.getItem(TOKEN_STORAGE_KEY);
-      const storedIssued = Number(
-        sessionStorage.getItem(TOKEN_ISSUED_KEY) ||
-          localStorage.getItem(TOKEN_ISSUED_KEY) ||
-          0
+      const rawStoredToken =
+        sessionStorage.getItem(TOKEN_STORAGE_KEY) || localStorage.getItem(TOKEN_STORAGE_KEY);
+      const storedIssuedAt = Number(
+        sessionStorage.getItem(TOKEN_ISSUED_KEY) || localStorage.getItem(TOKEN_ISSUED_KEY) || 0
       );
-      const storedExpiry = Number(
-        sessionStorage.getItem(TOKEN_EXPIRY_KEY) ||
-          localStorage.getItem(TOKEN_EXPIRY_KEY) ||
-          0
+      const storedExpiresAt = Number(
+        sessionStorage.getItem(TOKEN_EXPIRY_KEY) || localStorage.getItem(TOKEN_EXPIRY_KEY) || 0
       );
 
-      const stored =
+      const resolvedToken =
         (activeEmail ? getSavedTokenForEmail(activeEmail) : null) ||
-        decodeStoredToken(rawStored);
+        decodeStoredToken(rawStoredToken);
 
-      if (stored && isValidGoogleAccessToken(stored)) {
-        const now = Date.now();
-        cachedAccessToken = stored;
-        tokenIssuedAt = storedIssued || now;
-        tokenExpiresAt = storedExpiry || (now + TOKEN_LIFETIME_MS);
-        const encoded = encodeStoredToken(stored);
-        sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
-        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
-        syncFirebaseAuthWithAccessToken(stored);
+      if (resolvedToken && isValidGoogleAccessToken(resolvedToken)) {
+        const currentTimeMs = Date.now();
+        cachedAccessToken = resolvedToken;
+        tokenIssuedAt = storedIssuedAt || currentTimeMs;
+        tokenExpiresAt = storedExpiresAt || currentTimeMs + TOKEN_LIFETIME_MS;
+        const encodedToken = encodeStoredToken(resolvedToken);
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
+        localStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
+        syncFirebaseAuthWithAccessToken(resolvedToken);
         return cachedAccessToken;
       } else if (!hasRequestedTokenFromPeers && tokenSyncChannel) {
         hasRequestedTokenFromPeers = true;
         try {
-          tokenSyncChannel.postMessage({ type: 'REQUEST_TOKEN' });
+          tokenSyncChannel.postMessage({ type: SYNC_MESSAGE_REQUEST_TOKEN });
         } catch (_) {}
       }
     } catch (_) {}
@@ -478,49 +417,66 @@ export const getCachedAccessToken = (): string | null => {
   return null;
 };
 
+/**
+ * Actualiza el token OAuth 2.0 activo en memoria, almacenamiento persistente y pestañas hermanas vía `BroadcastChannel`.
+ * Si se recibe `null`, limpia la sesión de acceso en todas las capas.
+ *
+ * @param accessToken Nuevo token OAuth 2.0 o `null` para limpiar.
+ * @param teacherEmail Correo del docente asociado al token.
+ * @param expiresInSeconds Tiempo de vida reportado por Google OAuth en segundos.
+ */
 export const setCachedAccessToken = (
-  token: string | null,
+  accessToken: string | null,
   teacherEmail?: string,
   expiresInSeconds?: number
 ): void => {
-  const now = Date.now();
+  const currentTimeMs = Date.now();
   setupCrossTabTokenSync();
-  if (token && isValidGoogleAccessToken(token)) {
-    cachedAccessToken = token;
-    tokenIssuedAt = now;
-    const ttlMs = expiresInSeconds ? Math.max(expiresInSeconds * 1000, TOKEN_LIFETIME_MS) : TOKEN_LIFETIME_MS;
-    const expiresAt = now + ttlMs;
-    tokenExpiresAt = expiresAt;
-    const encoded = encodeStoredToken(token);
+  if (accessToken && isValidGoogleAccessToken(accessToken)) {
+    cachedAccessToken = accessToken;
+    tokenIssuedAt = currentTimeMs;
+    const lifetimeDurationMs = expiresInSeconds
+      ? Math.max(expiresInSeconds * MILLISECONDS_IN_SECOND, TOKEN_LIFETIME_MS)
+      : TOKEN_LIFETIME_MS;
+    const computedExpiresAt = currentTimeMs + lifetimeDurationMs;
+    tokenExpiresAt = computedExpiresAt;
+    const encodedToken = encodeStoredToken(accessToken);
 
-    syncFirebaseAuthWithAccessToken(token);
+    syncFirebaseAuthWithAccessToken(accessToken);
 
     if (typeof window !== 'undefined') {
       try {
-        sessionStorage.setItem(TOKEN_STORAGE_KEY, encoded);
-        sessionStorage.setItem(TOKEN_ISSUED_KEY, String(now));
-        sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
-        localStorage.setItem(TOKEN_STORAGE_KEY, encoded);
-        localStorage.setItem(TOKEN_ISSUED_KEY, String(now));
-        localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiresAt));
+        sessionStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
+        sessionStorage.setItem(TOKEN_ISSUED_KEY, String(currentTimeMs));
+        sessionStorage.setItem(TOKEN_EXPIRY_KEY, String(computedExpiresAt));
+        localStorage.setItem(TOKEN_STORAGE_KEY, encodedToken);
+        localStorage.setItem(TOKEN_ISSUED_KEY, String(currentTimeMs));
+        localStorage.setItem(TOKEN_EXPIRY_KEY, String(computedExpiresAt));
 
-        const cleanEmail = (teacherEmail || getActiveTeacherEmail() || getLastRememberedEmail() || '').trim().toLowerCase();
-        if (cleanEmail) {
-          sessionStorage.setItem('docencia_teacher_email', cleanEmail);
-          localStorage.setItem(LAST_TEACHER_EMAIL_KEY, cleanEmail);
-          saveTokenForEmail(cleanEmail, token);
+        const normalizedEmail = (
+          teacherEmail ||
+          getActiveTeacherEmail() ||
+          getLastRememberedEmail() ||
+          ''
+        )
+          .trim()
+          .toLowerCase();
+        if (normalizedEmail) {
+          sessionStorage.setItem(TEACHER_EMAIL_STORAGE_KEY, normalizedEmail);
+          localStorage.setItem(LAST_TEACHER_EMAIL_KEY, normalizedEmail);
+          saveTokenForEmail(normalizedEmail, accessToken);
         }
 
         tokenSyncChannel?.postMessage({
-          type: 'SHARE_TOKEN',
-          token,
-          issuedAt: now,
-          expiresAt,
-          teacherEmail: cleanEmail,
+          type: SYNC_MESSAGE_SHARE_TOKEN,
+          token: accessToken,
+          issuedAt: currentTimeMs,
+          expiresAt: computedExpiresAt,
+          teacherEmail: normalizedEmail,
         });
       } catch (_) {}
     }
-  } else if (!token) {
+  } else if (!accessToken) {
     cachedAccessToken = null;
     tokenIssuedAt = null;
     tokenExpiresAt = null;
@@ -528,7 +484,7 @@ export const setCachedAccessToken = (
     if (typeof window !== 'undefined') {
       try {
         clearPersistedStorageTokens();
-        tokenSyncChannel?.postMessage({ type: 'CLEAR_TOKEN' });
+        tokenSyncChannel?.postMessage({ type: SYNC_MESSAGE_CLEAR_TOKEN });
       } catch (_) {}
     }
   }
@@ -538,111 +494,137 @@ export const clearAuthSession = (): void => {
   setCachedAccessToken(null);
 };
 
-// Listen to Firebase Auth state (only when session is active in current tab and not explicitly logged out)
+/**
+ * Inicializa el observador de estado de autenticación de Firebase sincronizado con la sesión activa de la pestaña.
+ *
+ * @param onAuthSuccess Callback invocado cuando existe un usuario y un token válidos.
+ * @param onAuthFailure Callback invocado cuando no hay sesión activa o falla la validación.
+ * @returns Función de desuscripción de `onAuthStateChanged`.
+ */
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
   const isSessionActive =
     typeof window !== 'undefined' &&
-    localStorage.getItem('docencia_explicit_logout') !== 'true' &&
-    sessionStorage.getItem('docencia_session_active') === 'true';
+    localStorage.getItem(EXPLICIT_LOGOUT_STORAGE_KEY) !== 'true' &&
+    sessionStorage.getItem(SESSION_ACTIVE_STORAGE_KEY) === 'true';
 
   const initialToken = isSessionActive ? getCachedAccessToken() : null;
   if (initialToken && !auth.currentUser) {
     syncFirebaseAuthWithAccessToken(initialToken);
   }
-  return onAuthStateChanged(auth, async (user: User | null) => {
-    const currentlyActive =
+  return onAuthStateChanged(auth, async (firebaseUser: User | null) => {
+    const isCurrentlyActive =
       typeof window !== 'undefined' &&
-      localStorage.getItem('docencia_explicit_logout') !== 'true' &&
-      sessionStorage.getItem('docencia_session_active') === 'true';
-    if (!currentlyActive) {
+      localStorage.getItem(EXPLICIT_LOGOUT_STORAGE_KEY) !== 'true' &&
+      sessionStorage.getItem(SESSION_ACTIVE_STORAGE_KEY) === 'true';
+    if (!isCurrentlyActive) {
       if (!isSigningIn && onAuthFailure) onAuthFailure();
       return;
     }
     const activeToken = getCachedAccessToken();
-    if (user && activeToken) {
-      if (onAuthSuccess) onAuthSuccess(user, activeToken);
+    if (firebaseUser && activeToken) {
+      if (onAuthSuccess) onAuthSuccess(firebaseUser, activeToken);
     } else if (!isSigningIn && !activeToken) {
       if (onAuthFailure) onAuthFailure();
     }
   });
 };
 
-// Helper to decode Google JWT token securely
-export const parseGoogleJwt = (token: string): any => {
+/**
+ * Decodifica de forma segura el payload JSON de un token JWT de Google (Base64Url -> UTF-8).
+ *
+ * @param jwtToken Cadena JWT de 3 segmentos separados por punto.
+ * @returns El objeto decodificado del payload o `null` si el formato es inválido.
+ */
+export const parseGoogleJwt = (jwtToken: string): any => {
   try {
-    const base64Url = token.split('.')[1];
-    if (!base64Url) return null;
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const base64UrlPayload = jwtToken.split('.')[1];
+    if (!base64UrlPayload) return null;
+    const standardBase64 = base64UrlPayload.replace(/-/g, '+').replace(/_/g, '/');
     const jsonPayload = decodeURIComponent(
-      atob(base64)
+      atob(standardBase64)
         .split('')
-        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .map((char) => '%' + ('00' + char.charCodeAt(0).toString(16)).slice(-2))
         .join('')
     );
     return JSON.parse(jsonPayload);
-  } catch (err) {
-    console.error('Error al decodificar credencial de Google:', err);
+  } catch (decodeError) {
+    console.error('Error al decodificar credencial de Google:', decodeError);
     return null;
   }
 };
 
-// Sign in with Google ID Token obtained from Google Identity Services (GSI)
+/**
+ * Autentica al docente a partir de un ID Token emitido por Google Identity Services (One Tap / Botón GSI),
+ * vinculando la credencial con Firebase Auth sin requerir ventana emergente adicional.
+ *
+ * @param idToken Token JWT de identidad emitido por Google.
+ * @returns Perfil docente construido y el `accessToken` de Workspace recuperado si existía.
+ * @throws {Error} Si el token JWT no puede decodificarse o carece de correo electrónico.
+ */
 export const signInWithGoogleIdToken = async (
   idToken: string
 ): Promise<{ profile: TeacherProfile; accessToken: string }> => {
-  const payload = parseGoogleJwt(idToken);
-  if (!payload || !payload.email) {
+  const decodedPayload = parseGoogleJwt(idToken);
+  if (!decodedPayload || !decodedPayload.email) {
     throw new Error('No se pudo verificar la cuenta de Google con el token proporcionado.');
   }
 
-  const userEmail = (payload.email || '').trim().toLowerCase();
-  const rawName = payload.name || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') : 'Docente');
-  const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
+  const userEmail = (decodedPayload.email || '').trim().toLowerCase();
+  const fallbackDisplayName = userEmail
+    ? userEmail
+        .split('@')[0]
+        .split(/[._-]/)
+        .map((namePart: string) => namePart.charAt(0).toUpperCase() + namePart.slice(1))
+        .join(' ')
+    : GENERIC_TEACHER_LABEL;
+  const rawName = decodedPayload.name || fallbackDisplayName;
+  const displayName = rawName.startsWith(PROFESSOR_TITLE_PREFIX)
+    ? rawName
+    : `${PROFESSOR_TITLE_PREFIX} ${rawName}`;
   const derivedSchool = deriveSchoolFromEmail(userEmail);
 
-  const profile: TeacherProfile = {
-    id: payload.sub || `google-${Date.now()}`,
+  const teacherProfile: TeacherProfile = {
+    id: decodedPayload.sub || `google-${Date.now()}`,
     name: displayName,
     email: userEmail,
-    avatar: payload.picture || getTeacherAvatar(displayName, userEmail),
-    role: 'Docente Titular',
+    avatar: decodedPayload.picture || getTeacherAvatar(displayName, userEmail),
+    role: DEFAULT_TEACHER_NAME,
     school: derivedSchool,
     permissions: DEFAULT_TEACHER.permissions,
     scopes: WORKSPACE_SCOPES,
   };
 
-  saveRememberedProfile(profile);
-  const realAccessToken = getSavedTokenForEmail(userEmail) || '';
-  if (realAccessToken) {
-    setCachedAccessToken(realAccessToken, userEmail);
+  saveRememberedProfile(teacherProfile);
+  const savedAccessToken = getSavedTokenForEmail(userEmail) || '';
+  if (savedAccessToken) {
+    setCachedAccessToken(savedAccessToken, userEmail);
   }
 
-  // Sign into Firebase Auth via credential without needing popup or authDomain
   try {
-    const cred = GoogleAuthProvider.credential(idToken);
-    await signInWithCredential(auth, cred);
-  } catch (fbErr) {
-    console.warn('Nota de autenticación Firebase con credencial:', fbErr);
+    const firebaseCredential = GoogleAuthProvider.credential(idToken);
+    await signInWithCredential(auth, firebaseCredential);
+  } catch (firebaseAuthError) {
+    console.warn('Nota de autenticación Firebase con credencial:', firebaseAuthError);
   }
 
-  // Synchronize authenticated session with backend non-blocking
-  api.syncAuthSession({
-    uid: profile.id,
-    email: profile.email,
-    name: profile.name,
-    avatar: profile.avatar,
-    token: realAccessToken || idToken,
-    scopes: WORKSPACE_SCOPES,
-    school: profile.school,
-  }).catch(() => {});
+  api
+    .syncAuthSession({
+      uid: teacherProfile.id,
+      email: teacherProfile.email,
+      name: teacherProfile.name,
+      avatar: teacherProfile.avatar,
+      token: savedAccessToken || idToken,
+      scopes: WORKSPACE_SCOPES,
+      school: teacherProfile.school,
+    })
+    .catch(() => {});
 
-  return { profile, accessToken: realAccessToken };
+  return { profile: teacherProfile, accessToken: savedAccessToken };
 };
 
-// ISO/IEC 27001 A.8.20 & A.8.26: Authorized JavaScript Origins Allowlist
 export const AUTHORIZED_APP_ORIGINS = [
   'https://ais-dev-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app',
   'https://ais-pre-xanf7lgydk64d73ob33wqe-252580185511.us-east1.run.app',
@@ -650,18 +632,22 @@ export const AUTHORIZED_APP_ORIGINS = [
   'http://127.0.0.1:3000',
 ];
 
+/**
+ * Valida que el origen de ejecución actual cumpla con la política de orígenes autorizados (HTTPS o localhost).
+ *
+ * @param originInput Origen opcional a verificar; por defecto toma `window.location.origin`.
+ * @returns `true` si el origen es seguro y está autorizado para iniciar flujos OAuth.
+ */
 export const isAuthorizedAppOrigin = (originInput?: string): boolean => {
-  const rawOrigin =
-    originInput ||
-    (typeof window !== 'undefined' ? window.location.origin : '');
+  const rawOrigin = originInput || (typeof window !== 'undefined' ? window.location.origin : '');
   if (!rawOrigin) return true;
   if (AUTHORIZED_APP_ORIGINS.includes(rawOrigin)) return true;
 
   try {
-    const parsed = new URL(rawOrigin);
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'localhost' || host === '127.0.0.1') return true;
-    if (parsed.protocol === 'https:') {
+    const parsedUrl = new URL(rawOrigin);
+    const hostname = parsedUrl.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+    if (parsedUrl.protocol === 'https:') {
       return true;
     }
   } catch {
@@ -670,18 +656,27 @@ export const isAuthorizedAppOrigin = (originInput?: string): boolean => {
   return false;
 };
 
-// Automatically selects the matching OAuth Client ID for the current origin
+/**
+ * Selecciona dinámicamente el OAuth Client ID adecuado según el dominio donde corre la aplicación,
+ * priorizando `VITE_GOOGLE_CLIENT_ID` en despliegues propios (ej. Vercel) para permitir cuentas institucionales multi-colegio.
+ *
+ * @returns El Client ID de OAuth 2.0 a utilizar con Google Identity Services.
+ */
 export const getEffectiveOAuthClientId = (): string => {
   if (typeof window !== 'undefined') {
-    const host = window.location.hostname || '';
-    if (host.includes('xanf7lgydk64d73ob33wqe')) {
-      return '708929916247-j4j7vl4vipn2to5vlvh7us3jl7td29mi.apps.googleusercontent.com';
+    const currentHostname = window.location.hostname || '';
+    if (currentHostname.includes(AI_STUDIO_PREVIEW_HOST_FRAGMENT)) {
+      return AI_STUDIO_PREVIEW_OAUTH_CLIENT_ID;
     }
-    const envClientId =
+    const configuredEnvClientId =
       (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
       (import.meta as any).env?.VITE_OAUTH_CLIENT_ID;
-    if (envClientId && typeof envClientId === 'string' && envClientId.trim()) {
-      return envClientId.trim();
+    if (
+      configuredEnvClientId &&
+      typeof configuredEnvClientId === 'string' &&
+      configuredEnvClientId.trim()
+    ) {
+      return configuredEnvClientId.trim();
     }
   }
   return firebaseConfig.oAuthClientId;
@@ -689,7 +684,15 @@ export const getEffectiveOAuthClientId = (): string => {
 
 let inFlightGsiAuthPromise: Promise<{ accessToken: string; profile: TeacherProfile }> | null = null;
 
-// Attempt Google Sign-In with Google Identity Services (GSI) - opens Google account chooser and requests full Workspace & Classroom permissions for every teacher
+/**
+ * Inicia el flujo OAuth 2.0 mediante Google Identity Services (`initTokenClient`) solicitando
+ * todos los alcances de Google Workspace (Classroom, Drive, Sheets, Forms, Calendar y Gmail).
+ * Reutiliza una promesa en vuelo (`inFlightGsiAuthPromise`) para evitar abrir múltiples ventanas si el usuario hace doble clic.
+ *
+ * @param preferredEmail Correo sugerido opcional para preseleccionar cuenta cuando no se fuerza `select_account`.
+ * @param options Opciones de visualización del prompt de consentimiento/selección de cuenta.
+ * @returns Promesa con el `accessToken` emitido y el `TeacherProfile` autenticado.
+ */
 export const signInWithGoogleIdentityServices = (
   preferredEmail?: string,
   options?: { prompt?: string }
@@ -698,132 +701,186 @@ export const signInWithGoogleIdentityServices = (
     return inFlightGsiAuthPromise;
   }
 
-  inFlightGsiAuthPromise = new Promise<{ accessToken: string; profile: TeacherProfile }>((resolve, reject) => {
-    const settleResolve = (val: { accessToken: string; profile: TeacherProfile }) => {
-      inFlightGsiAuthPromise = null;
-      resolve(val);
-    };
-    const settleReject = (err: any) => {
-      inFlightGsiAuthPromise = null;
-      reject(err);
-    };
+  inFlightGsiAuthPromise = new Promise<{ accessToken: string; profile: TeacherProfile }>(
+    (resolve, reject) => {
+      const settleResolve = (authResult: { accessToken: string; profile: TeacherProfile }) => {
+        inFlightGsiAuthPromise = null;
+        resolve(authResult);
+      };
+      const settleReject = (authError: any) => {
+        inFlightGsiAuthPromise = null;
+        reject(authError);
+      };
 
-    if (typeof window === 'undefined') {
-      return settleReject(new Error('Window not available'));
-    }
-    const google = (window as any).google;
-    const clientId = getEffectiveOAuthClientId();
-    if (!google?.accounts?.oauth2 || !clientId) {
-      return settleReject(new Error('El servicio de inicio de sesión de Google se está cargando. Intentá nuevamente en un segundo.'));
-    }
+      if (typeof window === 'undefined') {
+        return settleReject(new Error('Window not available'));
+      }
+      const googleGlobal = (window as any).google;
+      const oauthClientId = getEffectiveOAuthClientId();
+      if (!googleGlobal?.accounts?.oauth2 || !oauthClientId) {
+        return settleReject(
+          new Error(
+            'El servicio de inicio de sesión de Google se está cargando. Intentá nuevamente en un segundo.'
+          )
+        );
+      }
 
-    const cleanHint = (preferredEmail || getActiveTeacherEmail() || '').trim().toLowerCase() || undefined;
-    const promptMode = options?.prompt !== undefined ? options.prompt : 'select_account';
-    const useHint = promptMode !== 'select_account' && cleanHint ? cleanHint : undefined;
+      const normalizedHint =
+        (preferredEmail || getActiveTeacherEmail() || '').trim().toLowerCase() || undefined;
+      const promptMode =
+        options?.prompt !== undefined ? options.prompt : OAUTH_PROMPT_SELECT_ACCOUNT;
+      // Si se solicita `select_account`, no se envía `hint` para que Google muestre todas las cuentas del navegador y permita cambiar a otra institución.
+      const loginHintToUse =
+        promptMode !== OAUTH_PROMPT_SELECT_ACCOUNT && normalizedHint ? normalizedHint : undefined;
 
-    try {
-      const client = google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: WORKSPACE_SCOPES.join(' '),
-        prompt: promptMode,
-        ...(useHint ? { hint: useHint } : {}),
-        callback: async (tokenResponse: any) => {
-          if (tokenResponse?.error) {
-            return settleReject(new Error(tokenResponse.error_description || tokenResponse.error || 'Error en Google OAuth'));
-          }
-          try {
-            const accessToken = tokenResponse.access_token;
-            if (!accessToken || !isValidGoogleAccessToken(accessToken)) {
-              return settleReject(new Error('No se recibió un token de acceso OAuth 2.0 válido de Google'));
-            }
-            const expiresIn = Number(tokenResponse.expires_in) || 3540;
-
-            const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
-            const userInfo = await res.json().catch(() => ({}));
-            const userEmail = (userInfo.email || cleanHint || '').trim().toLowerCase();
-            if (!userEmail) {
-              return settleReject(new Error('No se pudo identificar el correo de la cuenta de Google seleccionada.'));
-            }
-            const rawName = userInfo.name || (userEmail ? userEmail.split('@')[0].split(/[._-]/).map((p: string) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ') : 'Docente');
-            const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-            const derivedSchool = deriveSchoolFromEmail(userEmail);
-
-            if (typeof window !== 'undefined') {
-              try {
-                localStorage.removeItem('docencia_explicit_logout');
-                sessionStorage.setItem('docencia_session_active', 'true');
-                sessionStorage.setItem('docencia_teacher_email', userEmail);
-              } catch (_) {}
-            }
-
-            setCachedAccessToken(accessToken, userEmail, expiresIn);
-
-            const remembered = getRememberedProfile(userEmail);
-            const profile: TeacherProfile = {
-              id:
-                userInfo.sub ||
-                (remembered?.id && !String(remembered.id).startsWith('user-')
-                  ? remembered.id
-                  : `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`),
-              name: displayName,
-              email: userEmail,
-              avatar: userInfo.picture || remembered?.avatar || getTeacherAvatar(displayName, userEmail),
-              role: 'Docente Titular',
-              school: derivedSchool,
-              permissions: DEFAULT_TEACHER.permissions,
-              scopes: WORKSPACE_SCOPES,
-            };
-
-            saveRememberedProfile(profile);
-
-            api.syncAuthSession({
-              uid: profile.id,
-              email: profile.email,
-              name: profile.name,
-              avatar: profile.avatar,
-              token: accessToken,
-              scopes: WORKSPACE_SCOPES,
-              school: profile.school,
-            }).catch(() => {});
-
-            if (typeof window !== 'undefined') {
-              window.dispatchEvent(
-                new CustomEvent('google_session_renewed', { detail: { token: accessToken } })
+      try {
+        const tokenClient = googleGlobal.accounts.oauth2.initTokenClient({
+          client_id: oauthClientId,
+          scope: WORKSPACE_SCOPES.join(' '),
+          prompt: promptMode,
+          ...(loginHintToUse ? { hint: loginHintToUse } : {}),
+          callback: async (tokenResponse: any) => {
+            if (tokenResponse?.error) {
+              return settleReject(
+                new Error(
+                  tokenResponse.error_description || tokenResponse.error || 'Error en Google OAuth'
+                )
               );
             }
+            try {
+              const accessToken = tokenResponse.access_token;
+              if (!accessToken || !isValidGoogleAccessToken(accessToken)) {
+                return settleReject(
+                  new Error('No se recibió un token de acceso OAuth 2.0 válido de Google')
+                );
+              }
+              const expiresInSeconds =
+                Number(tokenResponse.expires_in) || DEFAULT_OAUTH_EXPIRES_IN_SECONDS;
 
-            settleResolve({ accessToken, profile });
-          } catch (fetchErr) {
-            settleReject(fetchErr);
-          }
-        },
-        error_callback: (err: any) => {
-          const errType = String(err?.type || '').toLowerCase();
-          if (errType === 'popup_closed') {
-            settleReject(new Error('Seleccioná tu cuenta de Google y aceptá los permisos en la ventana emergente para completar el ingreso.'));
-          } else if (errType === 'popup_blocked') {
-            notifyGoogleSessionExpired('popup_blocked');
-            settleReject(new Error('El navegador bloqueó la ventana de Google. Permití las ventanas emergentes e intentá nuevamente.'));
-          } else {
-            settleReject(new Error(err?.message || 'Cancelaste o cerraste el inicio de sesión de Google.'));
-          }
-        },
-      });
+              const userInfoResponse = await fetch(GOOGLE_USERINFO_ENDPOINT, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+              });
+              const userInfo = await userInfoResponse.json().catch(() => ({}));
+              const userEmail = (userInfo.email || normalizedHint || '').trim().toLowerCase();
+              if (!userEmail) {
+                return settleReject(
+                  new Error(
+                    'No se pudo identificar el correo de la cuenta de Google seleccionada.'
+                  )
+                );
+              }
+              const fallbackDisplayName = userEmail
+                ? userEmail
+                    .split('@')[0]
+                    .split(/[._-]/)
+                    .map(
+                      (namePart: string) => namePart.charAt(0).toUpperCase() + namePart.slice(1)
+                    )
+                    .join(' ')
+                : GENERIC_TEACHER_LABEL;
+              const rawName = userInfo.name || fallbackDisplayName;
+              const displayName = rawName.startsWith(PROFESSOR_TITLE_PREFIX)
+                ? rawName
+                : `${PROFESSOR_TITLE_PREFIX} ${rawName}`;
+              const derivedSchool = deriveSchoolFromEmail(userEmail);
 
-      client.requestAccessToken({
-        prompt: promptMode,
-        ...(useHint ? { hint: useHint } : {}),
-      });
-    } catch (err) {
-      settleReject(err);
+              if (typeof window !== 'undefined') {
+                try {
+                  localStorage.removeItem(EXPLICIT_LOGOUT_STORAGE_KEY);
+                  sessionStorage.setItem(SESSION_ACTIVE_STORAGE_KEY, 'true');
+                  sessionStorage.setItem(TEACHER_EMAIL_STORAGE_KEY, userEmail);
+                } catch (_) {}
+              }
+
+              setCachedAccessToken(accessToken, userEmail, expiresInSeconds);
+
+              const rememberedProfile = getRememberedProfile(userEmail);
+              const teacherProfile: TeacherProfile = {
+                id:
+                  userInfo.sub ||
+                  (rememberedProfile?.id && !String(rememberedProfile.id).startsWith('user-')
+                    ? rememberedProfile.id
+                    : `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`),
+                name: displayName,
+                email: userEmail,
+                avatar:
+                  userInfo.picture ||
+                  rememberedProfile?.avatar ||
+                  getTeacherAvatar(displayName, userEmail),
+                role: DEFAULT_TEACHER_NAME,
+                school: derivedSchool,
+                permissions: DEFAULT_TEACHER.permissions,
+                scopes: WORKSPACE_SCOPES,
+              };
+
+              saveRememberedProfile(teacherProfile);
+
+              api
+                .syncAuthSession({
+                  uid: teacherProfile.id,
+                  email: teacherProfile.email,
+                  name: teacherProfile.name,
+                  avatar: teacherProfile.avatar,
+                  token: accessToken,
+                  scopes: WORKSPACE_SCOPES,
+                  school: teacherProfile.school,
+                })
+                .catch(() => {});
+
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent(EVENT_GOOGLE_SESSION_RENEWED, { detail: { token: accessToken } })
+                );
+              }
+
+              settleResolve({ accessToken, profile: teacherProfile });
+            } catch (userInfoFetchError) {
+              settleReject(userInfoFetchError);
+            }
+          },
+          error_callback: (gsiError: any) => {
+            const errorType = String(gsiError?.type || '').toLowerCase();
+            if (errorType === 'popup_closed') {
+              settleReject(
+                new Error(
+                  'Seleccioná tu cuenta de Google y aceptá los permisos en la ventana emergente para completar el ingreso.'
+                )
+              );
+            } else if (errorType === 'popup_blocked') {
+              notifyGoogleSessionExpired('popup_blocked');
+              settleReject(
+                new Error(
+                  'El navegador bloqueó la ventana de Google. Permití las ventanas emergentes e intentá nuevamente.'
+                )
+              );
+            } else {
+              settleReject(
+                new Error(
+                  gsiError?.message || 'Cancelaste o cerraste el inicio de sesión de Google.'
+                )
+              );
+            }
+          },
+        });
+
+        tokenClient.requestAccessToken({
+          prompt: promptMode,
+          ...(loginHintToUse ? { hint: loginHintToUse } : {}),
+        });
+      } catch (initializationError) {
+        settleReject(initializationError);
+      }
     }
-  });
+  );
 
   return inFlightGsiAuthPromise;
 };
 
+/**
+ * Invalida un token OAuth 2.0 vencido o revocado tanto en memoria como en el mapa por correo de `localStorage`.
+ *
+ * @param expiredToken Token específico que falló con 401/403; si se omite, invalida el token activo en caché.
+ */
 export const invalidateExpiredAccessToken = (expiredToken?: string | null): void => {
   const tokenToClear = expiredToken || cachedAccessToken;
   cachedAccessToken = null;
@@ -833,74 +890,75 @@ export const invalidateExpiredAccessToken = (expiredToken?: string | null): void
   clearPersistedStorageTokens();
   if (typeof window !== 'undefined') {
     try {
-      const raw = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
-      if (raw) {
-        const map: Record<string, string> = JSON.parse(raw);
+      const serializedTokenMap = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
+      if (serializedTokenMap) {
+        const tokensByEmailMap: Record<string, string> = JSON.parse(serializedTokenMap);
         const activeEmail = getActiveTeacherEmail().trim().toLowerCase();
-        if (activeEmail && map[activeEmail]) {
-          const decoded = decodeStoredToken(map[activeEmail]);
-          if (!tokenToClear || decoded === tokenToClear) {
-            delete map[activeEmail];
+        if (activeEmail && tokensByEmailMap[activeEmail]) {
+          const decodedToken = decodeStoredToken(tokensByEmailMap[activeEmail]);
+          if (!tokenToClear || decodedToken === tokenToClear) {
+            delete tokensByEmailMap[activeEmail];
           }
         }
         if (tokenToClear) {
-          for (const key of Object.keys(map)) {
-            if (decodeStoredToken(map[key]) === tokenToClear) {
-              delete map[key];
+          for (const emailKey of Object.keys(tokensByEmailMap)) {
+            if (decodeStoredToken(tokensByEmailMap[emailKey]) === tokenToClear) {
+              delete tokensByEmailMap[emailKey];
             }
           }
         }
-        localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(map));
+        localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(tokensByEmailMap));
       }
     } catch (_) {}
   }
 };
 
-// Requests or returns a valid Google OAuth access token for Workspace APIs (Classroom, Drive, Sheets, Forms, Calendar, Gmail) for ANY authenticated teacher
+/**
+ * Obtiene un token OAuth 2.0 válido para consumir las APIs de Google Workspace (Classroom, Drive, Sheets, Forms, Calendar, Gmail).
+ * Intenta primero memoria, luego `localStorage` por email, luego sesión del backend y, solo si hubo un gesto reciente del usuario, abre GSI.
+ *
+ * @param forceRefresh Si es `true`, descarta el token actual y solicita uno nuevo a Google.
+ * @param preferredEmail Correo electrónico opcional del docente.
+ * @returns Promesa con el token OAuth 2.0 o `''` si no pudo obtenerse sin bloquear el navegador.
+ */
 export const requestGoogleAccessToken = async (
   forceRefresh = false,
   preferredEmail?: string
 ): Promise<string> => {
-  const activeEmail = (
-    preferredEmail ||
-    getActiveTeacherEmail()
-  )
-    .trim()
-    .toLowerCase();
+  const activeEmail = (preferredEmail || getActiveTeacherEmail()).trim().toLowerCase();
 
   if (forceRefresh) {
     invalidateExpiredAccessToken(cachedAccessToken);
   } else {
-    const existing = getCachedAccessToken();
-    if (existing && isValidGoogleAccessToken(existing)) {
-      return existing;
+    const existingCachedToken = getCachedAccessToken();
+    if (existingCachedToken && isValidGoogleAccessToken(existingCachedToken)) {
+      return existingCachedToken;
     }
 
     if (activeEmail) {
-      const savedLocal = getSavedTokenForEmail(activeEmail);
-      if (savedLocal && isValidGoogleAccessToken(savedLocal)) {
-        setCachedAccessToken(savedLocal, activeEmail);
-        return savedLocal;
+      const savedLocalToken = getSavedTokenForEmail(activeEmail);
+      if (savedLocalToken && isValidGoogleAccessToken(savedLocalToken)) {
+        setCachedAccessToken(savedLocalToken, activeEmail);
+        return savedLocalToken;
       }
     }
   }
 
-  // Try recovering from backend session if not in forceRefresh mode
   if (!forceRefresh && activeEmail) {
     try {
-      const data = await api.getAuthUser(activeEmail);
-      const serverToken = (data as any)?.token || (data?.user as any)?.token;
-      if (serverToken && isValidGoogleAccessToken(serverToken)) {
-        setCachedAccessToken(serverToken, activeEmail);
-        return serverToken;
+      const backendAuthData = await api.getAuthUser(activeEmail);
+      const backendServerToken =
+        (backendAuthData as any)?.token || (backendAuthData?.user as any)?.token;
+      if (backendServerToken && isValidGoogleAccessToken(backendServerToken)) {
+        setCachedAccessToken(backendServerToken, activeEmail);
+        return backendServerToken;
       }
     } catch (_) {}
   }
 
-  // Request OAuth token with full Workspace scopes via Google Identity Services for any teacher
-  // Debounce popup calls so rapid consecutive requests (like creating subfolders) never trigger overlapping popups
-  const now = Date.now();
-  if (now - lastPopupRequestTime < 4000) {
+  // Se aplica una ventana de enfriamiento (`POPUP_DEBOUNCE_COOLDOWN_MS`) para que operaciones en lote (como crear las 6 subcarpetas de un curso en Drive) nunca disparen múltiples popups seguidos.
+  const currentTimeMs = Date.now();
+  if (currentTimeMs - lastPopupRequestTime < POPUP_DEBOUNCE_COOLDOWN_MS) {
     return '';
   }
 
@@ -910,17 +968,21 @@ export const requestGoogleAccessToken = async (
     (window as any).google?.accounts?.oauth2 &&
     getEffectiveOAuthClientId()
   ) {
-    lastPopupRequestTime = now;
+    lastPopupRequestTime = currentTimeMs;
     try {
       const gsiResult = await signInWithGoogleIdentityServices(activeEmail || undefined, {
-        prompt: forceRefresh ? 'consent' : activeEmail ? '' : 'select_account',
+        prompt: forceRefresh
+          ? OAUTH_PROMPT_CONSENT
+          : activeEmail
+          ? ''
+          : OAUTH_PROMPT_SELECT_ACCOUNT,
       });
       if (gsiResult?.accessToken && isValidGoogleAccessToken(gsiResult.accessToken)) {
         setCachedAccessToken(gsiResult.accessToken, gsiResult.profile?.email || activeEmail);
         return gsiResult.accessToken;
       }
-    } catch (err) {
-      console.warn('GSI on-demand token acquisition notice:', err);
+    } catch (gsiAcquisitionError) {
+      console.warn('GSI on-demand token acquisition notice:', gsiAcquisitionError);
     }
   }
 
@@ -929,10 +991,15 @@ export const requestGoogleAccessToken = async (
 
 export const requestAccessToken = requestGoogleAccessToken;
 
-// Sign in with Google / Gmail:
-// Primary Entry: Authenticates seamlessly with Google (Identity & Email), NEVER blocked by Error 403.
-// If the user already has saved Workspace/Classroom tokens, they are restored immediately.
-// If not, Workspace features (Classroom, Drive, Sheets) request authorization on demand when used.
+/**
+ * Punto de entrada principal para el inicio de sesión con Google.
+ * Cuando se solicitan permisos de Workspace (`requestFullWorkspace`), prioriza Google Identity Services
+ * porque utiliza `getEffectiveOAuthClientId()` (`VITE_GOOGLE_CLIENT_ID`), evitando bloqueos `org_internal` en cuentas de distintos colegios.
+ *
+ * @param preferredEmail Correo electrónico sugerido opcional.
+ * @param options Configuración para forzar selector de cuenta (`forcePopup`) o solicitar alcances completos de Workspace (`requestFullWorkspace`).
+ * @returns Promesa con el usuario de Firebase (si aplica), el `accessToken` de Workspace y el `TeacherProfile`.
+ */
 export const googleSignIn = async (
   preferredEmail?: string,
   options?: { forcePopup?: boolean; requestFullWorkspace?: boolean }
@@ -941,19 +1008,17 @@ export const googleSignIn = async (
   try {
     const isExplicitLogout =
       typeof window !== 'undefined' &&
-      localStorage.getItem('docencia_explicit_logout') === 'true';
+      localStorage.getItem(EXPLICIT_LOGOUT_STORAGE_KEY) === 'true';
     const isSessionCurrentlyActive =
       typeof window !== 'undefined' &&
       !isExplicitLogout &&
-      sessionStorage.getItem('docencia_session_active') === 'true';
+      sessionStorage.getItem(SESSION_ACTIVE_STORAGE_KEY) === 'true';
 
     const activeEmail = getActiveTeacherEmail();
-    const cleanEmail = (preferredEmail || (isSessionCurrentlyActive ? activeEmail : '') || '')
+    const normalizedEmail = (preferredEmail || (isSessionCurrentlyActive ? activeEmail : '') || '')
       .trim()
       .toLowerCase();
 
-    // 0. If full Workspace scopes (Classroom/Drive/Sheets/Gmail) were explicitly requested,
-    // use Google Identity Services (which respects VITE_GOOGLE_CLIENT_ID) first
     if (
       options?.requestFullWorkspace &&
       typeof window !== 'undefined' &&
@@ -961,11 +1026,11 @@ export const googleSignIn = async (
       getEffectiveOAuthClientId()
     ) {
       const promptType = options?.forcePopup
-        ? 'select_account'
-        : cleanEmail
+        ? OAUTH_PROMPT_SELECT_ACCOUNT
+        : normalizedEmail
         ? ''
-        : 'select_account';
-      const gsiResult = await signInWithGoogleIdentityServices(cleanEmail || undefined, {
+        : OAUTH_PROMPT_SELECT_ACCOUNT;
+      const gsiResult = await signInWithGoogleIdentityServices(normalizedEmail || undefined, {
         prompt: promptType,
       });
       if (gsiResult?.profile) {
@@ -977,76 +1042,86 @@ export const googleSignIn = async (
       }
     }
 
-    // 1. Try Firebase Popup authentication (the most reliable standard flow for basic sign-in)
     if (typeof window !== 'undefined') {
       try {
-        const basicProvider = new GoogleAuthProvider();
-        basicProvider.setCustomParameters({ prompt: 'select_account' });
+        const googleAuthProvider = new GoogleAuthProvider();
+        googleAuthProvider.setCustomParameters({ prompt: OAUTH_PROMPT_SELECT_ACCOUNT });
         if (options?.requestFullWorkspace) {
-          WORKSPACE_SCOPES.forEach((s) => {
-            if (!s.includes('userinfo.')) basicProvider.addScope(s);
+          WORKSPACE_SCOPES.forEach((workspaceScope) => {
+            if (!workspaceScope.includes('userinfo.')) {
+              googleAuthProvider.addScope(workspaceScope);
+            }
           });
         }
-        const credResult = await signInWithPopup(auth, basicProvider);
-        const credential = GoogleAuthProvider.credentialFromResult(credResult);
-        const fbToken = credential?.accessToken || '';
-        const fbUser = credResult.user;
-        const userEmail = (fbUser.email || cleanEmail || '').trim().toLowerCase();
+        const popupCredentialResult = await signInWithPopup(auth, googleAuthProvider);
+        const oauthCredential = GoogleAuthProvider.credentialFromResult(popupCredentialResult);
+        const firebaseOAuthAccessToken = oauthCredential?.accessToken || '';
+        const firebaseUser = popupCredentialResult.user;
+        const userEmail = (firebaseUser.email || normalizedEmail || '').trim().toLowerCase();
 
         if (userEmail) {
-          const rawName = fbUser.displayName || userEmail.split('@')[0];
-          const displayName = rawName.startsWith('Prof.') ? rawName : `Prof. ${rawName}`;
-          const remembered = getRememberedProfile(userEmail);
-          const profile: TeacherProfile = {
-            id: fbUser.uid || `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
+          const rawName = firebaseUser.displayName || userEmail.split('@')[0];
+          const displayName = rawName.startsWith(PROFESSOR_TITLE_PREFIX)
+            ? rawName
+            : `${PROFESSOR_TITLE_PREFIX} ${rawName}`;
+          const rememberedProfile = getRememberedProfile(userEmail);
+          const teacherProfile: TeacherProfile = {
+            id: firebaseUser.uid || `teacher_${userEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
             name: displayName,
             email: userEmail,
-            avatar: fbUser.photoURL || remembered?.avatar || getTeacherAvatar(displayName, userEmail),
-            role: 'Docente Titular',
+            avatar:
+              firebaseUser.photoURL ||
+              rememberedProfile?.avatar ||
+              getTeacherAvatar(displayName, userEmail),
+            role: DEFAULT_TEACHER_NAME,
             school: deriveSchoolFromEmail(userEmail),
             permissions: DEFAULT_TEACHER.permissions,
             scopes: WORKSPACE_SCOPES,
           };
 
-          const effectiveTok =
-            (options?.requestFullWorkspace && fbToken && isValidGoogleAccessToken(fbToken) ? fbToken : null) ||
+          const effectiveWorkspaceToken =
+            (options?.requestFullWorkspace &&
+            firebaseOAuthAccessToken &&
+            isValidGoogleAccessToken(firebaseOAuthAccessToken)
+              ? firebaseOAuthAccessToken
+              : null) ||
             getSavedTokenForEmail(userEmail) ||
             '';
 
-          localStorage.removeItem('docencia_explicit_logout');
-          sessionStorage.setItem('docencia_session_active', 'true');
-          sessionStorage.setItem('docencia_teacher_email', userEmail);
+          localStorage.removeItem(EXPLICIT_LOGOUT_STORAGE_KEY);
+          sessionStorage.setItem(SESSION_ACTIVE_STORAGE_KEY, 'true');
+          sessionStorage.setItem(TEACHER_EMAIL_STORAGE_KEY, userEmail);
 
-          if (effectiveTok && isValidGoogleAccessToken(effectiveTok)) {
-            setCachedAccessToken(effectiveTok, userEmail);
+          if (effectiveWorkspaceToken && isValidGoogleAccessToken(effectiveWorkspaceToken)) {
+            setCachedAccessToken(effectiveWorkspaceToken, userEmail);
           }
-          saveRememberedProfile(profile);
+          saveRememberedProfile(teacherProfile);
 
-          api.syncAuthSession({
-            uid: profile.id,
-            email: profile.email,
-            name: profile.name,
-            avatar: profile.avatar,
-            token: effectiveTok || undefined,
-            scopes: WORKSPACE_SCOPES,
-            school: profile.school,
-          }).catch(() => {});
+          api
+            .syncAuthSession({
+              uid: teacherProfile.id,
+              email: teacherProfile.email,
+              name: teacherProfile.name,
+              avatar: teacherProfile.avatar,
+              token: effectiveWorkspaceToken || undefined,
+              scopes: WORKSPACE_SCOPES,
+              school: teacherProfile.school,
+            })
+            .catch(() => {});
 
           return {
-            user: fbUser,
-            accessToken: effectiveTok,
-            profile,
+            user: firebaseUser,
+            accessToken: effectiveWorkspaceToken,
+            profile: teacherProfile,
           };
         }
-      } catch (fbErr: any) {
-        // If popup was explicitly closed by the user, rethrow
-        if (fbErr?.code === 'auth/popup-closed-by-user') {
+      } catch (firebasePopupError: any) {
+        if (firebasePopupError?.code === 'auth/popup-closed-by-user') {
           throw new Error('Ventana de inicio de sesión de Google cerrada.');
         }
       }
     }
 
-    // 2. Fallback to Google Identity Services token client
     if (
       typeof window !== 'undefined' &&
       (window as any).google?.accounts?.oauth2 &&
@@ -1054,11 +1129,11 @@ export const googleSignIn = async (
     ) {
       const promptType =
         options?.forcePopup || !isSessionCurrentlyActive
-          ? 'select_account'
-          : cleanEmail
+          ? OAUTH_PROMPT_SELECT_ACCOUNT
+          : normalizedEmail
           ? ''
-          : 'select_account';
-      const gsiResult = await signInWithGoogleIdentityServices(cleanEmail || undefined, {
+          : OAUTH_PROMPT_SELECT_ACCOUNT;
+      const gsiResult = await signInWithGoogleIdentityServices(normalizedEmail || undefined, {
         prompt: promptType,
       });
       if (gsiResult?.profile) {
@@ -1076,48 +1151,56 @@ export const googleSignIn = async (
   }
 };
 
-// Sign out of active session: requires the user to log in again (with Google or password) on next entry,
-// while keeping their granted per-email OAuth token in localStorage for once they authenticate again.
+/**
+ * Cierra la sesión activa del docente en la pestaña actual y en Firebase Auth,
+ * conservando en `localStorage` el token OAuth por correo para no exigir re-consentimiento de permisos en el próximo ingreso.
+ */
 export const logoutUser = async (): Promise<void> => {
   if (typeof window !== 'undefined') {
     try {
-      localStorage.setItem('docencia_explicit_logout', 'true');
-      sessionStorage.removeItem('docencia_session_active');
-      sessionStorage.removeItem('docencia_user_profile');
-      sessionStorage.removeItem('docencia_teacher_email');
-      localStorage.removeItem('docencia_session_active');
-      localStorage.removeItem('docencia_user_profile');
-      localStorage.removeItem('docencia_teacher_email');
+      localStorage.setItem(EXPLICIT_LOGOUT_STORAGE_KEY, 'true');
+      sessionStorage.removeItem(SESSION_ACTIVE_STORAGE_KEY);
+      sessionStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      sessionStorage.removeItem(TEACHER_EMAIL_STORAGE_KEY);
+      localStorage.removeItem(SESSION_ACTIVE_STORAGE_KEY);
+      localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
+      localStorage.removeItem(TEACHER_EMAIL_STORAGE_KEY);
     } catch (_) {}
   }
   clearAuthSession();
   try {
     await signOut(auth);
-  } catch (err) {
-    console.warn('SignOut error:', err);
+  } catch (signOutError) {
+    console.warn('SignOut error:', signOutError);
   }
   api.logoutAuth().catch(() => {});
 };
 
 /**
- * Recovers the stored Google OAuth token without opening any interactive popup window.
+ * Intenta recuperar de forma silenciosa el token OAuth almacenado para el docente sin abrir ventanas emergentes.
+ *
+ * @param userEmail Correo electrónico opcional del docente.
+ * @returns El token recuperado o `null`.
  */
 export const renewGoogleSessionSilently = async (userEmail?: string): Promise<string | null> => {
   if (typeof window === 'undefined') return null;
-  const existing = getCachedAccessToken();
-  if (existing && isValidGoogleAccessToken(existing)) {
-    return existing;
+  const existingToken = getCachedAccessToken();
+  if (existingToken && isValidGoogleAccessToken(existingToken)) {
+    return existingToken;
   }
-  const recovered = await requestGoogleAccessToken(false, userEmail);
-  return recovered || null;
+  const recoveredToken = await requestGoogleAccessToken(false, userEmail);
+  return recoveredToken || null;
 };
 
-let isRefreshingToken = false;
-let lastPopupRequestTime = 0;
-
 /**
- * Universal fetch wrapper for Google Workspace APIs (Sheets, Drive, Calendar, Classroom, Gmail, Docs, Forms)
- * Automatically injects the active Google OAuth token.
+ * Wrapper universal de `fetch` para todas las APIs de Google Workspace (Sheets, Drive, Calendar, Classroom, Gmail, Docs, Forms).
+ * Inyecta automáticamente la cabecera `Authorization: Bearer` y, ante un `401` o `403 insufficient_scope`,
+ * invalida el token vencido e intenta una única recuperación silenciosa sin disparar bucles de popups.
+ *
+ * @param input URL o `Request` de destino hacia `googleapis.com`.
+ * @param init Opciones estándar de la petición HTTP.
+ * @param providedToken Token OAuth explícito opcional.
+ * @returns La respuesta HTTP (`Response`) de la API de Google.
  */
 export const fetchGoogleApiWithRetry = async (
   input: RequestInfo | URL,
@@ -1126,37 +1209,45 @@ export const fetchGoogleApiWithRetry = async (
 ): Promise<Response> => {
   const activeToken = providedToken || getCachedAccessToken();
 
-  const buildHeaders = (tok: string | null, forceOverwrite = false): Headers => {
-    const headers = new Headers(init.headers || {});
-    if (tok && (forceOverwrite || !headers.has('Authorization'))) {
-      headers.set('Authorization', `Bearer ${tok}`);
+  const buildAuthorizedHeaders = (
+    bearerToken: string | null,
+    forceOverwrite = false
+  ): Headers => {
+    const requestHeaders = new Headers(init.headers || {});
+    if (bearerToken && (forceOverwrite || !requestHeaders.has('Authorization'))) {
+      requestHeaders.set('Authorization', `Bearer ${bearerToken}`);
     }
-    return headers;
+    return requestHeaders;
   };
 
   const response = await fetch(input, {
     ...init,
-    headers: buildHeaders(activeToken),
+    headers: buildAuthorizedHeaders(activeToken),
   });
 
-  // Intercept 401 Unauthorized (token expired) or 403 insufficient_scope:
-  // Invalidate expired token in cache.
-  // CRITICAL: NEVER automatically trigger an interactive popup in background/sub-requests,
-  // to completely prevent infinite popup opening/closing loops.
-  const wwwAuth = (response.headers.get('www-authenticate') || '').toLowerCase();
-  if (response.status === 401 || (response.status === 403 && wwwAuth.includes('insufficient_scope'))) {
+  const wwwAuthenticateHeader = (response.headers.get('www-authenticate') || '').toLowerCase();
+  const isInsufficientOrExpiredScope =
+    response.status === HTTP_STATUS_UNAUTHORIZED ||
+    (response.status === HTTP_STATUS_FORBIDDEN &&
+      wwwAuthenticateHeader.includes('insufficient_scope'));
+
+  if (isInsufficientOrExpiredScope) {
     invalidateExpiredAccessToken(activeToken);
 
-    // Only attempt recovery silently without triggering interactive popups inside loop
+    // Nunca se abre un popup interactivo dentro de este interceptor de red para evitar bucles infinitos de ventanas cuando fallan peticiones en paralelo.
     if (!isRefreshingToken) {
       isRefreshingToken = true;
       try {
-        const saved = getSavedTokenForEmail(getActiveTeacherEmail());
-        if (saved && saved !== activeToken && isValidGoogleAccessToken(saved)) {
-          setCachedAccessToken(saved);
+        const savedTokenForUser = getSavedTokenForEmail(getActiveTeacherEmail());
+        if (
+          savedTokenForUser &&
+          savedTokenForUser !== activeToken &&
+          isValidGoogleAccessToken(savedTokenForUser)
+        ) {
+          setCachedAccessToken(savedTokenForUser);
           return await fetch(input, {
             ...init,
-            headers: buildHeaders(saved, true),
+            headers: buildAuthorizedHeaders(savedTokenForUser, true),
           });
         }
       } catch (_) {
@@ -1168,4 +1259,3 @@ export const fetchGoogleApiWithRetry = async (
 
   return response;
 };
-

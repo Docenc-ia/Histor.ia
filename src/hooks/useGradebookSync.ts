@@ -189,12 +189,16 @@ export function useGradebookSync({
 
   // Re-hydrate local gradebook state immediately when switching courseId so previous course grades never leak
   const prevCourseIdRef = useRef(courseId);
+  const activeCourseIdRef = useRef(courseId);
+  activeCourseIdRef.current = courseId;
+
   useEffect(() => {
     if (courseId) {
       touchCourseDataLru(courseId);
     }
     if (prevCourseIdRef.current === courseId) return;
     prevCourseIdRef.current = courseId;
+    setSheetsSavedInfo(null);
     if (typeof window === 'undefined') return;
 
     try {
@@ -608,21 +612,35 @@ export function useGradebookSync({
           courseId,
         });
         if (uid) {
-          firestoreSync.syncCompactDispositionNow(uid, false);
+          const dispTimerKey = `disp_sync_1c_${courseId}`;
+          if (cloudSyncTimerRef.current[dispTimerKey]) {
+            clearTimeout(cloudSyncTimerRef.current[dispTimerKey]);
+          }
+          cloudSyncTimerRef.current[dispTimerKey] = setTimeout(() => {
+            delete cloudSyncTimerRef.current[dispTimerKey];
+            firestoreSync.syncCompactDispositionNow(uid, false);
+          }, 450);
         }
       } else {
         if (uid) {
-          firestoreSync.syncCompactDispositionNow(uid, false);
-          firestoreSync
-            .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
-            .then((cloud2c) => {
-              const merged2c: Record<string, StudentDispositionData> = { ...(cloud2c || {}) };
-              for (const [sId, val] of Object.entries(currentMap)) {
-                merged2c[`${courseId}::${sId}`] = { ...val, courseId };
-              }
-              return firestoreSync.saveUserSetting(uid, 'disposition_map_2c', merged2c);
-            })
-            .catch(() => {});
+          const dispTimerKey = `disp_sync_2c_${courseId}`;
+          if (cloudSyncTimerRef.current[dispTimerKey]) {
+            clearTimeout(cloudSyncTimerRef.current[dispTimerKey]);
+          }
+          cloudSyncTimerRef.current[dispTimerKey] = setTimeout(() => {
+            delete cloudSyncTimerRef.current[dispTimerKey];
+            firestoreSync.syncCompactDispositionNow(uid, false);
+            firestoreSync
+              .loadUserSetting<Record<string, StudentDispositionData>>(uid, 'disposition_map_2c')
+              .then((cloud2c) => {
+                const merged2c: Record<string, StudentDispositionData> = { ...(cloud2c || {}) };
+                for (const [sId, val] of Object.entries(currentMap)) {
+                  merged2c[`${courseId}::${sId}`] = { ...val, courseId };
+                }
+                return firestoreSync.saveUserSetting(uid, 'disposition_map_2c', merged2c);
+              })
+              .catch(() => {});
+          }, 450);
         }
       }
     } catch (err) {
@@ -856,14 +874,15 @@ export function useGradebookSync({
   // Auto-load & recover saved gradebook snapshots from Firestore on mount, course switch, or live cross-device update
   useEffect(() => {
     let isMounted = true;
+    const requestedCourseId = courseId;
     const syncSnapshotsFromCloud = () => {
       const userId = getActiveUserId();
-      if (!userId || !courseId) return;
+      if (!userId || !requestedCourseId || activeCourseIdRef.current !== requestedCourseId) return;
 
       firestoreSync
-        .loadTermSnapshots(userId, courseId)
+        .loadTermSnapshots(userId, requestedCourseId)
         .then((snapshots) => {
-          if (!isMounted || !snapshots) return;
+          if (!isMounted || activeCourseIdRef.current !== requestedCourseId || !snapshots) return;
 
           const snap1c = snapshots['1c'];
           if (snap1c) {
@@ -986,6 +1005,9 @@ export function useGradebookSync({
   // Listen for external grades or category updates
   useEffect(() => {
     const handleGradesUpdated = (e: any) => {
+      if (e?.detail?.courseId && e.detail.courseId !== courseId) {
+        return;
+      }
       try {
         const savedCats1c =
           localStorage.getItem(getCatKey('1c')) ||

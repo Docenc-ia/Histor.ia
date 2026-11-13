@@ -23,8 +23,20 @@ import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { driveService } from '../../services/workspace/driveService';
+import { escapeHtml } from '../../utils/htmlEscape';
+import {
+  QualitativeTrajectory,
+  flattenEvaluativeItems,
+  resolveSelectedAssessmentsMeta,
+  computePreliminaryStudentRows,
+  suggestAllPreliminaryValuations,
+  filterPreliminaryStudentRows,
+  computePreliminaryValuationStats,
+  buildPreliminaryValuationTsv,
+  buildPreliminaryValuationCsv,
+} from '../../utils/preliminaryValuationCalculations';
 
-export type QualitativeTrajectory = 'TEA' | 'TEP' | 'TED' | '';
+export type { QualitativeTrajectory };
 
 export interface PreliminaryValuationRecord {
   courseId: string;
@@ -72,29 +84,10 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   const termLabel = term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
 
   // Flatten all available evaluative items (categories with no subcategories, or each subcategory)
-  const availableAssessments = useMemo(() => {
-    const list: Array<{ id: string; name: string; categoryName: string; maxScore: number }> = [];
-    categories.forEach((cat) => {
-      if (cat.subcategories.length === 0) {
-        list.push({
-          id: cat.id,
-          name: cat.name,
-          categoryName: cat.name,
-          maxScore: 10,
-        });
-      } else {
-        cat.subcategories.forEach((sub) => {
-          list.push({
-            id: sub.id,
-            name: sub.name,
-            categoryName: cat.name,
-            maxScore: sub.maxScore || 10,
-          });
-        });
-      }
-    });
-    return list;
-  }, [categories]);
+  const availableAssessments = useMemo(
+    () => flattenEvaluativeItems(categories),
+    [categories]
+  );
 
   // Selected assessment IDs state
   const [selectedAssessmentIds, setSelectedAssessmentIds] = useState<string[]>(() => {
@@ -108,19 +101,10 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   });
 
   // Array of metadata objects for selected assessments in order
-  const selectedAssessmentsMeta = useMemo(() => {
-    return selectedAssessmentIds.map((id) => {
-      const found = availableAssessments.find((a) => a.id === id);
-      return (
-        found || {
-          id,
-          name: id,
-          categoryName: '',
-          maxScore: 10,
-        }
-      );
-    });
-  }, [selectedAssessmentIds, availableAssessments]);
+  const selectedAssessmentsMeta = useMemo(
+    () => resolveSelectedAssessmentsMeta(selectedAssessmentIds, availableAssessments),
+    [selectedAssessmentIds, availableAssessments]
+  );
 
   // Valuations map: studentId -> { trajectory, observation }
   const [valuations, setValuations] = useState<
@@ -169,41 +153,12 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
     setSelectedAssessmentIds([]);
   };
 
-  // Compute calculated preliminary average and scores for each student
-  const studentRows = useMemo(() => {
-    return students.map((st) => {
-      const stGrades = gradesMap[st.id] || {};
-      const numericScores: number[] = [];
-
-      selectedAssessmentIds.forEach((assessId) => {
-        const val = stGrades[assessId];
-        if (val !== undefined && val !== null) {
-          const normalized = String(val).trim().replace(',', '.');
-          if (normalized !== '' && !isNaN(Number(normalized))) {
-            numericScores.push(Number(normalized));
-          }
-        }
-      });
-
-      let averageScore: number | null = null;
-      let averageScoreStr = '';
-      if (numericScores.length > 0) {
-        averageScore = numericScores.reduce((a, b) => a + b, 0) / numericScores.length;
-        averageScoreStr = averageScore.toFixed(1).replace('.0', '');
-      }
-
-      const userVal = valuations[st.id] || { trajectory: '', observation: '' };
-
-      return {
-        student: st,
-        numericScores,
-        averageScore,
-        averageScoreStr,
-        trajectory: userVal.trajectory,
-        observation: userVal.observation,
-      };
-    });
-  }, [students, gradesMap, selectedAssessmentIds, valuations]);
+  // Compute calculated preliminary average and scores for each student using pure engine
+  const studentRows = useMemo(
+    () =>
+      computePreliminaryStudentRows(students, gradesMap, selectedAssessmentIds, valuations),
+    [students, gradesMap, selectedAssessmentIds, valuations]
+  );
 
   // Set trajectory for a student
   const handleSetTrajectory = (studentId: string, traj: QualitativeTrajectory) => {
@@ -229,23 +184,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 
   // Smart Auto-suggest TEA / TEP based on preliminary average
   const handleAutoSuggestAll = () => {
-    const nextValuations = { ...valuations };
-    studentRows.forEach((row) => {
-      if (row.averageScore !== null) {
-        // TEA if >= 7, TEP if < 7
-        const suggested: QualitativeTrajectory = row.averageScore >= 7 ? 'TEA' : 'TEP';
-        nextValuations[row.student.id] = {
-          trajectory: suggested,
-          observation: nextValuations[row.student.id]?.observation || '',
-        };
-      } else {
-        nextValuations[row.student.id] = {
-          trajectory: 'TEP',
-          observation: nextValuations[row.student.id]?.observation || 'Sin notas registradas aún',
-        };
-      }
-    });
-    setValuations(nextValuations);
+    setValuations((prev) => suggestAllPreliminaryValuations(studentRows, prev));
   };
 
   // Handle Save
@@ -266,34 +205,16 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   };
 
   // Filtered rows for display
-  const filteredRows = useMemo(() => {
-    if (!searchFilter.trim()) return studentRows;
-    const q = searchFilter.toLowerCase();
-    return studentRows.filter(
-      (r) =>
-        r.student.lastName.toLowerCase().includes(q) ||
-        r.student.firstName.toLowerCase().includes(q) ||
-        r.trajectory.toLowerCase().includes(q)
-    );
-  }, [studentRows, searchFilter]);
+  const filteredRows = useMemo(
+    () => filterPreliminaryStudentRows(studentRows, searchFilter),
+    [studentRows, searchFilter]
+  );
 
   // Statistics
-  const stats = useMemo(() => {
-    const total = students.length;
-    let teaCount = 0;
-    let tepCount = 0;
-    let tedCount = 0;
-    let pendingCount = 0;
-
-    studentRows.forEach((r) => {
-      if (r.trajectory === 'TEA') teaCount++;
-      else if (r.trajectory === 'TEP') tepCount++;
-      else if (r.trajectory === 'TED') tedCount++;
-      else pendingCount++;
-    });
-
-    return { total, teaCount, tepCount, tedCount, pendingCount };
-  }, [students, studentRows]);
+  const stats = useMemo(
+    () => computePreliminaryValuationStats(students.length, studentRows),
+    [students.length, studentRows]
+  );
 
   // Sync / Import to Google Sheets
   const handleImportToGoogleSheets = async () => {
@@ -335,41 +256,11 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 
   // Copy table TSV format to clipboard for direct Google Sheets paste
   const handleCopyForSheets = () => {
-    const headers = [
-      'Apellido y Nombre',
-      'Correo Institucional',
-      ...selectedAssessmentsMeta.map((a) => (a.categoryName ? `${a.name} (${a.categoryName})` : a.name)),
-      'Promedio Preliminar',
-      'Valoración Cualitativa',
-      'Descripción Trayecto',
-      'Observación Pedagógica',
-    ];
-
-    const lines = [headers.join('\t')];
-
-    studentRows.forEach((r) => {
-      const stGrades = gradesMap[r.student.id] || {};
-      const scoreCols = selectedAssessmentsMeta.map((a) => stGrades[a.id] || '');
-      const traj = r.trajectory || 'Pendiente';
-      let trajDesc = '';
-      if (r.trajectory === 'TEA') trajDesc = 'Trayecto Educativo en Alcanzado';
-      else if (r.trajectory === 'TEP') trajDesc = 'Trayecto Educativo en Proceso';
-      else if (r.trajectory === 'TED') trajDesc = 'Trayecto Educativo Discontinuo';
-
-      const rowCols = [
-        `${r.student.lastName}, ${r.student.firstName}`,
-        r.student.email || '',
-        ...scoreCols,
-        r.averageScoreStr || '-',
-        traj,
-        trajDesc,
-        r.observation || '',
-      ];
-
-      lines.push(rowCols.join('\t'));
-    });
-
-    const tsvContent = lines.join('\n');
+    const tsvContent = buildPreliminaryValuationTsv(
+      studentRows,
+      selectedAssessmentsMeta,
+      gradesMap
+    );
     navigator.clipboard.writeText(tsvContent).then(() => {
       setCopiedToClipboard(true);
       setToastMessage('¡Copiado al portapapeles! Puedes pegarlo (Ctrl+V) en cualquier Google Sheet.');
@@ -382,35 +273,11 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 
   // Export CSV with all selected notes as individual columns
   const handleExportCSV = () => {
-    let csv = '\uFEFF'; // BOM for Excel / UTF-8 compatibility
-    const headers = [
-      'Apellido y Nombre',
-      'Correo Institucional',
-      ...selectedAssessmentsMeta.map((a) => `"${(a.categoryName ? `${a.name} - ${a.categoryName}` : a.name).replace(/"/g, '""')}"`),
-      '"Promedio Preliminar"',
-      '"Valoración Cualitativa"',
-      '"Descripción Trayecto"',
-      '"Observación Pedagógica"',
-    ];
-
-    csv += headers.join(',') + '\r\n';
-
-    studentRows.forEach((r) => {
-      const stGrades = gradesMap[r.student.id] || {};
-      const scoreCols = selectedAssessmentsMeta.map((a) => `"${(stGrades[a.id] || '').replace(/"/g, '""')}"`);
-      const name = `"${r.student.lastName}, ${r.student.firstName}"`;
-      const email = `"${r.student.email || ''}"`;
-      const avg = `"${r.averageScoreStr || ''}"`;
-      const traj = `"${r.trajectory || 'Pendiente'}"`;
-      let trajDesc = '';
-      if (r.trajectory === 'TEA') trajDesc = 'Trayecto Educativo en Alcanzado';
-      else if (r.trajectory === 'TEP') trajDesc = 'Trayecto Educativo en Proceso';
-      else if (r.trajectory === 'TED') trajDesc = 'Trayecto Educativo Discontinuo';
-      const obs = `"${(r.observation || '').replace(/"/g, '""')}"`;
-
-      const rowParts = [name, email, ...scoreCols, avg, traj, `"${trajDesc}"`, obs];
-      csv += rowParts.join(',') + '\r\n';
-    });
+    const csv = buildPreliminaryValuationCsv(
+      studentRows,
+      selectedAssessmentsMeta,
+      gradesMap
+    );
 
     const fileName = `Valoracion_Preliminar_${term}_${courseName.replace(/\s+/g, '_')}.csv`;
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -449,12 +316,18 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
       const folderStructure = await driveService.setupCourseFolderStructure(courseName, driveFolderId);
       const targetFolderId = folderStructure.reportsFolder?.id || folderStructure.mainFolder.id;
       const docTitle = `📋 Valoración Preliminar (${termLabel}) - ${courseName}`;
+      const safeDocTitle = escapeHtml(docTitle);
 
       const rowsHtml = studentRows
         .map((r, idx) => {
           const stGrades = gradesMap[r.student.id] || {};
           const cells = selectedAssessmentsMeta
-            .map((a) => `<td style="text-align:center;padding:6px;border:1px solid #cbd5e1;">${stGrades[a.id] || '—'}</td>`)
+            .map(
+              (a) =>
+                `<td style="text-align:center;padding:6px;border:1px solid #cbd5e1;">${escapeHtml(
+                  stGrades[a.id] || '—'
+                )}</td>`
+            )
             .join('');
           const badgeBg =
             r.trajectory === 'TEA'
@@ -466,27 +339,39 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
               : '#f1f5f9;color:#475569';
           return `<tr>
             <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;">${idx + 1}</td>
-            <td style="padding:6px;border:1px solid #cbd5e1;font-weight:bold;">${r.student.lastName}, ${r.student.firstName}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;font-weight:bold;">${escapeHtml(
+              r.student.lastName
+            )}, ${escapeHtml(r.student.firstName)}</td>
             ${cells}
-            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;">${r.averageScoreStr || '—'}</td>
-            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;background:${badgeBg};">${r.trajectory || 'Pendiente'}</td>
-            <td style="padding:6px;border:1px solid #cbd5e1;">${r.observation || '—'}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;">${escapeHtml(
+              r.averageScoreStr || '—'
+            )}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;text-align:center;font-weight:bold;background:${badgeBg};">${escapeHtml(
+            r.trajectory || 'Pendiente'
+          )}</td>
+            <td style="padding:6px;border:1px solid #cbd5e1;">${escapeHtml(
+              r.observation || '—'
+            )}</td>
           </tr>`;
         })
         .join('');
 
       const htmlContent = `<!DOCTYPE html>
 <html lang="es">
-<head><meta charset="UTF-8"><title>${docTitle}</title></head>
+<head><meta charset="UTF-8"><title>${safeDocTitle}</title></head>
 <body style="font-family:Arial,sans-serif;color:#1e293b;padding:24px;">
-  <h2 style="color:#1e3a8a;margin-bottom:4px;">${docTitle}</h2>
-  <p style="font-size:12px;color:#64748b;margin-top:0;">Fecha de emisión: ${new Date().toLocaleDateString('es-AR')} — Alumnos: ${students.length} (TEA: ${stats.teaCount} | TEP: ${stats.tepCount} | TED: ${stats.tedCount})</p>
+  <h2 style="color:#1e3a8a;margin-bottom:4px;">${safeDocTitle}</h2>
+  <p style="font-size:12px;color:#64748b;margin-top:0;">Fecha de emisión: ${escapeHtml(
+    new Date().toLocaleDateString('es-AR')
+  )} — Alumnos: ${students.length} (TEA: ${stats.teaCount} | TEP: ${stats.tepCount} | TED: ${stats.tedCount})</p>
   <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:16px;">
     <thead>
       <tr style="background:#f1f5f9;">
         <th style="padding:8px;border:1px solid #cbd5e1;">#</th>
         <th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">Estudiante</th>
-        ${selectedAssessmentsMeta.map((a) => `<th style="padding:8px;border:1px solid #cbd5e1;">${a.name}</th>`).join('')}
+        ${selectedAssessmentsMeta
+          .map((a) => `<th style="padding:8px;border:1px solid #cbd5e1;">${escapeHtml(a.name)}</th>`)
+          .join('')}
         <th style="padding:8px;border:1px solid #cbd5e1;">Promedio</th>
         <th style="padding:8px;border:1px solid #cbd5e1;">Valoración</th>
         <th style="padding:8px;border:1px solid #cbd5e1;text-align:left;">Observación Pedagógica</th>

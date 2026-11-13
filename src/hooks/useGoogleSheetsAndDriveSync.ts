@@ -228,25 +228,27 @@ export function useGoogleSheetsAndDriveSync({
       }
 
       if (Array.isArray(payload.newStudentsToCreate) && payload.newStudentsToCreate.length > 0) {
-        for (const st of payload.newStudentsToCreate) {
-          const newStudentObj: Student = {
-            id: st.id,
-            firstName: st.firstName,
-            lastName: st.lastName,
-            email:
-              st.email ||
-              `${st.firstName.toLowerCase()}.${st.lastName.toLowerCase()}@alumno.edu.ar`.replace(
-                /\s+/g,
-                ''
-              ),
-            courseId: activeCourse.id,
-            attendanceRate: 100,
-            averageGrade: 0,
-            notes: (st as any).notes || 'Importado desde archivo',
-            avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(st.firstName + ' ' + st.lastName)}&background=1a73e8&color=ffffff&bold=true`,
-          };
-          await api.createStudent(newStudentObj).catch(() => {});
-        }
+        await Promise.all(
+          payload.newStudentsToCreate.map((st) => {
+            const newStudentObj: Student = {
+              id: st.id,
+              firstName: st.firstName,
+              lastName: st.lastName,
+              email:
+                st.email ||
+                `${st.firstName.toLowerCase()}.${st.lastName.toLowerCase()}@alumno.edu.ar`.replace(
+                  /\s+/g,
+                  ''
+                ),
+              courseId: activeCourse.id,
+              attendanceRate: 100,
+              averageGrade: 0,
+              notes: (st as any).notes || 'Importado desde archivo',
+              avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(st.firstName + ' ' + st.lastName)}&background=1a73e8&color=ffffff&bold=true`,
+            };
+            return api.createStudent(newStudentObj).catch(() => {});
+          })
+        );
         onRefreshData();
       }
 

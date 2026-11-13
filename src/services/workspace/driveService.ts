@@ -19,40 +19,52 @@ export interface CourseFolderStructure {
 }
 
 /**
- * Formats the main course folder name in Google Drive as "[Nombre del curso] por Docenc.ia"
+ * Normaliza el nombre de la carpeta principal de un curso en Google Drive bajo el estándar `"[Nombre del curso] por Docenc.ia"`.
+ *
+ * @param courseName Nombre original del curso.
+ * @returns Nombre de carpeta estandarizado sin emojis ni sufijos duplicados.
  */
 export function formatCourseDriveFolderName(courseName: string): string {
-  const clean = (courseName || 'Curso')
+  const cleanCourseName = (courseName || 'Curso')
     .replace(/^📚\s*/u, '')
     .replace(/\s*-\s*Materiales Docentes$/i, '')
     .trim();
-  if (/por\s+docenc\.ia$/i.test(clean)) {
-    return clean;
+  if (/por\s+docenc\.ia$/i.test(cleanCourseName)) {
+    return cleanCourseName;
   }
-  return `${clean} por Docenc.ia`;
+  return `${cleanCourseName} por Docenc.ia`;
 }
 
 /**
- * Checks whether an ID is a real Google Drive file/folder ID (not a local placeholder)
+ * Determina si un identificador corresponde a un archivo o carpeta real de Google Drive,
+ * descartando IDs provisorios generados en modo sin conexión (`folder-...`, `sheet-...`, `report-...`).
+ *
+ * @param id Identificador a evaluar.
+ * @returns `true` si el ID tiene el formato y longitud de un recurso real en Google Drive.
  */
 export function isRealDriveFolderId(id?: string): boolean {
   if (!id || typeof id !== 'string') return false;
-  const trimmed = id.trim();
-  if (!trimmed) return false;
+  const trimmedId = id.trim();
+  if (!trimmedId) return false;
   if (
-    trimmed.startsWith('folder-') ||
-    trimmed.startsWith('f-') ||
-    trimmed.startsWith('sheet-') ||
-    trimmed.startsWith('report-') ||
-    trimmed.includes('/')
+    trimmedId.startsWith('folder-') ||
+    trimmedId.startsWith('f-') ||
+    trimmedId.startsWith('sheet-') ||
+    trimmedId.startsWith('report-') ||
+    trimmedId.includes('/')
   ) {
     return false;
   }
-  return trimmed.length >= 10;
+  return trimmedId.length >= 10;
 }
 
 /**
- * Builds the direct Google Drive folder URL so opening a folder navigates straight into the folder and never to My Drive
+ * Construye el enlace directo hacia una carpeta específica de Google Drive para que el navegador
+ * abra directamente el directorio del curso en lugar de la raíz general de "Mi unidad".
+ *
+ * @param folderId ID de la carpeta en Google Drive.
+ * @param fallbackUrl URL alternativa en caso de no contar con un ID real de Drive.
+ * @returns URL directa hacia la carpeta en Google Drive.
  */
 export function getDirectDriveFolderUrl(folderId?: string, fallbackUrl?: string): string {
   if (isRealDriveFolderId(folderId)) {
@@ -88,9 +100,83 @@ export interface ExistingCategoryFileItem {
 export interface UploadOverwritePolicy {
   mode: 'overwrite' | 'create_new';
   targetFileId?: string;
+  courseName?: string;
+  category?: CourseDriveCategory;
 }
 
-let nextUploadOverwritePolicy: UploadOverwritePolicy | null = null;
+const UPLOAD_POLICY_TTL_MS = 60_000;
+
+/**
+ * Almacén encapsulado con expiración automática (TTL) para políticas de sobrescritura de subida a Drive.
+ * Evita efectos secundarios ("side effects") y condiciones de carrera que ocurrían con una variable global suelta
+ * cuando una subida automática en segundo plano consumía la política elegida manualmente por el docente.
+ */
+class ScopedUploadPolicyStore {
+  private scopedPolicies = new Map<string, { policy: UploadOverwritePolicy; expiresAt: number }>();
+  private fallbackPolicy: { policy: UploadOverwritePolicy; expiresAt: number } | null = null;
+
+  private buildScopeKey(courseName?: string, category?: CourseDriveCategory): string | null {
+    if (!courseName || !category) return null;
+    return `${formatCourseDriveFolderName(courseName).toLowerCase()}::${category}`;
+  }
+
+  setPolicy(policy: UploadOverwritePolicy | null): void {
+    if (!policy) {
+      this.fallbackPolicy = null;
+      this.scopedPolicies.clear();
+      return;
+    }
+    const entry = { policy, expiresAt: Date.now() + UPLOAD_POLICY_TTL_MS };
+    const scopeKey = this.buildScopeKey(policy.courseName, policy.category);
+    if (scopeKey) {
+      this.scopedPolicies.set(scopeKey, entry);
+    }
+    this.fallbackPolicy = entry;
+  }
+
+  consumePolicy(courseName?: string, category?: CourseDriveCategory): UploadOverwritePolicy | null {
+    const now = Date.now();
+    const scopeKey = this.buildScopeKey(courseName, category);
+    if (scopeKey && this.scopedPolicies.has(scopeKey)) {
+      const scopedEntry = this.scopedPolicies.get(scopeKey)!;
+      this.scopedPolicies.delete(scopeKey);
+      if (this.fallbackPolicy?.policy === scopedEntry.policy) {
+        this.fallbackPolicy = null;
+      }
+      if (scopedEntry.expiresAt >= now) {
+        return scopedEntry.policy;
+      }
+    }
+
+    if (this.fallbackPolicy) {
+      const currentFallback = this.fallbackPolicy;
+      // Si la política tenía curso/categoría explícitos distintos a los de esta subida en segundo plano, no la consumimos por error.
+      if (
+        currentFallback.policy.courseName &&
+        courseName &&
+        formatCourseDriveFolderName(currentFallback.policy.courseName).toLowerCase() !==
+          formatCourseDriveFolderName(courseName).toLowerCase()
+      ) {
+        return null;
+      }
+      if (
+        currentFallback.policy.category &&
+        category &&
+        currentFallback.policy.category !== category
+      ) {
+        return null;
+      }
+      this.fallbackPolicy = null;
+      if (currentFallback.expiresAt >= now) {
+        return currentFallback.policy;
+      }
+    }
+
+    return null;
+  }
+}
+
+const uploadPolicyStore = new ScopedUploadPolicyStore();
 
 const SAVED_DRIVE_FILES_REGISTRY_KEY = 'docencia_saved_drive_files_v1';
 
@@ -125,6 +211,12 @@ function writeSavedDriveRegistryEntry(entry: SavedDriveRegistryEntry): void {
   } catch {}
 }
 
+/**
+ * Traduce un formato de exportación de la aplicación hacia su `mimeType` oficial en Google Drive API v3.
+ *
+ * @param format Formato lógico solicitado (`'sheets'`, `'gdoc'`, `'xlsx'`, `'csv'`, `'html'`).
+ * @returns El `mimeType` estándar o nativo de Google Workspace correspondiente.
+ */
 export function getTargetMimeTypeForDriveFormat(
   format: 'sheets' | 'gdoc' | 'xlsx' | 'csv' | 'html'
 ): string {
@@ -145,6 +237,7 @@ export function getTargetMimeTypeForDriveFormat(
 function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   let binary = '';
+  // Se procesa en bloques de 32 KB (0x8000) para evitar desbordar la pila de llamadas (`Maximum call stack size exceeded`) con `String.fromCharCode.apply`.
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.subarray(i, i + chunkSize);
@@ -154,10 +247,22 @@ function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
 }
 
 export const driveService = {
+  /**
+   * Define la política de sobrescritura (`overwrite` vs. `create_new`) que se aplicará en la próxima subida a Google Drive.
+   *
+   * @param policy Política seleccionada por el docente en el diálogo de confirmación, o `null` para limpiar.
+   */
   setNextUploadOverwritePolicy(policy: UploadOverwritePolicy | null): void {
-    nextUploadOverwritePolicy = policy;
+    uploadPolicyStore.setPolicy(policy);
   },
 
+  /**
+   * Busca archivos previamente exportados dentro de la subcarpeta de una categoría del curso
+   * para ofrecer al docente la opción de sobrescribir el archivo existente o crear uno nuevo.
+   *
+   * @param options Curso, categoría pedagógica, formato buscado y credenciales opcionales.
+   * @returns Lista de archivos existentes que coinciden con la categoría y formato.
+   */
   async findExistingFilesInCategoryByFormat(options: {
     courseName: string;
     category: CourseDriveCategory;
@@ -232,15 +337,19 @@ export const driveService = {
     return localMatches;
   },
   /**
-   * Verify if a Google Drive file or spreadsheet still exists and is NOT in the trash (trashed = false).
-   * Prevents stale localStorage / DB IDs from failing when a teacher deletes a file in Drive.
+   * Verifica en Google Drive si un archivo o planilla sigue activo y no fue enviado a la papelera (`trashed = false`).
+   * Evita reutilizar IDs obsoletos en caché cuando el docente eliminó manualmente el archivo desde su Drive.
+   *
+   * @param fileId ID del archivo o carpeta en Google Drive.
+   * @param providedToken Token OAuth 2.0 explícito opcional.
+   * @returns `true` si el archivo existe y no está en la papelera (o si no hay conexión para comprobarlo).
    */
   async verifyFileIsActive(fileId?: string, providedToken?: string): Promise<boolean> {
     if (!isRealDriveFolderId(fileId)) {
       return false;
     }
     const token = providedToken || getCachedAccessToken();
-    if (!token) return true; // Assume valid if offline/unauthenticated
+    if (!token) return true;
 
     try {
       const res = await fetchGoogleApiWithRetry(
@@ -254,13 +363,19 @@ export const driveService = {
         return data.trashed !== true;
       }
     } catch {
-      // On network failure, don't invalidate cached ID
+      // Ante una caída transitoria de red, se conserva el ID en caché para no forzar la recreación duplicada de la planilla.
     }
     return true;
   },
 
   /**
-   * Find or create a folder in Google Drive (optionally inside a parent folder)
+   * Busca una carpeta por nombre en Google Drive (opcionalmente dentro de `parentFolderId`) y la crea si no existe.
+   *
+   * @param folderName Nombre de la carpeta a buscar o crear.
+   * @param parentFolderId ID opcional de la carpeta contenedora padre.
+   * @param providedToken Token OAuth 2.0 explícito opcional.
+   * @param skipTokenRequest Si es `true`, evita disparar solicitudes de token cuando es invocado en lote por subcarpetas.
+   * @returns Objeto con `id`, `name` y `url` directa de la carpeta.
    */
   async findOrCreateFolder(
     folderName: string,
@@ -719,8 +834,7 @@ export const driveService = {
     isLiveGoogle: boolean;
     overwritten?: boolean;
   } | null> {
-    const consumedPolicy = nextUploadOverwritePolicy;
-    nextUploadOverwritePolicy = null;
+    const consumedPolicy = uploadPolicyStore.consumePolicy(options.courseName, options.category);
 
     const effectiveOverwriteMode = options.overwriteMode || consumedPolicy?.mode || 'create_new';
     let effectiveOverwriteFileId = options.overwriteFileId || consumedPolicy?.targetFileId;
@@ -881,12 +995,15 @@ export const driveService = {
             Informes: structure.reportsFolder.id,
             'Historial de Incidencias': structure.incidentsFolder.id,
           };
-          for (const extraCat of options.alsoShortcutInCategories) {
-            const extraFolderId = catMap[extraCat];
-            if (extraFolderId && extraFolderId !== targetFolderId) {
-              this.ensureShortcutInFolder(finalName, fileId, extraFolderId, token).catch(() => {});
-            }
-          }
+          const shortcutPromises = options.alsoShortcutInCategories
+            .map((extraCat) => catMap[extraCat])
+            .filter((extraFolderId): extraFolderId is string =>
+              Boolean(extraFolderId && extraFolderId !== targetFolderId)
+            )
+            .map((extraFolderId) =>
+              this.ensureShortcutInFolder(finalName, fileId, extraFolderId, token).catch(() => false)
+            );
+          Promise.all(shortcutPromises).catch(() => {});
         }
 
         return {
@@ -922,28 +1039,47 @@ export const driveService = {
           token
         );
         if (res.ok) {
-          const data = await res.json();
-          return (data.files || []).map((f: any) => ({
-            id: f.id,
-            name: f.name,
-            mimeType: f.mimeType,
-            type: f.mimeType.includes('spreadsheet') ? 'sheet' : f.mimeType.includes('document') ? 'doc' : f.mimeType.includes('presentation') ? 'slide' : 'pdf',
-            size: f.size ? `${(parseInt(f.size) / 1024).toFixed(0)} KB` : '450 KB',
-            folder: folderId || 'Drive Docente',
-            modifiedTime: f.modifiedTime,
-            googleDriveUrl: f.webViewLink || `https://drive.google.com/open?id=${f.id}`,
-            sharedWithClassroom: false,
-          }));
+          const data = await res.json().catch(() => ({}));
+          return (Array.isArray(data.files) ? data.files : []).map((f: any) => {
+            const mime = String(f?.mimeType || '');
+            return {
+              id: f.id,
+              name: f.name || 'Documento sin título',
+              mimeType: mime,
+              type: mime.includes('spreadsheet')
+                ? 'sheet'
+                : mime.includes('document')
+                ? 'doc'
+                : mime.includes('presentation')
+                ? 'slide'
+                : 'pdf',
+              size: f.size ? `${(parseInt(f.size, 10) / 1024).toFixed(0)} KB` : '450 KB',
+              folder: folderId || 'Drive Docente',
+              modifiedTime: f.modifiedTime,
+              googleDriveUrl: f.webViewLink || `https://drive.google.com/open?id=${f.id}`,
+              sharedWithClassroom: false,
+            };
+          });
         }
       } catch (err) {
         console.warn('Live Google Drive fetch error, falling back to local files:', err);
       }
     }
 
-    // Fallback to local server files
-    const res = await fetch('/api/drive/files');
-    const data = await res.json();
-    return data.files;
+    // Fallback to local server files (wrapped in try/catch for static/serverless hosts like Vercel)
+    try {
+      const res = await fetch('/api/drive/files');
+      if (res.ok) {
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await res.json();
+          if (Array.isArray(data?.files)) {
+            return data.files;
+          }
+        }
+      }
+    } catch (_) {}
+    return [];
   },
 
   /**
@@ -1096,22 +1232,26 @@ export const driveService = {
 
     if (token) {
       try {
-        const metaRes = await fetchGoogleApiWithRetry(
-          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}?fields=id,name,mimeType`,
-          {},
-          token
-        );
+        const activeTok = getCachedAccessToken() || token;
+        // Se consultan en paralelo los metadatos del documento y la exportación HTML para reducir a la mitad la latencia de red.
+        const [metaRes, htmlRes] = await Promise.all([
+          fetchGoogleApiWithRetry(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}?fields=id,name,mimeType`,
+            {},
+            activeTok
+          ),
+          fetchGoogleApiWithRetry(
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/html`,
+            {},
+            activeTok
+          ),
+        ]);
+
         if (metaRes.ok) {
-          const meta = await metaRes.json();
-          if (meta.name) title = meta.name;
+          const meta = await metaRes.json().catch(() => ({}));
+          if (meta?.name) title = meta.name;
         }
 
-        const activeTok = getCachedAccessToken() || token;
-        const htmlRes = await fetchGoogleApiWithRetry(
-          `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/html`,
-          {},
-          activeTok
-        );
         if (htmlRes.ok) {
           const html = await htmlRes.text();
           return { title, html };
@@ -1120,7 +1260,7 @@ export const driveService = {
         const txtRes = await fetchGoogleApiWithRetry(
           `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(cleanId)}/export?mimeType=text/plain`,
           {},
-          activeTok
+          getCachedAccessToken() || activeTok
         );
         if (txtRes.ok) {
           const text = await txtRes.text();

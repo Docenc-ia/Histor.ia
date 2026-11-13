@@ -19,6 +19,13 @@ import {
 import { Student } from '../../types';
 import { CourseReportModal } from './CourseReportModal';
 import { driveService } from '../../services/workspace/driveService';
+import {
+  computeStudentAnnualSummaryRows,
+  getAnnualConditionBadgeClass,
+  computeAnnualCourseKpis,
+  filterAnnualSummaryRows,
+  buildAnnualSummaryCsvContent,
+} from '../../utils/gradeCalculations';
 
 export interface AnnualSummaryViewProps {
   courseId: string;
@@ -52,129 +59,29 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
   const [reportModalTab, setReportModalTab] = useState<'course' | 'individual'>('course');
   const [reportModalStudentId, setReportModalStudentId] = useState<string>('all');
 
-  // Calculate annual details for each student
-  const studentAnnualData = useMemo(() => {
-    return students.map((st) => {
-      const s1 = score1cMap[st.id] || { scoreStr: '', num: null };
-      const s2 = score2cMap[st.id] || { scoreStr: '', num: null };
-      const override = annualOverrides[st.id];
-
-      let calcAvgStr = '';
-      let calcAvgNum: number | null = null;
-
-      if (s1.num !== null && s2.num !== null) {
-        calcAvgNum = (s1.num + s2.num) / 2;
-        calcAvgStr = calcAvgNum.toFixed(1).replace('.0', '');
-      } else if (s1.num !== null) {
-        calcAvgNum = s1.num;
-        calcAvgStr = s1.scoreStr;
-      } else if (s2.num !== null) {
-        calcAvgNum = s2.num;
-        calcAvgStr = s2.scoreStr;
-      }
-
-      const finalVal = override !== undefined && override !== '' ? override : calcAvgStr;
-      const finalNum = finalVal !== '' && !isNaN(Number(finalVal)) ? Number(finalVal) : null;
-
-      let condition = 'Pendiente';
-      let conditionBadgeClass = isDarkMode
-        ? 'bg-slate-800 text-slate-400 border-slate-700'
-        : 'bg-neutral-100 text-neutral-500 border-neutral-200';
-
-      if (finalNum !== null) {
-        if (finalNum >= 7) {
-          condition = 'Aprobado';
-          conditionBadgeClass = isDarkMode
-            ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/80'
-            : 'bg-emerald-50 text-emerald-700 border-emerald-200';
-        } else if (finalNum >= 6) {
-          condition = 'Aprobado (Regular)';
-          conditionBadgeClass = isDarkMode
-            ? 'bg-amber-950/60 text-amber-300 border-amber-800/80'
-            : 'bg-amber-50 text-amber-700 border-amber-200';
-        } else {
-          condition = 'Compensación Diciembre / Feb';
-          conditionBadgeClass = isDarkMode
-            ? 'bg-rose-950/60 text-rose-300 border-rose-800/80'
-            : 'bg-rose-50 text-rose-700 border-rose-200';
-        }
-      }
-
-      return {
-        student: st,
-        score1c: s1.scoreStr,
-        score1cNum: s1.num,
-        score2c: s2.scoreStr,
-        score2cNum: s2.num,
-        calcAvgStr,
-        calcAvgNum,
-        finalVal,
-        finalNum,
-        hasOverride: override !== undefined && override !== '',
-        condition,
-        conditionBadgeClass,
-      };
-    });
-  }, [students, score1cMap, score2cMap, annualOverrides, isDarkMode]);
+  // Calculate annual details for each student using pure calculation engine (decoupled from UI theme)
+  const studentAnnualData = useMemo(
+    () =>
+      computeStudentAnnualSummaryRows(students, score1cMap, score2cMap, annualOverrides),
+    [students, score1cMap, score2cMap, annualOverrides]
+  );
 
   // Overall KPIs
-  const kpis = useMemo(() => {
-    const total = students.length;
-    const with1c = studentAnnualData.filter((d) => d.score1cNum !== null);
-    const with2c = studentAnnualData.filter((d) => d.score2cNum !== null);
-    const withFinal = studentAnnualData.filter((d) => d.finalNum !== null);
-    const approved = studentAnnualData.filter((d) => d.finalNum !== null && d.finalNum >= 7);
-
-    const avg1c = with1c.length > 0
-      ? (with1c.reduce((sum, d) => sum + (d.score1cNum || 0), 0) / with1c.length).toFixed(1)
-      : '—';
-
-    const avg2c = with2c.length > 0
-      ? (with2c.reduce((sum, d) => sum + (d.score2cNum || 0), 0) / with2c.length).toFixed(1)
-      : '—';
-
-    const avgFinal = withFinal.length > 0
-      ? (withFinal.reduce((sum, d) => sum + (d.finalNum || 0), 0) / withFinal.length).toFixed(1)
-      : '—';
-
-    return {
-      total,
-      with1cCount: with1c.length,
-      with2cCount: with2c.length,
-      avg1c,
-      avg2c,
-      avgFinal,
-      approvedCount: approved.length,
-      approvedPercent: total > 0 ? Math.round((approved.length / total) * 100) : 0,
-    };
-  }, [students, studentAnnualData]);
+  const kpis = useMemo(
+    () => computeAnnualCourseKpis(students.length, studentAnnualData),
+    [students.length, studentAnnualData]
+  );
 
   // Filtered rows
-  const filteredData = useMemo(() => {
-    if (!searchQuery.trim()) return studentAnnualData;
-    const q = searchQuery.toLowerCase();
-    return studentAnnualData.filter(
-      (d) =>
-        d.student.lastName.toLowerCase().includes(q) ||
-        d.student.firstName.toLowerCase().includes(q) ||
-        (d.student.email && d.student.email.toLowerCase().includes(q))
-    );
-  }, [studentAnnualData, searchQuery]);
+  const filteredData = useMemo(
+    () => filterAnnualSummaryRows(studentAnnualData, searchQuery),
+    [studentAnnualData, searchQuery]
+  );
 
   // Export CSV
   const handleExportAnnualCSV = () => {
-    let csv = 'data:text/csv;charset=utf-8,';
-    csv += 'Apellido y Nombre,1° Cuatrimestre,2° Cuatrimestre,Promedio Anual Sugerido,Calificación Final Definitiva,Condición\r\n';
-
-    studentAnnualData.forEach((d) => {
-      const name = `"${d.student.lastName}, ${d.student.firstName}"`;
-      const s1 = `"${d.score1c || ''}"`;
-      const s2 = `"${d.score2c || ''}"`;
-      const avg = `"${d.calcAvgStr || ''}"`;
-      const fin = `"${d.finalVal || ''}"`;
-      const cond = `"${d.condition}"`;
-      csv += [name, s1, s2, avg, fin, cond].join(',') + '\r\n';
-    });
+    const rawCsv = buildAnnualSummaryCsvContent(studentAnnualData);
+    const csv = 'data:text/csv;charset=utf-8,' + rawCsv;
 
     const fileName = `Cierre_Calificaciones_Anual_${courseName.replace(/\s+/g, '_')}.csv`;
     const encodedUri = encodeURI(csv);
@@ -185,7 +92,6 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
     link.click();
     document.body.removeChild(link);
 
-    const rawCsv = csv.replace(/^data:text\/csv;charset=utf-8,/i, '');
     driveService
       .uploadFileToCourseCategory({
         courseName,
@@ -561,7 +467,12 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                     </td>
 
                     <td data-pii="student" className="py-3 px-4 text-center">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold border ${row.conditionBadgeClass}`}>
+                      <span
+                        className={`inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-semibold border ${getAnnualConditionBadgeClass(
+                          row.conditionTone,
+                          isDarkMode
+                        )}`}
+                      >
                         {row.condition}
                       </span>
                     </td>

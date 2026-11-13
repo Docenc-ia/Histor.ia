@@ -45,17 +45,18 @@ function normalizeFormTitle(text: string): string {
 
 export const formsService = {
   /**
-   * Extracts a clean Google Form ID from a URL or raw ID string.
-   * Supports:
-   * - https://docs.google.com/forms/d/1abc123.../edit
-   * - https://docs.google.com/forms/d/e/1FAIpQL.../viewform
-   * - https://forms.gle/...
-   * - Raw ID: 1abc123...
+   * Extrae el identificador limpio de un formulario de Google Forms y detecta si el enlace
+   * corresponde a una vista pública de respondedor (`/forms/d/e/.../viewform` o `forms.gle`) o al enlace de edición (`/forms/d/.../edit`).
+   *
+   * @param idOrUrl URL completa o ID directo del formulario de Google Forms.
+   * @returns El identificador extraído (`formId`) y el indicador `isPublicResponderUrl`.
    */
   extractFormId(idOrUrl: string): { formId: string; isPublicResponderUrl: boolean } {
-    const trimmed = idOrUrl.trim();
+    const trimmed = String(idOrUrl || '').trim();
+    if (!trimmed) {
+      return { formId: '', isPublicResponderUrl: false };
+    }
 
-    // Detect /forms/d/e/{responderId}/viewform (public responder link)
     if (/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9_-]+)/i.test(trimmed)) {
       const m = trimmed.match(/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9_-]+)/i);
       return {
@@ -71,7 +72,6 @@ export const formsService = {
       };
     }
 
-    // Standard editor/form URL: /forms/d/{formId}/edit
     const match = trimmed.match(/\/forms\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+)/i);
     if (match && match[1]) {
       return {
@@ -87,7 +87,12 @@ export const formsService = {
   },
 
   /**
-   * Lists Google Forms available in the teacher's Google Drive (if accessible with current scopes)
+   * Lista los formularios de Google Forms disponibles en el Google Drive del docente autenticado.
+   *
+   * @param searchQuery Filtro opcional por nombre del formulario.
+   * @param providedToken Token OAuth 2.0 explícito opcional.
+   * @param interactive Si es `true`, permite solicitar autorización interactiva cuando no hay token en caché.
+   * @returns Arreglo de formularios encontrados ordenados por fecha de modificación.
    */
   async listUserGoogleForms(
     searchQuery?: string,
@@ -129,9 +134,14 @@ export const formsService = {
   },
 
   /**
-   * Resolves a public responder URL (/forms/d/e/1FAIpQL.../viewform or forms.gle/...)
-   * by extracting its public title via server proxy and matching against the teacher's
-   * Google Forms (`responderUri` or title) or linked Google Sheets in Drive.
+   * Resuelve un enlace público de respondedor (`/forms/d/e/1FAIpQL.../viewform` o `forms.gle/...`)
+   * hacia el ID de edición real del formulario o hacia su planilla de respuestas vinculada en Google Drive.
+   * La API de Google Forms v1 no acepta el ID público `1FAIpQL...`, por lo que es necesario cruzar el `responderUri` o el título contra el Drive del docente.
+   *
+   * @param rawInputUrl URL pública ingresada por el docente.
+   * @param responderIdHint ID de respondedor extraído de la URL.
+   * @param token Token OAuth 2.0 activo del docente.
+   * @returns Referencia al formulario (`kind: 'form'`) o planilla de respuestas (`kind: 'sheet'`), o `null` si no se halló coincidencia.
    */
   async resolvePublicResponderForm(
     rawInputUrl: string,
@@ -177,7 +187,6 @@ export const formsService = {
 
     const normTargetTitle = normalizeFormTitle(extractedTitle);
 
-    // 1. Search the teacher's Google Forms in Drive and check responderUri / title
     try {
       const [matchingForms, recentForms] = await Promise.all([
         extractedTitle ? this.listUserGoogleForms(extractedTitle, token) : Promise.resolve([]),
@@ -226,7 +235,6 @@ export const formsService = {
       }
     } catch {}
 
-    // 2. Search the teacher's Google Spreadsheets in Drive for a linked Response Sheet ("{Title} (Respuestas)")
     try {
       const queries: string[] = [];
       if (extractedTitle) {
@@ -271,8 +279,13 @@ export const formsService = {
   },
 
   /**
-   * Fetches a Google Form's structure and its responses directly via the Google Forms API v1,
-   * extracting student identifiers (name/email) and their final score.
+   * Descarga la estructura y las entregas de un formulario mediante Google Forms API v1
+   * (o su hoja de cálculo vinculada como respaldo), reconstruyendo los puntajes totales por alumno.
+   *
+   * @param idOrUrl Enlace o ID del formulario de Google Forms.
+   * @param providedToken Token OAuth 2.0 explícito opcional.
+   * @returns Objeto `DirectGoogleFormDataResult` con título, puntaje máximo, encabezados y filas de respuestas.
+   * @throws {Error} Si el enlace es inválido, faltan permisos o el formulario no registra entregas.
    */
   async fetchGoogleFormEvaluations(
     idOrUrl: string,
@@ -326,7 +339,6 @@ export const formsService = {
 
     const safeFormId = encodeURIComponent(formId.trim());
 
-    // 1. Fetch Form Metadata & Questions (to get title, question titles, and total quiz points)
     let formData = preloadedFormData;
     if (!formData) {
       const formRes = await fetchGoogleApiWithRetry(
@@ -336,6 +348,7 @@ export const formsService = {
       );
 
       if (!formRes.ok) {
+        // Si el usuario pegó por error el ID de una hoja de respuestas de Google Sheets en el buscador de Forms, se intenta leer como planilla antes de fallar.
         try {
           const sheetFallback = await fetchArbitrarySpreadsheetDataHelper(formId, undefined, token);
           if (sheetFallback.rows.length > 0 && sheetFallback.headers.length > 0) {
@@ -375,7 +388,6 @@ export const formsService = {
       'Evaluación de Google Forms';
     const linkedSheetId = formData?.linkedSheetId ? String(formData.linkedSheetId).trim() : '';
 
-    // Map questionId -> question title, and calculate total possible points in the Quiz
     const questionIdToTitle: Record<string, string> = {};
     let totalQuizPoints = 0;
 
@@ -405,7 +417,6 @@ export const formsService = {
       }
     });
 
-    // 2. Fetch Form Responses (submissions & scores)
     const activeToken = getCachedAccessToken() || token;
     const responsesRes = await fetchGoogleApiWithRetry(
       `https://forms.googleapis.com/v1/forms/${safeFormId}/responses`,
@@ -464,7 +475,6 @@ export const formsService = {
       throw new Error('Este formulario de Google Forms aún no tiene respuestas enviadas.');
     }
 
-    // Build headers & rows compatible with our student roster matcher
     const questionHeaders = Object.values(questionIdToTitle);
     const headers = [
       'Marca temporal',
@@ -476,7 +486,6 @@ export const formsService = {
     const effectiveMaxScore = totalQuizPoints > 0 ? totalQuizPoints : 10;
 
     const rows: Array<Record<string, any>> = responsesList.map((resp) => {
-      // Calculate earned score: either resp.totalScore or sum of individual answer grades
       let earnedScore: number | null =
         typeof resp.totalScore === 'number' ? resp.totalScore : null;
 
@@ -489,7 +498,7 @@ export const formsService = {
             summed += ans.grade.score;
             hasAnyGrade = true;
           } else if (ans?.grade) {
-            // In Google Forms API, a grade object with 0 points omits the `score` field (`grade: {}`)
+            // La API de Google Forms omite la propiedad `score` cuando la respuesta obtuvo 0 puntos (`grade: {}`).
             hasAnyGrade = true;
           }
         });

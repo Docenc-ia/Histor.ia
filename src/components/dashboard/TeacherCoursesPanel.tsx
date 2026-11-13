@@ -188,17 +188,26 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
       .then(async (res) => {
         if (mounted && res.success && Array.isArray(res.slots)) {
           setLiveCalendarSlots(res.slots);
-          // Si alguna materia nueva todavía no tiene horario válido cargado pero ya fue acomodada en Google Calendar, adoptarlo automáticamente
+          // Si alguna materia nueva todavía no tiene horario válido cargado pero ya fue acomodada en Google Calendar, adoptarlo concurrentemente
+          const scheduleUpdatePromises: Promise<unknown>[] = [];
           for (const course of courses) {
             if (!isValidCourseSchedule(course.schedule)) {
               const matched = res.slots.filter((slot) => doesCalendarSlotMatchCourse(slot, course));
               if (matched.length > 0) {
-                const uniqueTexts = Array.from(new Set(matched.map((m) => m.displayText).filter(Boolean)));
+                const uniqueTexts = Array.from(
+                  new Set(matched.map((m) => m.displayText).filter(Boolean))
+                );
                 if (uniqueTexts.length > 0) {
-                  await api.updateCourse(course.id, { schedule: uniqueTexts.join(', ') }).catch(() => {});
+                  scheduleUpdatePromises.push(
+                    api.updateCourse(course.id, { schedule: uniqueTexts.join(', ') }).catch(() => {})
+                  );
                 }
               }
             }
+          }
+
+          if (scheduleUpdatePromises.length > 0) {
+            await Promise.all(scheduleUpdatePromises);
           }
         }
       })

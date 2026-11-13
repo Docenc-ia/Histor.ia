@@ -338,14 +338,28 @@ export const sheetsService = {
         }
 
         if (sheetIdToUse && isRealGoogleSpreadsheetId(sheetIdToUse)) {
-          try {
-            const folders = await driveService.setupCourseFolderStructure(course.name, folderId, token);
-            const targetGradesFolderId = folders.gradesFolder?.id || folders.mainFolder?.id || folderId;
-            if (targetGradesFolderId && !targetGradesFolderId.startsWith('folder-') && !targetGradesFolderId.startsWith('f-')) {
-              await driveService.moveFileToFolder(sheetIdToUse, targetGradesFolderId, token);
-            }
-          } catch (_) {}
-          await this.ensureSheetsExist(sheetIdToUse, token, [tabName]);
+          const targetSheetId = sheetIdToUse;
+          await Promise.all([
+            (async () => {
+              try {
+                const folders = await driveService.setupCourseFolderStructure(
+                  course.name,
+                  folderId,
+                  token
+                );
+                const targetGradesFolderId =
+                  folders.gradesFolder?.id || folders.mainFolder?.id || folderId;
+                if (
+                  targetGradesFolderId &&
+                  !targetGradesFolderId.startsWith('folder-') &&
+                  !targetGradesFolderId.startsWith('f-')
+                ) {
+                  await driveService.moveFileToFolder(targetSheetId, targetGradesFolderId, token);
+                }
+              } catch (_) {}
+            })(),
+            this.ensureSheetsExist(targetSheetId, token, [tabName]),
+          ]);
 
           // Clear previous data in tab
           try {

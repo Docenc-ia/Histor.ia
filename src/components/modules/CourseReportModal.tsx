@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Printer,
   Download,
@@ -44,9 +44,10 @@ import {
 } from '../../utils/attendanceCalculations';
 import { generateCourseReportHtml } from '../../utils/courseReportHtml';
 import {
-  computeTermScoreForStudent,
   buildConsolidatedReportStudents,
   computeCourseReportStats,
+  filterCourseDispositionMap,
+  resolveEffectiveTermScoresMap,
 } from '../../utils/courseReportAggregator';
 import { useTerminologySettings } from '../../utils/terminologySettings';
 
@@ -119,14 +120,53 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }
   });
 
+  const courseObsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCourseObsRef = useRef<string | null>(null);
+  const studentObsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingStudentObsMapRef = useRef<Record<string, string> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      const userId = getActiveUserId();
+      if (courseObsTimerRef.current) {
+        clearTimeout(courseObsTimerRef.current);
+        courseObsTimerRef.current = null;
+      }
+      if (userId && pendingCourseObsRef.current !== null) {
+        const textToFlush = pendingCourseObsRef.current;
+        pendingCourseObsRef.current = null;
+        firestoreSync.saveUserSetting(userId, `course_obs_${courseId}`, textToFlush).catch(() => {});
+      }
+      if (studentObsTimerRef.current) {
+        clearTimeout(studentObsTimerRef.current);
+        studentObsTimerRef.current = null;
+      }
+      if (userId && pendingStudentObsMapRef.current !== null) {
+        const mapToFlush = pendingStudentObsMapRef.current;
+        pendingStudentObsMapRef.current = null;
+        firestoreSync
+          .saveUserSetting(userId, `student_report_obs_${courseId}`, mapToFlush)
+          .catch(() => {});
+      }
+    };
+  }, [courseId]);
+
   const handleUpdateCourseObservation = (text: string) => {
     setCourseObservation(text);
     try {
       setStorageItemForUser(`fds_report_course_observation_${courseId}`, text);
-      const userId = getActiveUserId();
-      if (userId) {
-        firestoreSync.saveUserSetting(userId, `course_obs_${courseId}`, text).catch(() => {});
+      pendingCourseObsRef.current = text;
+      if (courseObsTimerRef.current) {
+        clearTimeout(courseObsTimerRef.current);
       }
+      courseObsTimerRef.current = setTimeout(() => {
+        courseObsTimerRef.current = null;
+        pendingCourseObsRef.current = null;
+        const userId = getActiveUserId();
+        if (userId) {
+          firestoreSync.saveUserSetting(userId, `course_obs_${courseId}`, text).catch(() => {});
+        }
+      }, 450);
     } catch (err) {
       console.error('Error saving course report observation:', err);
     }
@@ -161,19 +201,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const disp1cMap = useMemo(() => {
     try {
       const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_1c`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          const filtered: Record<string, any> = {};
-          for (const [k, val] of Object.entries(parsed)) {
-            if (!(val as any)?.courseId || (val as any).courseId === courseId) {
-              filtered[k] = val;
-            }
-          }
-          return filtered;
-        }
-      }
-      return {};
+      return raw ? filterCourseDispositionMap(JSON.parse(raw), courseId) : {};
     } catch {
       return {};
     }
@@ -182,19 +210,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const disp2cMap = useMemo(() => {
     try {
       const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_2c`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          const filtered: Record<string, any> = {};
-          for (const [k, val] of Object.entries(parsed)) {
-            if (!(val as any)?.courseId || (val as any).courseId === courseId) {
-              filtered[k] = val;
-            }
-          }
-          return filtered;
-        }
-      }
-      return {};
+      return raw ? filterCourseDispositionMap(JSON.parse(raw), courseId) : {};
     } catch {
       return {};
     }
@@ -301,36 +317,62 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     }
   });
 
-  // Hydrate observations from Firestore cloud if available
+  // Hydrate observations from local storage and Firestore cloud when courseId changes, preventing cross-course race conditions
   useEffect(() => {
+    let isMounted = true;
+    const targetCourseId = courseId;
+
+    try {
+      setCourseObservation(
+        getStorageItemForUser(`fds_report_course_observation_${targetCourseId}`) || ''
+      );
+    } catch {
+      setCourseObservation('');
+    }
+
+    try {
+      const rawStudentObs = getStorageItemForUser(
+        `fds_report_student_observations_${targetCourseId}`
+      );
+      setReportObservations(rawStudentObs ? JSON.parse(rawStudentObs) : {});
+    } catch {
+      setReportObservations({});
+    }
+
     const userId = getActiveUserId();
-    if (!userId || !courseId) return;
+    if (!userId || !targetCourseId) {
+      return () => {
+        isMounted = false;
+      };
+    }
 
     firestoreSync
-      .loadUserSetting<string>(userId, `course_obs_${courseId}`)
+      .loadUserSetting<string>(userId, `course_obs_${targetCourseId}`)
       .then((cloudObs) => {
-        if (cloudObs && typeof cloudObs === 'string') {
-          setCourseObservation((prev) => prev || cloudObs);
-          setStorageItemForUser(`fds_report_course_observation_${courseId}`, cloudObs);
-        }
+        if (!isMounted || !cloudObs || typeof cloudObs !== 'string') return;
+        setCourseObservation((prev) => prev || cloudObs);
+        setStorageItemForUser(`fds_report_course_observation_${targetCourseId}`, cloudObs);
       })
       .catch(() => {});
 
     firestoreSync
-      .loadUserSetting<Record<string, string>>(userId, `student_report_obs_${courseId}`)
+      .loadUserSetting<Record<string, string>>(userId, `student_report_obs_${targetCourseId}`)
       .then((cloudMap) => {
-        if (cloudMap && typeof cloudMap === 'object') {
-          setReportObservations((prev) => {
-            const merged = { ...cloudMap, ...prev };
-            setStorageItemForUser(
-              `fds_report_student_observations_${courseId}`,
-              JSON.stringify(merged)
-            );
-            return merged;
-          });
-        }
+        if (!isMounted || !cloudMap || typeof cloudMap !== 'object') return;
+        setReportObservations((prev) => {
+          const merged = { ...cloudMap, ...prev };
+          setStorageItemForUser(
+            `fds_report_student_observations_${targetCourseId}`,
+            JSON.stringify(merged)
+          );
+          return merged;
+        });
       })
       .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
   }, [courseId]);
 
   const handleUpdateStudentReportObservation = (studentId: string, text: string) => {
@@ -341,10 +383,20 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           `fds_report_student_observations_${courseId}`,
           JSON.stringify(updated)
         );
-        const userId = getActiveUserId();
-        if (userId) {
-          firestoreSync.saveUserSetting(userId, `student_report_obs_${courseId}`, updated).catch(() => {});
+        pendingStudentObsMapRef.current = updated;
+        if (studentObsTimerRef.current) {
+          clearTimeout(studentObsTimerRef.current);
         }
+        studentObsTimerRef.current = setTimeout(() => {
+          studentObsTimerRef.current = null;
+          pendingStudentObsMapRef.current = null;
+          const userId = getActiveUserId();
+          if (userId) {
+            firestoreSync
+              .saveUserSetting(userId, `student_report_obs_${courseId}`, updated)
+              .catch(() => {});
+          }
+        }, 450);
       } catch (err) {
         console.error('Error saving report observation:', err);
       }
@@ -353,29 +405,29 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   };
 
   // Fallback loading of grades and annual overrides if opened outside of GradebookMatrix
-  const effectiveScore1cMap = useMemo(() => {
-    if (score1cMap && Object.keys(score1cMap).length > 0) return score1cMap;
-    const result: Record<string, { scoreStr: string; num: number | null }> = {};
-    students.forEach((st) => {
-      const calc = computeTermScoreForStudent(st.id, categories1c, gradesData1c, calcMode1c);
-      if (calc.scoreStr !== '') {
-        result[st.id] = calc;
-      }
-    });
-    return result;
-  }, [score1cMap, students, categories1c, gradesData1c, calcMode1c]);
+  const effectiveScore1cMap = useMemo(
+    () =>
+      resolveEffectiveTermScoresMap(
+        score1cMap,
+        students,
+        categories1c,
+        gradesData1c,
+        calcMode1c
+      ),
+    [score1cMap, students, categories1c, gradesData1c, calcMode1c]
+  );
 
-  const effectiveScore2cMap = useMemo(() => {
-    if (score2cMap && Object.keys(score2cMap).length > 0) return score2cMap;
-    const result: Record<string, { scoreStr: string; num: number | null }> = {};
-    students.forEach((st) => {
-      const calc = computeTermScoreForStudent(st.id, categories2c, gradesData2c, calcMode2c);
-      if (calc.scoreStr !== '') {
-        result[st.id] = calc;
-      }
-    });
-    return result;
-  }, [score2cMap, students, categories2c, gradesData2c, calcMode2c]);
+  const effectiveScore2cMap = useMemo(
+    () =>
+      resolveEffectiveTermScoresMap(
+        score2cMap,
+        students,
+        categories2c,
+        gradesData2c,
+        calcMode2c
+      ),
+    [score2cMap, students, categories2c, gradesData2c, calcMode2c]
+  );
 
   const effectiveOverrides = useMemo(() => {
     if (annualOverrides && Object.keys(annualOverrides).length > 0) return annualOverrides;

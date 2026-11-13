@@ -3,8 +3,64 @@ import { GradeCategory, StudentGradesMap } from '../types/grades';
 import type {
   DetectedColumnConfig,
   MultiVerifiedStudentRow,
-} from '../components/modules/ImportGradesModal';
+} from '../types/gradeImport';
+import { sanitizePlainTextInput } from './htmlEscape';
 
+const EXACT_EMAIL_MATCH_SCORE = 1.0;
+const EXACT_FULL_NAME_MATCH_SCORE = 0.99;
+const BOTH_NAMES_CONTAINED_SCORE = 0.92;
+const MIN_FUZZY_MATCH_SCORE_THRESHOLD = 0.5;
+const NO_MATCH_SCORE = 0;
+
+const CONCEPTUAL_GRADE_EXCELLENT = 10;
+const CONCEPTUAL_GRADE_VERY_GOOD = 9;
+const CONCEPTUAL_GRADE_GOOD = 8;
+const CONCEPTUAL_GRADE_REGULAR = 6;
+const CONCEPTUAL_GRADE_INSUFFICIENT = 4;
+
+const MIN_GRADE_SCORE = 0;
+const MAX_GRADE_SCORE = 10;
+const MIN_DISPOSITION_SCORE = 1;
+const MAX_DISPOSITION_SCORE = 10;
+const MAX_NEGATIVE_DISPOSITION_DEDUCTION = -9;
+const TWO_DECIMAL_PRECISION = 2;
+const DEFAULT_DISPOSITION_FALLBACK_STRING = '10';
+const DEFAULT_ATTENDANCE_FALLBACK_STRING = '0';
+
+const MAX_HEADER_TEXT_LENGTH_BEFORE_QUESTION = 50;
+const DELIMITER_LINE_RATIO_THRESHOLD = 0.4;
+const MAX_PREVIEW_COLUMNS_PER_ROW = 3;
+const EMPTY_CELL_DASH = '-';
+const ORDER_BY_ROSTER_KEY = '__ORDER__';
+const DEFAULT_CATEGORY_ID = 'cat-default';
+const DEFAULT_EVALUATION_CATEGORY_NAME = 'Evaluaciones';
+const DEFAULT_GRADES_CATEGORY_NAME = 'Calificaciones';
+const DEFAULT_CATEGORY_WEIGHT = 100;
+const SYNTHETIC_HEADER_STUDENT = 'Alumno';
+const SYNTHETIC_HEADER_DISPOSITION = 'Disposición';
+
+const ZIP_LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+const ZIP_HEADER_MIN_BYTES = 30;
+const ZIP_COMPRESSION_METHOD_OFFSET = 8;
+const ZIP_COMPRESSED_SIZE_OFFSET = 18;
+const ZIP_FILENAME_LENGTH_OFFSET = 26;
+const ZIP_EXTRA_FIELD_LENGTH_OFFSET = 28;
+const ZIP_COMPRESSION_STORED = 0;
+const ZIP_COMPRESSION_DEFLATE = 8;
+const WORD_DOCUMENT_XML_ENTRY_PATH = 'word/document.xml';
+const PK_SIGNATURE_BYTE_0 = 0x50;
+const PK_SIGNATURE_BYTE_1 = 0x4b;
+const PK_LOCAL_HEADER_MARKER = 0x03;
+const PK_CENTRAL_DIR_MARKER = 0x01;
+const PK_DATA_DESCRIPTOR_MARKER = 0x07;
+
+/**
+ * Normaliza un texto eliminando tildes, signos de puntuación y convirtiendo a minúsculas
+ * para permitir comparaciones tolerantes a errores de tipeo entre planillas y el padrón.
+ *
+ * @param text Cadena de entrada a normalizar.
+ * @returns Cadena alfanumérica en minúsculas separada por espacios simples.
+ */
 export function normalizeImportText(text: string): string {
   return String(text || '')
     .toLowerCase()
@@ -15,825 +71,950 @@ export function normalizeImportText(text: string): string {
 }
 
 /**
- * Fuzzy match between raw student name/email in Excel/Sheets and course roster
+ * Busca la mejor coincidencia para un alumno dentro del padrón del curso utilizando
+ * coincidencia exacta de correo electrónico, inversión de orden Apellido/Nombre y similitud por tokens.
+ *
+ * @param students Lista oficial de alumnos del curso.
+ * @param rawName Nombre completo o parcial leído desde la fila importada.
+ * @param rawEmail Correo electrónico opcional leído desde la fila importada.
+ * @returns El alumno mejor posicionado (`student`) y su índice de confianza (`score` entre `0` y `1`).
  */
 export function findBestStudentMatchInRoster(
   students: Student[],
   rawName: string,
   rawEmail?: string
 ): { student: Student | null; score: number } {
-  const emailClean = rawEmail ? String(rawEmail).trim().toLowerCase() : '';
-  if (emailClean) {
-    const exactEmail = students.find(
-      (s) => s.email && s.email.trim().toLowerCase() === emailClean
-    );
-    if (exactEmail) return { student: exactEmail, score: 1.0 };
+  if (!Array.isArray(students) || students.length === 0) {
+    return { student: null, score: NO_MATCH_SCORE };
   }
 
-  const rawClean = normalizeImportText(rawName);
-  if (!rawClean) return { student: null, score: 0 };
+  const normalizedEmail = rawEmail ? String(rawEmail).trim().toLowerCase() : '';
+  if (normalizedEmail) {
+    const exactEmailStudent = students.find(
+      (student) =>
+        student && student.email && student.email.trim().toLowerCase() === normalizedEmail
+    );
+    if (exactEmailStudent) {
+      return { student: exactEmailStudent, score: EXACT_EMAIL_MATCH_SCORE };
+    }
+  }
 
-  let bestMatch: Student | null = null;
-  let highestScore = 0;
+  const normalizedRawName = normalizeImportText(rawName);
+  if (!normalizedRawName) return { student: null, score: NO_MATCH_SCORE };
+
+  let bestMatchedStudent: Student | null = null;
+  let highestSimilarityScore = NO_MATCH_SCORE;
 
   for (const student of students) {
-    const lastClean = normalizeImportText(student.lastName);
-    const firstClean = normalizeImportText(student.firstName);
-    const fullLastFirst = `${lastClean} ${firstClean}`;
-    const fullFirstLast = `${firstClean} ${lastClean}`;
-    const stEmailClean = student.email ? normalizeImportText(student.email) : '';
+    if (!student) continue;
+    const normalizedLastName = normalizeImportText(student.lastName);
+    const normalizedFirstName = normalizeImportText(student.firstName);
+    const fullLastFirst = `${normalizedLastName} ${normalizedFirstName}`;
+    const fullFirstLast = `${normalizedFirstName} ${normalizedLastName}`;
+    const normalizedStudentEmail = student.email ? normalizeImportText(student.email) : '';
 
-    if (stEmailClean && (rawClean === stEmailClean || rawClean.includes(stEmailClean))) {
-      return { student, score: 1.0 };
+    if (
+      normalizedStudentEmail &&
+      (normalizedRawName === normalizedStudentEmail ||
+        normalizedRawName.includes(normalizedStudentEmail))
+    ) {
+      return { student, score: EXACT_EMAIL_MATCH_SCORE };
     }
 
-    if (rawClean === fullLastFirst || rawClean === fullFirstLast) {
-      return { student, score: 0.99 };
+    if (normalizedRawName === fullLastFirst || normalizedRawName === fullFirstLast) {
+      return { student, score: EXACT_FULL_NAME_MATCH_SCORE };
     }
 
-    if (lastClean && firstClean && rawClean.includes(lastClean) && rawClean.includes(firstClean)) {
-      return { student, score: 0.92 };
+    if (
+      normalizedLastName &&
+      normalizedFirstName &&
+      normalizedRawName.includes(normalizedLastName) &&
+      normalizedRawName.includes(normalizedFirstName)
+    ) {
+      return { student, score: BOTH_NAMES_CONTAINED_SCORE };
     }
 
-    const rawTokens = rawClean.split(/\s+/).filter(Boolean);
-    const studentTokens = `${lastClean} ${firstClean}`.split(/\s+/).filter(Boolean);
-    let matchedTokens = 0;
-    for (const t of rawTokens) {
-      if (studentTokens.includes(t)) {
-        matchedTokens++;
+    const rawNameTokens = normalizedRawName.split(/\s+/).filter(Boolean);
+    const studentNameTokens = `${normalizedLastName} ${normalizedFirstName}`
+      .split(/\s+/)
+      .filter(Boolean);
+    let matchedTokenCount = 0;
+    for (const token of rawNameTokens) {
+      if (studentNameTokens.includes(token)) {
+        matchedTokenCount++;
       }
     }
-    const tokenScore = matchedTokens / Math.max(rawTokens.length, studentTokens.length, 1);
-    if (tokenScore > highestScore) {
-      highestScore = tokenScore;
-      bestMatch = student;
+    const tokenSimilarityScore =
+      matchedTokenCount / Math.max(rawNameTokens.length, studentNameTokens.length, 1);
+    if (tokenSimilarityScore > highestSimilarityScore) {
+      highestSimilarityScore = tokenSimilarityScore;
+      bestMatchedStudent = student;
     }
   }
 
-  if (highestScore >= 0.5) {
-    return { student: bestMatch, score: highestScore };
+  if (highestSimilarityScore >= MIN_FUZZY_MATCH_SCORE_THRESHOLD) {
+    return { student: bestMatchedStudent, score: highestSimilarityScore };
   }
 
-  return { student: null, score: 0 };
+  return { student: null, score: NO_MATCH_SCORE };
 }
 
 /**
- * Auto-detects primary student Name column, optional secondary First Name column (when Apellido and Nombre are separated),
- * and Email column.
+ * Identifica automáticamente las columnas de identidad del estudiante (Apellido/Nombre principal,
+ * Nombre separado secundario y Correo electrónico) a partir de los encabezados de la tabla.
+ *
+ * @param columnHeaders Lista de encabezados de la hoja o documento importado.
+ * @returns Nombres de las columnas asignadas a identidad (`nameCol`, `secondaryNameCol`, `emailCol`).
  */
-export function autoDetectIdentityColumns(cols: string[]): {
+export function autoDetectIdentityColumns(columnHeaders: string[]): {
   nameCol: string;
   secondaryNameCol: string;
   emailCol: string;
 } {
+  const safeHeaders = Array.isArray(columnHeaders)
+    ? columnHeaders.filter((header) => typeof header === 'string' && header.trim() !== '')
+    : [];
+  if (safeHeaders.length === 0) {
+    return { nameCol: '', secondaryNameCol: '', emailCol: '' };
+  }
+
   let nameCol = '';
   let secondaryNameCol = '';
 
-  const exactLastCol = cols.find((c) => /^apellido(s)?$/i.test(normalizeImportText(c)));
-  const exactFirstCol = cols.find(
-    (c) => c !== exactLastCol && /^nombre(s)?$/i.test(normalizeImportText(c))
+  const exactLastNameColumn = safeHeaders.find((columnName) =>
+    /^apellido(s)?$/i.test(normalizeImportText(columnName))
+  );
+  const exactFirstNameColumn = safeHeaders.find(
+    (columnName) =>
+      columnName !== exactLastNameColumn && /^nombre(s)?$/i.test(normalizeImportText(columnName))
   );
 
-  if (exactLastCol && exactFirstCol) {
-    nameCol = exactLastCol;
-    secondaryNameCol = exactFirstCol;
+  if (exactLastNameColumn && exactFirstNameColumn) {
+    nameCol = exactLastNameColumn;
+    secondaryNameCol = exactFirstNameColumn;
   } else {
     nameCol =
-      cols.find((c) => /alumno|nombre|estudiante|apellido|nom|ape|persona/i.test(c)) ||
-      cols[0] ||
+      safeHeaders.find((columnName) =>
+        /alumno|nombre|estudiante|apellido|nom|ape|persona/i.test(columnName)
+      ) ||
+      safeHeaders[0] ||
       '';
   }
 
   const emailCol =
-    cols.find(
-      (c) => c !== nameCol && c !== secondaryNameCol && /email|correo|mail/i.test(c)
+    safeHeaders.find(
+      (columnName) =>
+        columnName !== nameCol &&
+        columnName !== secondaryNameCol &&
+        /email|correo|mail/i.test(columnName)
     ) || '';
 
   return { nameCol, secondaryNameCol, emailCol };
 }
 
 /**
- * Extracts a clean numeric value from cells like "8,5", "8.50 (MB)", "9 pts", "-1,5", "3 faltas",
- * or standard Argentine conceptual scales (EX=10, MB=9, B=8, R=6).
+ * Interpreta el valor de una celda hacia un número válido según el rol de la columna.
+ * Soporta decimales con coma o punto, fracciones ("8 / 10"), descuentos negativos ("-1,5")
+ * y escalas conceptuales argentinas (`EX`=10, `MB`=9, `B`=8, `R`=6, `I`=4).
+ *
+ * @param rawCellValue Valor crudo de la celda.
+ * @param columnKind Tipo semántico asignado a la columna (`grade`, `disposition`, `disposition_deduction`, `absences`, `lates`).
+ * @returns El valor numérico normalizado (`numVal`) y un indicador booleano de validez (`isValid`) dentro del rango permitido.
  */
 export function parseFlexibleCellNumber(
-  rawVal: any,
-  kind: DetectedColumnConfig['kind']
+  rawCellValue: any,
+  columnKind: DetectedColumnConfig['kind']
 ): { numVal: number; isValid: boolean } {
-  const rawStr = String(rawVal ?? '').trim();
-  if (!rawStr || rawStr === '-') {
+  const rawCellString = String(rawCellValue ?? '').trim();
+  if (!rawCellString || rawCellString === EMPTY_CELL_DASH) {
     return { numVal: NaN, isValid: false };
   }
 
-  const upper = rawStr.toUpperCase();
-  if (kind === 'disposition' || kind === 'grade') {
-    if (upper === 'EX' || upper === 'EXCELENTE' || upper === 'S' || upper === 'SOBRESALIENTE') {
-      return { numVal: 10, isValid: true };
+  const upperCaseText = rawCellString.toUpperCase();
+  if (columnKind === 'disposition' || columnKind === 'grade') {
+    if (
+      upperCaseText === 'EX' ||
+      upperCaseText === 'EXCELENTE' ||
+      upperCaseText === 'S' ||
+      upperCaseText === 'SOBRESALIENTE'
+    ) {
+      return { numVal: CONCEPTUAL_GRADE_EXCELLENT, isValid: true };
     }
-    if (upper === 'MB' || upper === 'MUY BUENO') {
-      return { numVal: 9, isValid: true };
+    if (upperCaseText === 'MB' || upperCaseText === 'MUY BUENO') {
+      return { numVal: CONCEPTUAL_GRADE_VERY_GOOD, isValid: true };
     }
-    if (upper === 'B' || upper === 'BUENO') {
-      return { numVal: 8, isValid: true };
+    if (upperCaseText === 'B' || upperCaseText === 'BUENO') {
+      return { numVal: CONCEPTUAL_GRADE_GOOD, isValid: true };
     }
-    if (upper === 'R' || upper === 'REGULAR') {
-      return { numVal: 6, isValid: true };
+    if (upperCaseText === 'R' || upperCaseText === 'REGULAR') {
+      return { numVal: CONCEPTUAL_GRADE_REGULAR, isValid: true };
     }
-    if (upper === 'M' || upper === 'MALO' || upper === 'I' || upper === 'INSUFICIENTE') {
-      return { numVal: 4, isValid: true };
+    if (
+      upperCaseText === 'M' ||
+      upperCaseText === 'MALO' ||
+      upperCaseText === 'I' ||
+      upperCaseText === 'INSUFICIENTE'
+    ) {
+      return { numVal: CONCEPTUAL_GRADE_INSUFFICIENT, isValid: true };
     }
   }
 
-  // Support Google Forms "X / Y" score format (e.g. "8 / 10", "8,50 / 10", "75 / 100")
-  if (kind === 'grade') {
-    const fractionMatch = rawStr.match(
+  if (columnKind === 'grade') {
+    const fractionMatch = rawCellString.match(
       /^(-?\d+(?:[.,]\d+)?)\s*(?:\/|de|sobre)\s*(\d+(?:[.,]\d+)?)$/i
     );
     if (fractionMatch) {
-      const earned = parseFloat(fractionMatch[1].replace(',', '.'));
-      const max = parseFloat(fractionMatch[2].replace(',', '.'));
-      if (!isNaN(earned) && !isNaN(max) && max > 0) {
-        const scaled = max === 10 ? earned : (earned / max) * 10;
+      const earnedPoints = parseFloat(fractionMatch[1].replace(',', '.'));
+      const maxPossiblePoints = parseFloat(fractionMatch[2].replace(',', '.'));
+      if (!isNaN(earnedPoints) && !isNaN(maxPossiblePoints) && maxPossiblePoints > 0) {
+        const scaledGrade =
+          maxPossiblePoints === MAX_GRADE_SCORE
+            ? earnedPoints
+            : (earnedPoints / maxPossiblePoints) * MAX_GRADE_SCORE;
         return {
-          numVal: Number(scaled.toFixed(2)),
-          isValid: scaled >= 0 && scaled <= 10,
+          numVal: Number(scaledGrade.toFixed(TWO_DECIMAL_PRECISION)),
+          isValid: scaledGrade >= MIN_GRADE_SCORE && scaledGrade <= MAX_GRADE_SCORE,
         };
       }
     }
   }
 
-  // Extract first number (supporting comma or dot decimals and optional negative sign)
-  const normalizedDecimals = rawStr.replace(',', '.');
-  const numMatch = normalizedDecimals.match(/-?\d+(?:\.\d+)?/);
-  if (!numMatch) {
+  const normalizedDecimalText = rawCellString.replace(',', '.');
+  const numericTokenMatch = normalizedDecimalText.match(/-?\d+(?:\.\d+)?/);
+  if (!numericTokenMatch) {
     return { numVal: NaN, isValid: false };
   }
 
-  const parsed = parseFloat(numMatch[0]);
-  if (isNaN(parsed)) {
+  const parsedNumber = parseFloat(numericTokenMatch[0]);
+  if (isNaN(parsedNumber)) {
     return { numVal: NaN, isValid: false };
   }
 
-  if (kind === 'disposition_deduction') {
-    // Converts a deduction (e.g. -1.5 or 1.5 points deducted) into final disposition on 1-10 scale
-    const deduction = Math.abs(parsed);
-    const resultingDisp = Math.max(1, Math.min(10, 10 - deduction));
-    return { numVal: resultingDisp, isValid: deduction >= 0 && deduction <= 10 };
+  if (columnKind === 'disposition_deduction') {
+    const absoluteDeduction = Math.abs(parsedNumber);
+    const resultingDisposition = Math.max(
+      MIN_DISPOSITION_SCORE,
+      Math.min(MAX_DISPOSITION_SCORE, MAX_DISPOSITION_SCORE - absoluteDeduction)
+    );
+    return {
+      numVal: resultingDisposition,
+      isValid: absoluteDeduction >= MIN_GRADE_SCORE && absoluteDeduction <= MAX_DISPOSITION_SCORE,
+    };
   }
 
-  if (kind === 'disposition') {
-    // If teacher wrote a negative number like -1 or -2 in a disposition column, treat as deduction from 10
-    if (parsed < 0 && parsed >= -9) {
-      return { numVal: Math.max(1, 10 + parsed), isValid: true };
+  if (columnKind === 'disposition') {
+    // Muchos docentes anotan "-1" o "-2" directamente en la columna de Disposición como puntos a descontar sobre la base de 10.
+    if (parsedNumber < 0 && parsedNumber >= MAX_NEGATIVE_DISPOSITION_DEDUCTION) {
+      return {
+        numVal: Math.max(MIN_DISPOSITION_SCORE, MAX_DISPOSITION_SCORE + parsedNumber),
+        isValid: true,
+      };
     }
-    return { numVal: parsed, isValid: parsed >= 0 && parsed <= 10 };
+    return {
+      numVal: parsedNumber,
+      isValid: parsedNumber >= MIN_GRADE_SCORE && parsedNumber <= MAX_DISPOSITION_SCORE,
+    };
   }
 
-  if (kind === 'grade') {
-    return { numVal: parsed, isValid: parsed >= 0 && parsed <= 10 };
+  if (columnKind === 'grade') {
+    return {
+      numVal: parsedNumber,
+      isValid: parsedNumber >= MIN_GRADE_SCORE && parsedNumber <= MAX_GRADE_SCORE,
+    };
   }
 
-  if (kind === 'absences' || kind === 'lates') {
-    return { numVal: Math.abs(parsed), isValid: Math.abs(parsed) >= 0 };
+  if (columnKind === 'absences' || columnKind === 'lates') {
+    const absoluteAttendanceCount = Math.abs(parsedNumber);
+    return {
+      numVal: absoluteAttendanceCount,
+      isValid: absoluteAttendanceCount >= MIN_GRADE_SCORE,
+    };
   }
 
-  return { numVal: parsed, isValid: true };
+  return { numVal: parsedNumber, isValid: true };
 }
 
 /**
- * Auto-detects what each column in the uploaded Excel or Google Sheet represents:
- * - Student Name / Secondary Name / Email
- * - Attendance / Disposition (Ausencias, Tardanzas, Disposición, Descuento)
- * - Grade / Category columns (e.g. "Trabajos Prácticos - TP 1", "Parcial 1", "Exámenes", etc.)
+ * Clasifica automáticamente cada columna no-identitaria de una planilla importada
+ * en su rol pedagógico (Calificación + Categoría/Subcategoría, Inasistencias, Tardanzas, Disposición o Ignorar).
+ *
+ * @param columnHeaders Encabezados de la tabla importada.
+ * @param nameCol Columna asignada al nombre principal del alumno.
+ * @param emailCol Columna asignada al correo electrónico.
+ * @param categories Categorías de calificación existentes en el curso/cuatrimestre activo.
+ * @param secondaryNameCol Columna opcional asignada al nombre de pila cuando viene separado del apellido.
+ * @param importContext Contexto desde el cual se abrió el importador (`'grades'` o `'attendance'`).
+ * @param attendanceDefaultKind Tipo por defecto cuando se importa una única columna desde el módulo de Asistencia.
+ * @returns Arreglo de configuraciones detectadas (`DetectedColumnConfig[]`) para todas las columnas de datos.
  */
 export function autoDetectColumnsConfiguration(
-  cols: string[],
+  columnHeaders: string[],
   nameCol: string,
   emailCol: string,
-  cats: GradeCategory[],
+  categories: GradeCategory[],
   secondaryNameCol = '',
   importContext: 'grades' | 'attendance' = 'grades',
   attendanceDefaultKind: 'disposition' | 'absences' | 'both' = 'disposition'
 ): DetectedColumnConfig[] {
-  const configs: DetectedColumnConfig[] = [];
-  const defaultCat = cats[0] || {
-    id: 'cat-default',
-    name: 'Evaluaciones',
-    weight: 100,
+  const columnConfigurations: DetectedColumnConfig[] = [];
+  const defaultCategory = categories[0] || {
+    id: DEFAULT_CATEGORY_ID,
+    name: DEFAULT_EVALUATION_CATEGORY_NAME,
+    weight: DEFAULT_CATEGORY_WEIGHT,
     subcategories: [],
   };
 
-  cols.forEach((col) => {
-    if (col === nameCol || col === secondaryNameCol || col === emailCol) return;
+  const createNonGradeConfig = (
+    columnKey: string,
+    subcategoryLabel: string,
+    kind: DetectedColumnConfig['kind'],
+    isIncluded = true
+  ): DetectedColumnConfig => ({
+    colKey: columnKey,
+    isIncluded,
+    kind,
+    targetCategoryMode: 'existing',
+    targetCategoryId: defaultCategory.id,
+    newCategoryName: '',
+    targetSubcategoryMode: 'new',
+    targetSubcategoryId: '',
+    subcategoryName: subcategoryLabel,
+  });
 
-    const clean = col.trim();
-    const lower = normalizeImportText(clean);
-    // Ignore non-data, survey questions, long prompts, or calculated summary columns by default (teacher can still enable them)
-    const isSummaryOrMeta =
+  columnHeaders.forEach((columnHeader) => {
+    if (
+      columnHeader === nameCol ||
+      columnHeader === secondaryNameCol ||
+      columnHeader === emailCol
+    ) {
+      return;
+    }
+
+    const trimmedHeader = columnHeader.trim();
+    const normalizedHeader = normalizeImportText(trimmedHeader);
+    // Los encabezados de más de 50 caracteres o con signos de interrogación suelen ser consignas de Google Forms y no columnas de notas.
+    const isSummaryOrMetadataColumn =
       /^n$|^nro$|^numero$|^id$|^legajo$|^orden$|marca temporal|timestamp|promedio final|condicion|estado|ultima actualizacion|ultima incidencia|asistencia %|% asistencia|fecha|hora|pregunta|consigna|observacion|comentario|devolucion|feedback|descripcion|respuesta/i.test(
-        lower
+        normalizedHeader
       ) ||
-      clean.length > 50 || // Column header is a long question text
-      clean.endsWith('?') ||
-      clean.startsWith('¿');
+      trimmedHeader.length > MAX_HEADER_TEXT_LENGTH_BEFORE_QUESTION ||
+      trimmedHeader.endsWith('?') ||
+      trimmedHeader.startsWith('¿');
 
-    // Check if it's an Attendance or Disposition column
-    if (/ausencia|falta|inasistencia|ausentes/i.test(lower) && !/justificada/i.test(lower)) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: 'absences',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+    if (
+      /ausencia|falta|inasistencia|ausentes/i.test(normalizedHeader) &&
+      !/justificada/i.test(normalizedHeader)
+    ) {
+      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'absences'));
       return;
     }
 
-    if (/tardanza|llegada tarde|tardes|\btarde\b|demora/i.test(lower)) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: 'lates',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+    if (/tardanza|llegada tarde|tardes|\btarde\b|demora/i.test(normalizedHeader)) {
+      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'lates'));
       return;
     }
 
-    if (/descuento|puntos menos|resta|sancion|negativo/i.test(lower)) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: 'disposition_deduction',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+    if (/descuento|puntos menos|resta|sancion|negativo/i.test(normalizedHeader)) {
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, 'disposition_deduction')
+      );
       return;
     }
 
     if (
       /disposicion|conducta|actitud|comportamiento|nota disp|concepto|participacion|desempeno/i.test(
-        lower
+        normalizedHeader
       ) &&
-      (importContext === 'attendance' || /disposicion|conducta|actitud|comportamiento|nota disp/i.test(lower))
+      (importContext === 'attendance' ||
+        /disposicion|conducta|actitud|comportamiento|nota disp/i.test(normalizedHeader))
     ) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: 'disposition',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'disposition'));
       return;
     }
 
-    // If we are in attendance/disposition import context:
-    // - If there is 1 data column, map it to the selected attendanceDefaultKind ('absences' or 'disposition')
-    // - If attendanceDefaultKind === 'both' and there are 2 generic data columns, map col 1 to 'absences' and col 2 to 'disposition'
-    const nonIdentityCols = cols.filter(
-      (c) => c !== nameCol && c !== secondaryNameCol && c !== emailCol
+    const nonIdentityColumns = columnHeaders.filter(
+      (candidateCol) =>
+        candidateCol !== nameCol &&
+        candidateCol !== secondaryNameCol &&
+        candidateCol !== emailCol
     );
-    const nonIdentityIdx = nonIdentityCols.indexOf(col);
-    const looksLikeExplicitEvalCol =
+    const nonIdentityColumnIndex = nonIdentityColumns.indexOf(columnHeader);
+    const looksLikeExplicitEvaluationColumn =
       /calific|tp|trabajo|practico|parcial|examen|eval|prueba|trimestre|cuatrimestre|oral|escrito|entrega/i.test(
-        lower
+        normalizedHeader
       );
-    if (importContext === 'attendance' && nonIdentityCols.length === 1 && !looksLikeExplicitEvalCol) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: attendanceDefaultKind === 'absences' ? 'absences' : 'disposition',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+
+    if (
+      importContext === 'attendance' &&
+      nonIdentityColumns.length === 1 &&
+      !looksLikeExplicitEvaluationColumn
+    ) {
+      const targetAttendanceKind =
+        attendanceDefaultKind === 'absences' ? 'absences' : 'disposition';
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, targetAttendanceKind)
+      );
       return;
     }
+
     if (
       importContext === 'attendance' &&
       attendanceDefaultKind === 'both' &&
-      nonIdentityCols.length === 2 &&
-      !looksLikeExplicitEvalCol
+      nonIdentityColumns.length === 2 &&
+      !looksLikeExplicitEvaluationColumn
     ) {
-      configs.push({
-        colKey: col,
-        isIncluded: true,
-        kind: nonIdentityIdx === 0 ? 'absences' : 'disposition',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+      const pairedAttendanceKind = nonIdentityColumnIndex === 0 ? 'absences' : 'disposition';
+      columnConfigurations.push(
+        createNonGradeConfig(columnHeader, trimmedHeader, pairedAttendanceKind)
+      );
       return;
     }
 
-    if (isSummaryOrMeta) {
-      configs.push({
-        colKey: col,
-        isIncluded: false,
-        kind: 'ignore',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: clean,
-      });
+    if (isSummaryOrMetadataColumn) {
+      columnConfigurations.push(createNonGradeConfig(columnHeader, trimmedHeader, 'ignore', false));
       return;
     }
 
-    // Otherwise treat as a Grade / Category column!
-    let parsedCatName = '';
-    let parsedSubName = clean;
-    if (clean.includes(' - ')) {
-      const parts = clean
+    let parsedCategoryName = '';
+    let parsedSubcategoryName = trimmedHeader;
+    if (trimmedHeader.includes(' - ')) {
+      const headerSegments = trimmedHeader
         .split(' - ')
-        .map((p) => p.trim())
+        .map((segment) => segment.trim())
         .filter(Boolean);
-      if (parts.length >= 2) {
-        parsedCatName = parts[0];
-        parsedSubName = parts.slice(1).join(' - ');
+      if (headerSegments.length >= 2) {
+        parsedCategoryName = headerSegments[0];
+        parsedSubcategoryName = headerSegments.slice(1).join(' - ');
       }
-    } else if (clean.includes(': ')) {
-      const parts = clean
+    } else if (trimmedHeader.includes(': ')) {
+      const headerSegments = trimmedHeader
         .split(': ')
-        .map((p) => p.trim())
+        .map((segment) => segment.trim())
         .filter(Boolean);
-      if (parts.length >= 2) {
-        parsedCatName = parts[0];
-        parsedSubName = parts.slice(1).join(': ');
+      if (headerSegments.length >= 2) {
+        parsedCategoryName = headerSegments[0];
+        parsedSubcategoryName = headerSegments.slice(1).join(': ');
       }
     }
 
     let matchedCategory: GradeCategory | undefined;
-    if (parsedCatName) {
-      const normCat = normalizeImportText(parsedCatName);
-      matchedCategory = cats.find(
-        (c) =>
-          normalizeImportText(c.name) === normCat ||
-          normalizeImportText(c.name).includes(normCat) ||
-          normCat.includes(normalizeImportText(c.name))
+    if (parsedCategoryName) {
+      const normalizedParsedCategory = normalizeImportText(parsedCategoryName);
+      matchedCategory = categories.find(
+        (category) =>
+          normalizeImportText(category.name) === normalizedParsedCategory ||
+          normalizeImportText(category.name).includes(normalizedParsedCategory) ||
+          normalizedParsedCategory.includes(normalizeImportText(category.name))
       );
     }
 
     if (!matchedCategory) {
-      if (/^tp\b|trabajo practico|guia|entrega|actividad|tarea/i.test(lower)) {
-        matchedCategory = cats.find((c) =>
-          /trabajo|practico|tp|actividad/i.test(normalizeImportText(c.name))
+      if (/^tp\b|trabajo practico|guia|entrega|actividad|tarea/i.test(normalizedHeader)) {
+        matchedCategory = categories.find((category) =>
+          /trabajo|practico|tp|actividad/i.test(normalizeImportText(category.name))
         );
       } else if (
-        /examen|parcial|evaluacion|prueba|recuperatorio|integrador|diagnostica/i.test(lower)
+        /examen|parcial|evaluacion|prueba|recuperatorio|integrador|diagnostica/i.test(
+          normalizedHeader
+        )
       ) {
-        matchedCategory = cats.find((c) =>
-          /evaluacion|examen|parcial|prueba/i.test(normalizeImportText(c.name))
+        matchedCategory = categories.find((category) =>
+          /evaluacion|examen|parcial|prueba/i.test(normalizeImportText(category.name))
         );
-      } else if (/concepto|participacion|desempeno|carpeta/i.test(lower)) {
-        matchedCategory = cats.find((c) =>
-          /concepto|desempeno|participacion/i.test(normalizeImportText(c.name))
+      } else if (/concepto|participacion|desempeno|carpeta/i.test(normalizedHeader)) {
+        matchedCategory = categories.find((category) =>
+          /concepto|desempeno|participacion/i.test(normalizeImportText(category.name))
         );
       }
     }
 
-    let matchedSubId = '';
-    for (const c of cats) {
-      const foundSub = c.subcategories.find(
-        (s) => normalizeImportText(s.name) === normalizeImportText(parsedSubName)
+    let matchedSubcategoryId = '';
+    for (const category of categories) {
+      const existingSubcategory = category.subcategories.find(
+        (subcategory) =>
+          normalizeImportText(subcategory.name) === normalizeImportText(parsedSubcategoryName)
       );
-      if (foundSub) {
-        matchedCategory = c;
-        matchedSubId = foundSub.id;
+      if (existingSubcategory) {
+        matchedCategory = category;
+        matchedSubcategoryId = existingSubcategory.id;
         break;
       }
     }
 
     if (matchedCategory) {
-      if (!matchedSubId) {
-        const subInCat = matchedCategory.subcategories.find(
-          (s) => normalizeImportText(s.name) === normalizeImportText(parsedSubName)
+      if (!matchedSubcategoryId) {
+        const subcategoryInMatchedCategory = matchedCategory.subcategories.find(
+          (subcategory) =>
+            normalizeImportText(subcategory.name) === normalizeImportText(parsedSubcategoryName)
         );
-        if (subInCat) matchedSubId = subInCat.id;
+        if (subcategoryInMatchedCategory) {
+          matchedSubcategoryId = subcategoryInMatchedCategory.id;
+        }
       }
 
-      configs.push({
-        colKey: col,
+      columnConfigurations.push({
+        colKey: columnHeader,
         isIncluded: true,
         kind: 'grade',
         targetCategoryMode: 'existing',
         targetCategoryId: matchedCategory.id,
-        newCategoryName: parsedCatName || matchedCategory.name,
-        targetSubcategoryMode: matchedSubId ? 'existing' : 'new',
-        targetSubcategoryId: matchedSubId || '',
-        subcategoryName: parsedSubName,
+        newCategoryName: parsedCategoryName || matchedCategory.name,
+        targetSubcategoryMode: matchedSubcategoryId ? 'existing' : 'new',
+        targetSubcategoryId: matchedSubcategoryId || '',
+        subcategoryName: parsedSubcategoryName,
       });
-    } else if (parsedCatName) {
-      configs.push({
-        colKey: col,
+    } else if (parsedCategoryName) {
+      columnConfigurations.push({
+        colKey: columnHeader,
         isIncluded: true,
         kind: 'grade',
         targetCategoryMode: 'new',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: parsedCatName,
+        targetCategoryId: defaultCategory.id,
+        newCategoryName: parsedCategoryName,
         targetSubcategoryMode: 'new',
         targetSubcategoryId: '',
-        subcategoryName: parsedSubName,
+        subcategoryName: parsedSubcategoryName,
       });
     } else {
-      configs.push({
-        colKey: col,
+      columnConfigurations.push({
+        colKey: columnHeader,
         isIncluded: true,
         kind: 'grade',
-        targetCategoryMode: cats.length > 0 ? 'existing' : 'new',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: 'Calificaciones',
+        targetCategoryMode: categories.length > 0 ? 'existing' : 'new',
+        targetCategoryId: defaultCategory.id,
+        newCategoryName: DEFAULT_GRADES_CATEGORY_NAME,
         targetSubcategoryMode: 'new',
         targetSubcategoryId: '',
-        subcategoryName: parsedSubName,
+        subcategoryName: parsedSubcategoryName,
       });
     }
   });
 
-  return configs;
+  return columnConfigurations;
 }
 
 /**
- * Parses free-form text lines (from Google Docs, Word, TXT, or pasted lists) into a 2D grid.
- * Supports tab/semicolon/pipe separated tables AND lines like:
- *   "1. García, Ana - 9.5"
- *   "Pérez, Juan: 8,5"
- *   "López María 10"
+ * Convierte bloques de texto libre (provenientes de Google Docs, Word, archivos `.txt` o listas pegadas)
+ * en una matriz bidimensional normalizada con fila de encabezado garantizada.
+ *
+ * @param textContent Texto plano con líneas de alumnos y calificaciones.
+ * @returns Matriz 2D lista para transformarse en objetos de tabla.
  */
-export function parseTextLinesTo2DGrid(text: string): any[][] {
-  const lines = String(text || '')
+export function parseTextLinesTo2DGrid(textContent: string): any[][] {
+  const nonEmptyLines = String(textContent || '')
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
 
-  if (lines.length === 0) return [];
+  if (nonEmptyLines.length === 0) return [];
 
-  // 1. Check if most lines use tab, semicolon, or pipe delimiters
-  const tabCount = lines.filter((l) => l.includes('\t')).length;
-  const semiCount = lines.filter((l) => l.includes(';')).length;
-  const pipeCount = lines.filter((l) => l.includes('|')).length;
+  const minDelimitedLinesThreshold = Math.max(
+    1,
+    Math.floor(nonEmptyLines.length * DELIMITER_LINE_RATIO_THRESHOLD)
+  );
+  const tabDelimitedCount = nonEmptyLines.filter((line) => line.includes('\t')).length;
+  const semicolonDelimitedCount = nonEmptyLines.filter((line) => line.includes(';')).length;
+  const pipeDelimitedCount = nonEmptyLines.filter((line) => line.includes('|')).length;
 
-  let rows: string[][] = [];
+  let parsedRows: string[][] = [];
 
-  if (tabCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
-    rows = lines.map((l) => l.split('\t').map((c) => c.trim()));
-  } else if (pipeCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
-    rows = lines
-      .map((l) =>
-        l
+  if (tabDelimitedCount >= minDelimitedLinesThreshold) {
+    parsedRows = nonEmptyLines.map((line) => line.split('\t').map((cell) => cell.trim()));
+  } else if (pipeDelimitedCount >= minDelimitedLinesThreshold) {
+    parsedRows = nonEmptyLines
+      .map((line) =>
+        line
           .replace(/^\|+|\|+$/g, '')
           .split('|')
-          .map((c) => c.trim())
+          .map((cell) => cell.trim())
       )
-      .filter((r) => !r.every((c) => /^[-:]+$/.test(c)));
-  } else if (semiCount >= Math.max(1, Math.floor(lines.length * 0.4))) {
-    rows = lines.map((l) => l.split(';').map((c) => c.trim()));
+      // Se descartan las filas separadoras de tablas Markdown (ej. `|---|---|`) para que no se interpreten como alumnos.
+      .filter((rowCells) => !rowCells.every((cell) => /^[-:]+$/.test(cell)));
+  } else if (semicolonDelimitedCount >= minDelimitedLinesThreshold) {
+    parsedRows = nonEmptyLines.map((line) => line.split(';').map((cell) => cell.trim()));
   } else {
-    // Parse line by line: strip leading numbering ("1.", "1)", "01 -") and separate Name from trailing score(s)
-    rows = lines.map((line) => {
-      const cleaned = line.replace(/^\d+\s*[.):\-]\s*/, '').trim();
-      // Check for separator like " - ", " : ", " – ", " — " before a number or conceptual grade
-      const dashOrColonMatch = cleaned.match(
+    parsedRows = nonEmptyLines.map((rawLine) => {
+      const lineWithoutLeadingIndex = rawLine.replace(/^\d+\s*[.):\-]\s*/, '').trim();
+      const dashOrColonScoreMatch = lineWithoutLeadingIndex.match(
         /^(.+?)\s*(?:[-–—:=]+)\s*(-?\d+(?:[.,]\d+)?(?:\s*\/\s*\d+)?|EX|EXCELENTE|MB|MUY BUENO|B|BUENO|R|REGULAR|I|INSUFICIENTE)$/i
       );
-      if (dashOrColonMatch) {
-        return [dashOrColonMatch[1].trim(), dashOrColonMatch[2].trim()];
+      if (dashOrColonScoreMatch) {
+        return [dashOrColonScoreMatch[1].trim(), dashOrColonScoreMatch[2].trim()];
       }
 
-      // Check for trailing number at the end of the line (e.g. "García, Ana 9,5")
-      const trailingNumMatch = cleaned.match(
+      const trailingNumberMatch = lineWithoutLeadingIndex.match(
         /^([a-zA-ZáéíóúÁÉÍÓÚñÑüÜ\s,.'’-]+?)\s+(-?\d+(?:[.,]\d+)?|EX|MB|B|R)$/i
       );
-      if (trailingNumMatch) {
-        return [trailingNumMatch[1].trim(), trailingNumMatch[2].trim()];
+      if (trailingNumberMatch) {
+        return [trailingNumberMatch[1].trim(), trailingNumberMatch[2].trim()];
       }
 
-      // Check if comma-separated "Apellido, Nombre, 9"
-      const commaParts = cleaned.split(',').map((p) => p.trim());
+      const commaSeparatedParts = lineWithoutLeadingIndex
+        .split(',')
+        .map((segment) => segment.trim());
       if (
-        commaParts.length >= 2 &&
-        /^-?\d+(?:[.,]\d+)?$/.test(commaParts[commaParts.length - 1])
+        commaSeparatedParts.length >= 2 &&
+        /^-?\d+(?:[.,]\d+)?$/.test(commaSeparatedParts[commaSeparatedParts.length - 1])
       ) {
-        const scorePart = commaParts[commaParts.length - 1];
-        const namePart = commaParts.slice(0, -1).join(', ');
-        return [namePart, scorePart];
+        const trailingScoreSegment = commaSeparatedParts[commaSeparatedParts.length - 1];
+        const studentNameSegment = commaSeparatedParts.slice(0, -1).join(', ');
+        return [studentNameSegment, trailingScoreSegment];
       }
 
-      return [cleaned];
+      return [lineWithoutLeadingIndex];
     });
   }
 
-  return ensureHeaderRowIn2DGrid(rows);
+  return ensureHeaderRowIn2DGrid(parsedRows);
 }
 
 /**
- * Ensures that if row 0 of a 2D grid already contains a student name + numeric score (instead of column headers),
- * synthetic headers ['Alumno', 'Disposición / Nota', ...] are prepended so the first student is not lost.
+ * Garantiza que la primera fila de una matriz 2D corresponda a encabezados de columna.
+ * Si detecta que la fila 0 ya contiene directamente el nombre de un alumno y una nota numérica,
+ * antepone encabezados sintéticos para evitar que el primer alumno de la lista se pierda como cabecera.
+ *
+ * @param rawGrid Matriz 2D original.
+ * @returns Matriz 2D con fila de encabezados en la posición `0`.
  */
-export function ensureHeaderRowIn2DGrid(grid: any[][]): any[][] {
-  const nonEmpty = grid.filter(
-    (r) => Array.isArray(r) && r.some((cell) => String(cell ?? '').trim() !== '')
+export function ensureHeaderRowIn2DGrid(rawGrid: any[][]): any[][] {
+  const nonEmptyRows = rawGrid.filter(
+    (rowCells) =>
+      Array.isArray(rowCells) && rowCells.some((cellValue) => String(cellValue ?? '').trim() !== '')
   );
-  if (nonEmpty.length === 0) return [];
+  if (nonEmptyRows.length === 0) return [];
 
-  const firstRow = nonEmpty[0].map((c) => String(c ?? '').trim());
-  const maxCols = Math.max(...nonEmpty.map((r) => r.length), 1);
+  const firstRowCells = nonEmptyRows[0].map((cellValue) => String(cellValue ?? '').trim());
+  const maxColumnCount = Math.max(...nonEmptyRows.map((rowCells) => rowCells.length), 1);
 
-  if (maxCols === 1) {
-    const firstCell = firstRow[0] || '';
-    const isHeaderWord = /^(alumno|estudiante|nombre|apellido|nota|disposicion|calificacion)/i.test(
-      normalizeImportText(firstCell)
-    );
-    if (!isHeaderWord) {
-      const looksNumeric = /^-?\d+(?:[.,]\d+)?$/.test(firstCell);
-      return [[looksNumeric ? 'Disposición' : 'Alumno'], ...nonEmpty];
+  if (maxColumnCount === 1) {
+    const firstCellText = firstRowCells[0] || '';
+    const isKnownHeaderKeyword =
+      /^(alumno|estudiante|nombre|apellido|nota|disposicion|calificacion)/i.test(
+        normalizeImportText(firstCellText)
+      );
+    if (!isKnownHeaderKeyword) {
+      const looksNumeric = /^-?\d+(?:[.,]\d+)?$/.test(firstCellText);
+      return [
+        [looksNumeric ? SYNTHETIC_HEADER_DISPOSITION : SYNTHETIC_HEADER_STUDENT],
+        ...nonEmptyRows,
+      ];
     }
-    return nonEmpty;
+    return nonEmptyRows;
   }
 
-  // Check if any cell in firstRow looks like a known header keyword
-  const hasExplicitHeaderWord = firstRow.some((cell) =>
+  const hasExplicitHeaderKeyword = firstRowCells.some((cellText) =>
     /^(alumno|alumnos|estudiante|estudiantes|nombre|nombres|apellido|apellidos|disposicion|nota|notas|calificacion|ausencia|falta|tardanza|email|correo|tp|examen|parcial|concepto|conducta)/i.test(
-      normalizeImportText(cell)
+      normalizeImportText(cellText)
     )
   );
 
-  if (!hasExplicitHeaderWord) {
-    // Check if any cell from index 1..end in firstRow is a valid number or conceptual grade
-    const secondCellNumeric = firstRow
+  if (!hasExplicitHeaderKeyword) {
+    const hasNumericOrConceptualValueInFirstRow = firstRowCells
       .slice(1)
-      .some((cell) => /^-?\d+(?:[.,]\d+)?$/.test(cell) || /^(EX|MB|B|R)$/i.test(cell));
-    if (secondCellNumeric) {
-      const synthHeaders = ['Alumno'];
-      for (let i = 1; i < maxCols; i++) {
-        synthHeaders.push(i === 1 ? 'Disposición' : `Columna ${i + 1}`);
+      .some((cellText) => /^-?\d+(?:[.,]\d+)?$/.test(cellText) || /^(EX|MB|B|R)$/i.test(cellText));
+    if (hasNumericOrConceptualValueInFirstRow) {
+      const syntheticHeaders = [SYNTHETIC_HEADER_STUDENT];
+      for (let columnIndex = 1; columnIndex < maxColumnCount; columnIndex++) {
+        syntheticHeaders.push(
+          columnIndex === 1 ? SYNTHETIC_HEADER_DISPOSITION : `Columna ${columnIndex + 1}`
+        );
       }
-      return [synthHeaders, ...nonEmpty];
+      return [syntheticHeaders, ...nonEmptyRows];
     }
   }
 
-  return nonEmpty;
+  return nonEmptyRows;
 }
 
 /**
- * Parses HTML (from Google Docs export, Word .doc/.html, or web tables) or plain text into a 2D grid.
+ * Extrae una matriz 2D desde contenido HTML (exportación de Google Docs, archivos `.doc`/`.html` o tablas web)
+ * o recurre al parser de líneas de texto si el documento no contiene tablas HTML.
+ *
+ * @param htmlOrTextContent Cadena con marcado HTML o texto plano.
+ * @returns Matriz 2D normalizada con encabezados y filas de datos.
  */
-export function parseHtmlOrTextDocumentTo2DGrid(htmlOrText: string): any[][] {
-  const raw = String(htmlOrText || '').trim();
-  if (!raw) return [];
+export function parseHtmlOrTextDocumentTo2DGrid(htmlOrTextContent: string): any[][] {
+  const trimmedContent = String(htmlOrTextContent || '').trim();
+  if (!trimmedContent) return [];
 
-  if (typeof DOMParser !== 'undefined' && /<(table|tr|td|th|p|div|li|html|body)\b/i.test(raw)) {
+  if (
+    typeof DOMParser !== 'undefined' &&
+    /<(table|tr|td|th|p|div|li|html|body)\b/i.test(trimmedContent)
+  ) {
     try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(raw, 'text/html');
+      const domParser = new DOMParser();
+      const htmlDocument = domParser.parseFromString(trimmedContent, 'text/html');
 
-      // 1. Prefer HTML <table> if present
-      const tables = Array.from(doc.querySelectorAll('table'));
-      if (tables.length > 0) {
-        let bestTableGrid: string[][] = [];
-        for (const table of tables) {
-          const trs = Array.from(table.querySelectorAll('tr'));
-          const tableRows: string[][] = [];
-          for (const tr of trs) {
-            const cells = Array.from(tr.querySelectorAll('th, td')).map((cell) =>
-              (cell.textContent || '').replace(/\s+/g, ' ').trim()
+      const tableElements = Array.from(htmlDocument.querySelectorAll('table'));
+      if (tableElements.length > 0) {
+        let largestTableGrid: string[][] = [];
+        for (const tableElement of tableElements) {
+          const tableRowElements = Array.from(tableElement.querySelectorAll('tr'));
+          const extractedTableRows: string[][] = [];
+          for (const rowElement of tableRowElements) {
+            const rowCells = Array.from(rowElement.querySelectorAll('th, td')).map((cellElement) =>
+              (cellElement.textContent || '').replace(/\s+/g, ' ').trim()
             );
-            if (cells.some((c) => c !== '')) {
-              tableRows.push(cells);
+            if (rowCells.some((cellText) => cellText !== '')) {
+              extractedTableRows.push(rowCells);
             }
           }
-          if (tableRows.length > bestTableGrid.length) {
-            bestTableGrid = tableRows;
+          // Cuando un documento tiene un encabezado institucional en una tabla pequeña arriba y la nómina de alumnos abajo, se elige la tabla con más filas.
+          if (extractedTableRows.length > largestTableGrid.length) {
+            largestTableGrid = extractedTableRows;
           }
         }
-        if (bestTableGrid.length > 0) {
-          return ensureHeaderRowIn2DGrid(bestTableGrid);
+        if (largestTableGrid.length > 0) {
+          return ensureHeaderRowIn2DGrid(largestTableGrid);
         }
       }
 
-      // 2. Otherwise extract paragraphs and list items
-      const blocks = Array.from(doc.querySelectorAll('p, li, h1, h2, h3, h4, tr'));
-      if (blocks.length > 0) {
-        const lines = blocks
-          .map((b) => (b.textContent || '').replace(/\s+/g, ' ').trim())
+      const textBlockElements = Array.from(
+        htmlDocument.querySelectorAll('p, li, h1, h2, h3, h4, tr')
+      );
+      if (textBlockElements.length > 0) {
+        const extractedLines = textBlockElements
+          .map((blockElement) => (blockElement.textContent || '').replace(/\s+/g, ' ').trim())
           .filter(Boolean);
-        if (lines.length > 0) {
-          return parseTextLinesTo2DGrid(lines.join('\n'));
+        if (extractedLines.length > 0) {
+          return parseTextLinesTo2DGrid(extractedLines.join('\n'));
         }
       }
 
-      const bodyText = doc.body?.innerText || doc.body?.textContent || '';
-      if (bodyText.trim()) {
-        return parseTextLinesTo2DGrid(bodyText);
+      const documentBodyText =
+        htmlDocument.body?.innerText || htmlDocument.body?.textContent || '';
+      if (documentBodyText.trim()) {
+        return parseTextLinesTo2DGrid(documentBodyText);
       }
-    } catch (err) {
-      console.warn('Fallback to text parser after HTML parse notice:', err);
+    } catch (htmlParseError) {
+      console.warn('Fallback to text parser after HTML parse notice:', htmlParseError);
     }
   }
 
-  return parseTextLinesTo2DGrid(raw);
+  return parseTextLinesTo2DGrid(trimmedContent);
 }
 
 /**
- * Extracts `word/document.xml` from a `.docx` ArrayBuffer in the browser (using DecompressionStream)
- * and parses Word tables (`<w:tbl>`) or paragraphs (`<w:p>`) into a 2D grid.
+ * Descomprime en el navegador la entrada `word/document.xml` de un archivo binario `.docx` (contenedor ZIP)
+ * utilizando `DecompressionStream` nativo y transforma sus tablas (`<w:tbl>`) o párrafos (`<w:p>`) en una matriz 2D.
+ *
+ * @param arrayBuffer Buffer binario del archivo `.docx`.
+ * @returns Promesa con la matriz 2D extraída o `[]` si el archivo está corrupto o vacío.
  */
-export async function parseDocxArrayBufferTo2DGrid(buffer: ArrayBuffer): Promise<any[][]> {
-  const bytes = new Uint8Array(buffer);
-  const view = new DataView(buffer);
+export async function parseDocxArrayBufferTo2DGrid(arrayBuffer: ArrayBuffer): Promise<any[][]> {
+  if (!arrayBuffer || arrayBuffer.byteLength === 0) return [];
 
-  // Locate local file header for "word/document.xml"
-  let offset = 0;
-  let xmlText = '';
+  try {
+    const archiveBytes = new Uint8Array(arrayBuffer);
+    const dataView = new DataView(arrayBuffer);
 
-  while (offset + 30 < bytes.length) {
-    const sig = view.getUint32(offset, true);
-    if (sig !== 0x04034b50) {
-      offset++;
-      continue;
-    }
+    let byteOffset = 0;
+    let documentXmlText = '';
 
-    const compressionMethod = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const fileNameLen = view.getUint16(offset + 26, true);
-    const extraLen = view.getUint16(offset + 28, true);
+    while (byteOffset + ZIP_HEADER_MIN_BYTES < archiveBytes.length) {
+      const headerSignature = dataView.getUint32(byteOffset, true);
+      if (headerSignature !== ZIP_LOCAL_FILE_HEADER_SIGNATURE) {
+        byteOffset++;
+        continue;
+      }
 
-    const nameBytes = bytes.subarray(offset + 30, offset + 30 + fileNameLen);
-    const entryName = new TextDecoder('utf-8').decode(nameBytes);
-    const dataStart = offset + 30 + fileNameLen + extraLen;
+      const compressionMethod = dataView.getUint16(
+        byteOffset + ZIP_COMPRESSION_METHOD_OFFSET,
+        true
+      );
+      const compressedSize = dataView.getUint32(byteOffset + ZIP_COMPRESSED_SIZE_OFFSET, true);
+      const fileNameLength = dataView.getUint16(byteOffset + ZIP_FILENAME_LENGTH_OFFSET, true);
+      const extraFieldLength = dataView.getUint16(
+        byteOffset + ZIP_EXTRA_FIELD_LENGTH_OFFSET,
+        true
+      );
 
-    if (entryName === 'word/document.xml') {
-      // Find next PK header if compressedSize is 0 (data descriptor bit set)
-      let actualEnd = dataStart + compressedSize;
-      if (compressedSize === 0 || actualEnd > bytes.length) {
-        actualEnd = bytes.length;
-        for (let i = dataStart; i < bytes.length - 4; i++) {
-          if (
-            bytes[i] === 0x50 &&
-            bytes[i + 1] === 0x4b &&
-            (bytes[i + 2] === 0x03 || bytes[i + 2] === 0x01 || bytes[i + 2] === 0x07)
+      if (byteOffset + ZIP_HEADER_MIN_BYTES + fileNameLength > archiveBytes.length) {
+        break;
+      }
+
+      const fileNameBytes = archiveBytes.subarray(
+        byteOffset + ZIP_HEADER_MIN_BYTES,
+        byteOffset + ZIP_HEADER_MIN_BYTES + fileNameLength
+      );
+      const zipEntryName = new TextDecoder('utf-8').decode(fileNameBytes);
+      const payloadStartOffset =
+        byteOffset + ZIP_HEADER_MIN_BYTES + fileNameLength + extraFieldLength;
+
+      if (zipEntryName === WORD_DOCUMENT_XML_ENTRY_PATH) {
+        let payloadEndOffset = payloadStartOffset + compressedSize;
+        // Cuando un generador ZIP activa el bit de Data Descriptor (bit 3), `compressedSize` viene en 0 en la cabecera local y es necesario escanear hasta la próxima firma PK.
+        if (compressedSize === 0 || payloadEndOffset > archiveBytes.length) {
+          payloadEndOffset = archiveBytes.length;
+          for (
+            let scanOffset = payloadStartOffset;
+            scanOffset < archiveBytes.length - 4;
+            scanOffset++
           ) {
-            actualEnd = i;
-            break;
+            const isNextPkHeader =
+              archiveBytes[scanOffset] === PK_SIGNATURE_BYTE_0 &&
+              archiveBytes[scanOffset + 1] === PK_SIGNATURE_BYTE_1 &&
+              (archiveBytes[scanOffset + 2] === PK_LOCAL_HEADER_MARKER ||
+                archiveBytes[scanOffset + 2] === PK_CENTRAL_DIR_MARKER ||
+                archiveBytes[scanOffset + 2] === PK_DATA_DESCRIPTOR_MARKER);
+            if (isNextPkHeader) {
+              payloadEndOffset = scanOffset;
+              break;
+            }
           }
         }
+
+        const compressedPayloadSlice = archiveBytes.subarray(payloadStartOffset, payloadEndOffset);
+        if (compressionMethod === ZIP_COMPRESSION_STORED) {
+          documentXmlText = new TextDecoder('utf-8').decode(compressedPayloadSlice);
+        } else if (
+          compressionMethod === ZIP_COMPRESSION_DEFLATE &&
+          typeof DecompressionStream !== 'undefined'
+        ) {
+          const decompressionStream = new DecompressionStream('deflate-raw');
+          const streamWriter = decompressionStream.writable.getWriter();
+          streamWriter.write(compressedPayloadSlice).catch(() => {});
+          streamWriter.close().catch(() => {});
+          const decompressedBuffer = await new Response(
+            decompressionStream.readable
+          ).arrayBuffer();
+          documentXmlText = new TextDecoder('utf-8').decode(decompressedBuffer);
+        }
+        break;
       }
 
-      const rawSlice = bytes.subarray(dataStart, actualEnd);
-      if (compressionMethod === 0) {
-        xmlText = new TextDecoder('utf-8').decode(rawSlice);
-      } else if (compressionMethod === 8 && typeof DecompressionStream !== 'undefined') {
-        const ds = new DecompressionStream('deflate-raw');
-        const writer = ds.writable.getWriter();
-        writer.write(rawSlice).catch(() => {});
-        writer.close().catch(() => {});
-        const decompressedBuf = await new Response(ds.readable).arrayBuffer();
-        xmlText = new TextDecoder('utf-8').decode(decompressedBuf);
-      }
-      break;
+      // Se garantiza un avance mínimo de 1 byte cuando `compressedSize` es 0 para impedir bucles infinitos ante entradas ZIP con Data Descriptor.
+      byteOffset = payloadStartOffset + (compressedSize > 0 ? compressedSize : 1);
     }
 
-    offset = dataStart + (compressedSize > 0 ? compressedSize : 0);
-  }
+    if (!documentXmlText) {
+      const fallbackDecodedText = new TextDecoder('utf-8').decode(archiveBytes);
+      return parseHtmlOrTextDocumentTo2DGrid(fallbackDecodedText);
+    }
 
-  if (!xmlText) {
-    // Fallback: try decoding as plain text / HTML (.doc saved as HTML)
-    const fallbackText = new TextDecoder('utf-8').decode(bytes);
-    return parseHtmlOrTextDocumentTo2DGrid(fallbackText);
-  }
+    const domParser = new DOMParser();
+    const xmlDocument = domParser.parseFromString(documentXmlText, 'application/xml');
 
-  const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(xmlText, 'application/xml');
-
-  // 1. Check for Word tables (<w:tbl>)
-  const tables = Array.from(xmlDoc.getElementsByTagNameNS('*', 'tbl'));
-  if (tables.length > 0) {
-    let bestRows: string[][] = [];
-    for (const tbl of tables) {
-      const trs = Array.from(tbl.getElementsByTagNameNS('*', 'tr'));
-      const tblRows: string[][] = [];
-      for (const tr of trs) {
-        const tcs = Array.from(tr.getElementsByTagNameNS('*', 'tc'));
-        const rowCells = tcs.map((tc) => {
-          const ts = Array.from(tc.getElementsByTagNameNS('*', 't'));
-          return ts
-            .map((t) => t.textContent || '')
-            .join('')
-            .replace(/\s+/g, ' ')
-            .trim();
-        });
-        if (rowCells.some((c) => c !== '')) {
-          tblRows.push(rowCells);
+    const wordTables = Array.from(xmlDocument.getElementsByTagNameNS('*', 'tbl'));
+    if (wordTables.length > 0) {
+      let largestTableRows: string[][] = [];
+      for (const tableNode of wordTables) {
+        const tableRowNodes = Array.from(tableNode.getElementsByTagNameNS('*', 'tr'));
+        const currentTableRows: string[][] = [];
+        for (const rowNode of tableRowNodes) {
+          const tableCellNodes = Array.from(rowNode.getElementsByTagNameNS('*', 'tc'));
+          const rowCellStrings = tableCellNodes.map((cellNode) => {
+            const textNodes = Array.from(cellNode.getElementsByTagNameNS('*', 't'));
+            return textNodes
+              .map((textNode) => textNode.textContent || '')
+              .join('')
+              .replace(/\s+/g, ' ')
+              .trim();
+          });
+          if (rowCellStrings.some((cellText) => cellText !== '')) {
+            currentTableRows.push(rowCellStrings);
+          }
+        }
+        if (currentTableRows.length > largestTableRows.length) {
+          largestTableRows = currentTableRows;
         }
       }
-      if (tblRows.length > bestRows.length) {
-        bestRows = tblRows;
+      if (largestTableRows.length > 0) {
+        return ensureHeaderRowIn2DGrid(largestTableRows);
       }
     }
-    if (bestRows.length > 0) {
-      return ensureHeaderRowIn2DGrid(bestRows);
+
+    const wordParagraphs = Array.from(xmlDocument.getElementsByTagNameNS('*', 'p'));
+    const paragraphLines: string[] = [];
+    for (const paragraphNode of wordParagraphs) {
+      const textNodes = Array.from(paragraphNode.getElementsByTagNameNS('*', 't'));
+      const paragraphText = textNodes
+        .map((textNode) => textNode.textContent || '')
+        .join('')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (paragraphText) paragraphLines.push(paragraphText);
     }
-  }
 
-  // 2. Fallback: extract paragraphs (<w:p>)
-  const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS('*', 'p'));
-  const lines: string[] = [];
-  for (const p of paragraphs) {
-    const ts = Array.from(p.getElementsByTagNameNS('*', 't'));
-    const line = ts
-      .map((t) => t.textContent || '')
-      .join('')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (line) lines.push(line);
+    return parseTextLinesTo2DGrid(paragraphLines.join('\n'));
+  } catch (docxParseError) {
+    console.warn('Error defensivo al decodificar archivo DOCX:', docxParseError);
+    return [];
   }
-
-  return parseTextLinesTo2DGrid(lines.join('\n'));
 }
 
 /**
- * Extracts a readable label for each row in `rawRows` so the teacher can choose
- * which document row corresponds to which student in the course.
+ * Construye una lista de opciones legibles por cada fila del documento importado
+ * para que el docente pueda reasignar manualmente en un selector desplegable qué fila pertenece a cada alumno.
+ *
+ * @param rawRows Filas de datos del documento importado.
+ * @param nameCol Columna de nombre principal.
+ * @param secondaryNameCol Columna de nombre secundario.
+ * @param emailCol Columna de correo electrónico.
+ * @param columnConfigs Configuraciones de columnas para mostrar un resumen de valores junto al nombre.
+ * @returns Arreglo de opciones descriptivas por fila excluyendo filas de totales o promedios.
  */
 export function buildDocumentRowOptions(
   rawRows: Array<Record<string, any>>,
   nameCol: string,
   secondaryNameCol: string,
   emailCol: string,
-  colConfigs: DetectedColumnConfig[]
+  columnConfigs: DetectedColumnConfig[]
 ): Array<{
   rawRowIndex: number;
   rawName: string;
   rawEmail: string;
   summaryPreview: string;
 }> {
-  const includedConfigs = colConfigs.filter((c) => c.isIncluded && c.kind !== 'ignore');
+  const includedColumnConfigs = columnConfigs.filter(
+    (config) => config.isIncluded && config.kind !== 'ignore'
+  );
 
   return rawRows
-    .map((row, idx) => {
-      const primaryName = nameCol && nameCol !== '__ORDER__' ? String(row[nameCol] ?? '').trim() : '';
-      const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
+    .map((rowRecord, rowIndex) => {
+      const primaryName =
+        nameCol && nameCol !== ORDER_BY_ROSTER_KEY ? String(rowRecord[nameCol] ?? '').trim() : '';
+      const secondaryName = secondaryNameCol
+        ? String(rowRecord[secondaryNameCol] ?? '').trim()
+        : '';
       const rawName =
-        nameCol === '__ORDER__'
-          ? `Fila #${idx + 1}`
+        nameCol === ORDER_BY_ROSTER_KEY
+          ? `Fila #${rowIndex + 1}`
           : primaryName && secondaryName
           ? `${primaryName}, ${secondaryName}`
-          : primaryName || secondaryName || `Fila #${idx + 1}`;
-      const rawEmail = emailCol ? String(row[emailCol] ?? '').trim() : '';
+          : primaryName || secondaryName || `Fila #${rowIndex + 1}`;
+      const rawEmail = emailCol ? String(rowRecord[emailCol] ?? '').trim() : '';
 
-      const previews: string[] = [];
-      for (const cfg of includedConfigs.slice(0, 3)) {
-        const val = String(row[cfg.colKey] ?? '').trim();
-        if (val && val !== '-') {
-          const shortCol =
-            cfg.kind === 'disposition'
+      const cellPreviews: string[] = [];
+      for (const columnConfig of includedColumnConfigs.slice(0, MAX_PREVIEW_COLUMNS_PER_ROW)) {
+        const cellValue = String(rowRecord[columnConfig.colKey] ?? '').trim();
+        if (cellValue && cellValue !== EMPTY_CELL_DASH) {
+          const shortColumnLabel =
+            columnConfig.kind === 'disposition'
               ? 'Disp'
-              : cfg.kind === 'disposition_deduction'
+              : columnConfig.kind === 'disposition_deduction'
               ? 'Desc'
-              : cfg.kind === 'absences'
+              : columnConfig.kind === 'absences'
               ? 'Faltas'
-              : cfg.kind === 'lates'
+              : columnConfig.kind === 'lates'
               ? 'Tardes'
-              : cfg.subcategoryName || cfg.colKey;
-          previews.push(`${shortCol}: ${val}`);
+              : columnConfig.subcategoryName || columnConfig.colKey;
+          cellPreviews.push(`${shortColumnLabel}: ${cellValue}`);
         }
       }
 
       return {
-        rawRowIndex: idx,
+        rawRowIndex: rowIndex,
         rawName,
         rawEmail,
-        summaryPreview: previews.join(' · '),
+        summaryPreview: cellPreviews.join(' · '),
       };
     })
-    .filter((item) => {
-      if (!item.rawName) return false;
+    .filter((optionItem) => {
+      if (!optionItem.rawName) return false;
       if (
         /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(
-          item.rawName
+          optionItem.rawName
         )
       ) {
         return false;
@@ -843,18 +1024,29 @@ export function buildDocumentRowOptions(
 }
 
 /**
- * Pure builder for the multi-column verification table for all students in the course + any new students in the file.
- * Supports `manualRowMatches` (mapping `studentId -> rawRowIndex | null`) so the teacher can manually choose
- * or override which name from the document belongs to each student.
+ * Genera la tabla completa de verificación multicolumna cruzando el padrón del curso con las filas importadas,
+ * respetando primero las vinculaciones manuales del docente (`manualRowMatches`), luego el modo por orden de lista
+ * o la coincidencia difusa, y anexando al final los alumnos nuevos presentes en el archivo.
+ *
+ * @param students Padrón actual de alumnos del curso.
+ * @param rawRows Filas extraídas del documento importado.
+ * @param nameCol Columna de nombre o `'__ORDER__'` para asignación posicional por orden alfabético.
+ * @param emailCol Columna de correo electrónico.
+ * @param columnConfigs Configuración de cada columna a importar.
+ * @param activeGradesMap Mapa de calificaciones vigentes del cuatrimestre para detectar altas vs. modificaciones.
+ * @param activeDispositionMap Mapa de inasistencias, tardanzas y disposición vigentes por alumno.
+ * @param secondaryNameCol Columna de nombre secundario opcional.
+ * @param manualRowMatches Diccionario de sobrescrituras manuales (`studentId -> rawRowIndex | null`).
+ * @returns Filas verificadas (`rowsResult`) y bandera `shouldAutoEnableNewStudents` cuando el curso aún no tenía alumnos cargados.
  */
 export function computeMultiVerificationRows(
   students: Student[],
   rawRows: Array<Record<string, any>>,
   nameCol: string,
   emailCol: string,
-  colConfigs: DetectedColumnConfig[],
+  columnConfigs: DetectedColumnConfig[],
   activeGradesMap: StudentGradesMap,
-  activeDispMap: Record<
+  activeDispositionMap: Record<
     string,
     { totalAbsences: number; totalLates?: number; totalDisposition: number }
   >,
@@ -864,7 +1056,7 @@ export function computeMultiVerificationRows(
   rowsResult: MultiVerifiedStudentRow[];
   shouldAutoEnableNewStudents: boolean;
 } {
-  const matchedByStudentId: Record<
+  const matchedRowByStudentId: Record<
     string,
     {
       rawRow: Record<string, any>;
@@ -875,99 +1067,111 @@ export function computeMultiVerificationRows(
     }
   > = {};
 
-  const usedRawRowIndices = new Set<number>();
+  const consumedRawRowIndices = new Set<number>();
 
-  const getRowDisplayName = (row: Record<string, any>, idx: number) => {
-    if (nameCol === '__ORDER__') return `Fila #${idx + 1} (Orden de lista)`;
-    const primaryName = nameCol ? String(row[nameCol] ?? '').trim() : '';
-    const secondaryName = secondaryNameCol ? String(row[secondaryNameCol] ?? '').trim() : '';
+  const formatRowDisplayName = (rowRecord: Record<string, any>, rowIndex: number) => {
+    if (nameCol === ORDER_BY_ROSTER_KEY) return `Fila #${rowIndex + 1} (Orden de lista)`;
+    const primaryName = nameCol
+      ? sanitizePlainTextInput(rowRecord[nameCol], 160)
+      : '';
+    const secondaryName = secondaryNameCol
+      ? sanitizePlainTextInput(rowRecord[secondaryNameCol], 160)
+      : '';
     return primaryName && secondaryName
       ? `${primaryName}, ${secondaryName}`
       : primaryName || secondaryName;
   };
 
-  // 1. Apply explicit manual matches chosen by the teacher first
-  Object.entries(manualRowMatches).forEach(([studentId, chosenIdx]) => {
-    if (chosenIdx === null) {
-      // Explicitly unassigned by teacher
+  // Las vinculaciones elegidas manualmente por el docente se reservan primero para que el matcher automático no reutilice esas filas en otro alumno.
+  Object.entries(manualRowMatches).forEach(([studentId, chosenRowIndex]) => {
+    if (chosenRowIndex === null) {
       return;
     }
-    if (typeof chosenIdx === 'number' && chosenIdx >= 0 && chosenIdx < rawRows.length) {
-      const row = rawRows[chosenIdx];
-      const rawNameVal = getRowDisplayName(row, chosenIdx) || `Fila #${chosenIdx + 1}`;
-      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
-      matchedByStudentId[studentId] = {
-        rawRow: row,
-        rawRowIndex: chosenIdx,
-        rawName: rawNameVal,
-        rawEmail: rawEmailVal,
-        matchScore: 1.0,
+    if (
+      typeof chosenRowIndex === 'number' &&
+      chosenRowIndex >= 0 &&
+      chosenRowIndex < rawRows.length
+    ) {
+      const chosenRowRecord = rawRows[chosenRowIndex];
+      const rawNameValue =
+        formatRowDisplayName(chosenRowRecord, chosenRowIndex) || `Fila #${chosenRowIndex + 1}`;
+      const rawEmailValue = emailCol ? String(chosenRowRecord[emailCol] ?? '').trim() : '';
+      matchedRowByStudentId[studentId] = {
+        rawRow: chosenRowRecord,
+        rawRowIndex: chosenRowIndex,
+        rawName: rawNameValue,
+        rawEmail: rawEmailValue,
+        matchScore: EXACT_EMAIL_MATCH_SCORE,
       };
-      usedRawRowIndices.add(chosenIdx);
+      consumedRawRowIndices.add(chosenRowIndex);
     }
   });
 
-  // 2. Mode: Order-by-roster matching when nameCol is '__ORDER__' (1-column paste mode)
-  if (nameCol === '__ORDER__') {
-    const sortedRoster = [...students].sort((a, b) =>
-      `${a.lastName}, ${a.firstName}`.localeCompare(`${b.lastName}, ${b.firstName}`, 'es', {
-        sensitivity: 'base',
-      })
+  if (nameCol === ORDER_BY_ROSTER_KEY) {
+    const alphabeticallySortedRoster = [...students].sort((studentA, studentB) =>
+      `${studentA.lastName}, ${studentA.firstName}`.localeCompare(
+        `${studentB.lastName}, ${studentB.firstName}`,
+        'es',
+        { sensitivity: 'base' }
+      )
     );
-    rawRows.forEach((row, idx) => {
-      if (usedRawRowIndices.has(idx)) return;
-      const targetStudent = sortedRoster[idx];
+    rawRows.forEach((rowRecord, rowIndex) => {
+      if (consumedRawRowIndices.has(rowIndex)) return;
+      const targetStudent = alphabeticallySortedRoster[rowIndex];
       if (
         targetStudent &&
         manualRowMatches[targetStudent.id] !== null &&
-        !matchedByStudentId[targetStudent.id]
+        !matchedRowByStudentId[targetStudent.id]
       ) {
-        matchedByStudentId[targetStudent.id] = {
-          rawRow: row,
-          rawRowIndex: idx,
-          rawName: `Fila #${idx + 1} (Orden de lista)`,
+        matchedRowByStudentId[targetStudent.id] = {
+          rawRow: rowRecord,
+          rawRowIndex: rowIndex,
+          rawName: `Fila #${rowIndex + 1} (Orden de lista)`,
           rawEmail: targetStudent.email || '',
-          matchScore: 1.0,
+          matchScore: EXACT_EMAIL_MATCH_SCORE,
         };
-        usedRawRowIndices.add(idx);
+        consumedRawRowIndices.add(rowIndex);
       }
     });
   } else {
-    // Automatic fuzzy matching for remaining rows
-    rawRows.forEach((row, idx) => {
-      if (usedRawRowIndices.has(idx)) return;
-      const rawNameVal = getRowDisplayName(row, idx);
-      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
-      if (!rawNameVal && !rawEmailVal) return;
+    rawRows.forEach((rowRecord, rowIndex) => {
+      if (consumedRawRowIndices.has(rowIndex)) return;
+      const rawNameValue = formatRowDisplayName(rowRecord, rowIndex);
+      const rawEmailValue = emailCol ? String(rowRecord[emailCol] ?? '').trim() : '';
+      if (!rawNameValue && !rawEmailValue) return;
       if (
-        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)
+        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(
+          rawNameValue
+        )
       ) {
         return;
       }
 
-      // Only match against students not already matched or manually unassigned
       const availableStudents = students.filter(
-        (s) => !matchedByStudentId[s.id] && manualRowMatches[s.id] !== null
+        (student) => !matchedRowByStudentId[student.id] && manualRowMatches[student.id] !== null
       );
       const { student, score } = findBestStudentMatchInRoster(
         availableStudents,
-        rawNameVal,
-        rawEmailVal
+        rawNameValue,
+        rawEmailValue
       );
-      if (student && score >= 0.5 && !matchedByStudentId[student.id]) {
-        matchedByStudentId[student.id] = {
-          rawRow: row,
-          rawRowIndex: idx,
-          rawName: rawNameVal,
-          rawEmail: rawEmailVal,
+      if (
+        student &&
+        score >= MIN_FUZZY_MATCH_SCORE_THRESHOLD &&
+        !matchedRowByStudentId[student.id]
+      ) {
+        matchedRowByStudentId[student.id] = {
+          rawRow: rowRecord,
+          rawRowIndex: rowIndex,
+          rawName: rawNameValue,
+          rawEmail: rawEmailValue,
           matchScore: score,
         };
-        usedRawRowIndices.add(idx);
+        consumedRawRowIndices.add(rowIndex);
       }
     });
   }
 
-  // Collect unmatched rows from the document
   const unmatchedRawRows: Array<{
     rawRow: Record<string, any>;
     rawRowIndex: number;
@@ -975,52 +1179,67 @@ export function computeMultiVerificationRows(
     rawEmail: string;
   }> = [];
 
-  if (nameCol !== '__ORDER__') {
-    rawRows.forEach((row, idx) => {
-      if (usedRawRowIndices.has(idx)) return;
-      const rawNameVal = getRowDisplayName(row, idx);
-      const rawEmailVal = emailCol ? String(row[emailCol] ?? '').trim() : '';
-      if (!rawNameVal) return;
+  if (nameCol !== ORDER_BY_ROSTER_KEY) {
+    rawRows.forEach((rowRecord, rowIndex) => {
+      if (consumedRawRowIndices.has(rowIndex)) return;
+      const rawNameValue = formatRowDisplayName(rowRecord, rowIndex);
+      const rawEmailValue = emailCol ? String(rowRecord[emailCol] ?? '').trim() : '';
+      if (!rawNameValue) return;
       if (
-        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(rawNameVal)
+        /^promedio|^total|^media|^resumen|^apellido y nombre|^estudiante|^alumno/i.test(
+          rawNameValue
+        )
       ) {
         return;
       }
       unmatchedRawRows.push({
-        rawRow: row,
-        rawRowIndex: idx,
-        rawName: rawNameVal,
-        rawEmail: rawEmailVal,
+        rawRow: rowRecord,
+        rawRowIndex: rowIndex,
+        rawName: rawNameValue,
+        rawEmail: rawEmailValue,
       });
     });
   }
 
-  const evaluateCell = (
+  const evaluateStudentCell = (
     studentId: string,
-    rawVal: any,
-    colCfg: DetectedColumnConfig
+    rawCellValue: any,
+    columnConfig: DetectedColumnConfig
   ): MultiVerifiedStudentRow['valuesByCol'][string] => {
-    const cleanStr = String(rawVal ?? '').trim();
+    const cleanCellString = String(rawCellValue ?? '').trim();
 
-    let currentVal = '';
-    if (colCfg.kind === 'grade') {
-      if (colCfg.targetSubcategoryMode === 'existing' && colCfg.targetSubcategoryId) {
-        currentVal = String(activeGradesMap[studentId]?.[colCfg.targetSubcategoryId] ?? '');
+    let currentStoredValue = '';
+    if (columnConfig.kind === 'grade') {
+      if (
+        columnConfig.targetSubcategoryMode === 'existing' &&
+        columnConfig.targetSubcategoryId
+      ) {
+        currentStoredValue = String(
+          activeGradesMap[studentId]?.[columnConfig.targetSubcategoryId] ?? ''
+        );
       }
-    } else if (colCfg.kind === 'absences') {
-      const cur = activeDispMap[studentId]?.totalAbsences;
-      currentVal = cur !== undefined ? String(cur) : '0';
-    } else if (colCfg.kind === 'lates') {
-      const cur = activeDispMap[studentId]?.totalLates;
-      currentVal = cur !== undefined ? String(cur) : '0';
-    } else if (colCfg.kind === 'disposition' || colCfg.kind === 'disposition_deduction') {
-      const cur = activeDispMap[studentId]?.totalDisposition;
-      currentVal = cur !== undefined ? String(cur) : '10';
+    } else if (columnConfig.kind === 'absences') {
+      const currentAbsences = activeDispositionMap[studentId]?.totalAbsences;
+      currentStoredValue =
+        currentAbsences !== undefined ? String(currentAbsences) : DEFAULT_ATTENDANCE_FALLBACK_STRING;
+    } else if (columnConfig.kind === 'lates') {
+      const currentLates = activeDispositionMap[studentId]?.totalLates;
+      currentStoredValue =
+        currentLates !== undefined ? String(currentLates) : DEFAULT_ATTENDANCE_FALLBACK_STRING;
+    } else if (
+      columnConfig.kind === 'disposition' ||
+      columnConfig.kind === 'disposition_deduction'
+    ) {
+      const currentDisposition = activeDispositionMap[studentId]?.totalDisposition;
+      currentStoredValue =
+        currentDisposition !== undefined
+          ? String(currentDisposition)
+          : DEFAULT_DISPOSITION_FALLBACK_STRING;
     }
 
-    if (cleanStr === '' || cleanStr === '-') {
+    if (cleanCellString === '' || cleanCellString === EMPTY_CELL_DASH) {
       return {
-        currentVal,
+        currentVal: currentStoredValue,
         importedVal: '',
         editedVal: '',
         isValid: true,
@@ -1028,106 +1247,124 @@ export function computeMultiVerificationRows(
       };
     }
 
-    const { numVal, isValid } = parseFlexibleCellNumber(rawVal, colCfg.kind);
+    const { numVal, isValid } = parseFlexibleCellNumber(rawCellValue, columnConfig.kind);
 
-    if (isValid && (colCfg.kind === 'absences' || colCfg.kind === 'lates')) {
-      const rounded = String(Number(numVal.toFixed(2)));
+    if (isValid && (columnConfig.kind === 'absences' || columnConfig.kind === 'lates')) {
+      const formattedAttendanceValue = String(Number(numVal.toFixed(TWO_DECIMAL_PRECISION)));
       return {
-        currentVal,
-        importedVal: rounded,
-        editedVal: rounded,
+        currentVal: currentStoredValue,
+        importedVal: formattedAttendanceValue,
+        editedVal: formattedAttendanceValue,
         isValid: true,
-        status: !currentVal ? 'new' : currentVal === rounded ? 'same' : 'update',
+        status: !currentStoredValue
+          ? 'new'
+          : currentStoredValue === formattedAttendanceValue
+          ? 'same'
+          : 'update',
       };
     }
 
-    const normalizedVal = isValid ? String(Number(numVal.toFixed(2))) : cleanStr;
-    let status: 'new' | 'update' | 'same' | 'empty' | 'invalid' = 'new';
+    const normalizedCellValue = isValid
+      ? String(Number(numVal.toFixed(TWO_DECIMAL_PRECISION)))
+      : cleanCellString;
+    let cellChangeStatus: 'new' | 'update' | 'same' | 'empty' | 'invalid' = 'new';
     if (!isValid) {
-      status = 'invalid';
-    } else if (!currentVal) {
-      status = 'new';
-    } else if (String(Number(parseFloat(currentVal).toFixed(2))) === normalizedVal) {
-      status = 'same';
+      cellChangeStatus = 'invalid';
+    } else if (!currentStoredValue) {
+      cellChangeStatus = 'new';
+    } else if (
+      String(Number(parseFloat(currentStoredValue).toFixed(TWO_DECIMAL_PRECISION))) ===
+      normalizedCellValue
+    ) {
+      cellChangeStatus = 'same';
     } else {
-      status = 'update';
+      cellChangeStatus = 'update';
     }
 
     return {
-      currentVal,
-      importedVal: normalizedVal,
-      editedVal: normalizedVal,
+      currentVal: currentStoredValue,
+      importedVal: normalizedCellValue,
+      editedVal: normalizedCellValue,
       isValid,
-      status,
+      status: cellChangeStatus,
     };
   };
 
-  const rowsResult: MultiVerifiedStudentRow[] = students.map((st) => {
-    const matched = matchedByStudentId[st.id];
+  const rowsResult: MultiVerifiedStudentRow[] = students.map((student) => {
+    const matchedRowInfo = matchedRowByStudentId[student.id];
     const valuesByCol: MultiVerifiedStudentRow['valuesByCol'] = {};
 
-    colConfigs.forEach((cfg) => {
-      const rawCell = matched ? matched.rawRow[cfg.colKey] : '';
-      valuesByCol[cfg.colKey] = evaluateCell(st.id, rawCell, cfg);
+    columnConfigs.forEach((columnConfig) => {
+      const rawCell = matchedRowInfo ? matchedRowInfo.rawRow[columnConfig.colKey] : '';
+      valuesByCol[columnConfig.colKey] = evaluateStudentCell(student.id, rawCell, columnConfig);
     });
 
-    const hasAnyValidChange = colConfigs.some((cfg) => {
-      if (!cfg.isIncluded || cfg.kind === 'ignore') return false;
-      const cell = valuesByCol[cfg.colKey];
-      return cell && cell.isValid && cell.editedVal !== '' && cell.status !== 'same';
+    const hasAnyValidChange = columnConfigs.some((columnConfig) => {
+      if (!columnConfig.isIncluded || columnConfig.kind === 'ignore') return false;
+      const evaluatedCell = valuesByCol[columnConfig.colKey];
+      return (
+        evaluatedCell &&
+        evaluatedCell.isValid &&
+        evaluatedCell.editedVal !== '' &&
+        evaluatedCell.status !== 'same'
+      );
     });
 
     return {
-      rowId: st.id,
-      studentId: st.id,
+      rowId: student.id,
+      studentId: student.id,
       isNewStudent: false,
-      studentName: `${st.lastName}, ${st.firstName}`,
-      firstName: st.firstName,
-      lastName: st.lastName,
-      studentEmail: st.email || matched?.rawEmail || '',
-      matchedFromRaw: matched?.rawName || '',
-      matchedRawRowIndex: matched?.rawRowIndex,
-      matchScore: matched?.matchScore || 0,
-      isIncluded: Boolean(matched && hasAnyValidChange),
+      studentName: `${student.lastName}, ${student.firstName}`,
+      firstName: student.firstName,
+      lastName: student.lastName,
+      studentEmail: student.email || matchedRowInfo?.rawEmail || '',
+      matchedFromRaw: matchedRowInfo?.rawName || '',
+      matchedRawRowIndex: matchedRowInfo?.rawRowIndex,
+      matchScore: matchedRowInfo?.matchScore || NO_MATCH_SCORE,
+      isIncluded: Boolean(matchedRowInfo && hasAnyValidChange),
       valuesByCol,
     };
   });
 
-  unmatchedRawRows.forEach((unmatched, idx) => {
-    const tempId = `new-student-${unmatched.rawRowIndex}-${idx}`;
+  unmatchedRawRows.forEach((unmatchedRow, unmatchedIndex) => {
+    const temporaryStudentId = `new-student-${unmatchedRow.rawRowIndex}-${unmatchedIndex}`;
     const valuesByCol: MultiVerifiedStudentRow['valuesByCol'] = {};
-    colConfigs.forEach((cfg) => {
-      valuesByCol[cfg.colKey] = evaluateCell(tempId, unmatched.rawRow[cfg.colKey], cfg);
+    columnConfigs.forEach((columnConfig) => {
+      valuesByCol[columnConfig.colKey] = evaluateStudentCell(
+        temporaryStudentId,
+        unmatchedRow.rawRow[columnConfig.colKey],
+        columnConfig
+      );
     });
 
-    let lastName = unmatched.rawName;
-    let firstName = '';
-    if (unmatched.rawName.includes(',')) {
-      const parts = unmatched.rawName.split(',').map((s) => s.trim());
-      lastName = parts[0] || unmatched.rawName;
-      firstName = parts.slice(1).join(' ') || 'Alumno';
+    let parsedLastName = unmatchedRow.rawName;
+    let parsedFirstName = '';
+    if (unmatchedRow.rawName.includes(',')) {
+      const commaNameSegments = unmatchedRow.rawName.split(',').map((segment) => segment.trim());
+      parsedLastName = commaNameSegments[0] || unmatchedRow.rawName;
+      parsedFirstName = commaNameSegments.slice(1).join(' ') || SYNTHETIC_HEADER_STUDENT;
     } else {
-      const parts = unmatched.rawName.split(/\s+/);
-      if (parts.length >= 2) {
-        lastName = parts[0];
-        firstName = parts.slice(1).join(' ');
+      const spaceNameSegments = unmatchedRow.rawName.split(/\s+/);
+      if (spaceNameSegments.length >= 2) {
+        parsedLastName = spaceNameSegments[0];
+        parsedFirstName = spaceNameSegments.slice(1).join(' ');
       } else {
-        lastName = unmatched.rawName;
-        firstName = '';
+        parsedLastName = unmatchedRow.rawName;
+        parsedFirstName = '';
       }
     }
 
     rowsResult.push({
-      rowId: tempId,
-      studentId: tempId,
+      rowId: temporaryStudentId,
+      studentId: temporaryStudentId,
       isNewStudent: true,
-      studentName: firstName ? `${lastName}, ${firstName}` : lastName,
-      firstName: firstName || 'Alumno',
-      lastName,
-      studentEmail: unmatched.rawEmail || '',
-      matchedFromRaw: unmatched.rawName,
-      matchedRawRowIndex: unmatched.rawRowIndex,
-      matchScore: 0,
+      studentName: parsedFirstName ? `${parsedLastName}, ${parsedFirstName}` : parsedLastName,
+      firstName: parsedFirstName || SYNTHETIC_HEADER_STUDENT,
+      lastName: parsedLastName,
+      studentEmail: unmatchedRow.rawEmail || '',
+      matchedFromRaw: unmatchedRow.rawName,
+      matchedRawRowIndex: unmatchedRow.rawRowIndex,
+      matchScore: NO_MATCH_SCORE,
       isIncluded: students.length === 0,
       valuesByCol,
     });
@@ -1138,4 +1375,3 @@ export function computeMultiVerificationRows(
     shouldAutoEnableNewStudents: students.length === 0 && unmatchedRawRows.length > 0,
   };
 }
-

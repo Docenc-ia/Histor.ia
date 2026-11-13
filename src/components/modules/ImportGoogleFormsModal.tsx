@@ -17,19 +17,39 @@ import {
   Edit3,
   Link2,
 } from 'lucide-react';
-import type * as XLSXType from 'xlsx';
 import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
-import { GradeHistoryEntry } from '../../utils/excelExport';
 import { driveService } from '../../services/workspace/driveService';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { formsService, GoogleFormListItem } from '../../services/workspace/formsService';
+import { parseUploadedImportFile } from '../../services/gradeImportDataService';
+import { normalizeImportText } from '../../utils/gradeImportParser';
+import { getScoreColorClass } from '../../utils/gradeCalculations';
 import {
-  normalizeImportText,
-  findBestStudentMatchInRoster,
-} from '../../utils/gradeImportParser';
-import { CATEGORY_COLORS, getScoreColorClass } from '../../utils/gradeCalculations';
-import type { MultiImportApplyPayload } from './ImportGradesModal';
+  FormsScaleMode,
+  FormsRoundingMode,
+  ParsedFormSubmission,
+  StudentFormsReviewRow,
+  parseGoogleFormsScoreCell,
+  formatConvertedFormsGrade,
+  autoDetectGoogleFormsColumns,
+  filterFormsToIdentityAndScoreOnly,
+  computeGoogleFormsMatching,
+  buildGoogleFormsCommitPayload,
+} from '../../utils/googleFormsEvaluationHelper';
+import type { MultiImportApplyPayload } from '../../types/gradeImport';
+
+export type {
+  FormsScaleMode,
+  FormsRoundingMode,
+  ParsedFormSubmission,
+  StudentFormsReviewRow,
+};
+export {
+  parseGoogleFormsScoreCell,
+  formatConvertedFormsGrade,
+  autoDetectGoogleFormsColumns,
+};
 
 export interface ImportGoogleFormsModalProps {
   isOpen: boolean;
@@ -44,285 +64,6 @@ export interface ImportGoogleFormsModalProps {
   currentTerm: '1c' | '2c';
   isDarkMode: boolean;
   onApplyMultiImport: (payload: MultiImportApplyPayload) => void;
-}
-
-export type FormsScaleMode = 'scale_10' | 'raw';
-export type FormsRoundingMode = 'two_decimals' | 'one_decimal' | 'half_point' | 'integer';
-
-export interface ParsedFormSubmission {
-  rowIndex: number;
-  rawRow: Record<string, any>;
-  rawName: string;
-  rawEmail: string;
-  rawTimestamp: string;
-  rawScoreText: string;
-  earnedPoints: number | null;
-  maxPoints: number | null;
-}
-
-export interface StudentFormsReviewRow {
-  student: Student;
-  matchedSubmissionIndex: number | null;
-  matchConfidence: number;
-  duplicateSubmissionsCount: number;
-  rawScoreText: string;
-  computedScore: string;
-  editedScore: string;
-  currentGradeInCol: string;
-  isIncluded: boolean;
-  isManuallyEdited: boolean;
-}
-
-/**
- * Parses a Google Forms score cell such as:
- * - "8 / 10", "8,50 / 10", "8.00 / 10"
- * - "75 / 100", "14 / 20"
- * - "85%"
- * - "8,5" or "9"
- */
-export function parseGoogleFormsScoreCell(rawCell: any): {
-  rawText: string;
-  earned: number | null;
-  max: number | null;
-} {
-  const rawText = String(rawCell ?? '').trim();
-  if (!rawText || rawText === '-') {
-    return { rawText: '', earned: null, max: null };
-  }
-
-  // Pattern 1: "X / Y" or "X de Y" (standard Google Forms Puntuación / Score format)
-  const fractionMatch = rawText.match(
-    /(-?\d+(?:[.,]\d+)?)\s*(?:\/|de|sobre)\s*(\d+(?:[.,]\d+)?)/i
-  );
-  if (fractionMatch) {
-    const earned = parseFloat(fractionMatch[1].replace(',', '.'));
-    const max = parseFloat(fractionMatch[2].replace(',', '.'));
-    if (!isNaN(earned) && !isNaN(max) && max > 0) {
-      return { rawText, earned, max };
-    }
-  }
-
-  // Pattern 2: Percentage "85%"
-  const percentMatch = rawText.match(/^(-?\d+(?:[.,]\d+)?)\s*%$/);
-  if (percentMatch) {
-    const pct = parseFloat(percentMatch[1].replace(',', '.'));
-    if (!isNaN(pct)) {
-      return { rawText, earned: pct, max: 100 };
-    }
-  }
-
-  // Pattern 3: Single numeric score "8.5" or "8,5" or "80"
-  const singleMatch = rawText.replace(',', '.').match(/-?\d+(?:\.\d+)?/);
-  if (singleMatch) {
-    const earned = parseFloat(singleMatch[0]);
-    if (!isNaN(earned)) {
-      return { rawText, earned, max: null };
-    }
-  }
-
-  return { rawText, earned: null, max: null };
-}
-
-/**
- * Formats and scales the extracted score into the Final Grade (Nota Final)
- */
-export function formatConvertedFormsGrade(
-  earned: number | null,
-  max: number | null,
-  fallbackMaxPoints: number,
-  scaleMode: FormsScaleMode,
-  roundingMode: FormsRoundingMode
-): string {
-  if (earned === null || isNaN(earned)) return '';
-
-  let numericGrade = earned;
-  const effectiveMax = max && max > 0 ? max : fallbackMaxPoints;
-
-  if (scaleMode === 'scale_10') {
-    if (effectiveMax > 0 && effectiveMax !== 10) {
-      numericGrade = (earned / effectiveMax) * 10;
-    } else if (!max && earned > 10 && earned <= 100) {
-      numericGrade = (earned / 100) * 10;
-    }
-  }
-
-  if (roundingMode === 'integer') {
-    return String(Math.round(numericGrade));
-  }
-  if (roundingMode === 'half_point') {
-    const half = Math.round(numericGrade * 2) / 2;
-    return String(Number(half.toFixed(1)));
-  }
-  if (roundingMode === 'one_decimal') {
-    return String(Number(numericGrade.toFixed(1)));
-  }
-  return String(Number(numericGrade.toFixed(2)));
-}
-
-/**
- * Automatically detects the Student Name column, optional Secondary Name column, Email column,
- * and Score (Puntuación / Nota Final) column from a Google Forms evaluation.
- */
-export function autoDetectGoogleFormsColumns(
-  headers: string[],
-  rows: Array<Record<string, any>>,
-  students: Student[]
-): {
-  nameCol: string;
-  secondaryNameCol: string;
-  emailCol: string;
-  scoreCol: string;
-  timestampCol: string;
-  detectedMaxScore: number;
-} {
-  const timestampCol =
-    headers.find((h) => /marca temporal|timestamp|fecha|enviado/i.test(normalizeImportText(h))) || '';
-
-  // 1. Detect Score / Puntuación / Nota Final column
-  let scoreCol =
-    headers.find((h) =>
-      /^puntuacion$|^score$|^puntaje$|^calificacion$|^nota$|^nota final$|^puntos$|^total points$|^puntaje total$/i.test(
-        normalizeImportText(h)
-      )
-    ) ||
-    headers.find((h) =>
-      /puntuacion|score|puntaje|calificacion|nota final|nota/i.test(normalizeImportText(h))
-    ) ||
-    '';
-
-  if (!scoreCol) {
-    for (const h of headers) {
-      if (h === timestampCol) continue;
-      const sampleVals = rows
-        .slice(0, 12)
-        .map((r) => String(r[h] ?? '').trim())
-        .filter(Boolean);
-      const fractionCount = sampleVals.filter((v) =>
-        /^\d+(?:[.,]\d+)?\s*\/\s*\d+(?:[.,]\d+)?$/.test(v)
-      ).length;
-      if (fractionCount > 0 && fractionCount >= Math.ceil(sampleVals.length * 0.4)) {
-        scoreCol = h;
-        break;
-      }
-    }
-  }
-
-  // 2. Detect Email column
-  const emailCol =
-    headers.find(
-      (h) =>
-        h !== scoreCol &&
-        h !== timestampCol &&
-        /correo|email|mail|direccion de correo/i.test(normalizeImportText(h))
-    ) || '';
-
-  // 3. Detect Student Name column(s)
-  const exactLastCol = headers.find(
-    (h) =>
-      h !== scoreCol &&
-      h !== timestampCol &&
-      h !== emailCol &&
-      /^apellido(s)?$/i.test(normalizeImportText(h))
-  );
-  const exactFirstCol = headers.find(
-    (h) =>
-      h !== scoreCol &&
-      h !== timestampCol &&
-      h !== emailCol &&
-      h !== exactLastCol &&
-      /^nombre(s)?$/i.test(normalizeImportText(h))
-  );
-
-  let nameCol = '';
-  let secondaryNameCol = '';
-
-  if (exactLastCol && exactFirstCol) {
-    nameCol = exactLastCol;
-    secondaryNameCol = exactFirstCol;
-  } else {
-    let bestRosterMatchCol = '';
-    let bestRosterMatchCount = 0;
-
-    const candidateCols = headers.filter(
-      (h) => h !== scoreCol && h !== timestampCol && h !== emailCol
-    );
-
-    if (students.length > 0 && rows.length > 0) {
-      for (const col of candidateCols) {
-        let matches = 0;
-        for (const r of rows.slice(0, 40)) {
-          const val = String(r[col] ?? '').trim();
-          if (!val || val.length < 3) continue;
-          const { student, score } = findBestStudentMatchInRoster(students, val);
-          if (student && score >= 0.6) {
-            matches++;
-          }
-        }
-        if (matches > bestRosterMatchCount) {
-          bestRosterMatchCount = matches;
-          bestRosterMatchCol = col;
-        }
-      }
-    }
-
-    if (bestRosterMatchCol && bestRosterMatchCount > 0) {
-      nameCol = bestRosterMatchCol;
-    } else {
-      nameCol =
-        candidateCols.find((h) =>
-          /apellido y nombre|nombre y apellido|nombre completo|alumno|estudiante|selecciona tu nombre|tu nombre|nombre|apellido/i.test(
-            normalizeImportText(h)
-          )
-        ) ||
-        candidateCols[0] ||
-        '';
-    }
-  }
-
-  if (!scoreCol) {
-    const remaining = headers.filter(
-      (h) => h !== timestampCol && h !== emailCol && h !== nameCol && h !== secondaryNameCol
-    );
-    for (const col of remaining) {
-      const sampleVals = rows
-        .slice(0, 10)
-        .map((r) => String(r[col] ?? '').trim())
-        .filter(Boolean);
-      const numericCount = sampleVals.filter(
-        (v) => parseGoogleFormsScoreCell(v).earned !== null
-      ).length;
-      if (numericCount > 0 && numericCount >= Math.ceil(sampleVals.length * 0.5)) {
-        scoreCol = col;
-        break;
-      }
-    }
-    if (!scoreCol && remaining.length > 0) {
-      scoreCol = remaining[0];
-    }
-  }
-
-  let detectedMaxScore = 10;
-  if (scoreCol) {
-    for (const r of rows) {
-      const parsed = parseGoogleFormsScoreCell(r[scoreCol]);
-      if (parsed.max && parsed.max > 0) {
-        detectedMaxScore = parsed.max;
-        break;
-      }
-      if (parsed.earned !== null && parsed.earned > 10) {
-        detectedMaxScore = 100;
-      }
-    }
-  }
-
-  return {
-    nameCol,
-    secondaryNameCol,
-    emailCol,
-    scoreCol,
-    timestampCol,
-    detectedMaxScore,
-  };
 }
 
 export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
@@ -522,105 +263,28 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     targetSubIdForExisting: string,
     colMode: 'existing_sub' | 'new_sub'
   ) => {
-    const submissions: ParsedFormSubmission[] = [];
-    rowsToProcess.forEach((row, idx) => {
-      const primaryName = cName ? String(row[cName] ?? '').trim() : '';
-      const secName = cSecName ? String(row[cSecName] ?? '').trim() : '';
-      const fullName =
-        primaryName && secName ? `${primaryName}, ${secName}` : primaryName || secName;
-      const emailVal = cEmail ? String(row[cEmail] ?? '').trim() : '';
-      const tsVal = cTimestamp ? String(row[cTimestamp] ?? '').trim() : '';
-      const rawScoreCell = cScore ? row[cScore] : '';
-
-      if (!fullName && !emailVal && !String(rawScoreCell ?? '').trim()) return;
-      if (/^promedio|^total|^media|^puntuacion$/i.test(fullName)) return;
-
-      const parsedScore = parseGoogleFormsScoreCell(rawScoreCell);
-      submissions.push({
-        rowIndex: idx,
-        rawRow: row,
-        rawName: fullName,
-        rawEmail: emailVal,
-        rawTimestamp: tsVal,
-        rawScoreText: parsedScore.rawText,
-        earnedPoints: parsedScore.earned,
-        maxPoints: parsedScore.max,
-      });
+    const { submissions, reviewRows: nextReviewRows } = computeGoogleFormsMatching({
+      rows: rowsToProcess,
+      students,
+      activeGradesMap,
+      nameCol: cName,
+      secondaryNameCol: cSecName,
+      emailCol: cEmail,
+      scoreCol: cScore,
+      timestampCol: cTimestamp,
+      scaleMode: sMode,
+      maxPoints: maxPts,
+      roundingMode: rMode,
+      targetSubIdForExisting,
+      colMode,
     });
-
     setParsedSubmissions(submissions);
-
-    const matchedByStudentId: Record<
-      string,
-      { subIdx: number; confidence: number; count: number }
-    > = {};
-
-    submissions.forEach((sub, subIdx) => {
-      const { student, score } = findBestStudentMatchInRoster(
-        students,
-        sub.rawName,
-        sub.rawEmail
-      );
-      if (student && score >= 0.5) {
-        const existing = matchedByStudentId[student.id];
-        if (!existing) {
-          matchedByStudentId[student.id] = {
-            subIdx,
-            confidence: score,
-            count: 1,
-          };
-        } else {
-          matchedByStudentId[student.id] = {
-            subIdx: score >= existing.confidence ? subIdx : existing.subIdx,
-            confidence: Math.max(score, existing.confidence),
-            count: existing.count + 1,
-          };
-        }
-      }
-    });
-
-    const existingColKey =
-      colMode === 'existing_sub' && targetSubIdForExisting
-        ? targetSubIdForExisting
-        : '';
-
-    const nextReviewRows: StudentFormsReviewRow[] = students.map((st) => {
-      const matchInfo = matchedByStudentId[st.id];
-      const sub = matchInfo !== undefined ? submissions[matchInfo.subIdx] : null;
-
-      const computedGrade = sub
-        ? formatConvertedFormsGrade(
-            sub.earnedPoints,
-            sub.maxPoints,
-            maxPts,
-            sMode,
-            rMode
-          )
-        : '';
-
-      const currentGrade = existingColKey
-        ? String(activeGradesMap[st.id]?.[existingColKey] ?? '')
-        : '';
-
-      return {
-        student: st,
-        matchedSubmissionIndex: matchInfo !== undefined ? matchInfo.subIdx : null,
-        matchConfidence: matchInfo ? matchInfo.confidence : 0,
-        duplicateSubmissionsCount: matchInfo ? matchInfo.count : 0,
-        rawScoreText: sub ? sub.rawScoreText : '',
-        computedScore: computedGrade,
-        editedScore: computedGrade,
-        currentGradeInCol: currentGrade,
-        isIncluded: Boolean(sub && computedGrade !== ''),
-        isManuallyEdited: false,
-      };
-    });
-
     setReviewRows(nextReviewRows);
   };
 
   /**
-   * Process newly loaded table headers & rows from any source (Direct Google Forms API, Sheet, CSV/XLSX, Paste)
+   * Process newly loaded table headers & rows from any source (Direct Google Forms API, Sheet, CSV/XLSX, Paste),
+   * keeping strictly student identity columns + final score column (stripping test questions).
    */
   const handleLoadedFormsTable = (
     headers: string[],
@@ -628,8 +292,11 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     title: string,
     explicitMaxScore?: number
   ) => {
-    setAvailableHeaders(headers);
-    setRawRows(rows);
+    const detected = autoDetectGoogleFormsColumns(headers, rows, students);
+    const { filteredHeaders, filteredRows } = filterFormsToIdentityAndScoreOnly(rows, detected);
+
+    setAvailableHeaders(filteredHeaders.length > 0 ? filteredHeaders : headers);
+    setRawRows(filteredRows.length > 0 ? filteredRows : rows);
     setSourceTitle(title);
 
     const cleanEvalTitle = title
@@ -638,20 +305,16 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
       .replace(/respuestas de formulario \d*/gi, '')
       .replace(/google sheet:\s*/gi, '')
       .trim();
-    if (cleanEvalTitle) {
-      setNewSubcategoryName(cleanEvalTitle.slice(0, 42));
-    } else {
-      setNewSubcategoryName('Evaluación Forms');
-    }
+    setNewSubcategoryName(cleanEvalTitle ? cleanEvalTitle.slice(0, 42) : 'Evaluación Forms');
 
-    const detected = autoDetectGoogleFormsColumns(headers, rows, students);
-    const effectiveMax = explicitMaxScore && explicitMaxScore > 0 ? explicitMaxScore : detected.detectedMaxScore;
+    const effectiveMax =
+      explicitMaxScore && explicitMaxScore > 0 ? explicitMaxScore : detected.detectedMaxScore;
 
     setNameCol(detected.nameCol);
     setSecondaryNameCol(detected.secondaryNameCol);
     setEmailCol(detected.emailCol);
     setScoreCol(detected.scoreCol);
-    setTimestampCol(detected.timestampCol);
+    setTimestampCol('');
     setCustomMaxScore(effectiveMax);
 
     const defaultScale: FormsScaleMode = 'scale_10';
@@ -679,12 +342,12 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     setSelectedSubcategoryId(initialSubId);
 
     recomputeFormsMatching(
-      rows,
+      filteredRows.length > 0 ? filteredRows : rows,
       detected.nameCol,
       detected.secondaryNameCol,
       detected.emailCol,
       detected.scoreCol,
-      detected.timestampCol,
+      '',
       defaultScale,
       effectiveMax,
       roundingMode,
@@ -806,40 +469,20 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   };
 
   /**
-   * File upload handler (.csv or .xlsx exported from Google Forms)
+   * File upload handler (.csv or .xlsx exported from Google Forms) — reuses parseUploadedImportFile
    */
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const XLSX = await import('xlsx');
-        const buffer = evt.target?.result as ArrayBuffer;
-        let wb: XLSXType.WorkBook;
-
-        if (file.name.toLowerCase().endsWith('.csv') || file.name.toLowerCase().endsWith('.tsv')) {
-          const utf8Text = new TextDecoder('utf-8').decode(buffer);
-          wb = XLSX.read(utf8Text, { type: 'string', raw: false });
-        } else {
-          wb = XLSX.read(buffer, { type: 'array', codepage: 65001 });
-        }
-
-        const firstSheet = wb.SheetNames[0];
-        const ws = wb.Sheets[firstSheet];
-        if (!ws) return;
-
-        const raw2D: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        const { headers, rows } = sheetsService.convert2DArrayToTableObjects(raw2D);
-        if (headers.length === 0 || rows.length === 0) return;
-
-        handleLoadedFormsTable(headers, rows, file.name);
-      } catch (err) {
-        console.error('Error al leer el archivo de Google Forms:', err);
+    e.target.value = '';
+    try {
+      const dataset = await parseUploadedImportFile(file);
+      if (dataset && dataset.headers.length > 0 && dataset.rows.length > 0) {
+        handleLoadedFormsTable(dataset.headers, dataset.rows, file.name);
       }
-    };
-    reader.readAsArrayBuffer(file);
+    } catch (err) {
+      console.error('Error al leer el archivo de Google Forms:', err);
+    }
   };
 
   /**
@@ -982,144 +625,23 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   }, [reviewRows, students.length, parsedSubmissions.length]);
 
   const handleAcceptAndApplyGrades = () => {
-    const rowsToSave = reviewRows.filter(
-      (r) => r.isIncluded && r.editedScore.trim() !== ''
-    );
-    if (rowsToSave.length === 0) return;
-
-    const workingCategories: GradeCategory[] = activeCategories.map((c) => ({
-      ...c,
-      subcategories: [...c.subcategories],
-    }));
-
-    let targetCat: GradeCategory | undefined;
-    if (targetCategoryMode === 'new' && newCategoryName.trim()) {
-      const cleanCatName = newCategoryName.trim();
-      targetCat = workingCategories.find(
-        (c) => normalizeImportText(c.name) === normalizeImportText(cleanCatName)
-      );
-      if (!targetCat) {
-        targetCat = {
-          id: `cat-forms-${Date.now()}`,
-          name: cleanCatName,
-          color: CATEGORY_COLORS[workingCategories.length % CATEGORY_COLORS.length].badge,
-          subcategories: [],
-        };
-        workingCategories.push(targetCat);
-      }
-    } else {
-      targetCat =
-        workingCategories.find((c) => c.id === selectedCategoryId) || workingCategories[0];
-      if (!targetCat) {
-        targetCat = {
-          id: `cat-forms-${Date.now()}`,
-          name: 'Evaluaciones',
-          color: CATEGORY_COLORS[0].badge,
-          subcategories: [],
-        };
-        workingCategories.push(targetCat);
-      }
-    }
-
-    let finalColId = '';
-    let finalColName = '';
-
-    if (targetColumnMode === 'existing_sub' && selectedSubcategoryId) {
-      if (selectedSubcategoryId === '__CATEGORY_DIRECT__') {
-        finalColId = targetCat.id;
-        finalColName = targetCat.name;
-      } else {
-        const existingSub = targetCat.subcategories.find((s) => s.id === selectedSubcategoryId);
-        if (existingSub) {
-          finalColId = existingSub.id;
-          finalColName = existingSub.name;
-        }
-      }
-    }
-
-    if (!finalColId) {
-      const cleanSubName = newSubcategoryName.trim() || 'Evaluación Forms';
-      const existingSameName = targetCat.subcategories.find(
-        (s) => normalizeImportText(s.name) === normalizeImportText(cleanSubName)
-      );
-      if (existingSameName) {
-        finalColId = existingSameName.id;
-        finalColName = existingSameName.name;
-      } else {
-        finalColId = `sub-forms-${Date.now()}`;
-        finalColName = cleanSubName;
-        targetCat.subcategories.push({
-          id: finalColId,
-          name: finalColName,
-          maxScore: 10,
-        });
-      }
-    }
-
-    const workingGradesMap: StudentGradesMap = {};
-    Object.keys(activeGradesMap).forEach((stId) => {
-      workingGradesMap[stId] = { ...(activeGradesMap[stId] || {}) };
-    });
-
-    rowsToSave.forEach((row) => {
-      const stId = row.student.id;
-      if (!workingGradesMap[stId]) {
-        workingGradesMap[stId] = {};
-      }
-      const numVal = parseFloat(row.editedScore.replace(',', '.'));
-      workingGradesMap[stId][finalColId] = !isNaN(numVal)
-        ? String(Number(numVal.toFixed(2)))
-        : row.editedScore.trim();
-    });
-
-    const numericVals = rowsToSave
-      .map((r) => parseFloat(r.editedScore.replace(',', '.')))
-      .filter((n) => !isNaN(n));
-    const avg =
-      numericVals.length > 0
-        ? numericVals.reduce((a, b) => a + b, 0) / numericVals.length
-        : undefined;
-
-    const historyEntry: GradeHistoryEntry = {
-      id: `gh-forms-${Date.now()}`,
+    const payload = buildGoogleFormsCommitPayload({
       courseId,
-      timestamp: Date.now(),
-      date: new Date().toLocaleDateString('es-AR'),
-      time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
-      term: selectedTerm,
-      termLabel: selectedTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-      subcategoryId: finalColId,
-      evaluationName: finalColName,
-      categoryName: targetCat.name,
-      action: sourceTab === 'forms_direct' ? 'import_sheets' : 'import_excel',
-      description: `Google Forms: Se cargaron ${rowsToSave.length} notas finales en "${targetCat.name} → ${finalColName}"`,
-      updatedStudentsCount: rowsToSave.length,
-      averageScore: avg,
-      sourceFile: `Google Forms: ${sourceTitle}`,
-      changesSummary: rowsToSave.map((r) => ({
-        studentId: r.student.id,
-        studentName: `${r.student.lastName}, ${r.student.firstName}`,
-        studentEmail: r.student.email,
-        previousScore: r.currentGradeInCol || undefined,
-        newScore: r.editedScore.trim(),
-        status: !r.currentGradeInCol
-          ? 'new'
-          : r.currentGradeInCol === r.editedScore.trim()
-          ? 'unchanged'
-          : 'updated',
-      })),
-    };
-
-    onApplyMultiImport({
-      term: selectedTerm,
-      updatedCategories: workingCategories,
-      updatedGradesMap: workingGradesMap,
-      historyEntries: [historyEntry],
-      attendanceUpdates: {},
-      newStudentsToCreate: [],
-      sourceLabel: `Google Forms (${sourceTitle})`,
+      selectedTerm,
+      sourceTab,
+      sourceTitle,
+      activeCategories,
+      activeGradesMap,
+      targetCategoryMode,
+      selectedCategoryId,
+      newCategoryName,
+      targetColumnMode,
+      selectedSubcategoryId,
+      newSubcategoryName,
+      reviewRows,
     });
-
+    if (!payload) return;
+    onApplyMultiImport(payload);
     onClose();
   };
 

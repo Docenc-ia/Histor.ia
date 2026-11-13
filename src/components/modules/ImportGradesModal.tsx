@@ -31,118 +31,44 @@ import {
 import type * as XLSXType from 'xlsx';
 import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
-import {
-  GradeHistoryEntry,
-  exportGradeHistoryToExcel,
-} from '../../utils/excelExport';
+import { GradeHistoryEntry } from '../../utils/excelExport';
 import { driveService } from '../../services/workspace/driveService';
 import { sheetsService } from '../../services/workspace/sheetsService';
-import { formsService } from '../../services/workspace/formsService';
 import {
   normalizeImportText,
-  findBestStudentMatchInRoster,
   autoDetectIdentityColumns,
   autoDetectColumnsConfiguration,
   computeMultiVerificationRows,
   parseFlexibleCellNumber,
-  parseHtmlOrTextDocumentTo2DGrid,
-  parseDocxArrayBufferTo2DGrid,
-  ensureHeaderRowIn2DGrid,
   buildDocumentRowOptions,
 } from '../../utils/gradeImportParser';
+import { buildGradeImportCommitPayload } from '../../utils/gradeImportCommitBuilder';
+import { ImportHistoryTab } from './gradeImport/ImportHistoryTab';
+import {
+  LoadedImportDataset,
+  splitPasteLineSmart,
+  extractExcelSheetDataset,
+  parseUploadedImportFile,
+  loadRemoteImportDocument,
+  buildPasteImportDataset,
+} from '../../services/gradeImportDataService';
+import type {
+  ParsedStudentRow,
+  DetectedColumnKind,
+  QuickPastePreset,
+  DetectedColumnConfig,
+  MultiVerifiedStudentRow,
+  MultiImportApplyPayload,
+} from '../../types/gradeImport';
 
-export interface ParsedStudentRow {
-  studentId: string;
-  studentName: string;
-  studentEmail?: string;
-  matchedFromRaw: string;
-  matchScore: number; // 0 to 1
-  currentScore?: string;
-  importedScore: string;
-  editedScore: string;
-  isValid: boolean;
-  isIncluded: boolean;
-  status: 'new' | 'update' | 'same' | 'missing_in_file' | 'invalid';
-  note?: string;
-}
-
-export type DetectedColumnKind =
-  | 'grade'
-  | 'absences'
-  | 'lates'
-  | 'disposition'
-  | 'disposition_deduction'
-  | 'ignore';
-
-export type QuickPastePreset =
-  | 'auto'
-  | 'name_and_disp'
-  | 'last_first_disp'
-  | 'name_and_abs'
-  | 'last_first_abs'
-  | 'name_abs_disp'
-  | 'only_disp_ordered'
-  | 'only_abs_ordered';
-
-export interface DetectedColumnConfig {
-  colKey: string; // Raw column header in Excel/Sheets
-  isIncluded: boolean;
-  kind: DetectedColumnKind;
-  // For 'grade' columns:
-  targetCategoryMode: 'existing' | 'new';
-  targetCategoryId: string;
-  newCategoryName: string;
-  targetSubcategoryMode: 'existing' | 'new';
-  targetSubcategoryId: string;
-  subcategoryName: string;
-}
-
-export interface MultiVerifiedStudentRow {
-  rowId: string;
-  studentId: string; // Either existing student.id or `new-st-...`
-  isNewStudent: boolean;
-  studentName: string;
-  firstName: string;
-  lastName: string;
-  studentEmail: string;
-  matchedFromRaw: string;
-  matchedRawRowIndex?: number;
-  matchScore: number;
-  isIncluded: boolean;
-  // Values keyed by colKey
-  valuesByCol: Record<
-    string,
-    {
-      currentVal: string;
-      importedVal: string;
-      editedVal: string;
-      isValid: boolean;
-      status: 'new' | 'update' | 'same' | 'empty' | 'invalid';
-    }
-  >;
-}
-
-export interface MultiImportApplyPayload {
-  term: '1c' | '2c';
-  updatedCategories: GradeCategory[];
-  updatedGradesMap: StudentGradesMap;
-  historyEntries: GradeHistoryEntry[];
-  attendanceUpdates: Record<
-    string,
-    {
-      absences?: number;
-      lates?: number;
-      disposition?: number;
-    }
-  >;
-  newStudentsToCreate: Array<{
-    id: string;
-    firstName: string;
-    lastName: string;
-    email: string;
-  }>;
-  sourceLabel: string;
-}
+export type {
+  ParsedStudentRow,
+  DetectedColumnKind,
+  QuickPastePreset,
+  DetectedColumnConfig,
+  MultiVerifiedStudentRow,
+  MultiImportApplyPayload,
+};
 
 export interface ImportGradesModalProps {
   isOpen: boolean;
@@ -503,293 +429,110 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
       subcategories: [],
     };
 
-    if (role === 'student_name') {
-      const nextNameCol = colKey;
-      const nextSecCol = selectedSecondaryNameColumn === colKey ? '' : selectedSecondaryNameColumn;
-      const nextEmailCol = selectedEmailColumn === colKey ? '' : selectedEmailColumn;
-      setSelectedNameColumn(nextNameCol);
-      setSelectedSecondaryNameColumn(nextSecCol);
-      setSelectedEmailColumn(nextEmailCol);
+    const createColumnConfig = (
+      targetKey: string,
+      kind: DetectedColumnConfig['kind']
+    ): DetectedColumnConfig => ({
+      colKey: targetKey,
+      isIncluded: kind !== 'ignore',
+      kind,
+      targetCategoryMode: 'existing',
+      targetCategoryId: defaultCat.id,
+      newCategoryName: '',
+      targetSubcategoryMode: 'new',
+      targetSubcategoryId: '',
+      subcategoryName: targetKey,
+    });
+
+    const isIdentityRole =
+      role === 'student_name' || role === 'student_second_name' || role === 'student_email';
+
+    let nextNameCol =
+      role === 'student_name'
+        ? colKey
+        : selectedNameColumn === colKey
+          ? availableColumns.find((c) => c !== colKey) || ''
+          : selectedNameColumn;
+    let nextSecCol =
+      role === 'student_second_name'
+        ? colKey
+        : selectedSecondaryNameColumn === colKey
+          ? ''
+          : selectedSecondaryNameColumn;
+    let nextEmailCol =
+      role === 'student_email'
+        ? colKey
+        : selectedEmailColumn === colKey
+          ? ''
+          : selectedEmailColumn;
+
+    setSelectedNameColumn(nextNameCol);
+    setSelectedSecondaryNameColumn(nextSecCol);
+    setSelectedEmailColumn(nextEmailCol);
+
+    if (isIdentityRole) {
       const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
-      // If previous selectedNameColumn was a real column, add it back as ignored so it remains visible
       if (
+        role === 'student_name' &&
         selectedNameColumn &&
         selectedNameColumn !== '__ORDER__' &&
         selectedNameColumn !== colKey &&
         !nextDetected.some((c) => c.colKey === selectedNameColumn)
       ) {
-        nextDetected.unshift({
-          colKey: selectedNameColumn,
-          isIncluded: false,
-          kind: 'ignore',
-          targetCategoryMode: 'existing',
-          targetCategoryId: defaultCat.id,
-          newCategoryName: '',
-          targetSubcategoryMode: 'new',
-          targetSubcategoryId: '',
-          subcategoryName: selectedNameColumn,
-        });
+        nextDetected.unshift(createColumnConfig(selectedNameColumn, 'ignore'));
       }
       setDetectedColumns(nextDetected);
       buildMultiVerificationRows(rawTableRows, nextNameCol, nextEmailCol, nextDetected, nextSecCol);
       return;
     }
 
-    if (role === 'student_second_name') {
-      const nextSecCol = colKey;
-      const nextNameCol =
-        selectedNameColumn === colKey ? availableColumns[0] || '' : selectedNameColumn;
-      setSelectedNameColumn(nextNameCol);
-      setSelectedSecondaryNameColumn(nextSecCol);
-      const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
-      setDetectedColumns(nextDetected);
-      buildMultiVerificationRows(
-        rawTableRows,
-        nextNameCol,
-        selectedEmailColumn,
-        nextDetected,
-        nextSecCol
-      );
-      return;
-    }
-
-    if (role === 'student_email') {
-      const nextEmailCol = colKey;
-      const nextSecCol = selectedSecondaryNameColumn === colKey ? '' : selectedSecondaryNameColumn;
-      setSelectedEmailColumn(nextEmailCol);
-      setSelectedSecondaryNameColumn(nextSecCol);
-      const nextDetected = detectedColumns.filter((c) => c.colKey !== colKey);
-      setDetectedColumns(nextDetected);
-      buildMultiVerificationRows(
-        rawTableRows,
-        selectedNameColumn,
-        nextEmailCol,
-        nextDetected,
-        nextSecCol
-      );
-      return;
-    }
-
-    // Otherwise it's a data column ('disposition' | 'disposition_deduction' | 'absences' | 'lates' | 'grade' | 'ignore')
-    let nextNameCol = selectedNameColumn;
-    let nextSecCol = selectedSecondaryNameColumn;
-    let nextEmailCol = selectedEmailColumn;
-    if (nextNameCol === colKey) {
-      nextNameCol = availableColumns.find((c) => c !== colKey) || '';
-      setSelectedNameColumn(nextNameCol);
-    }
-    if (nextSecCol === colKey) {
-      nextSecCol = '';
-      setSelectedSecondaryNameColumn('');
-    }
-    if (nextEmailCol === colKey) {
-      nextEmailCol = '';
-      setSelectedEmailColumn('');
-    }
-
     const existsInDetected = detectedColumns.some((c) => c.colKey === colKey);
-    let nextDetected: DetectedColumnConfig[];
-    if (existsInDetected) {
-      nextDetected = detectedColumns.map((c) =>
-        c.colKey === colKey
-          ? {
-              ...c,
-              kind: role,
-              isIncluded: role !== 'ignore',
-            }
-          : c
-      );
-    } else {
-      nextDetected = [
-        ...detectedColumns,
-        {
-          colKey,
-          isIncluded: role !== 'ignore',
-          kind: role,
-          targetCategoryMode: 'existing',
-          targetCategoryId: defaultCat.id,
-          newCategoryName: '',
-          targetSubcategoryMode: 'new',
-          targetSubcategoryId: '',
-          subcategoryName: colKey,
-        },
-      ];
-    }
+    const nextDetected = existsInDetected
+      ? detectedColumns.map((c) =>
+          c.colKey === colKey ? { ...c, kind: role, isIncluded: role !== 'ignore' } : c
+        )
+      : [...detectedColumns, createColumnConfig(colKey, role)];
 
     setDetectedColumns(nextDetected);
     buildMultiVerificationRows(rawTableRows, nextNameCol, nextEmailCol, nextDetected, nextSecCol);
   };
 
-  /**
-   * Parse CSV text into a 2D array with auto-detected delimiter (;, ,, or \t) and quoted string support
-   */
-  const parseCsvTextTo2D = (csvText: string): string[][] => {
-    const cleanText = csvText.replace(/^\uFEFF/, '');
-    const lines = cleanText
-      .split(/\r?\n/)
-      .filter((l) => l.trim() !== '');
-    if (lines.length === 0) return [];
-
-    // Detect best delimiter from first 5 lines outside quotes
-    const countDelimiter = (line: string, delim: string): number => {
-      let inQuotes = false;
-      let count = 0;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          inQuotes = !inQuotes;
-        } else if (!inQuotes && ch === delim) {
-          count++;
-        }
-      }
-      return count;
-    };
-
-    const sample = lines.slice(0, 5);
-    const semiCount = sample.reduce((acc, l) => acc + countDelimiter(l, ';'), 0);
-    const commaCount = sample.reduce((acc, l) => acc + countDelimiter(l, ','), 0);
-    const tabCount = sample.reduce((acc, l) => acc + countDelimiter(l, '\t'), 0);
-
-    let delimiter = ',';
-    if (tabCount > semiCount && tabCount > commaCount) {
-      delimiter = '\t';
-    } else if (semiCount > commaCount) {
-      delimiter = ';';
+  const applyLoadedDataset = (dataset: LoadedImportDataset, autoAdvance = true) => {
+    setRawWorkbook(dataset.rawWorkbook);
+    setSheetNames(dataset.sheetNames);
+    setSelectedSheetName(dataset.selectedSheetName);
+    setRaw2DGrid(dataset.raw2DGrid);
+    setSelectedHeaderRowIndex(dataset.headerRowIndex);
+    if (dataset.activeRemoteSpreadsheetId !== undefined) {
+      setActiveRemoteSpreadsheetId(dataset.activeRemoteSpreadsheetId);
     }
-
-    const splitCsvLine = (line: string): string[] => {
-      const result: string[] = [];
-      let current = '';
-      let inQuotes = false;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          if (inQuotes && line[i + 1] === '"') {
-            current += '"';
-            i++;
-          } else {
-            inQuotes = !inQuotes;
-          }
-        } else if (ch === delimiter && !inQuotes) {
-          result.push(current.trim());
-          current = '';
-        } else {
-          current += ch;
-        }
-      }
-      result.push(current.trim());
-      return result;
-    };
-
-    return lines.map(splitCsvLine);
+    if (dataset.sheetUrlInput !== undefined) {
+      setSheetUrlInput(dataset.sheetUrlInput);
+    }
+    processLoadedTableData(
+      dataset.rows,
+      dataset.headers,
+      dataset.sourceLabel,
+      autoAdvance,
+      dataset.presetOverrides
+    );
   };
 
   /**
    * Handle Excel (.xlsx, .xls), CSV (.csv), Word (.docx, .doc), HTML (.html), or Text (.txt) upload
    */
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    const lowerName = file.name.toLowerCase();
-    const isCsv = lowerName.endsWith('.csv') || lowerName.endsWith('.tsv') || file.type === 'text/csv';
-    const isDocx = lowerName.endsWith('.docx');
-    const isTextOrHtmlDoc =
-      lowerName.endsWith('.doc') ||
-      lowerName.endsWith('.txt') ||
-      lowerName.endsWith('.html') ||
-      lowerName.endsWith('.htm');
-
-    if (isCsv) {
-      const textReader = new FileReader();
-      textReader.onload = (evt) => {
-        try {
-          const text = String(evt.target?.result || '');
-          const raw2D = ensureHeaderRowIn2DGrid(parseCsvTextTo2D(text));
-          if (raw2D.length === 0) return;
-          setRawWorkbook(null);
-          setSheetNames(['CSV']);
-          setSelectedSheetName('CSV');
-          setRaw2DGrid(raw2D);
-          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-          setSelectedHeaderRowIndex(headerRowIndex);
-          if (rows.length === 0 || headers.length === 0) return;
-          processLoadedTableData(rows, headers, `${file.name} (CSV)`, true);
-        } catch (err) {
-          console.error('Error al procesar archivo CSV:', err);
-        }
-      };
-      textReader.readAsText(file, 'UTF-8');
-      e.target.value = '';
-      return;
-    }
-
-    if (isDocx) {
-      const bufReader = new FileReader();
-      bufReader.onload = async (evt) => {
-        try {
-          const buf = evt.target?.result as ArrayBuffer;
-          if (!buf) return;
-          const raw2D = await parseDocxArrayBufferTo2DGrid(buf);
-          if (raw2D.length === 0) return;
-          setRawWorkbook(null);
-          setSheetNames(['Documento Word']);
-          setSelectedSheetName('Documento Word');
-          setRaw2DGrid(raw2D);
-          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-          setSelectedHeaderRowIndex(headerRowIndex);
-          if (rows.length === 0 || headers.length === 0) return;
-          processLoadedTableData(rows, headers, `${file.name} (Word)`, true);
-        } catch (err) {
-          console.error('Error al procesar archivo Word (.docx):', err);
-        }
-      };
-      bufReader.readAsArrayBuffer(file);
-      e.target.value = '';
-      return;
-    }
-
-    if (isTextOrHtmlDoc) {
-      const textReader = new FileReader();
-      textReader.onload = (evt) => {
-        try {
-          const text = String(evt.target?.result || '');
-          const raw2D = parseHtmlOrTextDocumentTo2DGrid(text);
-          if (raw2D.length === 0) return;
-          setRawWorkbook(null);
-          setSheetNames(['Documento']);
-          setSelectedSheetName('Documento');
-          setRaw2DGrid(raw2D);
-          const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-          setSelectedHeaderRowIndex(headerRowIndex);
-          if (rows.length === 0 || headers.length === 0) return;
-          processLoadedTableData(rows, headers, file.name, true);
-        } catch (err) {
-          console.error('Error al procesar documento de texto/HTML:', err);
-        }
-      };
-      textReader.readAsText(file, 'UTF-8');
-      e.target.value = '';
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const XLSX = await import('xlsx');
-        const data = evt.target?.result;
-        const wb = XLSX.read(data, { type: 'binary' });
-        setRawWorkbook(wb);
-        setSheetNames(wb.SheetNames);
-        const firstSheet = wb.SheetNames[0];
-        setSelectedSheetName(firstSheet);
-        await parseExcelSheet(wb, firstSheet, file.name, true);
-      } catch (err) {
-        console.error('Error al procesar archivo Excel:', err);
-      }
-    };
-    reader.readAsBinaryString(file);
     e.target.value = '';
+    try {
+      const dataset = await parseUploadedImportFile(file);
+      if (dataset) {
+        applyLoadedDataset(dataset, true);
+      }
+    } catch (err) {
+      console.error('Error al procesar archivo:', err);
+    }
   };
 
   const parseExcelSheet = async (
@@ -798,23 +541,10 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     sourceFileName?: string,
     autoAdvance = false
   ) => {
-    const ws = wb.Sheets[sheetName];
-    if (!ws) return;
-
-    const XLSX = await import('xlsx');
-    const raw2DFromSheet: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    const raw2D = ensureHeaderRowIn2DGrid(raw2DFromSheet);
-    setRaw2DGrid(raw2D);
-    const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-    setSelectedHeaderRowIndex(headerRowIndex);
-    if (rows.length === 0 || headers.length === 0) return;
-
-    processLoadedTableData(
-      rows,
-      headers,
-      sourceFileName ? `${sourceFileName} (${sheetName})` : sheetName,
-      autoAdvance
-    );
+    const dataset = await extractExcelSheetDataset(wb, sheetName, sourceFileName);
+    if (dataset) {
+      applyLoadedDataset(dataset, autoAdvance);
+    }
   };
 
   /**
@@ -830,292 +560,15 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     setIsLoadingRemoteSheet(true);
     setRemoteSheetError(null);
     try {
-      // 0. Check if it's a Google Forms link (/forms/d/... or /forms/d/e/... or forms.gle/...) or explicit Form from Drive
-      const isFormsUrl =
-        explicitDocType === 'form' ||
-        /\/forms\/(?:u\/\d+\/)?d\//i.test(trimmed) ||
-        /forms\.gle\//i.test(trimmed) ||
-        trimmed.startsWith('1FAIpQL');
-
-      if (isFormsUrl) {
-        const formResult = await formsService.fetchGoogleFormEvaluations(trimmed);
-        const fHeaders = formResult.headers;
-        const fRows = formResult.rows;
-        if (!fHeaders.length || !fRows.length) {
-          setRemoteSheetError('El formulario de Google Forms no contiene respuestas de alumnos.');
-          return;
-        }
-
-        // Smartly detect student name column, email column, and score column from the Form responses
-        const timestampCol =
-          fHeaders.find((h) => /marca temporal|timestamp/i.test(normalizeImportText(h))) || '';
-        const emailCol =
-          fHeaders.find((h) =>
-            /direccion de correo|correo electronico|email|mail/i.test(normalizeImportText(h))
-          ) || '';
-        const scoreCol =
-          fHeaders.find((h) =>
-            /^puntuacion$|^score$|^puntaje$|^nota$|^calificacion$/i.test(normalizeImportText(h))
-          ) ||
-          fHeaders.find((h) => /puntuacion|score|puntaje/i.test(normalizeImportText(h))) ||
-          '';
-
-        const candidateCols = fHeaders.filter(
-          (h) => h !== timestampCol && h !== emailCol && h !== scoreCol
-        );
-
-        let nameCol = '';
-        let secondaryNameCol = '';
-        const lastCol = candidateCols.find((h) => /^apellido(s)?$/i.test(normalizeImportText(h)));
-        const firstCol = candidateCols.find(
-          (h) => h !== lastCol && /^nombre(s)?$/i.test(normalizeImportText(h))
-        );
-
-        if (lastCol && firstCol) {
-          nameCol = lastCol;
-          secondaryNameCol = firstCol;
-        } else {
-          let bestMatchCol = '';
-          let bestMatchCount = 0;
-          if (students.length > 0) {
-            for (const col of candidateCols) {
-              let matches = 0;
-              for (const r of fRows.slice(0, 40)) {
-                const val = String(r[col] ?? '').trim();
-                if (!val || val.length < 3) continue;
-                const { student, score } = findBestStudentMatchInRoster(students, val);
-                if (student && score >= 0.6) matches++;
-              }
-              if (matches > bestMatchCount) {
-                bestMatchCount = matches;
-                bestMatchCol = col;
-              }
-            }
-          }
-          nameCol =
-            bestMatchCol ||
-            candidateCols.find((h) =>
-              /apellido y nombre|nombre y apellido|nombre completo|alumno|estudiante|selecciona tu nombre|tu nombre|nombre|apellido/i.test(
-                normalizeImportText(h)
-              )
-            ) ||
-            candidateCols[0] ||
-            emailCol ||
-            fHeaders[0];
-        }
-
-        const evalCat =
-          activeCategories.find((c) =>
-            /evaluacion|examen|prueba|forms/i.test(normalizeImportText(c.name))
-          ) ||
-          activeCategories[0] || {
-            id: 'cat-default',
-            name: 'Evaluaciones',
-            weight: 100,
-            subcategories: [],
-          };
-
-        const cleanEvalTitle =
-          formResult.title
-            .replace(/\(respuestas.*?\)/gi, '')
-            .replace(/\(responses.*?\)/gi, '')
-            .trim() || 'Evaluación Forms';
-
-        // Keep strictly the identity columns and the score column, discarding all individual question columns
-        const filteredHeaders = [nameCol];
-        if (secondaryNameCol && secondaryNameCol !== nameCol) {
-          filteredHeaders.push(secondaryNameCol);
-        }
-        if (emailCol && emailCol !== nameCol && emailCol !== secondaryNameCol) {
-          filteredHeaders.push(emailCol);
-        }
-        if (scoreCol && !filteredHeaders.includes(scoreCol)) {
-          filteredHeaders.push(scoreCol);
-        }
-
-        const filteredRows = fRows.map((r) => {
-          const rowObj: Record<string, any> = {};
-          filteredHeaders.forEach((h) => {
-            rowObj[h] = r[h] !== undefined ? r[h] : '';
-          });
-          return rowObj;
-        });
-
-        const colConfigs: DetectedColumnConfig[] = [
-          {
-            colKey: scoreCol || 'Puntuación',
-            isIncluded: true,
-            kind: 'grade',
-            targetCategoryMode: 'existing',
-            targetCategoryId: evalCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: cleanEvalTitle,
-          },
-        ];
-
-        const raw2D = [
-          filteredHeaders,
-          ...filteredRows.map((r) => filteredHeaders.map((h) => String(r[h] ?? ''))),
-        ];
-
-        setActiveRemoteSpreadsheetId('');
-        setSheetUrlInput(trimmed);
-        setSheetNames(['Google Forms']);
-        setSelectedSheetName('Google Forms');
-        setRawWorkbook(null);
-        setRaw2DGrid(raw2D);
-        setSelectedHeaderRowIndex(0);
-
-        processLoadedTableData(
-          filteredRows,
-          filteredHeaders,
-          `Google Forms: ${cleanEvalTitle}`,
-          true,
-          {
-            nameCol,
-            secondaryNameCol,
-            emailCol,
-            colConfigs,
-          }
-        );
-        return;
-      }
-
-      // 1. Check if it's a Google Docs link or explicit Google Doc from Drive
-      const docUrlMatch = trimmed.match(/\/document\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
-      if (docUrlMatch || explicitDocType === 'doc') {
-        const docId = docUrlMatch ? docUrlMatch[1] : trimmed;
-        const exported = await driveService.exportGoogleDocContent(docId);
-        if (!exported || (!exported.html && !exported.text)) {
-          setRemoteSheetError(
-            'No se pudo leer el Google Doc. Verificá que el documento tenga permisos de lectura o que hayas conectado tu Google Drive.'
-          );
-          return;
-        }
-        const raw2D = parseHtmlOrTextDocumentTo2DGrid(exported.html || exported.text || '');
-        if (raw2D.length === 0) {
-          setRemoteSheetError('El documento de Google Docs no contiene tablas ni filas con nombres y notas.');
-          return;
-        }
-        setActiveRemoteSpreadsheetId('');
-        setSheetUrlInput(trimmed);
-        setSheetNames(['Google Docs']);
-        setSelectedSheetName('Google Docs');
-        setRawWorkbook(null);
-        setRaw2DGrid(raw2D);
-        const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-        setSelectedHeaderRowIndex(headerRowIndex);
-        if (rows.length === 0 || headers.length === 0) {
-          setRemoteSheetError('No se detectaron alumnos o notas en el Google Doc.');
-          return;
-        }
-        processLoadedTableData(rows, headers, `Google Docs: ${exported.title}`, true);
-        return;
-      }
-
-      // 2. Check if it's a direct CSV/TSV/HTML link (not a Google Spreadsheet URL)
-      if (
-        /^https?:\/\//i.test(trimmed) &&
-        !trimmed.includes('docs.google.com/spreadsheets') &&
-        !trimmed.includes('drive.google.com')
-      ) {
-        try {
-          let text = '';
-          try {
-            const resp = await fetch(trimmed);
-            if (resp.ok) {
-              text = await resp.text();
-            }
-          } catch {}
-
-          if (!text) {
-            const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ url: trimmed }),
-            });
-            if (proxyRes.ok) {
-              const proxyData = await proxyRes.json();
-              if (proxyData?.ok && proxyData.text) {
-                text = proxyData.text;
-              }
-            }
-          }
-
-          if (text) {
-            const raw2D =
-              trimmed.toLowerCase().endsWith('.csv')
-                ? ensureHeaderRowIn2DGrid(parseCsvTextTo2D(text))
-                : parseHtmlOrTextDocumentTo2DGrid(text);
-            if (raw2D.length > 0) {
-              setActiveRemoteSpreadsheetId('');
-              setSheetUrlInput(trimmed);
-              setSheetNames(['Enlace Web']);
-              setSelectedSheetName('Enlace Web');
-              setRawWorkbook(null);
-              setRaw2DGrid(raw2D);
-              const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-              setSelectedHeaderRowIndex(headerRowIndex);
-              if (rows.length > 0 && headers.length > 0) {
-                processLoadedTableData(rows, headers, 'Documento desde Enlace', true);
-                return;
-              }
-            }
-          }
-        } catch {}
-      }
-
-      // 3. Default: Load Google Sheet via Sheets API / public export fallback
-      const result = await sheetsService.fetchArbitrarySpreadsheetData(trimmed, targetTab);
-      const safeRaw2D = ensureHeaderRowIn2DGrid(result.raw2D || []);
-      setActiveRemoteSpreadsheetId(result.spreadsheetId);
-      setSheetUrlInput(trimmed);
-      setSheetNames(result.sheetNames);
-      setSelectedSheetName(result.selectedSheet);
-      setRawWorkbook(null);
-      setRaw2DGrid(safeRaw2D);
-      const parsedFromSafe =
-        safeRaw2D.length > 0
-          ? sheetsService.convert2DArrayToTableObjects(safeRaw2D)
-          : { headers: result.headers, rows: result.rows, headerRowIndex: result.headerRowIndex ?? 0 };
-      setSelectedHeaderRowIndex(parsedFromSafe.headerRowIndex ?? 0);
-
-      if (parsedFromSafe.rows.length === 0 && safeRaw2D.length === 0) {
-        setRemoteSheetError(`La pestaña "${result.selectedSheet}" no contiene filas de datos.`);
-        return;
-      }
-
-      processLoadedTableData(
-        parsedFromSafe.rows,
-        parsedFromSafe.headers,
-        `Google Sheet: ${result.title} (${result.selectedSheet})`,
-        true
-      );
+      const dataset = await loadRemoteImportDocument({
+        idOrUrl: trimmed,
+        targetTab,
+        explicitDocType,
+        students,
+        activeCategories,
+      });
+      applyLoadedDataset(dataset, true);
     } catch (err: any) {
-      // If a generic Drive link was pasted and it's actually a Google Doc, try exporting as Google Doc
-      try {
-        const genericDriveMatch = trimmed.match(/[-\w]{25,}/);
-        if (genericDriveMatch && !/\/forms\//i.test(trimmed)) {
-          const docFallback = await driveService.exportGoogleDocContent(genericDriveMatch[0]);
-          if (docFallback && (docFallback.html || docFallback.text)) {
-            const raw2D = parseHtmlOrTextDocumentTo2DGrid(docFallback.html || docFallback.text || '');
-            if (raw2D.length > 0) {
-              setRaw2DGrid(raw2D);
-              setSheetNames(['Google Docs']);
-              setSelectedSheetName('Google Docs');
-              const { headers, rows, headerRowIndex } = sheetsService.convert2DArrayToTableObjects(raw2D);
-              setSelectedHeaderRowIndex(headerRowIndex);
-              if (rows.length > 0 && headers.length > 0) {
-                processLoadedTableData(rows, headers, `Google Docs: ${docFallback.title}`, true);
-                return;
-              }
-            }
-          }
-        }
-      } catch {}
-
       setRemoteSheetError(
         err?.message ||
           'No se pudo leer el documento desde el enlace. Verificá que el link sea de Google Sheets, Google Docs o Google Forms y que tengas acceso.'
@@ -1123,30 +576,6 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     } finally {
       setIsLoadingRemoteSheet(false);
     }
-  };
-
-  /**
-   * Splits a pasted line into cells:
-   * 1. First tries Tab (\t) — standard when copying from Google Sheets or Excel.
-   * 2. Next tries semicolon (;) — standard Argentine CSV format.
-   * 3. If neither is present, checks if line ends with a number (e.g. "García, Juan 8,5" or "García Juan - 9")
-   *    so 2-column paste works even when tab characters were lost!
-   */
-  const splitPasteLineSmart = (line: string): string[] => {
-    if (line.includes('\t')) {
-      return line.split('\t').map((c) => c.trim());
-    }
-    if (line.includes(';')) {
-      return line.split(';').map((c) => c.trim());
-    }
-    // Check if the line has a name (possibly with comma "Apellido, Nombre") followed by a separator/space and a score
-    const trailingScoreMatch = line.match(
-      /^(.+?)(?:\s+[-|:]\s+|\s{2,}|\s+)(-?\d+(?:[.,]\d+)?(?:\s*(?:pts?|puntos?|mb|b|ex|r))?)$/i
-    );
-    if (trailingScoreMatch) {
-      return [trailingScoreMatch[1].trim(), trailingScoreMatch[2].trim()];
-    }
-    return [line.trim()];
   };
 
   /**
@@ -1167,290 +596,16 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
    * Handle pasted cells from Excel or Sheets (with support for Alternativa 3 Quick Presets)
    */
   const handleParsePaste = () => {
-    if (!pasteText.trim()) return;
-    const lines = pasteText
-      .split('\n')
-      .map((l) => l.replace(/\r/g, ''))
-      .filter((l) => l.trim() !== '');
-    if (lines.length === 0) return;
-
-    const raw2D = lines.map((line) => splitPasteLineSmart(line));
-    const defaultCat = activeCategories[0] || {
-      id: 'cat-default',
-      name: 'Evaluaciones',
-      weight: 100,
-      subcategories: [],
-    };
-
-    const firstRowJoined = raw2D[0].join(' ').toLowerCase();
-    const firstRowHasNumbers = raw2D[0].some((cell, idx) => {
-      if (idx === 0 && raw2D[0].length > 1) return false;
-      return /^-?\d+(?:[.,]\d+)?$/.test(cell.trim());
+    const dataset = buildPasteImportDataset({
+      pasteText,
+      quickPastePreset,
+      activeCategories,
+      importContext,
+      attendanceTargetMode,
     });
-    const hasHeader =
-      !firstRowHasNumbers &&
-      /alumno|nombre|apellido|estudiante|nota|tp|eval|examen|falta|ausencia|tardanza|disposicion|conducta|concepto/i.test(
-        firstRowJoined
-      );
-
-    // Preset 1: 1 Single Column of Disposition numbers in alphabetical roster order
-    if (quickPastePreset === 'only_disp_ordered') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const colHeader = 'Disposición';
-      const final2D = [[colHeader], ...dataRows2D.map((r) => [r[r.length - 1] ?? r[0] ?? ''])];
-      setRaw2DGrid(final2D);
-      setSelectedHeaderRowIndex(0);
-      const rows = dataRows2D.map((r) => ({
-        [colHeader]: r[r.length - 1] ?? r[0] ?? '',
-      }));
-      const colCfg: DetectedColumnConfig = {
-        colKey: colHeader,
-        isIncluded: true,
-        kind: 'disposition',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: colHeader,
-      };
-      processLoadedTableData(rows, [colHeader], 'Pegado Rápido (Disposición por Orden de Lista)', true, {
-        nameCol: '__ORDER__',
-        secondaryNameCol: '',
-        emailCol: '',
-        colConfigs: [colCfg],
-      });
-      return;
+    if (dataset) {
+      applyLoadedDataset(dataset, true);
     }
-
-    // Preset 2: 2 Columns -> [Alumno] + [Disposición]
-    if (quickPastePreset === 'name_and_disp') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const headers = ['Apellido y Nombre', 'Disposición'];
-      const normalized2D = [
-        headers,
-        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '']),
-      ];
-      setRaw2DGrid(normalized2D);
-      setSelectedHeaderRowIndex(0);
-      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
-      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Disposición)', true, {
-        nameCol: 'Apellido y Nombre',
-        secondaryNameCol: '',
-        emailCol: '',
-        colConfigs: [
-          {
-            colKey: 'Disposición',
-            isIncluded: true,
-            kind: 'disposition',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Disposición',
-          },
-        ],
-      });
-      return;
-    }
-
-    // Preset 3: 3 Columns -> [Apellido] + [Nombre] + [Disposición]
-    if (quickPastePreset === 'last_first_disp') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const headers = ['Apellido', 'Nombre', 'Disposición'];
-      const normalized2D = [
-        headers,
-        ...dataRows2D.map((r) => [r[0] || '', r[1] || '', r[2] ?? '']),
-      ];
-      setRaw2DGrid(normalized2D);
-      setSelectedHeaderRowIndex(0);
-      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
-      processLoadedTableData(rows, headers, 'Pegado Rápido (Apellido + Nombre + Disposición)', true, {
-        nameCol: 'Apellido',
-        secondaryNameCol: 'Nombre',
-        emailCol: '',
-        colConfigs: [
-          {
-            colKey: 'Disposición',
-            isIncluded: true,
-            kind: 'disposition',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Disposición',
-          },
-        ],
-      });
-      return;
-    }
-
-    // Preset 1B: 1 Single Column of Absences numbers in alphabetical roster order
-    if (quickPastePreset === 'only_abs_ordered') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const colHeader = 'Faltas';
-      const final2D = [[colHeader], ...dataRows2D.map((r) => [r[r.length - 1] ?? r[0] ?? ''])];
-      setRaw2DGrid(final2D);
-      setSelectedHeaderRowIndex(0);
-      const rows = dataRows2D.map((r) => ({
-        [colHeader]: r[r.length - 1] ?? r[0] ?? '',
-      }));
-      const colCfg: DetectedColumnConfig = {
-        colKey: colHeader,
-        isIncluded: true,
-        kind: 'absences',
-        targetCategoryMode: 'existing',
-        targetCategoryId: defaultCat.id,
-        newCategoryName: '',
-        targetSubcategoryMode: 'new',
-        targetSubcategoryId: '',
-        subcategoryName: colHeader,
-      };
-      processLoadedTableData(rows, [colHeader], 'Pegado Rápido (Faltas por Orden de Lista)', true, {
-        nameCol: '__ORDER__',
-        secondaryNameCol: '',
-        emailCol: '',
-        colConfigs: [colCfg],
-      });
-      return;
-    }
-
-    // Preset 2B: 2 Columns -> [Alumno] + [Faltas]
-    if (quickPastePreset === 'name_and_abs') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const headers = ['Apellido y Nombre', 'Faltas'];
-      const normalized2D = [
-        headers,
-        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '']),
-      ];
-      setRaw2DGrid(normalized2D);
-      setSelectedHeaderRowIndex(0);
-      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
-      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Cantidad de Faltas)', true, {
-        nameCol: 'Apellido y Nombre',
-        secondaryNameCol: '',
-        emailCol: '',
-        colConfigs: [
-          {
-            colKey: 'Faltas',
-            isIncluded: true,
-            kind: 'absences',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Faltas',
-          },
-        ],
-      });
-      return;
-    }
-
-    // Preset 3B: 3 Columns -> [Apellido] + [Nombre] + [Faltas]
-    if (quickPastePreset === 'last_first_abs') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const headers = ['Apellido', 'Nombre', 'Faltas'];
-      const normalized2D = [
-        headers,
-        ...dataRows2D.map((r) => [r[0] || '', r[1] || '', r[2] ?? '']),
-      ];
-      setRaw2DGrid(normalized2D);
-      setSelectedHeaderRowIndex(0);
-      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
-      processLoadedTableData(rows, headers, 'Pegado Rápido (Apellido + Nombre + Faltas)', true, {
-        nameCol: 'Apellido',
-        secondaryNameCol: 'Nombre',
-        emailCol: '',
-        colConfigs: [
-          {
-            colKey: 'Faltas',
-            isIncluded: true,
-            kind: 'absences',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Faltas',
-          },
-        ],
-      });
-      return;
-    }
-
-    // Preset 4: 3 Columns -> [Alumno] + [Ausencias] + [Disposición]
-    if (quickPastePreset === 'name_abs_disp') {
-      const dataRows2D = hasHeader ? raw2D.slice(1) : raw2D;
-      const headers = ['Apellido y Nombre', 'Ausencias', 'Disposición'];
-      const normalized2D = [
-        headers,
-        ...dataRows2D.map((r) => [r[0] || '', r[1] ?? '', r[2] ?? '']),
-      ];
-      setRaw2DGrid(normalized2D);
-      setSelectedHeaderRowIndex(0);
-      const { rows } = sheetsService.convert2DArrayToTableObjects(normalized2D, 0);
-      processLoadedTableData(rows, headers, 'Pegado Rápido (Alumno + Ausencias + Disposición)', true, {
-        nameCol: 'Apellido y Nombre',
-        secondaryNameCol: '',
-        emailCol: '',
-        colConfigs: [
-          {
-            colKey: 'Ausencias',
-            isIncluded: true,
-            kind: 'absences',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Ausencias',
-          },
-          {
-            colKey: 'Disposición',
-            isIncluded: true,
-            kind: 'disposition',
-            targetCategoryMode: 'existing',
-            targetCategoryId: defaultCat.id,
-            newCategoryName: '',
-            targetSubcategoryMode: 'new',
-            targetSubcategoryId: '',
-            subcategoryName: 'Disposición',
-          },
-        ],
-      });
-      return;
-    }
-
-    // Automatic mode
-    const defaultColLabel =
-      importContext === 'attendance'
-        ? attendanceTargetMode === 'absences'
-          ? 'Faltas'
-          : 'Disposición'
-        : 'Nota';
-    const final2D = hasHeader
-      ? raw2D
-      : [
-          [
-            'Apellido y Nombre',
-            ...raw2D[0].slice(1).map((_, idx) =>
-              idx === 0 && importContext === 'attendance'
-                ? defaultColLabel
-                : `${defaultColLabel} ${idx + 1}`
-            ),
-          ],
-          ...raw2D,
-        ];
-
-    setRaw2DGrid(final2D);
-    setSelectedHeaderRowIndex(0);
-    const { headers, rows } = sheetsService.convert2DArrayToTableObjects(final2D, 0);
-    if (rows.length === 0) return;
-
-    processLoadedTableData(rows, headers, 'Datos Pegados desde Planilla', true);
   };
 
   // Update a column's configuration in Step 2 and recompute cell statuses if needed
@@ -1662,225 +817,27 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
    * Confirm & Apply all verified Categories, Evaluations, Grades, Attendance/Disposition, and New Students!
    */
   const handleConfirmAllVerifiedData = () => {
-    const activeRows = verifiedRows.filter(
-      (r) => r.isIncluded && (!r.isNewStudent || includeNewStudentsFromDoc)
-    );
-    if (activeRows.length === 0 || includedColumns.length === 0) return;
-
-    // 1. Build updated Categories and Subcategories
-    const workingCategories: GradeCategory[] = activeCategories.map((c) => ({
-      ...c,
-      subcategories: [...c.subcategories],
-    }));
-
-    const colKeyToSubcategoryId: Record<string, { categoryId: string; categoryName: string; subcategoryId: string; subcategoryName: string }> = {};
-
-    includedColumns.forEach((colCfg, idx) => {
-      if (colCfg.kind !== 'grade') return;
-
-      let targetCat: GradeCategory | undefined;
-      if (colCfg.targetCategoryMode === 'new' && colCfg.newCategoryName.trim()) {
-        const cleanCatName = colCfg.newCategoryName.trim();
-        targetCat = workingCategories.find(
-          (c) => normalizeText(c.name) === normalizeText(cleanCatName)
-        );
-        if (!targetCat) {
-          targetCat = {
-            id: `cat-imp-${Date.now()}-${idx}`,
-            name: cleanCatName,
-            weight: 0,
-            subcategories: [],
-          };
-          workingCategories.push(targetCat);
-        }
-      } else {
-        targetCat =
-          workingCategories.find((c) => c.id === colCfg.targetCategoryId) ||
-          workingCategories[0];
-        if (!targetCat) {
-          targetCat = {
-            id: `cat-imp-${Date.now()}-${idx}`,
-            name: 'Calificaciones',
-            weight: 100,
-            subcategories: [],
-          };
-          workingCategories.push(targetCat);
-        }
-      }
-
-      let subId = colCfg.targetSubcategoryId;
-      const cleanSubName = colCfg.subcategoryName.trim() || colCfg.colKey;
-
-      if (colCfg.targetSubcategoryMode === 'existing' && subId) {
-        const exists = targetCat.subcategories.find((s) => s.id === subId);
-        if (!exists) {
-          subId = `sub-imp-${Date.now()}-${idx}`;
-          targetCat.subcategories.push({
-            id: subId,
-            name: cleanSubName,
-            maxScore: 10,
-          });
-        }
-      } else {
-        // Check if a subcategory with the same name already exists in targetCat
-        const sameNameSub = targetCat.subcategories.find(
-          (s) => normalizeText(s.name) === normalizeText(cleanSubName)
-        );
-        if (sameNameSub) {
-          subId = sameNameSub.id;
-        } else {
-          subId = `sub-imp-${Date.now()}-${idx}`;
-          targetCat.subcategories.push({
-            id: subId,
-            name: cleanSubName,
-            maxScore: 10,
-          });
-        }
-      }
-
-      colKeyToSubcategoryId[colCfg.colKey] = {
-        categoryId: targetCat.id,
-        categoryName: targetCat.name,
-        subcategoryId: subId,
-        subcategoryName: cleanSubName,
-      };
+    const commitResult = buildGradeImportCommitPayload({
+      courseId,
+      selectedTerm,
+      sourceType,
+      fileName,
+      activeCategories,
+      activeGradesMap,
+      verifiedRows,
+      includedColumns,
+      includeNewStudentsFromDoc,
     });
-
-    // 2. Build updated Grades Map & Attendance Updates & New Students
-    const workingGradesMap: StudentGradesMap = {};
-    Object.keys(activeGradesMap).forEach((stId) => {
-      workingGradesMap[stId] = { ...(activeGradesMap[stId] || {}) };
-    });
-
-    const attendanceUpdates: MultiImportApplyPayload['attendanceUpdates'] = {};
-    const newStudentsToCreate: MultiImportApplyPayload['newStudentsToCreate'] = [];
-
-    activeRows.forEach((row) => {
-      if (row.isNewStudent && includeNewStudentsFromDoc) {
-        newStudentsToCreate.push({
-          id: row.studentId,
-          firstName: row.firstName,
-          lastName: row.lastName,
-          email: row.studentEmail,
-        });
-      }
-
-      if (!workingGradesMap[row.studentId]) {
-        workingGradesMap[row.studentId] = {};
-      }
-
-      includedColumns.forEach((colCfg) => {
-        const cell = row.valuesByCol[colCfg.colKey];
-        if (!cell || !cell.isValid || cell.editedVal === '') return;
-
-        const parsedCell = parseFlexibleCellNumber(cell.editedVal, colCfg.kind);
-        const numericVal = parsedCell.isValid ? parsedCell.numVal : Number(cell.editedVal);
-
-        if (colCfg.kind === 'grade') {
-          const targetInfo = colKeyToSubcategoryId[colCfg.colKey];
-          if (targetInfo) {
-            workingGradesMap[row.studentId][targetInfo.subcategoryId] = !isNaN(numericVal)
-              ? String(Number(numericVal.toFixed(2)))
-              : cell.editedVal;
-          }
-        } else if (colCfg.kind === 'absences') {
-          if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].absences = Math.max(0, Math.round(numericVal));
-        } else if (colCfg.kind === 'lates') {
-          if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].lates = Math.max(0, Math.round(numericVal));
-        } else if (colCfg.kind === 'disposition' || colCfg.kind === 'disposition_deduction') {
-          if (!attendanceUpdates[row.studentId]) attendanceUpdates[row.studentId] = {};
-          attendanceUpdates[row.studentId].disposition = Math.min(
-            10,
-            Math.max(1, Number(numericVal.toFixed(2)))
-          );
-        }
-      });
-    });
-
-    // 3. Build GradeHistoryEntries for each imported grade column
-    const newHistoryEntries: GradeHistoryEntry[] = [];
-    Object.entries(colKeyToSubcategoryId).forEach(([colKey, info], idx) => {
-      const colRows = activeRows.filter((r) => {
-        const cell = r.valuesByCol[colKey];
-        return cell && cell.isValid && cell.editedVal !== '';
-      });
-      if (colRows.length === 0) return;
-
-      const scores = colRows
-        .map((r) => parseFloat(r.valuesByCol[colKey].editedVal))
-        .filter((n) => !isNaN(n));
-      const avg =
-        scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : undefined;
-
-      newHistoryEntries.push({
-        id: `gh-${Date.now()}-${idx}`,
-        courseId,
-        timestamp: Date.now(),
-        date: new Date().toLocaleDateString('es-AR'),
-        time: new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' }),
-        term: selectedTerm,
-        termLabel: selectedTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre',
-        subcategoryId: info.subcategoryId,
-        evaluationName: info.subcategoryName,
-        categoryName: info.categoryName,
-        action: sourceType === 'file' ? 'import_excel' : 'import_sheets',
-        description: `Se importaron ${colRows.length} calificaciones en "${info.categoryName} - ${info.subcategoryName}"`,
-        updatedStudentsCount: colRows.length,
-        averageScore: avg,
-        sourceFile: fileName || undefined,
-        changesSummary: colRows.map((r) => ({
-          studentId: r.studentId,
-          studentName: r.studentName,
-          studentEmail: r.studentEmail,
-          previousScore: r.valuesByCol[colKey].currentVal || undefined,
-          newScore: r.valuesByCol[colKey].editedVal,
-          status:
-            r.valuesByCol[colKey].status === 'new'
-              ? 'new'
-              : r.valuesByCol[colKey].status === 'update'
-              ? 'updated'
-              : 'unchanged',
-        })),
-      });
-    });
+    if (!commitResult) return;
 
     if (onApplyMultiImport) {
-      onApplyMultiImport({
-        term: selectedTerm,
-        updatedCategories: workingCategories,
-        updatedGradesMap: workingGradesMap,
-        historyEntries: newHistoryEntries,
-        attendanceUpdates,
-        newStudentsToCreate,
-        sourceLabel: fileName || (sourceType === 'file' ? 'Excel' : 'Google Sheets'),
-      });
+      onApplyMultiImport(commitResult.multiPayload);
       onClose();
       return;
     }
 
-    // Fallback to legacy single-column callback if onApplyMultiImport is not provided
-    const firstColEntry = Object.entries(colKeyToSubcategoryId)[0];
-    if (firstColEntry) {
-      const [colKey, info] = firstColEntry;
-      const updates: Record<string, string> = {};
-      activeRows.forEach((r) => {
-        const cell = r.valuesByCol[colKey];
-        if (cell && cell.isValid && cell.editedVal !== '') {
-          updates[r.studentId] = cell.editedVal;
-        }
-      });
-      if (newHistoryEntries[0]) {
-        onApplyGrades({
-          term: selectedTerm,
-          categoryId: info.categoryId,
-          subcategoryId: info.subcategoryId,
-          newSubcategoryName: info.subcategoryName,
-          updates,
-          historyEntry: newHistoryEntries[0],
-        });
-      }
+    if (commitResult.legacySingleGradePayload) {
+      onApplyGrades(commitResult.legacySingleGradePayload);
     }
     onClose();
   };
@@ -4042,52 +2999,12 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         {/* PASO 3: HISTORIAL DE IMPORTACIONES                                        */}
         {/* ========================================================================= */}
         {activeStep === 'history' && (
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-            <div className="p-5 flex-1 overflow-y-auto space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-sm">Historial de Importaciones de la Materia</h4>
-                <button
-                  type="button"
-                  onClick={() => exportGradeHistoryToExcel(courseName, historyEntries)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Exportar Historial a Excel</span>
-                </button>
-              </div>
-              {historyEntries.map((item) => (
-                <div
-                  key={item.id}
-                  className={`p-3.5 rounded-xl border text-xs space-y-1 ${
-                    isDarkMode ? 'bg-slate-800/60 border-slate-750' : 'bg-white border-neutral-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between font-bold">
-                    <span>
-                      {item.categoryName} — {item.evaluationName} ({item.termLabel})
-                    </span>
-                    <span className="text-neutral-400">
-                      {item.date} {item.time}
-                    </span>
-                  </div>
-                  <p className="text-neutral-500 dark:text-slate-400">{item.description}</p>
-                </div>
-              ))}
-            </div>
-            <div
-              className={`px-5 py-3 border-t flex justify-between ${
-                isDarkMode ? 'bg-slate-850 border-slate-750' : 'bg-neutral-50 border-neutral-200'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => setActiveStep('upload')}
-                className="px-4 py-2 rounded-xl border text-xs font-semibold cursor-pointer"
-              >
-                ← Volver a Importar
-              </button>
-            </div>
-          </div>
+          <ImportHistoryTab
+            courseName={courseName}
+            historyEntries={historyEntries}
+            isDarkMode={isDarkMode}
+            onBackToUpload={() => setActiveStep('upload')}
+          />
         )}
       </div>
     </div>

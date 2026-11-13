@@ -627,9 +627,55 @@ async function startServer() {
   app.post("/api/workspace/fetch-remote-document", async (req, res) => {
     try {
       const rawUrl = String(req.body?.url || "").trim();
-      const targetSheet = String(req.body?.sheetName || "").trim();
+      const targetSheet = String(req.body?.sheetName || "").trim().slice(0, 120);
       if (!rawUrl) {
         return res.status(400).json({ ok: false, error: "URL requerida" });
+      }
+
+      // SSRF Protection (ISO/IEC 27001 A.8.20 / OWASP SSRF Prevention):
+      // Only allow outbound HTTPS requests to public hosts; block loopback, RFC1918 private networks, and cloud metadata IPs.
+      const isSafeRemoteFetchUrl = (candidateUrl: string): boolean => {
+        try {
+          const parsed = new URL(candidateUrl);
+          if (parsed.protocol !== "https:") return false;
+          const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+          if (
+            !host ||
+            host === "localhost" ||
+            host.endsWith(".local") ||
+            host.endsWith(".internal") ||
+            host === "::1" ||
+            host.startsWith("fe80:") ||
+            host.startsWith("fc00:") ||
+            host.startsWith("fd00:")
+          ) {
+            return false;
+          }
+          const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+          if (ipv4Match) {
+            const [, a, b] = ipv4Match.map(Number);
+            if (
+              a === 0 ||
+              a === 10 ||
+              a === 127 ||
+              (a === 169 && b === 254) ||
+              (a === 172 && b >= 16 && b <= 31) ||
+              (a === 192 && b === 168)
+            ) {
+              return false;
+            }
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      if (/^https?:\/\//i.test(rawUrl) && !isSafeRemoteFetchUrl(rawUrl)) {
+        return res.status(400).json({
+          ok: false,
+          error: "El enlace proporcionado no cumple con las políticas de seguridad (se requiere HTTPS público).",
+        });
       }
 
       const decodeHtmlEntities = (str: string): string =>
@@ -674,8 +720,14 @@ async function startServer() {
 
       // 1. Check if it's a Google Forms link (or forms.gle shortlink)
       if (/\/forms\/(?:u\/\d+\/)?d\//i.test(rawUrl) || /forms\.gle\//i.test(rawUrl)) {
+        if (!isSafeRemoteFetchUrl(rawUrl)) {
+          return res.status(400).json({ ok: false, error: "URL de formulario no válida." });
+        }
         const resp = await fetch(rawUrl, { headers: fetchHeaders, redirect: "follow" });
         const finalUrl = resp.url || rawUrl;
+        if (!isSafeRemoteFetchUrl(finalUrl)) {
+          return res.status(400).json({ ok: false, error: "Redirección bloqueada por seguridad." });
+        }
         const html = resp.ok ? await resp.text() : "";
         const responderMatch = finalUrl.match(/\/forms\/(?:u\/\d+\/)?d\/e\/([a-zA-Z0-9-_]+)/i);
         const editorMatch = !responderMatch
@@ -749,7 +801,7 @@ async function startServer() {
       // 3. Check if it's a Google Sheets link (or spreadsheet ID)
       const sheetMatch = rawUrl.match(/\/spreadsheets\/(?:u\/\d+\/)?d\/([a-zA-Z0-9-_]+)/i);
       const gidMatch = rawUrl.match(/[#?&]gid=(\d+)/i);
-      const spreadsheetId = sheetMatch ? sheetMatch[1] : (!rawUrl.includes("/") && rawUrl.length >= 15 ? rawUrl : "");
+      const spreadsheetId = sheetMatch ? sheetMatch[1] : (/^[a-zA-Z0-9-_]{15,80}$/.test(rawUrl) ? rawUrl : "");
 
       if (spreadsheetId) {
         const gidParam = gidMatch ? `&gid=${gidMatch[1]}` : "";
@@ -810,10 +862,10 @@ async function startServer() {
         });
       }
 
-      // 4. Generic web URL fallback
-      if (/^https?:\/\//i.test(rawUrl)) {
+      // 4. Generic web URL fallback (validated by isSafeRemoteFetchUrl)
+      if (/^https:\/\//i.test(rawUrl) && isSafeRemoteFetchUrl(rawUrl)) {
         const webRes = await fetch(rawUrl, { headers: fetchHeaders, redirect: "follow" });
-        if (webRes.ok) {
+        if (webRes.ok && isSafeRemoteFetchUrl(webRes.url || rawUrl)) {
           const text = await webRes.text();
           return res.json({
             ok: true,
@@ -1123,6 +1175,16 @@ async function startServer() {
     });
   });
 
+  // Input Sanitization Helper for Backend Data Routes (ISO/IEC 27001 A.8.28)
+  const sanitizeServerInputText = (value: unknown, maxLength = 500): string => {
+    if (value === null || value === undefined) return "";
+    return String(value)
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .replace(/<\s*\/?\s*script\b[^>]*>/gi, "")
+      .trim()
+      .slice(0, maxLength);
+  };
+
   // Courses API
   app.get("/api/courses", (_req, res) => {
     if (!coursesLoadedFromDisk) {
@@ -1133,7 +1195,14 @@ async function startServer() {
   });
 
   app.post("/api/courses", (req, res) => {
-    const { name, subject, grade, room, schedule, color, orientation, division } = req.body;
+    const name = sanitizeServerInputText(req.body?.name, 160);
+    const subject = sanitizeServerInputText(req.body?.subject, 160);
+    const grade = sanitizeServerInputText(req.body?.grade, 120);
+    const room = sanitizeServerInputText(req.body?.room, 120);
+    const schedule = sanitizeServerInputText(req.body?.schedule, 160);
+    const color = sanitizeServerInputText(req.body?.color, 40);
+    const orientation = sanitizeServerInputText(req.body?.orientation, 80);
+    const division = sanitizeServerInputText(req.body?.division, 80);
     if (!name || !subject) {
       return res.status(400).json({ error: "Nombre y materia son requeridos." });
     }
@@ -1351,7 +1420,32 @@ async function startServer() {
     if (typeof req.body.studentsCount === "number") {
       course.studentsCount = req.body.studentsCount;
     }
-    Object.assign(course, req.body);
+    if (req.body && typeof req.body === "object") {
+      const allowedCourseKeys: Array<keyof Course> = [
+        "name",
+        "subject",
+        "grade",
+        "room",
+        "schedule",
+        "color",
+        "classroomSynced",
+        "classroomCourseId",
+        "code",
+        "section",
+        "orientation",
+        "division",
+        "schoolYear",
+        "driveFolderId",
+      ];
+      for (const key of allowedCourseKeys) {
+        if (Object.prototype.hasOwnProperty.call(req.body, key) && req.body[key] !== undefined) {
+          (course as any)[key] =
+            typeof req.body[key] === "string"
+              ? sanitizeServerInputText(req.body[key], 200)
+              : req.body[key];
+        }
+      }
+    }
     saveCoursesToDisk();
     res.json({ success: true, course });
   });
@@ -1518,7 +1612,11 @@ async function startServer() {
   });
 
   app.post("/api/students", (req, res) => {
-    const { id, courseId, firstName, lastName, email, avatar, attendanceRate, averageGrade, notes } = req.body;
+    const { id, courseId, avatar, attendanceRate, averageGrade } = req.body || {};
+    const firstName = sanitizeServerInputText(req.body?.firstName, 120);
+    const lastName = sanitizeServerInputText(req.body?.lastName, 120);
+    const email = sanitizeServerInputText(req.body?.email, 180);
+    const notes = sanitizeServerInputText(req.body?.notes, 1000);
     if (!courseId || !firstName || !lastName) {
       return res.status(400).json({ error: "Datos incompletos para crear estudiante." });
     }
@@ -1558,9 +1656,18 @@ async function startServer() {
     if (idx === -1) {
       return res.status(404).json({ error: "Estudiante no encontrado en esta materia." });
     }
+    const safeUpdates: Partial<Student> = {};
+    if (typeof updates.firstName === "string") safeUpdates.firstName = sanitizeServerInputText(updates.firstName, 120);
+    if (typeof updates.lastName === "string") safeUpdates.lastName = sanitizeServerInputText(updates.lastName, 120);
+    if (typeof updates.email === "string") safeUpdates.email = sanitizeServerInputText(updates.email, 180);
+    if (typeof updates.avatar === "string") safeUpdates.avatar = sanitizeServerInputText(updates.avatar, 500);
+    if (typeof updates.notes === "string") safeUpdates.notes = sanitizeServerInputText(updates.notes, 1000);
+    if (typeof updates.attendanceRate === "number") safeUpdates.attendanceRate = updates.attendanceRate;
+    if (typeof updates.averageGrade === "number") safeUpdates.averageGrade = updates.averageGrade;
+
     students[idx] = {
       ...students[idx],
-      ...updates,
+      ...safeUpdates,
       id: studentId,
       courseId,
     };
@@ -1748,15 +1855,15 @@ async function startServer() {
     const {
       id: clientRecordId,
       studentId,
-      studentName,
       courseId,
-      action,
-      category,
-      detail,
       date: clientDate,
       time: clientTime,
       timestamp: clientTimestamp,
-    } = req.body;
+    } = req.body || {};
+    const studentName = sanitizeServerInputText(req.body?.studentName, 160);
+    const action = sanitizeServerInputText(req.body?.action, 300);
+    const category = sanitizeServerInputText(req.body?.category, 80);
+    const detail = sanitizeServerInputText(req.body?.detail, 400);
 
     if (!studentId || !action || !category) {
       return res.status(400).json({ error: "Faltan datos obligatorios para el registro." });

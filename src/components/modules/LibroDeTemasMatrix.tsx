@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   ExternalLink,
   FileText,
-  Pencil,
   Trash2,
   X,
   AlertCircle,
@@ -15,7 +14,6 @@ import {
   saveCourseAttendanceSettings,
 } from '../../utils/attendanceCalculations';
 import {
-  OFFICIAL_HOLIDAYS_2026,
   SchoolHolidayItem,
   WEEKDAY_LABELS,
   extractWeekdaysFromSchedule,
@@ -39,7 +37,6 @@ import { isValidCourseSchedule } from '../../utils/courseFormatting';
 import { getCourseCachedItem, setCourseCachedItem } from '../../utils/lruCourseCache';
 import {
   SHORT_WEEKDAYS,
-  parseLocalDate,
   formatYYYYMMDD,
   buildHolidaysByDateMap,
   buildScheduledLibroRows,
@@ -104,7 +101,6 @@ export interface ScheduledRow {
 export interface LibroDeTemasStorageData {
   metadata: LibroDeTemasMetadata;
   entries: Record<string, LibroDeTemasEntry>; // key: YYYY-MM-DD
-  characterOptions?: string[]; // Opciones personalizadas del desplegable "Carácter de la clase"
   updatedAt: string;
 }
 
@@ -118,7 +114,6 @@ export interface LibroDeTemasMatrixProps {
   onUpdateAttendanceSettings?: (next: AttendanceSettings) => void;
   onRefreshCourse?: () => void;
   onOpenAttendanceSettingsModal?: () => void;
-  onOpenBackupModal?: () => void;
   isDarkMode: boolean;
   driveFolderId?: string;
   driveFolderUrl?: string;
@@ -192,24 +187,8 @@ export const NO_CLASS_PRESETS: {
   },
 ];
 
-const GLOBAL_CHARACTER_OPTIONS_KEY = 'fds_libro_temas_character_options_v1';
-
 function getStorageKey(courseId: string): string {
   return getUserStorageKey(`fds_libro_temas_${courseId}`);
-}
-
-function loadGlobalCharacterOptions(): string[] {
-  if (typeof window === 'undefined') return DEFAULT_CHARACTER_OPTIONS;
-  try {
-    const raw = localStorage.getItem(GLOBAL_CHARACTER_OPTIONS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
-    }
-  } catch (_) {}
-  return DEFAULT_CHARACTER_OPTIONS;
 }
 
 export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
@@ -222,7 +201,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   onUpdateAttendanceSettings,
   onRefreshCourse,
   onOpenAttendanceSettingsModal,
-  onOpenBackupModal,
   isDarkMode,
   driveFolderId,
 }) => {
@@ -255,9 +233,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   // Estado principal del Libro de Temas
   const [metadata, setMetadata] = useState<LibroDeTemasMetadata>(defaultMetadata);
   const [entriesMap, setEntriesMap] = useState<Record<string, LibroDeTemasEntry>>({});
-  const [characterOptions, setCharacterOptions] = useState<string[]>(() =>
-    loadGlobalCharacterOptions()
-  );
 
   // Modo edición de días y horarios (cuando ya están guardados se muestran bloqueados para no alterarlos por error)
   const [isEditingScheduleConfig, setIsEditingScheduleConfig] = useState<boolean>(false);
@@ -265,12 +240,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
   // Selector de hora para la tarjeta "Clase de Hoy" cuando el día tiene múltiples horas (módulos)
   const [selectedTodaySlotIndex, setSelectedTodaySlotIndex] = useState<number>(0);
-
-  // Modal para editar las opciones del desplegable "Carácter de la clase"
-  const [showCharacterOptionsModal, setShowCharacterOptionsModal] = useState(false);
-  const [newCharacterOptionText, setNewCharacterOptionText] = useState('');
-  const [editingOptionIndex, setEditingOptionIndex] = useState<number | null>(null);
-  const [editingOptionValue, setEditingOptionValue] = useState('');
 
   // Modal para marcar una fecha como "Sin dictado de clase" (Feriado, Acto, Mocks, Exámenes Internacionales, Deportes, etc.)
   const [noClassModalRow, setNoClassModalRow] = useState<{
@@ -323,16 +292,14 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   const latestStateRef = useRef<{
     metadata: LibroDeTemasMetadata;
     entries: Record<string, LibroDeTemasEntry>;
-    characterOptions: string[];
   }>({
     metadata,
     entries: entriesMap,
-    characterOptions,
   });
 
   useEffect(() => {
-    latestStateRef.current = { metadata, entries: entriesMap, characterOptions };
-  }, [metadata, entriesMap, characterOptions]);
+    latestStateRef.current = { metadata, entries: entriesMap };
+  }, [metadata, entriesMap]);
 
   const todayStr = useMemo(() => formatYYYYMMDD(new Date()), []);
 
@@ -340,7 +307,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   useEffect(() => {
     if (!courseId) return;
     let hasLocalData = false;
-    const globalCharOpts = loadGlobalCharacterOptions();
 
     try {
       const raw = getCourseCachedItem(courseId, getStorageKey(courseId));
@@ -387,23 +353,15 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           setEntriesMap({});
         }
 
-        if (Array.isArray(parsed.characterOptions) && parsed.characterOptions.length > 0) {
-          setCharacterOptions(parsed.characterOptions);
-        } else {
-          setCharacterOptions(globalCharOpts);
-        }
-
         hasLocalData = true;
       } else {
         setMetadata(defaultMetadata);
         setEntriesMap({});
-        setCharacterOptions(globalCharOpts);
         setIsEditingScheduleConfig(!defaultMetadata.isScheduleLocked);
       }
     } catch (_) {
       setMetadata(defaultMetadata);
       setEntriesMap({});
-      setCharacterOptions(globalCharOpts);
     }
 
     // Cargar desde Firestore en segundo plano y fusionar inteligentemente para no perder ningún registro entre dispositivos
@@ -434,10 +392,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                 const updatedPayload: LibroDeTemasStorageData = {
                   metadata: isCloudNewer && cloudData.metadata ? { ...latestStateRef.current.metadata, ...cloudData.metadata } : latestStateRef.current.metadata,
                   entries: mergedEntries,
-                  characterOptions:
-                    isCloudNewer && Array.isArray(cloudData.characterOptions) && cloudData.characterOptions.length > 0
-                      ? cloudData.characterOptions
-                      : latestStateRef.current.characterOptions,
                   updatedAt: isCloudNewer && cloudUpdatedAt ? cloudUpdatedAt : localUpdatedAt || new Date().toISOString(),
                 };
                 setCourseCachedItem(courseId, getStorageKey(courseId), JSON.stringify(updatedPayload));
@@ -479,14 +433,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             setMetadata(mergedMeta);
             setIsEditingScheduleConfig(!mergedMeta.isScheduleLocked);
           }
-
-          if (
-            isCloudNewer &&
-            Array.isArray(cloudData.characterOptions) &&
-            cloudData.characterOptions.length > 0
-          ) {
-            setCharacterOptions(cloudData.characterOptions);
-          }
         })
         .catch(() => {});
     };
@@ -501,21 +447,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     };
     window.addEventListener('docencia_cloud_live_sync', handleLiveCloudSync);
 
-    const handleBackupRestored = (e: any) => {
-      if (e?.detail?.courseId && e.detail.courseId !== courseId) return;
-      try {
-        const raw = localStorage.getItem(getStorageKey(courseId));
-        if (raw) {
-          const parsed = JSON.parse(raw) as Partial<LibroDeTemasStorageData>;
-          if (parsed.metadata) setMetadata(parsed.metadata);
-          if (parsed.entries) setEntriesMap(parsed.entries);
-          if (Array.isArray(parsed.characterOptions)) setCharacterOptions(parsed.characterOptions);
-        }
-      } catch (_) {}
-    };
-
-    window.addEventListener('docencia_libro_temas_restored', handleBackupRestored);
-
     const flushKey = `libro_temas_${courseId}`;
     const flushNow = () => {
       if (cloudSyncTimeoutRef.current) {
@@ -529,7 +460,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           .saveUserSetting(activeUid, `libro_temas_${courseId}`, {
             metadata: latestStateRef.current.metadata,
             entries: latestStateRef.current.entries,
-            characterOptions: latestStateRef.current.characterOptions,
             updatedAt: new Date().toISOString(),
           })
           .catch(() => {});
@@ -545,7 +475,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     return () => {
       mounted = false;
       window.removeEventListener('docencia_cloud_live_sync', handleLiveCloudSync);
-      window.removeEventListener('docencia_libro_temas_restored', handleBackupRestored);
       unregFlush();
       // Si había un guardado en la nube pendiente al cambiar de curso o pestaña, ejecutarlo inmediatamente
       if (cloudSyncTimeoutRef.current) {
@@ -558,7 +487,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   const persistLibroData = (
     nextMetadata: LibroDeTemasMetadata,
     nextEntries: Record<string, LibroDeTemasEntry>,
-    nextCharacterOptions: string[] = characterOptions,
     immediateCloud = false
   ) => {
     if (!courseId) return;
@@ -566,12 +494,10 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     const payload: LibroDeTemasStorageData = {
       metadata: nextMetadata,
       entries: nextEntries,
-      characterOptions: nextCharacterOptions,
       updatedAt: new Date().toISOString(),
     };
     try {
       setCourseCachedItem(courseId, getStorageKey(courseId), JSON.stringify(payload));
-      localStorage.setItem(GLOBAL_CHARACTER_OPTIONS_KEY, JSON.stringify(nextCharacterOptions));
     } catch (_) {}
 
     if (cloudSyncTimeoutRef.current) {
@@ -599,7 +525,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
   const handleMetadataChange = (field: keyof LibroDeTemasMetadata, value: any) => {
     setMetadata((prev) => {
       const next = { ...prev, [field]: value };
-      persistLibroData(next, entriesMap, characterOptions);
+      persistLibroData(next, entriesMap);
       return next;
     });
   };
@@ -621,7 +547,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         horario: courseSchedule,
         configuredWeekdays: fromSchedule,
       };
-      persistLibroData(updatedMeta, entriesMap, characterOptions, true);
+      persistLibroData(updatedMeta, entriesMap, true);
       return updatedMeta;
     });
 
@@ -743,7 +669,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       configuredWeekdays: nextWeekdays,
     };
     setMetadata(nextMeta);
-    persistLibroData(nextMeta, entriesMap, characterOptions, true);
+    persistLibroData(nextMeta, entriesMap, true);
 
     const nextSettings: AttendanceSettings = {
       ...attendanceSettings,
@@ -754,111 +680,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     if (onUpdateAttendanceSettings) {
       onUpdateAttendanceSettings(nextSettings);
     }
-  };
-
-  // Guardar permanentemente Día y Horario de las clases
-  const handleSavePermanentScheduleAndDays = async () => {
-    const newScheduleLabel = activeWeekdays
-      .map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d])
-      .join(', ');
-
-    const fromPreviousSchedule = extractWeekdaysFromSchedule(courseSchedule || metadata.horario);
-    const daysChanged = fromPreviousSchedule.join(',') !== activeWeekdays.join(',');
-
-    let updatedScheduleText = courseSchedule || metadata.horario;
-    if (
-      daysChanged ||
-      !updatedScheduleText ||
-      updatedScheduleText === 'Sin horario especificado' ||
-      updatedScheduleText === 'Lunes y Miércoles'
-    ) {
-      updatedScheduleText = newScheduleLabel;
-    }
-
-    const nextMeta: LibroDeTemasMetadata = {
-      ...metadata,
-      horario: updatedScheduleText,
-      configuredWeekdays: activeWeekdays,
-      isScheduleLocked: true,
-    };
-    setMetadata(nextMeta);
-    setIsEditingScheduleConfig(false);
-    persistLibroData(nextMeta, entriesMap, characterOptions, true);
-
-    // Sincronizar también en AttendanceSettings y en el Curso para que quede en toda la app
-    const nextSettings: AttendanceSettings = {
-      ...attendanceSettings,
-      courseWeekdays: activeWeekdays,
-      classesPerWeek: activeWeekdays.length,
-    };
-    saveCourseAttendanceSettings(courseId, nextSettings);
-    if (onUpdateAttendanceSettings) {
-      onUpdateAttendanceSettings(nextSettings);
-    }
-
-    try {
-      await api.updateCourse(courseId, { schedule: updatedScheduleText });
-      if (onRefreshCourse) {
-        onRefreshCourse();
-      }
-    } catch (_) {}
-
-    setToastMsg(
-      'Días y horario de cursada sincronizados correctamente para toda la materia.'
-    );
-    setTimeout(() => setToastMsg(null), 3500);
-  };
-
-  // Gestión de opciones personalizadas de "Carácter de la clase"
-  const handleAddCharacterOption = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = newCharacterOptionText.trim();
-    if (!trimmed) return;
-    if (characterOptions.some((o) => o.toLowerCase() === trimmed.toLowerCase())) {
-      setNewCharacterOptionText('');
-      return;
-    }
-    // Insertar antes de "-" si existe al final
-    const withoutDash = characterOptions.filter((o) => o !== '-');
-    const nextOptions = [...withoutDash, trimmed, '-'];
-    setCharacterOptions(nextOptions);
-    setNewCharacterOptionText('');
-    persistLibroData(metadata, entriesMap, nextOptions, true);
-  };
-
-  const handleSaveEditedCharacterOption = (index: number) => {
-    const trimmed = editingOptionValue.trim();
-    if (!trimmed) return;
-    const oldOption = characterOptions[index];
-    const nextOptions = characterOptions.map((opt, idx) => (idx === index ? trimmed : opt));
-    setCharacterOptions(nextOptions);
-    setEditingOptionIndex(null);
-    setEditingOptionValue('');
-
-    // Actualizar filas que tuvieran el nombre anterior
-    const nextEntries = { ...entriesMap };
-    Object.keys(nextEntries).forEach((dateKey) => {
-      if (nextEntries[dateKey]?.classCharacter === oldOption) {
-        nextEntries[dateKey] = {
-          ...nextEntries[dateKey],
-          classCharacter: trimmed,
-        };
-      }
-    });
-    setEntriesMap(nextEntries);
-    persistLibroData(metadata, nextEntries, nextOptions, true);
-  };
-
-  const handleDeleteCharacterOption = (optionToRemove: string) => {
-    if (optionToRemove === '-') return; // Mantener siempre "-" para días sin clase
-    const nextOptions = characterOptions.filter((o) => o !== optionToRemove);
-    setCharacterOptions(nextOptions);
-    persistLibroData(metadata, entriesMap, nextOptions, true);
-  };
-
-  const handleRestoreDefaultCharacterOptions = () => {
-    setCharacterOptions(DEFAULT_CHARACTER_OPTIONS);
-    persistLibroData(metadata, entriesMap, DEFAULT_CHARACTER_OPTIONS, true);
   };
 
   // Mapa de feriados activos para este curso
@@ -876,7 +697,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         dailySlots,
         holidaysByDate,
         entriesMap,
-        characterOptions,
       }),
     [
       attendanceSettings,
@@ -884,7 +704,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       dailySlots,
       holidaysByDate,
       entriesMap,
-      characterOptions,
     ]
   );
 
@@ -907,7 +726,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           timeLabel: rowMeta?.timeLabel,
           unitNumber: '1',
           contents: '',
-          classCharacter: characterOptions[0] || 'Teórico - Práctica',
+          classCharacter: DEFAULT_CHARACTER_OPTIONS[0] || 'Teórico - Práctica',
           observations: '',
           teacherSignature: '',
           authoritySignature: '',
@@ -919,7 +738,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       if (rowMeta && rowMeta.slotIndex === 0) {
         next[dateStr] = updated;
       }
-      persistLibroData(metadata, next, characterOptions, immediateCloud);
+      persistLibroData(metadata, next, immediateCloud);
       return next;
     });
   };
@@ -984,7 +803,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       siblingRows.forEach((sr) => {
         next[sr.rowKey] = updater(prev[sr.rowKey] || sr.entry);
       });
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
 
@@ -1014,7 +833,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
             : curr.contents,
         classCharacter:
           curr.classCharacter === '-'
-            ? characterOptions[0] || 'Teórico - Práctica'
+            ? DEFAULT_CHARACTER_OPTIONS[0] || 'Teórico - Práctica'
             : curr.classCharacter,
       });
 
@@ -1022,7 +841,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       siblingRows.forEach((sr) => {
         if (next[sr.rowKey]) next[sr.rowKey] = revertEntry(next[sr.rowKey], sr);
       });
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
     setNoClassModalRow(null);
@@ -1056,7 +875,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     if (count > 0) {
       setEntriesMap(nextEntries);
-      persistLibroData(metadata, nextEntries, characterOptions, true);
+      persistLibroData(metadata, nextEntries, true);
       setToastMsg(`Se firmaron ${count} fechas registradas en el Libro de Temas.`);
       setTimeout(() => setToastMsg(null), 3500);
     } else {
@@ -1075,7 +894,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       isHoliday: false,
       unitNumber: newCustomUnit || '1',
       contents: newCustomContents.trim(),
-      classCharacter: newCustomCharacter || characterOptions[0] || 'Teórico - Práctica',
+      classCharacter: newCustomCharacter || DEFAULT_CHARACTER_OPTIONS[0] || 'Teórico - Práctica',
       observations: 'Clase / Mesa especial agregada al cronograma',
       teacherSignature: metadata.profTitular.trim() || '',
       authoritySignature: '',
@@ -1084,7 +903,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
 
     setEntriesMap((prev) => {
       const next = { ...prev, [newCustomDate]: nextEntry };
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
 
@@ -1102,7 +921,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       Object.keys(next).forEach((k) => {
         if (k.startsWith(`${dateStr}__`)) delete next[k];
       });
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
     setToastMsg(`Fila del ${dateStr} eliminada del Libro de Temas.`);
@@ -1123,7 +942,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
       if (row.slotIndex === 0) {
         delete next[row.dateStr];
       }
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
     setToastMsg(
@@ -1155,7 +974,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           if (k.startsWith(`${dStr}__`)) delete next[k];
         });
       });
-      persistLibroData(metadata, next, characterOptions, true);
+      persistLibroData(metadata, next, true);
       return next;
     });
     setToastMsg(
@@ -1274,23 +1093,16 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
     return activeWeekdays.map((d) => WEEKDAY_LABELS[d] || SHORT_WEEKDAYS[d]).join(', ');
   }, [activeWeekdays]);
 
-  const {
-    handleSaveLibroInFormat,
-    handlePrintLibro,
-    handleOpenOrDownloadBackup,
-  } = useLibroDeTemasSync({
+  const { handleSaveLibroInFormat } = useLibroDeTemasSync({
     courseId,
     courseName,
     driveFolderId,
     todayStr,
     metadata,
-    entriesMap,
-    characterOptions,
     filteredRows,
     activeWeekdaysLabel,
     scheduleSummaryText,
     setExportedDocLink,
-    onOpenBackupModal,
   });
 
   return (
@@ -1366,7 +1178,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         metadata={metadata}
         setMetadata={setMetadata}
         entriesMap={entriesMap}
-        characterOptions={characterOptions}
         activeWeekdays={activeWeekdays}
         activeWeekdaysLabel={activeWeekdaysLabel}
         scheduleSummaryText={scheduleSummaryText}
@@ -1388,10 +1199,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         setSearchQuery={setSearchQuery}
         scheduledRows={scheduledRows}
         handleSignAllCompletedClasses={handleSignAllCompletedClasses}
-        setShowCharacterOptionsModal={setShowCharacterOptionsModal}
         setShowAddDateModal={setShowAddDateModal}
-        handlePrintLibro={handlePrintLibro}
-        handleOpenOrDownloadBackup={handleOpenOrDownloadBackup}
         handleSaveLibroInFormat={handleSaveLibroInFormat}
         handleMetadataChange={handleMetadataChange}
         handleToggleCourseWeekday={handleToggleCourseWeekday}
@@ -1407,7 +1215,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           setSelectedTodaySlotIndex={setSelectedTodaySlotIndex}
           isDarkMode={isDarkMode}
           activeWeekdays={activeWeekdays}
-          characterOptions={characterOptions}
           termFilter={termFilter}
           setTermFilter={setTermFilter}
           statusFilter={statusFilter}
@@ -1417,7 +1224,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
           todayRowRef={todayRowRef}
           handleOpenNoClassModal={handleOpenNoClassModal}
           handleDeleteOrClearRow={handleDeleteOrClearRow}
-          setShowCharacterOptionsModal={setShowCharacterOptionsModal}
           updateEntryField={updateEntryField}
           handleSignRow={handleSignRow}
         />
@@ -1522,25 +1328,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                     isDarkMode ? 'border-slate-700' : 'border-neutral-300'
                   }`}
                 >
-                  <div className="flex items-center justify-center gap-1.5">
-                    <span>
-                      Carácter de
-                      <br />
-                      la clase
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowCharacterOptionsModal(true)}
-                      className={`p-1 rounded-md border transition-colors cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-700/70 border-slate-600 text-slate-300 hover:text-white'
-                          : 'bg-white border-neutral-300 text-neutral-600 hover:text-blue-600'
-                      }`}
-                      title="Editar opciones del desplegable Carácter de la clase"
-                    >
-                      <Pencil className="w-3 h-3" />
-                    </button>
-                  </div>
+                  Carácter de
+                  <br />
+                  la clase
                 </th>
                 <th
                   rowSpan={2}
@@ -1826,7 +1616,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                                     : curr.unitNumber,
                                 classCharacter:
                                   !curr.isHoliday && !curr.classCharacter && val.trim()
-                                    ? characterOptions[0] || 'Teórico - Práctica'
+                                    ? DEFAULT_CHARACTER_OPTIONS[0] || 'Teórico - Práctica'
                                     : curr.classCharacter,
                               }));
                             }}
@@ -1847,7 +1637,7 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                         </div>
                       </td>
 
-                      {/* COLUMNA 5: CARÁCTER DE LA CLASE (CON OPCIONES EDITABLES POR EL DOCENTE) */}
+                      {/* COLUMNA 5: CARÁCTER DE LA CLASE */}
                       <td
                         className={`py-2 px-2 border-r align-middle ${
                           isDarkMode ? 'border-slate-800' : 'border-neutral-200'
@@ -1859,14 +1649,9 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                           <select
                             value={row.entry.classCharacter || ''}
                             onChange={(e) => {
-                              const val = e.target.value;
-                              if (val === '__EDIT_CHARACTER_OPTIONS__') {
-                                setShowCharacterOptionsModal(true);
-                                return;
-                              }
                               updateEntryField(row.rowKey, (curr) => ({
                                 ...curr,
-                                classCharacter: val,
+                                classCharacter: e.target.value,
                               }));
                             }}
                             className={`w-full px-2 py-1.5 rounded-lg border text-xs font-medium text-center focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
@@ -1876,21 +1661,17 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
                             }`}
                           >
                             <option value="">Seleccionar...</option>
-                            {/* Si la fila tiene un valor personalizado que aún no está en characterOptions, mostrarlo */}
                             {row.entry.classCharacter &&
-                              !characterOptions.includes(row.entry.classCharacter) && (
+                              !DEFAULT_CHARACTER_OPTIONS.includes(row.entry.classCharacter) && (
                                 <option value={row.entry.classCharacter}>
                                   {row.entry.classCharacter}
                                 </option>
                               )}
-                            {characterOptions.map((preset) => (
+                            {DEFAULT_CHARACTER_OPTIONS.map((preset) => (
                               <option key={preset} value={preset}>
                                 {preset}
                               </option>
                             ))}
-                            <option value="__EDIT_CHARACTER_OPTIONS__">
-                              ⚙️ Editar / agregar opciones...
-                            </option>
                           </select>
                         )}
                       </td>
@@ -2019,19 +1800,6 @@ export const LibroDeTemasMatrix: React.FC<LibroDeTemasMatrixProps> = ({
         setNoClassModalRow={setNoClassModalRow}
         handleConfirmNoClassReason={handleConfirmNoClassReason}
         handleRevertToNormalClass={handleRevertToNormalClass}
-        showCharacterOptionsModal={showCharacterOptionsModal}
-        setShowCharacterOptionsModal={setShowCharacterOptionsModal}
-        characterOptions={characterOptions}
-        newCharacterOptionText={newCharacterOptionText}
-        setNewCharacterOptionText={setNewCharacterOptionText}
-        editingOptionIndex={editingOptionIndex}
-        setEditingOptionIndex={setEditingOptionIndex}
-        editingOptionValue={editingOptionValue}
-        setEditingOptionValue={setEditingOptionValue}
-        handleAddCharacterOption={handleAddCharacterOption}
-        handleSaveEditedCharacterOption={handleSaveEditedCharacterOption}
-        handleDeleteCharacterOption={handleDeleteCharacterOption}
-        handleRestoreDefaultCharacterOptions={handleRestoreDefaultCharacterOptions}
         showAddDateModal={showAddDateModal}
         setShowAddDateModal={setShowAddDateModal}
         newCustomDate={newCustomDate}

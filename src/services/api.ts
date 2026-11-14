@@ -7,6 +7,7 @@ import { firestoreSync, getActiveUserId, getActiveUserEmail, isPrimaryOwnerAccou
 import { isSameCalendarDay } from '../utils/dateUtils';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
 import { computeQuickStudentAttendanceRate } from '../utils/attendanceCalculations';
+import { mergeHistoryLists, hasHistoryNotificationDrift } from '../utils/historyMerge';
 import { apiSecondaryEndpoints } from './apiSecondaryEndpoints';
 import {
   STORAGE_KEYS,
@@ -1278,10 +1279,7 @@ export const api = {
           Object.keys(cloud.disposition || {}).length > 0 ||
           Object.keys(cloud.disposition2c || {}).length > 0
         ) {
-          const mergedHistory = deduplicateHistoryItems([...cleanCloudHistory, ...local.history]).filter(
-            (h) => !deleted.has(h.id)
-          );
-          mergedHistory.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+          const mergedHistory = mergeHistoryLists(cleanCloudHistory, local.history, deleted);
           const mergedDisp = { ...local.disposition, ...(cloud.disposition || {}) };
           const mergedDisp2c = { ...local2c, ...(cloud.disposition2c || {}) };
 
@@ -1290,7 +1288,7 @@ export const api = {
             saveLocalDisposition2c(mergedDisp2c);
           }
 
-          if (hasUnsyncedLocalItems) {
+          if (hasUnsyncedLocalItems || hasHistoryNotificationDrift(cleanCloudHistory, mergedHistory)) {
             firestoreSync.syncCompactDispositionNow(userId, false);
           }
 
@@ -1312,9 +1310,7 @@ export const api = {
       );
       if (serverData?.history || serverData?.disposition) {
         const cleanServerHistory = (serverData.history || []).filter((h: any) => h?.id && !deleted.has(h.id));
-        const mergedHistory = deduplicateHistoryItems([...local.history, ...cleanServerHistory]).filter(
-          (h) => !deleted.has(h.id)
-        );
+        const mergedHistory = mergeHistoryLists(local.history, cleanServerHistory, deleted);
         const mergedDisp = { ...(serverData.disposition || {}), ...local.disposition };
         saveAllDispositionStorage(mergedDisp, mergedHistory, { silent: true });
         return { disposition: mergedDisp, disposition2c: local2c, history: mergedHistory };
@@ -1341,6 +1337,7 @@ export const api = {
     notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
     omitNotification?: boolean;
     notifiedAt?: string;
+    updatedAt?: string;
     pointsChange?: number;
     expectedSummary?: { totalAbsences: number; totalLates?: number; totalDisposition: number };
   }): Promise<{
@@ -1471,6 +1468,14 @@ export const api = {
 
     const allDisposition = is2c ? allDisposition2c : allDisposition1c;
 
+    const isNotificationResolution = Boolean(
+      data.omitNotification ||
+        data.messageSent ||
+        data.notificationMethod === 'omitted' ||
+        data.notifiedAt === 'No enviar' ||
+        data.notifiedAt === 'Omitido'
+    );
+
     const newRecord = {
       id: recordId,
       ...data,
@@ -1484,6 +1489,7 @@ export const api = {
           : 0,
       date: data.date || new Date().toISOString().split('T')[0],
       timestamp: data.timestamp || Date.now(),
+      updatedAt: data.updatedAt || new Date().toISOString(),
     };
 
     if (existingIndex === -1) {
@@ -1494,7 +1500,11 @@ export const api = {
 
     // Persist immediately across storage
     if (is2c) {
-      saveAllDispositionStorage(allDisposition1c, history, { silent: true, courseId: data.courseId });
+      saveAllDispositionStorage(allDisposition1c, history, {
+        silent: true,
+        courseId: data.courseId,
+        flushNow: isNotificationResolution,
+      });
       if (typeof window !== 'undefined') {
         window.dispatchEvent(
           new CustomEvent('docencia_disposition_storage_change', {
@@ -1503,7 +1513,10 @@ export const api = {
         );
       }
     } else {
-      saveAllDispositionStorage(allDisposition1c, history, { courseId: data.courseId });
+      saveAllDispositionStorage(allDisposition1c, history, {
+        courseId: data.courseId,
+        flushNow: isNotificationResolution,
+      });
     }
 
     // Cascaded update of local student record strictly for this course
@@ -1543,7 +1556,10 @@ export const api = {
     } catch (_) {}
 
     if (userId) {
-      firestoreSync.saveDisposition(userId, newRecord).catch((e) => console.warn('Firestore saveDisposition warning:', e));
+      const targetToSave = existingIndex !== -1 ? history[existingIndex] : newRecord;
+      firestoreSync
+        .saveDisposition(userId, targetToSave, isNotificationResolution)
+        .catch((e) => console.warn('Firestore saveDisposition warning:', e));
     }
 
     if (canUseExpressBackend()) {
@@ -1568,27 +1584,31 @@ export const api = {
     notificationData: {
       messageSent: boolean;
       messageText: string;
-      notificationMethod: 'classroom' | 'gmail' | 'none';
+      notificationMethod: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
+      omitNotification?: boolean;
       notifiedAt?: string;
+      updatedAt?: string;
     }
   ): Promise<{ success: boolean; record: any }> {
+    const nowIso = notificationData.updatedAt || new Date().toISOString();
     const local = getAllDispositionStorage();
     const updatedHistory = local.history.map((item: any) => {
       if (item.id === id) {
         return {
           ...item,
           ...notificationData,
+          updatedAt: nowIso,
         };
       }
       return item;
     });
 
-    saveAllDispositionStorage(local.disposition, updatedHistory);
+    saveAllDispositionStorage(local.disposition, updatedHistory, { flushNow: true });
 
     const userId = getActiveUserId();
     const targetItem = updatedHistory.find((h: any) => h.id === id);
     if (userId && targetItem) {
-      firestoreSync.saveDisposition(userId, targetItem).catch(() => {});
+      firestoreSync.saveDisposition(userId, targetItem, true).catch(() => {});
     }
 
     if (isPrimaryOwnerAccount()) {

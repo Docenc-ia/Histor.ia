@@ -25,6 +25,7 @@ import {
   StudentHistoryItem,
   StudentObservation,
 } from '../../../types';
+import { isPendingNotificationItem } from '../../../utils/historyMerge';
 import {
   AttendanceSettings,
   CourseAttendanceSummary,
@@ -893,13 +894,9 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                       );
                       const hasPendingAbsence = historyList.some(
                         (h) =>
-                          h.courseId === activeCourse.id &&
                           h.studentId === student.id &&
                           h.category === 'Ausencia' &&
-                          !h.messageSent &&
-                          !h.omitNotification &&
-                          h.notificationMethod !== 'omitted' &&
-                          h.notificationMethod !== 'none'
+                          isPendingNotificationItem(h, activeCourse.id)
                       );
                       const isSelected = selectedStudentIds.includes(student.id);
 

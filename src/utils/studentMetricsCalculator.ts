@@ -1,19 +1,12 @@
 import { Student, StudentDispositionData, StudentHistoryItem } from '../types';
 import { getDeletedHistoryIds } from '../services/api';
 import { getTerminologySettings } from './terminologySettings';
+import { mergeHistoryLists } from './historyMerge';
 
-// Helper function to deduplicate history entries (only filters identical IDs or deleted tombstones)
+// Helper function to deduplicate history entries (merges duplicate IDs cleanly and filters tombstones)
 export function deduplicateHistory(list: StudentHistoryItem[]): StudentHistoryItem[] {
-  const result: StudentHistoryItem[] = [];
-  const seenIds = new Set<string>();
   const deleted = getDeletedHistoryIds();
-
-  for (const item of list) {
-    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
-    seenIds.add(item.id);
-    result.push(item);
-  }
-  return result;
+  return mergeHistoryLists(list, [], deleted);
 }
 
 export interface PrecomputedStudentHistoryIndex {

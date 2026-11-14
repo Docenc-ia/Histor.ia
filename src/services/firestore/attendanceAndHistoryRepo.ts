@@ -13,6 +13,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { isSameCalendarDay } from '../../utils/dateUtils';
+import { mergeHistoryRecord } from '../../utils/historyMerge';
 import {
   ALL_DBS,
   FIRESTORE_TIMEOUT_MS,
@@ -112,8 +113,9 @@ function readLocalDispositionBundle(userId: string): {
           const list = JSON.parse(raw);
           if (Array.isArray(list)) {
             for (const item of list) {
-              if (item?.id && !deletedIds.has(item.id) && !historyMap.has(item.id)) {
-                historyMap.set(item.id, item);
+              if (item?.id && !deletedIds.has(item.id)) {
+                const existing = historyMap.get(item.id);
+                historyMap.set(item.id, existing ? mergeHistoryRecord(existing, item) : item);
               }
             }
           }
@@ -124,7 +126,8 @@ function readLocalDispositionBundle(userId: string): {
 
   inMemoryPendingRecords.forEach((rec, id) => {
     if (!deletedIds.has(id)) {
-      historyMap.set(id, { ...(historyMap.get(id) || {}), ...rec });
+      const existing = historyMap.get(id);
+      historyMap.set(id, existing ? mergeHistoryRecord(existing, rec) : rec);
     }
   });
 
@@ -132,6 +135,34 @@ function readLocalDispositionBundle(userId: string): {
   history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
   return { disposition, disposition2c, history, deletedIds };
+}
+
+function compactHistoryItemForCloud(item: any): Record<string, any> {
+  const compact: Record<string, any> = {
+    id: item.id,
+    studentId: item.studentId,
+    courseId: item.courseId,
+    date: item.date,
+    timestamp: item.timestamp,
+    action: item.action,
+    category: item.category,
+    term: item.term || '1c',
+  };
+  if (item.studentName) compact.studentName = item.studentName;
+  if (item.courseName) compact.courseName = item.courseName;
+  if (item.time) compact.time = item.time;
+  if (typeof item.pointsChange === 'number') compact.pointsChange = item.pointsChange;
+  if (typeof item.previousDisposition === 'number') compact.previousDisposition = item.previousDisposition;
+  if (typeof item.resultingDisposition === 'number') compact.resultingDisposition = item.resultingDisposition;
+  if (item.detail) compact.detail = String(item.detail).slice(0, 400);
+  if (item.notes) compact.notes = String(item.notes).slice(0, 300);
+  if (typeof item.omitNotification === 'boolean') compact.omitNotification = item.omitNotification;
+  if (item.notificationMethod) compact.notificationMethod = item.notificationMethod;
+  if (typeof item.messageSent === 'boolean') compact.messageSent = item.messageSent;
+  if (item.notifiedAt) compact.notifiedAt = item.notifiedAt;
+  if (item.messageText) compact.messageText = String(item.messageText).slice(0, 500);
+  if (item.updatedAt) compact.updatedAt = item.updatedAt;
+  return compact;
 }
 
 function computeTotalsFromHistoryList(history: any[]): {
@@ -222,23 +253,7 @@ async function flushCompactDispositionToCloud(
   const mergedDisp1c = { ...computed.disposition1c, ...localBundle.disposition };
   const mergedDisp2c = { ...computed.disposition2c, ...localBundle.disposition2c };
   // Keep up to 1500 compacted items in the single Firestore doc to stay safely below the 1 MB limit
-  const cleanHistory = localBundle.history.slice(0, 1500).map((item) => {
-    const compact: Record<string, any> = {
-      id: item.id,
-      studentId: item.studentId,
-      courseId: item.courseId,
-      date: item.date,
-      timestamp: item.timestamp,
-      action: item.action,
-      category: item.category,
-      term: item.term || '1c',
-    };
-    if (item.studentName) compact.studentName = item.studentName;
-    if (item.courseName) compact.courseName = item.courseName;
-    if (typeof item.pointsChange === 'number') compact.pointsChange = item.pointsChange;
-    if (item.notes) compact.notes = String(item.notes).slice(0, 300);
-    return compact;
-  });
+  const cleanHistory = localBundle.history.slice(0, 1500).map(compactHistoryItemForCloud);
   const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1200);
 
   dispositionReadCache = {
@@ -435,27 +450,31 @@ export const attendanceAndHistoryRepo = {
   /**
    * Save a student disposition / absence incident globally via the Compact Coalesced Engine
    */
-  async saveDisposition(userId: string, record: any): Promise<void> {
+  async saveDisposition(userId: string, record: any, immediate = false): Promise<void> {
     if (!userId || !record?.id || !isFirestoreAvailable()) return;
     inMemoryPendingRecords.set(record.id, {
       ...record,
-      updatedAt: new Date().toISOString(),
+      updatedAt: record.updatedAt || new Date().toISOString(),
     });
     inMemoryDeletedIds.delete(record.id);
-    scheduleCompactDispositionSync(userId, false);
+    scheduleCompactDispositionSync(userId, immediate);
   },
 
   /**
    * Save multiple disposition records in a single Compact Bundle write
    */
-  async saveDispositionBatch(userId: string, records: any[]): Promise<void> {
+  async saveDispositionBatch(userId: string, records: any[], immediate = false): Promise<void> {
     if (!userId || !Array.isArray(records) || records.length === 0 || !isFirestoreAvailable()) return;
+    const nowIso = new Date().toISOString();
     for (const rec of records) {
       if (rec?.id && !inMemoryDeletedIds.has(rec.id)) {
-        inMemoryPendingRecords.set(rec.id, rec);
+        inMemoryPendingRecords.set(rec.id, {
+          ...rec,
+          updatedAt: rec.updatedAt || nowIso,
+        });
       }
     }
-    scheduleCompactDispositionSync(userId, false);
+    scheduleCompactDispositionSync(userId, immediate);
   },
 
   /**
@@ -650,8 +669,7 @@ export const attendanceAndHistoryRepo = {
       let hasMigratedCompactDoc = false;
       let mergedDisposition1c: Record<string, any> = {};
       let mergedDisposition2c: Record<string, any> = {};
-      const seenRecordIds = new Set<string>();
-      const history: any[] = [];
+      const historyById = new Map<string, any>();
 
       const validSummarySnaps = summarySnaps
         .filter((snap) => snap && typeof snap.exists === 'function' && snap.exists())
@@ -694,9 +712,9 @@ export const attendanceAndHistoryRepo = {
         }
         for (const item of items) {
           const recordId = item?.id;
-          if (!recordId || deleted.has(recordId) || seenRecordIds.has(recordId)) continue;
-          seenRecordIds.add(recordId);
-          history.push(item);
+          if (!recordId || deleted.has(recordId)) continue;
+          const existing = historyById.get(recordId);
+          historyById.set(recordId, existing ? mergeHistoryRecord(existing, item) : item);
         }
       }
 
@@ -716,17 +734,25 @@ export const attendanceAndHistoryRepo = {
             const docId = docSnap.id;
             const data = docSnap.data();
             const recordId = data.id || docId;
-            if (deleted.has(docId) || deleted.has(recordId) || seenRecordIds.has(recordId)) return;
-            seenRecordIds.add(recordId);
+            if (deleted.has(docId) || deleted.has(recordId)) return;
             const item: any = { id: recordId, ...data };
             if (data.category === 'Ausencia' || data.category === 'Llegada tarde') {
               item.pointsChange = 0;
             }
-            history.push(item);
+            const existing = historyById.get(recordId);
+            historyById.set(recordId, existing ? mergeHistoryRecord(existing, item) : item);
           });
         }
       }
 
+      inMemoryPendingRecords.forEach((rec, id) => {
+        if (!deleted.has(id)) {
+          const existing = historyById.get(id);
+          historyById.set(id, existing ? mergeHistoryRecord(existing, rec) : rec);
+        }
+      });
+
+      const history = Array.from(historyById.values()).filter((h) => h?.id && !deleted.has(h.id));
       history.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
 
       const computedFromHistory = computeTotalsFromHistoryList(history);
@@ -770,8 +796,8 @@ export const attendanceAndHistoryRepo = {
 
       if (hasMigratedCompactDoc) {
         const writeIds = getTargetWriteUserIds(userId);
-        const cleanHistory = history.slice(0, 2500);
-        const cleanDeletedIds = Array.from(deleted).slice(-1500);
+        const cleanHistory = history.slice(0, 1500).map(compactHistoryItemForCloud);
+        const cleanDeletedIds = Array.from(deleted).slice(-1200);
         const summaryCore = {
           version: 2,
           migratedFromLegacy: true,
@@ -793,8 +819,9 @@ export const attendanceAndHistoryRepo = {
         const localBundle = readLocalDispositionBundle(userId);
         const combinedHistMap = new Map<string, any>();
         for (const h of [...history, ...localBundle.history]) {
-          if (h?.id && !deleted.has(h.id) && !combinedHistMap.has(h.id)) {
-            combinedHistMap.set(h.id, h);
+          if (h?.id && !deleted.has(h.id)) {
+            const existing = combinedHistMap.get(h.id);
+            combinedHistMap.set(h.id, existing ? mergeHistoryRecord(existing, h) : h);
           }
         }
         const combinedHistory = Array.from(combinedHistMap.values()).sort(

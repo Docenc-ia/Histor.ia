@@ -40,9 +40,6 @@ const CourseReportModal = lazy(() =>
 const AttendanceSettingsModal = lazy(() =>
   import('./AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
 );
-const BackupRestoreModal = lazy(() =>
-  import('./BackupRestoreModal').then((m) => ({ default: m.BackupRestoreModal }))
-);
 const QuickRollCallModal = lazy(() =>
   import('./QuickRollCallModal').then((m) => ({ default: m.QuickRollCallModal }))
 );
@@ -81,8 +78,6 @@ export interface ClassesModuleModalsHostProps {
   handleSaveAttendanceSettings: (newSettings: any, updatedSchedule?: string) => void;
   isAttendanceSettingsModalOpen: boolean;
   setIsAttendanceSettingsModalOpen: (v: boolean) => void;
-  isBackupModalOpen: boolean;
-  setIsBackupModalOpen: (v: boolean) => void;
   isQuickRollCallOpen: boolean;
   setIsQuickRollCallOpen: (v: boolean) => void;
   courseReportModalOpen: boolean;
@@ -117,8 +112,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
   handleSaveAttendanceSettings,
   isAttendanceSettingsModalOpen,
   setIsAttendanceSettingsModalOpen,
-  isBackupModalOpen,
-  setIsBackupModalOpen,
   isQuickRollCallOpen,
   setIsQuickRollCallOpen,
   courseReportModalOpen,
@@ -793,26 +786,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
               return map;
             })()}
             currentTerm={attendanceTerm}
-            isDarkMode={isDarkMode}
-          />
-        </Suspense>
-      )}
-
-      {isBackupModalOpen && activeCourse && (
-        <Suspense fallback={null}>
-          <BackupRestoreModal
-            isOpen={isBackupModalOpen}
-            onClose={() => setIsBackupModalOpen(false)}
-            course={activeCourse}
-            students={courseStudents}
-            courseHistory={courseHistory}
-            studentObservations={studentObservations}
-            onRestoreObservations={(merged) => setStudentObservations(merged)}
-            onRestoreSuccess={(msg) => {
-              setToastMessage(msg);
-              setTimeout(() => setToastMessage(null), 4000);
-              onRefreshData();
-            }}
             isDarkMode={isDarkMode}
           />
         </Suspense>

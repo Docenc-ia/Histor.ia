@@ -65,7 +65,6 @@ export function buildScheduledLibroRows(params: {
   dailySlots: Record<number, CourseDayTimeSlot[]>;
   holidaysByDate: Record<string, SchoolHolidayItem>;
   entriesMap: Record<string, LibroDeTemasEntry>;
-  characterOptions: string[];
 }): ScheduledRow[] {
   const {
     attendanceSettings,
@@ -73,7 +72,6 @@ export function buildScheduledLibroRows(params: {
     dailySlots,
     holidaysByDate,
     entriesMap,
-    characterOptions,
   } = params;
 
   const start1c = attendanceSettings?.termStartDate1c || '2026-03-02';
@@ -198,7 +196,7 @@ export function buildScheduledLibroRows(params: {
           : saved?.classCharacter !== undefined
           ? saved.classCharacter
           : saved?.contents
-          ? characterOptions[0] || 'Teórico - Práctica'
+          ? 'Teórico - Práctica'
           : '',
         observations:
           saved?.observations ??

@@ -8,6 +8,7 @@ import { firestoreSync, getActiveUserId, isPrimaryOwnerAccount } from './firesto
 export { isPrimaryOwnerAccount };
 import { safeSetLocalStorageItem, runStorageMaintenanceOnce } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
+import { mergeHistoryLists } from '../utils/historyMerge';
 import {
   isValidCourseSchedule,
   getEffectiveScheduleStringForCourse,
@@ -912,21 +913,14 @@ export function markHistoryIdDeleted(id: string): void {
 }
 
 export function deduplicateHistoryItems(list: any[]): any[] {
-  const result: any[] = [];
-  const seenIds = new Set<string>();
   const deleted = getDeletedHistoryIds();
-  for (const item of list) {
-    if (!item?.id || seenIds.has(item.id) || deleted.has(item.id)) continue;
-    seenIds.add(item.id);
-    result.push(item);
-  }
-  return result;
+  return mergeHistoryLists(list, [], deleted);
 }
 
 export function saveAllDispositionStorage(
   disposition: Record<string, any>,
   history: any[],
-  options?: { silent?: boolean; courseId?: string }
+  options?: { silent?: boolean; courseId?: string; flushNow?: boolean }
 ): void {
   if (typeof window === 'undefined') return;
   try {
@@ -991,6 +985,10 @@ export function saveAllDispositionStorage(
         safeSetLocalStorageItem(k, histJson);
       }
     });
+
+    if (options?.flushNow) {
+      flushStorageWriteBehind();
+    }
 
     if (!options?.silent) {
       emitAppEvent('docencia_disposition_storage_change', {

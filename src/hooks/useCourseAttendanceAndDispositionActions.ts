@@ -25,6 +25,7 @@ import {
 import { useManualDispositionAndAbsenceEditor } from './useManualDispositionAndAbsenceEditor';
 import { useStudentProfileAndObservationsActions } from './useStudentProfileAndObservationsActions';
 import { getTerminologySettings } from '../utils/terminologySettings';
+import { isPendingNotificationItem } from '../utils/historyMerge';
 
 interface UseCourseAttendanceAndDispositionActionsProps {
   activeCourse: Course;
@@ -145,18 +146,8 @@ export function useCourseAttendanceAndDispositionActions({
     if (!activeCourse) return [];
     return historyList.filter(
       (h) =>
-        h.courseId === activeCourse.id &&
         (h.category === 'Ausencia' || h.action === 'Ausencia') &&
-        h.category !== 'Sistema' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste') &&
-        !h.messageSent &&
-        !h.omitNotification &&
-        h.notificationMethod !== 'omitted' &&
-        h.notificationMethod !== 'none' &&
-        h.notifiedAt !== 'No enviar' &&
-        h.notifiedAt !== 'Omitido'
+        isPendingNotificationItem(h, activeCourse.id)
     );
   }, [historyList, activeCourse?.id]);
 
@@ -165,17 +156,8 @@ export function useCourseAttendanceAndDispositionActions({
     if (!activeCourse) return [];
     return historyList.filter(
       (h) =>
-        h.courseId === activeCourse.id &&
         h.category === 'Disposición' &&
-        !h.action?.toLowerCase().includes('actualizada') &&
-        !h.action?.toLowerCase().includes('verificación') &&
-        !h.action?.toLowerCase().includes('ajuste') &&
-        !h.messageSent &&
-        !h.omitNotification &&
-        h.notificationMethod !== 'omitted' &&
-        h.notificationMethod !== 'none' &&
-        h.notifiedAt !== 'No enviar' &&
-        h.notifiedAt !== 'Omitido'
+        isPendingNotificationItem(h, activeCourse.id)
     );
   }, [historyList, activeCourse?.id]);
 
@@ -244,6 +226,7 @@ export function useCourseAttendanceAndDispositionActions({
 
     const now = new Date();
     const notifiedAt = now.toLocaleTimeString();
+    const updatedAt = now.toISOString();
 
     const updatedHistory = historyList.map((item) => {
       if (item.id === historyItem.id) {
@@ -253,12 +236,17 @@ export function useCourseAttendanceAndDispositionActions({
           messageText,
           notificationMethod: channel,
           notifiedAt,
+          updatedAt,
         };
       }
       return item;
     });
 
     setHistoryList(updatedHistory);
+    saveAllDispositionStorage(dispositionMap, updatedHistory, {
+      courseId: activeCourse?.id,
+      flushNow: true,
+    });
 
     api
       .updateDispositionHistoryNotification(historyItem.id, {
@@ -266,6 +254,7 @@ export function useCourseAttendanceAndDispositionActions({
         messageText,
         notificationMethod: channel,
         notifiedAt,
+        updatedAt,
       })
       .catch(() => {});
 
@@ -581,11 +570,9 @@ export function useCourseAttendanceAndDispositionActions({
 
       const existingPending = historyList.find(
         (h) =>
-          h.courseId === activeCourse.id &&
           h.studentId === student.id &&
           h.category === 'Ausencia' &&
-          !h.messageSent &&
-          !h.omitNotification
+          isPendingNotificationItem(h, activeCourse.id)
       );
 
       if (existingPending) {
@@ -755,6 +742,7 @@ export function useCourseAttendanceAndDispositionActions({
 
       const now = new Date();
       const notifiedAt = now.toLocaleTimeString();
+      const updatedAt = now.toISOString();
 
       const idx = updatedHistoryItems.findIndex((h) => h.id === historyItem.id);
       if (idx !== -1) {
@@ -764,6 +752,7 @@ export function useCourseAttendanceAndDispositionActions({
           messageText: personalizedMessage,
           notificationMethod: channel,
           notifiedAt,
+          updatedAt,
         };
       }
 
@@ -773,6 +762,7 @@ export function useCourseAttendanceAndDispositionActions({
           messageText: personalizedMessage,
           notificationMethod: channel,
           notifiedAt,
+          updatedAt,
         })
         .catch(() => {});
 
@@ -780,6 +770,10 @@ export function useCourseAttendanceAndDispositionActions({
     }
 
     setHistoryList(updatedHistoryItems);
+    saveAllDispositionStorage(dispositionMap, updatedHistoryItems, {
+      courseId: activeCourse?.id,
+      flushNow: true,
+    });
 
     setBatchAbsenceModal({
       isOpen: false,
@@ -831,13 +825,7 @@ export function useCourseAttendanceAndDispositionActions({
 
   const toggleSelectAllPendingHistory = () => {
     const pendingIds = courseHistory
-      .filter(
-        (item) =>
-          (item.category === 'Ausencia' || item.category === 'Disposición') &&
-          !item.messageSent &&
-          !item.omitNotification &&
-          item.notificationMethod !== 'omitted'
-      )
+      .filter((item) => isPendingNotificationItem(item))
       .map((item) => item.id);
     if (selectedPendingHistoryIds.length === pendingIds.length && pendingIds.length > 0) {
       setSelectedPendingHistoryIds([]);
@@ -850,22 +838,29 @@ export function useCourseAttendanceAndDispositionActions({
   const handleMarkOmitNotification = (item: StudentHistoryItem) => {
     const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : activeConcreteTerm;
     const currentMetrics = getStudentMetrics(item.studentId, itemTerm);
-    const updatedHistory = historyList.map((h) => {
-      if (h.id === item.id) {
-        return {
-          ...h,
-          omitNotification: true,
-          notificationMethod: 'omitted' as const,
-          messageSent: false,
-          notifiedAt: 'Omitido',
-        };
-      }
-      return h;
-    });
+    const nowIso = new Date().toISOString();
+    const omittedEntry: StudentHistoryItem = {
+      ...item,
+      omitNotification: true,
+      notificationMethod: 'omitted',
+      messageSent: false,
+      notifiedAt: 'No enviar',
+      updatedAt: nowIso,
+    };
+
+    const updatedHistory = historyList.map((h) => (h.id === item.id ? omittedEntry : h));
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
+    saveAllDispositionStorage(dispositionMap, updatedHistory, {
+      courseId: activeCourse?.id,
+      flushNow: true,
+    });
     setSelectedPendingHistoryIds((prev) => prev.filter((id) => id !== item.id));
+
+    const userId = getActiveUserId();
+    if (userId) {
+      firestoreSync.saveDisposition(userId, omittedEntry, true).catch(() => {});
+    }
 
     api
       .recordDisposition({
@@ -884,6 +879,7 @@ export function useCourseAttendanceAndDispositionActions({
         notificationMethod: 'omitted',
         omitNotification: true,
         notifiedAt: 'No enviar',
+        updatedAt: nowIso,
         expectedSummary: {
           totalAbsences: currentMetrics.totalAbsences || 0,
           totalLates: currentMetrics.totalLates || 0,
@@ -902,6 +898,7 @@ export function useCourseAttendanceAndDispositionActions({
   const handleBatchMarkOmitNotification = () => {
     if (selectedPendingHistoryIds.length === 0) return;
     const idsSet = new Set(selectedPendingHistoryIds);
+    const nowIso = new Date().toISOString();
     const omittedBatch: StudentHistoryItem[] = [];
     const updatedHistory = historyList.map((h) => {
       if (idsSet.has(h.id)) {
@@ -910,7 +907,8 @@ export function useCourseAttendanceAndDispositionActions({
           omitNotification: true,
           notificationMethod: 'omitted' as const,
           messageSent: false,
-          notifiedAt: 'Omitido',
+          notifiedAt: 'No enviar',
+          updatedAt: nowIso,
         };
         omittedBatch.push(nextItem);
         return nextItem;
@@ -919,10 +917,13 @@ export function useCourseAttendanceAndDispositionActions({
     });
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
+    saveAllDispositionStorage(dispositionMap, updatedHistory, {
+      courseId: activeCourse?.id,
+      flushNow: true,
+    });
     const userId = getActiveUserId();
     if (userId && omittedBatch.length > 0) {
-      firestoreSync.saveDispositionBatch(userId, omittedBatch).catch(() => {});
+      firestoreSync.saveDispositionBatch(userId, omittedBatch, true).catch(() => {});
     }
     const count = selectedPendingHistoryIds.length;
     setSelectedPendingHistoryIds([]);
@@ -937,6 +938,7 @@ export function useCourseAttendanceAndDispositionActions({
   const handleMarkAllPendingAsOmitted = () => {
     if (pendingAllItems.length === 0) return;
     const pendingIdsSet = new Set(pendingAllItems.map((p) => p.id));
+    const nowIso = new Date().toISOString();
     const omittedBatch: StudentHistoryItem[] = [];
     const updatedHistory = historyList.map((h) => {
       if (pendingIdsSet.has(h.id)) {
@@ -945,7 +947,8 @@ export function useCourseAttendanceAndDispositionActions({
           omitNotification: true,
           notificationMethod: 'omitted' as const,
           messageSent: false,
-          notifiedAt: 'Omitido',
+          notifiedAt: 'No enviar',
+          updatedAt: nowIso,
         };
         omittedBatch.push(nextItem);
         return nextItem;
@@ -954,10 +957,13 @@ export function useCourseAttendanceAndDispositionActions({
     });
 
     setHistoryList(updatedHistory);
-    saveAllDispositionStorage(dispositionMap, updatedHistory, { courseId: activeCourse?.id });
+    saveAllDispositionStorage(dispositionMap, updatedHistory, {
+      courseId: activeCourse?.id,
+      flushNow: true,
+    });
     const userId = getActiveUserId();
     if (userId && omittedBatch.length > 0) {
-      firestoreSync.saveDispositionBatch(userId, omittedBatch).catch(() => {});
+      firestoreSync.saveDispositionBatch(userId, omittedBatch, true).catch(() => {});
     }
     setSelectedPendingHistoryIds([]);
     const count = pendingAllItems.length;

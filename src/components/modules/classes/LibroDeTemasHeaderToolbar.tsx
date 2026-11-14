@@ -4,14 +4,11 @@ import {
   Calendar,
   Check,
   Cloud,
-  Database,
   Lock,
   Pencil,
   PenTool,
   Plus,
-  Printer,
   Search,
-  Settings,
   X,
   ArrowUpDown,
 } from 'lucide-react';
@@ -57,7 +54,6 @@ export interface LibroDeTemasHeaderToolbarProps {
   metadata: LibroDeTemasMetadata;
   setMetadata: React.Dispatch<React.SetStateAction<LibroDeTemasMetadata>>;
   entriesMap: Record<string, LibroDeTemasEntry>;
-  characterOptions: string[];
   activeWeekdays: number[];
   activeWeekdaysLabel: string;
   scheduleSummaryText: string;
@@ -81,10 +77,7 @@ export interface LibroDeTemasHeaderToolbarProps {
   setSearchQuery: React.Dispatch<React.SetStateAction<string>>;
   scheduledRows: ScheduledRow[];
   handleSignAllCompletedClasses: () => void;
-  setShowCharacterOptionsModal: React.Dispatch<React.SetStateAction<boolean>>;
   setShowAddDateModal: React.Dispatch<React.SetStateAction<boolean>>;
-  handlePrintLibro: () => void;
-  handleOpenOrDownloadBackup: () => void;
   handleSaveLibroInFormat: (
     format: DriveSaveFormat,
     customTitle: string
@@ -94,7 +87,6 @@ export interface LibroDeTemasHeaderToolbarProps {
   persistLibroData: (
     nextMetadata: LibroDeTemasMetadata,
     nextEntries: Record<string, LibroDeTemasEntry>,
-    nextCharacterOptions?: string[],
     immediateCloud?: boolean
   ) => void;
   setToastMsg: React.Dispatch<React.SetStateAction<string | null>>;
@@ -111,7 +103,6 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
   metadata,
   setMetadata,
   entriesMap,
-  characterOptions,
   activeWeekdays,
   activeWeekdaysLabel,
   scheduleSummaryText,
@@ -133,10 +124,7 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
   setSearchQuery,
   scheduledRows,
   handleSignAllCompletedClasses,
-  setShowCharacterOptionsModal,
   setShowAddDateModal,
-  handlePrintLibro,
-  handleOpenOrDownloadBackup,
   handleSaveLibroInFormat,
   handleMetadataChange,
   handleToggleCourseWeekday,
@@ -211,93 +199,45 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
           </div>
         </div>
 
-        {/* 2 Columnas de 3 Opciones debajo del título y arriba de Asignatura, Prof. Titular, etc. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 w-full min-w-0 pt-2 border-t border-neutral-200/70 dark:border-slate-800">
-          {/* COLUMNA 1: Firmar clases cargadas, Opciones de carácter y Agregar Fecha */}
-          <div className="flex flex-col gap-1.5 min-w-0">
-            <button
-              type="button"
-              onClick={handleSignAllCompletedClasses}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
-                  : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-              }`}
-              title="Estampar la firma del profesor en todas las clases que ya tienen contenidos cargados"
-            >
-              <PenTool className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-              <span className="truncate">Firmar clases cargadas</span>
-            </button>
+        {/* Opciones principales: Firmar clases cargadas, Agregar Fecha y Guardar en Drive */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 w-full min-w-0 pt-2 border-t border-neutral-200/70 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={handleSignAllCompletedClasses}
+            className={`w-full min-w-0 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+              isDarkMode
+                ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
+            }`}
+            title="Estampar la firma del profesor en todas las clases que ya tienen contenidos cargados"
+          >
+            <PenTool className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+            <span className="truncate">Firmar clases cargadas</span>
+          </button>
 
-            <button
-              type="button"
-              onClick={() => setShowCharacterOptionsModal(true)}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
-                  : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-              }`}
-              title="Personalizar las opciones del desplegable Carácter de la clase"
-            >
-              <Settings className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-              <span className="truncate">Opciones de carácter</span>
-            </button>
+          <button
+            type="button"
+            onClick={() => setShowAddDateModal(true)}
+            className={`w-full min-w-0 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
+              isDarkMode
+                ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
+                : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
+            }`}
+            title="Agregar una fecha especial o clase adicional fuera de los días habituales"
+          >
+            <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+            <span className="truncate">Agregar Fecha</span>
+          </button>
 
-            <button
-              type="button"
-              onClick={() => setShowAddDateModal(true)}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
-                  : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-              }`}
-              title="Agregar una fecha especial o clase adicional fuera de los días habituales"
-            >
-              <Plus className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-              <span className="truncate">Agregar Fecha</span>
-            </button>
-          </div>
-
-          {/* COLUMNA 2: Imprimir, Copia de Seguridad y Guardar en Drive */}
-          <div className="flex flex-col gap-1.5 min-w-0 sm:border-l sm:pl-2.5 border-neutral-200 dark:border-slate-800">
-            <button
-              type="button"
-              onClick={handlePrintLibro}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 border-slate-700 text-slate-200'
-                  : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-700'
-              }`}
-              title="Imprimir folio del Libro de Temas en formato horizontal"
-            >
-              <Printer className="w-3.5 h-3.5 text-neutral-500 shrink-0" />
-              <span className="truncate">Imprimir</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleOpenOrDownloadBackup}
-              className={`w-full min-w-0 inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
-                isDarkMode
-                  ? 'bg-slate-800 hover:bg-slate-750 text-indigo-300 border-indigo-900/60 hover:border-indigo-700'
-                  : 'bg-white hover:bg-indigo-50/60 text-indigo-700 border-indigo-200'
-              }`}
-              title="Copia de seguridad local: Descargar respaldo o restaurar Libro de Temas y datos del curso"
-            >
-              <Database className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-              <span className="truncate">Copia de Seguridad</span>
-            </button>
-
-            <div className="w-full min-w-0 [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center sm:[&>div>button]:justify-start">
-              <DriveSaveFormatSelector
-                courseName={courseName}
-                category="Libro de Temas"
-                defaultTitle={`Libro de Temas - ${courseName} (${todayStr})`}
-                buttonLabel="Guardar en Drive"
-                compact
-                onSaveFormat={handleSaveLibroInFormat}
-              />
-            </div>
+          <div className="w-full min-w-0 [&>div]:w-full [&>div>button]:w-full [&>div>button]:justify-center">
+            <DriveSaveFormatSelector
+              courseName={courseName}
+              category="Libro de Temas"
+              defaultTitle={`Libro de Temas - ${courseName} (${todayStr})`}
+              buttonLabel="Guardar en Drive"
+              compact
+              onSaveFormat={handleSaveLibroInFormat}
+            />
           </div>
         </div>
       </div>
@@ -505,7 +445,7 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                         };
                         setMetadata(nextMeta);
                         setIsEditingScheduleConfig(false);
-                        persistLibroData(nextMeta, entriesMap, characterOptions, true);
+                        persistLibroData(nextMeta, entriesMap, true);
 
                         const nextSettings: AttendanceSettings = {
                           ...attendanceSettings,

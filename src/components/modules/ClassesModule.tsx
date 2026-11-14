@@ -173,7 +173,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
 
   // Semáforo de asistencia, semanas de clase y calendario escolar
   const [isAttendanceSettingsModalOpen, setIsAttendanceSettingsModalOpen] = useState(false);
-  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [isQuickRollCallOpen, setIsQuickRollCallOpen] = useState(false);
   const [attendanceSettings, setAttendanceSettings] = useState<AttendanceSettings>(() =>
     getCourseAttendanceSettings(activeCourse?.id, activeCourse?.schedule)
@@ -479,7 +478,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
     userEmail: user?.email,
     userId: user?.id,
     activeCourseId: activeCourse?.id,
-    enabled: activeTab === 'roster' || activeTab === 'history' || isBackupModalOpen,
+    enabled: activeTab === 'roster' || activeTab === 'history',
   });
 
   const [historySubTab, setHistorySubTab] = useState<'incidents' | 'summary'>('incidents');
@@ -1555,7 +1554,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                   onUpdateAttendanceSettings={(next) => setAttendanceSettings(next)}
                   onRefreshCourse={onRefreshData}
                   onOpenAttendanceSettingsModal={() => setIsAttendanceSettingsModalOpen(true)}
-                  onOpenBackupModal={() => setIsBackupModalOpen(true)}
                   isDarkMode={isDarkMode}
                   driveFolderId={activeCourse.libroDeTemasFolderId || activeCourse.driveFolderId}
                   driveFolderUrl={activeCourse.libroDeTemasFolderUrl || activeCourse.driveFolderUrl}
@@ -1636,8 +1634,6 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
         handleSaveAttendanceSettings={handleSaveAttendanceSettings}
         isAttendanceSettingsModalOpen={isAttendanceSettingsModalOpen}
         setIsAttendanceSettingsModalOpen={setIsAttendanceSettingsModalOpen}
-        isBackupModalOpen={isBackupModalOpen}
-        setIsBackupModalOpen={setIsBackupModalOpen}
         isQuickRollCallOpen={isQuickRollCallOpen}
         setIsQuickRollCallOpen={setIsQuickRollCallOpen}
         courseReportModalOpen={courseReportModalOpen}

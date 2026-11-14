@@ -84,6 +84,8 @@ export interface StudentHistoryItem {
   notificationMethod?: 'classroom' | 'gmail' | 'whatsapp' | 'none' | 'omitted';
   omitNotification?: boolean;
   notifiedAt?: string;
+  detail?: string;
+  updatedAt?: string;
 }
 
 export interface AbsencePresetTemplate {

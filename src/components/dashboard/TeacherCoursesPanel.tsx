@@ -870,7 +870,7 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
               </div>
               <p className="text-xs font-bold mb-1">Libro de Temas e informes</p>
               <p className={`text-[11px] leading-relaxed ${isDarkMode ? 'text-slate-400' : 'text-neutral-600'}`}>
-                Completá las clases del ciclo lectivo y exportá a Google Sheets, Docs, Excel o Copia de Seguridad.
+                Completá las clases del ciclo lectivo y exportá a Google Sheets, Docs o Excel.
               </p>
             </div>
           </div>

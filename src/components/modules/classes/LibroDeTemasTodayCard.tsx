@@ -1,6 +1,7 @@
 import React from 'react';
-import { Calendar, Pencil, Trash2 } from 'lucide-react';
+import { Calendar, Trash2 } from 'lucide-react';
 import {
+  DEFAULT_CHARACTER_OPTIONS,
   LibroDeTemasEntry,
   NO_CLASS_PRESETS,
   ScheduledRow,
@@ -13,7 +14,6 @@ export interface LibroDeTemasTodayCardProps {
   setSelectedTodaySlotIndex: React.Dispatch<React.SetStateAction<number>>;
   isDarkMode: boolean;
   activeWeekdays: number[];
-  characterOptions: string[];
   termFilter: 'all' | '1c' | '2c';
   setTermFilter: React.Dispatch<React.SetStateAction<'all' | '1c' | '2c'>>;
   statusFilter: 'all' | 'completed' | 'pending' | 'holidays';
@@ -25,7 +25,6 @@ export interface LibroDeTemasTodayCardProps {
   todayRowRef: React.RefObject<HTMLTableRowElement | null>;
   handleOpenNoClassModal: (row: ScheduledRow) => void;
   handleDeleteOrClearRow: (row: ScheduledRow) => void;
-  setShowCharacterOptionsModal: React.Dispatch<React.SetStateAction<boolean>>;
   updateEntryField: (
     dateStr: string,
     updater: (current: LibroDeTemasEntry) => LibroDeTemasEntry
@@ -39,7 +38,6 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
   setSelectedTodaySlotIndex,
   isDarkMode,
   activeWeekdays,
-  characterOptions,
   termFilter,
   setTermFilter,
   statusFilter,
@@ -49,7 +47,6 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
   todayRowRef,
   handleOpenNoClassModal,
   handleDeleteOrClearRow,
-  setShowCharacterOptionsModal,
   updateEntryField,
   handleSignRow,
 }) => {
@@ -284,19 +281,9 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
 
           {/* Carácter de la clase */}
           <div className="sm:col-span-9 min-w-0">
-            <div className="flex items-center justify-between gap-1 mb-1">
-              <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
-                Carácter de la clase
-              </label>
-              <button
-                type="button"
-                onClick={() => setShowCharacterOptionsModal(true)}
-                className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer inline-flex items-center gap-1"
-              >
-                <Pencil className="w-2.5 h-2.5" />
-                Editar opciones
-              </button>
-            </div>
+            <label className="block text-[10px] font-extrabold uppercase tracking-wider text-neutral-500 dark:text-slate-400 mb-1">
+              Carácter de la clase
+            </label>
             {isHol ? (
               <div
                 className={`px-3 py-1.5 rounded-lg border text-xs font-mono font-bold text-center ${
@@ -311,14 +298,9 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
               <select
                 value={row.entry.classCharacter || ''}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === '__EDIT_CHARACTER_OPTIONS__') {
-                    setShowCharacterOptionsModal(true);
-                    return;
-                  }
                   updateEntryField(row.rowKey, (curr) => ({
                     ...curr,
-                    classCharacter: val,
+                    classCharacter: e.target.value,
                   }));
                 }}
                 className={`w-full px-3 py-1.5 rounded-lg border text-xs font-medium focus:outline-hidden focus:ring-2 focus:ring-blue-500/40 ${
@@ -329,19 +311,16 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
               >
                 <option value="">Seleccionar carácter...</option>
                 {row.entry.classCharacter &&
-                  !characterOptions.includes(row.entry.classCharacter) && (
+                  !DEFAULT_CHARACTER_OPTIONS.includes(row.entry.classCharacter) && (
                     <option value={row.entry.classCharacter}>
                       {row.entry.classCharacter}
                     </option>
                   )}
-                {characterOptions.map((preset) => (
+                {DEFAULT_CHARACTER_OPTIONS.map((preset) => (
                   <option key={preset} value={preset}>
                     {preset}
                   </option>
                 ))}
-                <option value="__EDIT_CHARACTER_OPTIONS__">
-                  ⚙️ Editar / agregar opciones...
-                </option>
               </select>
             )}
           </div>
@@ -372,7 +351,7 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
                     : curr.unitNumber,
                 classCharacter:
                   !curr.isHoliday && !curr.classCharacter && val.trim()
-                    ? characterOptions[0] || 'Teórico - Práctica'
+                    ? DEFAULT_CHARACTER_OPTIONS[0] || 'Teórico - Práctica'
                     : curr.classCharacter,
               }));
             }}

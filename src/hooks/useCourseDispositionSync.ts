@@ -17,6 +17,7 @@ import {
 } from '../utils/studentMetricsCalculator';
 import { setCourseCachedItem, touchCourseDataLru } from '../utils/lruCourseCache';
 import { emitAppEvent, subscribeAppEvents } from '../utils/appEventBus';
+import { mergeHistoryLists } from '../utils/historyMerge';
 
 interface UseCourseDispositionSyncOptions {
   activeCourse?: Course;
@@ -347,14 +348,22 @@ export function useCourseDispositionSync({
         }
         if (Array.isArray(history)) {
           setHistoryList((prev) => {
-            const incomingDedup = deduplicateHistory(history);
+            const deleted = getDeletedHistoryIds();
+            const merged = mergeHistoryLists(prev, history, deleted);
             if (
-              prev.length === incomingDedup.length &&
-              prev.every((p, i) => p.id === incomingDedup[i]?.id)
+              prev.length === merged.length &&
+              prev.every(
+                (p, i) =>
+                  p.id === merged[i]?.id &&
+                  Boolean(p.omitNotification) === Boolean(merged[i]?.omitNotification) &&
+                  Boolean(p.messageSent) === Boolean(merged[i]?.messageSent) &&
+                  (p.notificationMethod || '') === (merged[i]?.notificationMethod || '') &&
+                  (p.notifiedAt || '') === (merged[i]?.notifiedAt || '')
+              )
             ) {
               return prev;
             }
-            return incomingDedup;
+            return merged;
           });
         }
       }
@@ -450,15 +459,22 @@ export function useCourseDispositionSync({
             const cleanIncoming = res.history.filter((h) => h?.id && !deleted.has(h.id));
             setHistoryList((prev) => {
               const cleanPrev = prev.filter((h) => h?.id && !deleted.has(h.id));
-              const prevIds = new Set(cleanPrev.map((p) => p.id));
-              const genuinelyNewFromCloud = cleanIncoming.filter((ci) => !prevIds.has(ci.id));
-              if (genuinelyNewFromCloud.length > 0) {
-                return deduplicateHistory([...cleanPrev, ...genuinelyNewFromCloud]);
+              const merged = mergeHistoryLists(cleanPrev, cleanIncoming, deleted);
+              if (
+                cleanPrev.length === merged.length &&
+                cleanPrev.every(
+                  (p, i) =>
+                    p.id === merged[i]?.id &&
+                    Boolean(p.omitNotification) === Boolean(merged[i]?.omitNotification) &&
+                    Boolean(p.messageSent) === Boolean(merged[i]?.messageSent) &&
+                    (p.notificationMethod || '') === (merged[i]?.notificationMethod || '') &&
+                    (p.notifiedAt || '') === (merged[i]?.notifiedAt || '') &&
+                    (p.updatedAt || '') === (merged[i]?.updatedAt || '')
+                )
+              ) {
+                return cleanPrev;
               }
-              if (cleanPrev.length === 0 && cleanIncoming.length > 0) {
-                return deduplicateHistory(cleanIncoming);
-              }
-              return cleanPrev;
+              return merged;
             });
           }
         })

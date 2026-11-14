@@ -1891,6 +1891,30 @@ async function startServer() {
     );
 
     if (existing) {
+      let updatedExisting = false;
+      if (req.body?.messageSent !== undefined) {
+        existing.messageSent = Boolean(req.body.messageSent);
+        updatedExisting = true;
+      }
+      if (req.body?.messageText !== undefined) {
+        existing.messageText = req.body.messageText;
+        updatedExisting = true;
+      }
+      if (req.body?.notificationMethod !== undefined) {
+        existing.notificationMethod = req.body.notificationMethod;
+        updatedExisting = true;
+      }
+      if (req.body?.omitNotification !== undefined) {
+        (existing as any).omitNotification = Boolean(req.body.omitNotification);
+        updatedExisting = true;
+      }
+      if (req.body?.notifiedAt !== undefined) {
+        existing.notifiedAt = req.body.notifiedAt;
+        updatedExisting = true;
+      }
+      if (updatedExisting) {
+        saveDispositionDataToDisk();
+      }
       return res.json({
         success: true,
         record: existing,
@@ -1944,7 +1968,7 @@ async function startServer() {
       pointsChange = -1;
     }
 
-    const newRecord: DispositionRecord = {
+    const newRecord: DispositionRecord & { omitNotification?: boolean } = {
       id: clientRecordId || `rec-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       studentId,
       studentName: studentName || "Estudiante",
@@ -1958,6 +1982,7 @@ async function startServer() {
       messageSent: req.body.messageSent || false,
       messageText: req.body.messageText || "",
       notificationMethod: req.body.notificationMethod || "none",
+      omitNotification: Boolean(req.body.omitNotification),
       notifiedAt: req.body.notifiedAt,
     };
 
@@ -1985,7 +2010,7 @@ async function startServer() {
   // Update notification status on existing history record
   app.put("/api/disposition/history/:id/notification", (req, res) => {
     const { id } = req.params;
-    const { messageSent, messageText, notificationMethod, notifiedAt } = req.body;
+    const { messageSent, messageText, notificationMethod, omitNotification, notifiedAt } = req.body;
     const record = studentHistoryList.find((h) => h.id === id);
     if (!record) {
       return res.status(404).json({ error: "Registro no encontrado." });
@@ -1994,6 +2019,7 @@ async function startServer() {
     if (messageSent !== undefined) record.messageSent = messageSent;
     if (messageText !== undefined) record.messageText = messageText;
     if (notificationMethod !== undefined) record.notificationMethod = notificationMethod;
+    if (omitNotification !== undefined) (record as any).omitNotification = Boolean(omitNotification);
     if (notifiedAt !== undefined) record.notifiedAt = notifiedAt;
 
     saveDispositionDataToDisk();

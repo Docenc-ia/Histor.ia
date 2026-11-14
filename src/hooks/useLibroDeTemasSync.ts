@@ -3,7 +3,6 @@ import { driveService } from '../services/workspace/driveService';
 import { buildOfficialLibroDeTemasHtml as buildLibroHtml } from '../utils/libroDeTemasHtml';
 import { touchCourseDataLru } from '../utils/lruCourseCache';
 import {
-  LibroDeTemasEntry,
   LibroDeTemasMetadata,
   ScheduledRow,
 } from '../components/modules/LibroDeTemasMatrix';
@@ -15,15 +14,12 @@ export interface UseLibroDeTemasSyncProps {
   driveFolderId?: string;
   todayStr: string;
   metadata: LibroDeTemasMetadata;
-  entriesMap: Record<string, LibroDeTemasEntry>;
-  characterOptions: string[];
   filteredRows: ScheduledRow[];
   activeWeekdaysLabel: string;
   scheduleSummaryText: string;
   setExportedDocLink: React.Dispatch<
     React.SetStateAction<{ url: string; name: string } | null>
   >;
-  onOpenBackupModal?: () => void;
 }
 
 export function useLibroDeTemasSync({
@@ -32,13 +28,10 @@ export function useLibroDeTemasSync({
   driveFolderId,
   todayStr,
   metadata,
-  entriesMap,
-  characterOptions,
   filteredRows,
   activeWeekdaysLabel,
   scheduleSummaryText,
   setExportedDocLink,
-  onOpenBackupModal,
 }: UseLibroDeTemasSyncProps) {
   React.useEffect(() => {
     if (courseId) {
@@ -53,80 +46,6 @@ export function useLibroDeTemasSync({
       activeWeekdaysLabel,
       scheduleSummaryText,
     });
-
-  // Imprimir folio oficial en formato horizontal y alojar copia en subcarpeta "Libro de Temas"
-  const handlePrintLibro = () => {
-    const html = buildOfficialLibroDeTemasHtml();
-    const safeCourse = courseName.replace(/[^a-zA-Z0-9_\u00C0-\u017F-]/g, '_');
-    driveService
-      .uploadFileToCourseCategory({
-        courseName,
-        category: 'Libro de Temas',
-        fileName: `Folio_Impreso_Libro_de_Temas_${safeCourse}_${todayStr}.html`,
-        content: html,
-        mimeType: 'text/html',
-        existingMainFolderId: driveFolderId,
-      })
-      .catch(() => {});
-
-    const iframe = document.createElement('iframe');
-    iframe.style.position = 'fixed';
-    iframe.style.right = '0';
-    iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
-    iframe.style.border = '0';
-    document.body.appendChild(iframe);
-
-    const doc = iframe.contentWindow?.document;
-    if (doc) {
-      doc.open();
-      doc.write(
-        html.replace(
-          '</head>',
-          `<style>@page { size: A4 landscape; margin: 10mm; } body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }</style></head>`
-        )
-      );
-      doc.close();
-      setTimeout(() => {
-        iframe.contentWindow?.focus();
-        iframe.contentWindow?.print();
-        setTimeout(() => {
-          document.body.removeChild(iframe);
-        }, 1500);
-      }, 300);
-    }
-  };
-
-  // Copia de seguridad (abre el modal general del curso o descarga respaldo JSON directo)
-  const handleOpenOrDownloadBackup = () => {
-    if (onOpenBackupModal) {
-      onOpenBackupModal();
-      return;
-    }
-    try {
-      const payload = {
-        app: 'Docenc.ia',
-        version: '2.0',
-        exportDate: new Date().toISOString(),
-        course: { id: courseId, name: courseName },
-        libroDeTemas: {
-          metadata,
-          entries: entriesMap,
-          characterOptions,
-        },
-      };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Respaldo_LibroDeTemas_${courseName.replace(/\s+/g, '_')}_${todayStr}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (_) {}
-  };
 
   const handleSaveLibroInFormat = async (
     format: DriveSaveFormat,
@@ -403,7 +322,5 @@ export function useLibroDeTemasSync({
 
   return {
     handleSaveLibroInFormat,
-    handlePrintLibro,
-    handleOpenOrDownloadBackup,
   };
 }

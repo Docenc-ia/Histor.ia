@@ -1,5 +1,6 @@
 import { Student } from '../types';
 import { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
+import { DispositionReasonDetailItem } from './courseReportAggregator';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import { escapeHtml } from './htmlEscape';
 
@@ -11,6 +12,7 @@ export interface ConsolidatedStudentReportRow {
   score2cNum: number | null;
   examDetails1c: ExamGradeDetailItem[];
   examDetails2c: ExamGradeDetailItem[];
+  dispositionReasons?: DispositionReasonDetailItem[];
   calcAvgStr: string;
   calcAvgNum: number | null;
   finalVal: string;
@@ -54,6 +56,7 @@ export interface GenerateCourseReportHtmlParams {
   includeExamDetails: boolean;
   includeAttendance: boolean;
   includeDisposition: boolean;
+  includeDispositionReasons?: boolean;
   includeObservations: boolean;
   includeFamilySignature: boolean;
 }
@@ -73,6 +76,7 @@ export function generateCourseReportHtml({
   includeExamDetails,
   includeAttendance,
   includeDisposition,
+  includeDispositionReasons = true,
   includeObservations,
   includeFamilySignature,
 }: GenerateCourseReportHtmlParams): string {
@@ -434,14 +438,13 @@ export function generateCourseReportHtml({
           `
                 : !includeAttendance && includeDisposition
                   ? `
-            <div class="section-title">${includeGrades ? '2' : '1'}. ${dispositionLabel} y Compromiso Áulico</div>
+            <div class="section-title">${includeGrades ? '2' : '1'}. ${dispositionLabel}</div>
             <table class="data-table" style="margin-bottom: 16px;">
               <thead>
                 <tr>
                   <th style="text-align: center;">${dispositionLabel} ${term1FullLabel}</th>
                   <th style="text-align: center;">${dispositionLabel} ${term2FullLabel}</th>
                   <th style="text-align: center; background: #ede9fe;">Promedio de ${dispositionLabel}</th>
-                  <th style="text-align: center;">Valoración de Compromiso y Tareas</th>
                 </tr>
               </thead>
               <tbody>
@@ -451,14 +454,50 @@ export function generateCourseReportHtml({
                   <td style="text-align: center; font-weight: bold; font-size: 16px; color: #6d28d9; background: #f5f3ff;">
                     ${escapeHtml(row.avgDisp)} / 10
                   </td>
-                  <td style="text-align: center; font-weight: 600; color: ${row.avgDisp >= 8 ? '#15803d' : row.avgDisp >= 6 ? '#d97706' : '#b91c1c'};">
-                    ${row.avgDisp >= 8 ? 'Favorable y participativo' : row.avgDisp >= 6 ? 'Regular / Ajustar entrega de tareas' : 'Requiere mayor compromiso en clase'}
-                  </td>
                 </tr>
               </tbody>
             </table>
           `
                   : ''
+          }
+
+          ${
+            includeDisposition &&
+            includeDispositionReasons &&
+            row.dispositionReasons &&
+            row.dispositionReasons.length > 0
+              ? `
+            <div style="font-size: 11.5px; font-weight: bold; color: #581c87; margin: 8px 0 6px 0;">
+              Detalle de motivos por los cuales se bajó ${dispositionLabel} (Fecha y Motivo):
+            </div>
+            <table class="data-table" style="margin-bottom: 16px;">
+              <thead>
+                <tr>
+                  <th style="width: 18%; text-align: center;">Fecha</th>
+                  <th style="width: 16%; text-align: center;">Período</th>
+                  <th style="width: 50%;">Motivo por el cual se bajó ${dispositionLabel}</th>
+                  <th style="width: 16%; text-align: center;">Puntaje</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${row.dispositionReasons
+                  .map(
+                    (item) => `
+                  <tr>
+                    <td style="text-align: center; font-weight: 600;">${escapeHtml(item.date)}</td>
+                    <td style="text-align: center;">${item.term === '2c' ? term2ShortLabel : term1ShortLabel}</td>
+                    <td>${escapeHtml(item.reason)}</td>
+                    <td style="text-align: center; font-weight: bold; color: #b91c1c;">
+                      ${item.pointsChange > 0 ? `+${escapeHtml(item.pointsChange)}` : escapeHtml(item.pointsChange)} pto
+                    </td>
+                  </tr>
+                `
+                  )
+                  .join('')}
+              </tbody>
+            </table>
+          `
+              : ''
           }
 
           ${

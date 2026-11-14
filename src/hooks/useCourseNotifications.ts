@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Course,
   Student,
@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { api } from '../services/api';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
+import { useGlobalData } from '../context/GlobalDataContext';
 
 export const DEFAULT_ABSENCE_PRESETS: AbsencePresetTemplate[] = [
   {
@@ -139,33 +140,17 @@ export function useCourseNotifications({
     return DEFAULT_REASON_TEMPLATES;
   });
 
-  const [notifSettings, setNotifSettings] = useState<AbsenceNotificationSettings>(() => {
-    const defaultSettings: AbsenceNotificationSettings = {
-      autoNotify: false,
-      channel: 'classroom',
-      templateClassroom:
-        'Estimado/a {ESTUDIANTE}, te notificamos que se ha registrado una inasistencia en la materia {MATERIA} el día {FECHA}. Recuerda revisar el material de la clase y ponerte al día con las actividades solicitadas.',
-      templateGmail:
-        'Estimado/a {ESTUDIANTE},\n\nTe informamos que en la fecha {FECHA} se ha registrado una inasistencia en la clase de {MATERIA}.\n\nPor favor consulta con tus compañeros o en el aula virtual las tareas correspondientes para mantenerte al día.\n\nSaludos cordiales,\nProfesor/a',
-      templateConductClassroom:
-        'Estimado/a {ESTUDIANTE}, te notificamos que hoy {FECHA} se registró un llamado de atención por "{MOTIVO}" en la materia {MATERIA}, descontándose 1 punto en tu nota de disposición (Puntaje actual: {DISPOSICION}/10). Te solicitamos mantener las pautas de trabajo y convivencia acordadas para el aula.',
-      templateConductGmail:
-        'Estimado/a {ESTUDIANTE}:\n\nPor medio del presente te informamos que en la fecha {FECHA} durante la clase de {MATERIA} se ha registrado un llamado de atención por el motivo: "{MOTIVO}".\nComo consecuencia, tu registro de disposición de la materia queda en {DISPOSICION}/10 puntos.\nTe pedimos reflexionar y mejorar en este aspecto para no comprometer tu evaluación de cursada.\n\nAtentamente,\nProfesor/a',
-      dontShowPopupOnAbsence: true,
-      dontShowPopupOnDisposition: true,
-    };
+  const {
+    notificationSettings: notifSettings,
+    updateNotificationSettings,
+  } = useGlobalData();
 
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(LOCAL_NOTIF_SETTINGS_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          return { ...defaultSettings, ...parsed, dontShowPopupOnAbsence: true };
-        }
-      } catch (_) {}
-    }
-    return defaultSettings;
-  });
+  const setNotifSettings = useCallback<React.Dispatch<React.SetStateAction<AbsenceNotificationSettings>>>(
+    (updater) => {
+      updateNotificationSettings(updater, { syncCloud: true, immediate: true });
+    },
+    [updateNotificationSettings]
+  );
 
   const [teacherConductOptions, setTeacherConductOptions] = useState<string[]>(() => {
     if (typeof window !== 'undefined') {
@@ -319,20 +304,6 @@ export function useCourseNotifications({
             const merged = Array.from(byId.values());
             try {
               localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(merged));
-            } catch (_) {}
-            return merged;
-          });
-        })
-        .catch(() => {});
-
-      firestoreSync
-        .loadUserSetting<AbsenceNotificationSettings>(uid, 'notification_settings')
-        .then((cloudSettings) => {
-          if (!isMounted || !cloudSettings || typeof cloudSettings !== 'object') return;
-          setNotifSettings((prev) => {
-            const merged = { ...prev, ...cloudSettings };
-            try {
-              localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(merged));
             } catch (_) {}
             return merged;
           });
@@ -595,17 +566,16 @@ export function useCourseNotifications({
     return Object.keys(conductReasonTemplates).some((k) => k.toLowerCase() === lower);
   };
 
-  const handleSaveNotifSettings = (newSettings: AbsenceNotificationSettings) => {
-    setNotifSettings(newSettings);
-    try {
-      localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(newSettings));
-    } catch (_) {}
-    const uid = getActiveUserId();
-    if (uid) {
-      firestoreSync.saveUserSetting(uid, 'notification_settings', newSettings).catch(() => {});
-    }
-    onShowToast('Configuración de avisos guardada correctamente.', 3000);
-  };
+  const handleSaveNotifSettings = useCallback(
+    (newSettings: AbsenceNotificationSettings) => {
+      updateNotificationSettings(newSettings, { syncCloud: true, immediate: true });
+      try {
+        localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(newSettings));
+      } catch (_) {}
+      onShowToast('Configuración de avisos guardada correctamente.', 3000);
+    },
+    [updateNotificationSettings, LOCAL_NOTIF_SETTINGS_KEY, onShowToast]
+  );
 
   const allKnownReasonKeys = useMemo(() => {
     const set = new Set<string>();

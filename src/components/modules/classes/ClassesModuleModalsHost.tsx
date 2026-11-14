@@ -761,6 +761,7 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
             score1cMap={{}}
             score2cMap={{}}
             annualOverrides={{}}
+            getStudentMetrics={getStudentMetrics}
             driveFolderId={activeCourse.driveFolderId}
             driveFolderUrl={activeCourse.driveFolderUrl}
             initialTab={courseReportModalTab}

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Course, Student, StudentHistoryItem, StudentDispositionData } from '../../../types';
 import { isPendingNotificationItem, isHistoryNotificationOmitted } from '../../../utils/historyMerge';
+import { useGlobalData } from '../../../context/GlobalDataContext';
 
 interface CourseHistoryTabViewProps {
   activeCourse: Course;
@@ -61,6 +62,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
   setToastMessage,
   getStudentMetrics,
 }) => {
+  const { omittedNotificationIds } = useGlobalData();
   return (
     <div className="space-y-4">
       {/* Sub-tabs: Incidencias vs Resumen Alumnos y Disposición */}
@@ -223,7 +225,8 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                   ) : (
                     courseHistory.map((item) => {
                       const student = courseStudents.find((s) => s.id === item.studentId);
-                      const isPendingNotif = isPendingNotificationItem(item);
+                      const isPendingNotif = isPendingNotificationItem(item, undefined, omittedNotificationIds);
+                      const isOmittedNotif = isHistoryNotificationOmitted(item, omittedNotificationIds);
                       const isSelectedPending = selectedPendingHistoryIds.includes(item.id);
 
                       return (
@@ -331,7 +334,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                                   <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 stroke-[3]" />
                                   <span>Enviado</span>
                                 </span>
-                              ) : isHistoryNotificationOmitted(item) ? (
+                              ) : isOmittedNotif ? (
                                 <div className="inline-flex items-center gap-1.5 justify-center">
                                   <span
                                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-neutral-100 dark:bg-slate-800 text-neutral-600 dark:text-slate-400 border border-neutral-200 dark:border-slate-700"
@@ -387,7 +390,7 @@ export const CourseHistoryTabView: React.FC<CourseHistoryTabViewProps> = ({
                               </p>
                             ) : (
                               <span className="text-[11px] text-neutral-400 dark:text-slate-500 italic">
-                                {isHistoryNotificationOmitted(item)
+                                {isOmittedNotif
                                   ? 'Sin aviso / No enviar (guardado en historial)'
                                   : item.category === 'Ausencia' || item.category === 'Disposición'
                                   ? 'Pendiente de envío'

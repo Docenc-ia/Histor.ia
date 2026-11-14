@@ -35,6 +35,7 @@ import { copyTableToClipboard } from '../../../utils/sheetsUtils';
 import { useTerminologySettings } from '../../../utils/terminologySettings';
 import { StudentAttendanceRow } from './StudentAttendanceRow';
 import { PendingNotificationsInbox } from './PendingNotificationsInbox';
+import { useGlobalData } from '../../../context/GlobalDataContext';
 
 interface CourseRosterTabViewProps {
   activeCourse: Course;
@@ -184,6 +185,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
     term2ShortLabel,
     initialDispositionScore,
   } = useTerminologySettings();
+  const { omittedNotificationIds } = useGlobalData();
 
   return (
     <div className="space-y-4">
@@ -896,7 +898,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                         (h) =>
                           h.studentId === student.id &&
                           h.category === 'Ausencia' &&
-                          isPendingNotificationItem(h, activeCourse.id)
+                          isPendingNotificationItem(h, activeCourse.id, omittedNotificationIds)
                       );
                       const isSelected = selectedStudentIds.includes(student.id);
 

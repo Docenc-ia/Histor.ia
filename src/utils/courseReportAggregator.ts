@@ -7,7 +7,7 @@
  * and make grade/attendance/disposition calculations independently testable.
  */
 
-import { Student, StudentObservation } from '../types';
+import { Student, StudentDispositionData, StudentObservation } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 import {
   AttendanceSettings,
@@ -15,6 +15,20 @@ import {
 } from './attendanceCalculations';
 import type { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
 import { getTerminologySettings } from './terminologySettings';
+import { findDispositionColumnKey } from './gradeCalculations';
+import {
+  buildStudentHistoryIndex,
+  calculateStudentMetrics,
+} from './studentMetricsCalculator';
+
+export interface DispositionReasonDetailItem {
+  id: string;
+  date: string;
+  time?: string;
+  term: '1c' | '2c';
+  reason: string;
+  pointsChange: number;
+}
 
 export interface ConsolidatedReportStudent {
   student: Student;
@@ -24,6 +38,7 @@ export interface ConsolidatedReportStudent {
   score2cNum: number | null;
   examDetails1c: ExamGradeDetailItem[];
   examDetails2c: ExamGradeDetailItem[];
+  dispositionReasons: DispositionReasonDetailItem[];
   calcAvgStr: string;
   calcAvgNum: number | null;
   finalVal: string;
@@ -125,9 +140,22 @@ export function extractStudentExamDetails(
   gradesMap: StudentGradesMap
 ): ExamGradeDetailItem[] {
   const stGrades = gradesMap[stId] || {};
+  const { dispositionLabel } = getTerminologySettings();
+  const dispColKey = findDispositionColumnKey(cats, dispositionLabel);
+  const isDispName = (name: string) => {
+    const norm = (name || '').trim().toLowerCase();
+    const target = (dispositionLabel || 'disposición').trim().toLowerCase();
+    return (
+      norm === target ||
+      norm.includes('disposición') ||
+      norm.includes('disposicion')
+    );
+  };
+
   const items: ExamGradeDetailItem[] = [];
   cats.forEach((cat) => {
     if (cat.subcategories.length === 0) {
+      if (cat.id === dispColKey || isDispName(cat.name)) return;
       const rawScore = stGrades[cat.id];
       items.push({
         id: cat.id,
@@ -140,6 +168,7 @@ export function extractStudentExamDetails(
       });
     } else {
       cat.subcategories.forEach((sub) => {
+        if (sub.id === dispColKey || isDispName(sub.name)) return;
         const rawScore = stGrades[sub.id];
         items.push({
           id: sub.id,
@@ -230,6 +259,11 @@ export function buildConsolidatedReportStudents(params: {
   gradesData2c: StudentGradesMap;
   disp1cMap: Record<string, any>;
   disp2cMap: Record<string, any>;
+  dispositionHistory?: any[];
+  getStudentMetrics?: (
+    studentId: string,
+    targetTerm?: '1c' | '2c' | 'annual' | 'all'
+  ) => StudentDispositionData;
   courseAttendanceSettings: AttendanceSettings;
   reportObservations: Record<string, string>;
   profileObservationsMap: Record<string, StudentObservation[]>;
@@ -246,10 +280,45 @@ export function buildConsolidatedReportStudents(params: {
     gradesData2c,
     disp1cMap,
     disp2cMap,
+    dispositionHistory = [],
+    getStudentMetrics,
     courseAttendanceSettings,
     reportObservations,
     profileObservationsMap,
   } = params;
+
+  const baseScore = getTerminologySettings().initialDispositionScore ?? 10;
+  const historyIndex = buildStudentHistoryIndex(dispositionHistory, students, courseId);
+
+  const has1cHistory = (dispositionHistory || []).some(
+    (h) =>
+      (!h?.courseId || h.courseId === courseId) &&
+      (h?.term === '1c' || !h?.term) &&
+      h?.category !== 'Sistema'
+  );
+  const has1cMapActivity = Object.values(disp1cMap || {}).some(
+    (d: any) =>
+      d &&
+      ((d.totalAbsences ?? 0) > 0 ||
+        (d.totalLates ?? 0) > 0 ||
+        (d.totalDisposition !== undefined && d.totalDisposition !== baseScore))
+  );
+  const hasCourse1cActivity = has1cHistory || has1cMapActivity;
+
+  const has2cHistory = (dispositionHistory || []).some(
+    (h) =>
+      (!h?.courseId || h.courseId === courseId) &&
+      h?.term === '2c' &&
+      h?.category !== 'Sistema'
+  );
+  const has2cMapActivity = Object.values(disp2cMap || {}).some(
+    (d: any) =>
+      d &&
+      ((d.totalAbsences ?? 0) > 0 ||
+        (d.totalLates ?? 0) > 0 ||
+        (d.totalDisposition !== undefined && d.totalDisposition !== baseScore))
+  );
+  const hasCourse2cActivity = has2cHistory || has2cMapActivity;
 
   return students.map((st) => {
     const s1 = effectiveScore1cMap[st.id] || { scoreStr: '', num: null };
@@ -258,6 +327,32 @@ export function buildConsolidatedReportStudents(params: {
 
     const examDetails1c = extractStudentExamDetails(st.id, categories1c, gradesData1c);
     const examDetails2c = extractStudentExamDetails(st.id, categories2c, gradesData2c);
+
+    const dispositionReasons: DispositionReasonDetailItem[] = (dispositionHistory || [])
+      .filter((h) => {
+        if (!h || h.studentId !== st.id) return false;
+        if (h.courseId && h.courseId !== courseId) return false;
+        const isDispCategory = h.category === 'Disposición';
+        const isNegativePoints = h.pointsChange !== undefined ? h.pointsChange < 0 : isDispCategory;
+        if (!isDispCategory || !isNegativePoints) return false;
+        if (/^(puntaje de .* restablecido|.* borrada y restablecida)/i.test(String(h.action || ''))) {
+          return false;
+        }
+        return true;
+      })
+      .map((h) => {
+        const rawAction = String(h.action || h.detail || 'Motivo registrado').trim();
+        const motivoMatch = rawAction.match(/-\s*Motivo:\s*(.+)$/i);
+        const cleanReason = motivoMatch ? motivoMatch[1].trim() : rawAction;
+        return {
+          id: String(h.id),
+          date: h.date || '—',
+          time: h.time,
+          term: (h.term === '2c' ? '2c' : '1c') as '1c' | '2c',
+          reason: cleanReason,
+          pointsChange: typeof h.pointsChange === 'number' ? h.pointsChange : -1,
+        };
+      });
 
     let calcAvgStr = '';
     let calcAvgNum: number | null = null;
@@ -283,18 +378,53 @@ export function buildConsolidatedReportStudents(params: {
       else condition = 'Compensación Diciembre / Feb';
     }
 
-    const abs1 = disp1cMap[st.id]?.totalAbsences ?? 0;
-    const abs2 = disp2cMap[st.id]?.totalAbsences ?? 0;
+    // Obtener métricas exclusivamente desde Asistencia y Disposición (nunca desde Calificaciones)
+    const m1 = getStudentMetrics
+      ? getStudentMetrics(st.id, '1c')
+      : calculateStudentMetrics({
+          studentId: st.id,
+          targetTerm: '1c',
+          activeCourseId: courseId,
+          students,
+          dispositionMap: disp1cMap,
+          dispositionMap2c: disp2cMap,
+          historyList: dispositionHistory,
+          historyIndex,
+        });
+
+    const m2 = getStudentMetrics
+      ? getStudentMetrics(st.id, '2c')
+      : calculateStudentMetrics({
+          studentId: st.id,
+          targetTerm: '2c',
+          activeCourseId: courseId,
+          students,
+          dispositionMap: disp1cMap,
+          dispositionMap2c: disp2cMap,
+          historyList: dispositionHistory,
+          historyIndex,
+        });
+
+    const abs1 = m1.totalAbsences ?? 0;
+    const abs2 = m2.totalAbsences ?? 0;
     const totalAbs = abs1 + abs2;
 
-    const lat1 = disp1cMap[st.id]?.totalLates ?? 0;
-    const lat2 = disp2cMap[st.id]?.totalLates ?? 0;
+    const lat1 = m1.totalLates ?? 0;
+    const lat2 = m2.totalLates ?? 0;
     const totalLat = lat1 + lat2;
 
-    const baseScore = getTerminologySettings().initialDispositionScore ?? 10;
-    const disp1 = disp1cMap[st.id]?.totalDisposition ?? baseScore;
-    const disp2 = disp2cMap[st.id]?.totalDisposition ?? baseScore;
-    const avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
+    const disp1 = m1.totalDisposition ?? baseScore;
+    const disp2 = m2.totalDisposition ?? baseScore;
+
+    // Si el informe se emite durante el 1°C (sin registros aún en el 2°C), tomar directamente la nota del 1°C
+    let avgDisp: number;
+    if (hasCourse1cActivity && !hasCourse2cActivity) {
+      avgDisp = Number(disp1.toFixed(1));
+    } else if (!hasCourse1cActivity && hasCourse2cActivity) {
+      avgDisp = Number(disp2.toFixed(1));
+    } else {
+      avgDisp = Number(((disp1 + disp2) / 2).toFixed(1));
+    }
 
     const trafficLight = computeStudentAttendanceTrafficLight(
       st.id,
@@ -325,6 +455,7 @@ export function buildConsolidatedReportStudents(params: {
       score2cNum: s2.num,
       examDetails1c,
       examDetails2c,
+      dispositionReasons,
       calcAvgStr,
       calcAvgNum,
       finalVal,

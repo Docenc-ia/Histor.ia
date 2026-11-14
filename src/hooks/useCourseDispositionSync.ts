@@ -18,6 +18,7 @@ import {
 import { setCourseCachedItem, touchCourseDataLru } from '../utils/lruCourseCache';
 import { emitAppEvent, subscribeAppEvents } from '../utils/appEventBus';
 import { mergeHistoryLists } from '../utils/historyMerge';
+import { useGlobalData } from '../context/GlobalDataContext';
 
 interface UseCourseDispositionSyncOptions {
   activeCourse?: Course;
@@ -67,18 +68,71 @@ export function useCourseDispositionSync({
     return {};
   });
 
+  const { omittedNotificationIds, omittedNotificationIdsRef } = useGlobalData();
+
+  const applyOmittedIdsToHistory = useCallback(
+    (list: StudentHistoryItem[], omittedSet: ReadonlySet<string>): StudentHistoryItem[] => {
+      if (!omittedSet || omittedSet.size === 0 || list.length === 0) return list;
+      let changed = false;
+      const next = list.map((item) => {
+        if (
+          item?.id &&
+          omittedSet.has(item.id) &&
+          !item.messageSent &&
+          (!item.omitNotification ||
+            item.notificationMethod !== 'omitted' ||
+            item.notifiedAt !== 'No enviar')
+        ) {
+          changed = true;
+          return {
+            ...item,
+            omitNotification: true,
+            notificationMethod: 'omitted' as const,
+            messageSent: false,
+            notifiedAt: item.notifiedAt || 'No enviar',
+          };
+        }
+        return item;
+      });
+      return changed ? next : list;
+    },
+    []
+  );
+
   // History entries list
   const [historyList, setHistoryList] = useState<StudentHistoryItem[]>(() => {
     if (typeof window !== 'undefined') {
       try {
         const stored = getAllDispositionStorage();
         if (Array.isArray(stored.history) && stored.history.length > 0) {
-          return deduplicateHistory(stored.history);
+          const deduped = deduplicateHistory(stored.history);
+          return deduped.map((item) => {
+            if (
+              item?.id &&
+              omittedNotificationIdsRef.current.has(item.id) &&
+              !item.messageSent
+            ) {
+              return {
+                ...item,
+                omitNotification: true,
+                notificationMethod: 'omitted' as const,
+                messageSent: false,
+                notifiedAt: item.notifiedAt || 'No enviar',
+              };
+            }
+            return item;
+          });
         }
       } catch (_) {}
     }
     return [];
   });
+
+  // Keep in-memory historyList aligned whenever global omittedNotificationIds updates from cloud or UI actions
+  useEffect(() => {
+    if (omittedNotificationIds.size === 0) return;
+    setHistoryList((prev) => applyOmittedIdsToHistory(prev, omittedNotificationIds));
+  }, [omittedNotificationIds, applyOmittedIdsToHistory]);
 
   const saveTermDisposition = useCallback(
     (
@@ -459,7 +513,10 @@ export function useCourseDispositionSync({
             const cleanIncoming = res.history.filter((h) => h?.id && !deleted.has(h.id));
             setHistoryList((prev) => {
               const cleanPrev = prev.filter((h) => h?.id && !deleted.has(h.id));
-              const merged = mergeHistoryLists(cleanPrev, cleanIncoming, deleted);
+              const merged = applyOmittedIdsToHistory(
+                mergeHistoryLists(cleanPrev, cleanIncoming, deleted),
+                omittedNotificationIdsRef.current
+              );
               if (
                 cleanPrev.length === merged.length &&
                 cleanPrev.every(

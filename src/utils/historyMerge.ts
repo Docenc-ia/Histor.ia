@@ -9,22 +9,29 @@ function parseUpdatedAtMs(value: unknown): number {
   return 0;
 }
 
-export function isHistoryNotificationOmitted(item: Partial<StudentHistoryItem> | any): boolean {
+export function isHistoryNotificationOmitted(
+  item: Partial<StudentHistoryItem> | any,
+  omittedIdsSet?: ReadonlySet<string>
+): boolean {
   if (!item) return false;
+  if (item.messageSent === true) return false;
   return Boolean(
     item.omitNotification ||
       item.notificationMethod === 'omitted' ||
-      item.notificationMethod === 'none' ||
       item.notifiedAt === 'No enviar' ||
-      item.notifiedAt === 'Omitido'
+      item.notifiedAt === 'Omitido' ||
+      (item.id && omittedIdsSet?.has(item.id))
   );
 }
 
-export function isHistoryNotificationResolved(item: Partial<StudentHistoryItem> | any): boolean {
+export function isHistoryNotificationResolved(
+  item: Partial<StudentHistoryItem> | any,
+  omittedIdsSet?: ReadonlySet<string>
+): boolean {
   if (!item) return false;
   return Boolean(
     item.messageSent ||
-      isHistoryNotificationOmitted(item) ||
+      isHistoryNotificationOmitted(item, omittedIdsSet) ||
       (typeof item.notifiedAt === 'string' && item.notifiedAt.trim().length > 0)
   );
 }
@@ -47,7 +54,8 @@ function isExplicitlyResolvedNotification(item: Partial<StudentHistoryItem> | an
 
 export function isPendingNotificationItem(
   item: Partial<StudentHistoryItem> | any,
-  courseId?: string
+  courseId?: string,
+  omittedIdsSet?: ReadonlySet<string>
 ): boolean {
   if (!item) return false;
   if (courseId && item.courseId !== courseId) return false;
@@ -64,7 +72,7 @@ export function isPendingNotificationItem(
   ) {
     return false;
   }
-  return !isHistoryNotificationResolved(item);
+  return !isHistoryNotificationResolved(item, omittedIdsSet);
 }
 
 export function mergeHistoryRecord<T extends Record<string, any>>(existing: T, incoming: T): T {

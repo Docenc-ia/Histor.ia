@@ -27,7 +27,7 @@ import {
   EyeOff,
   Save,
 } from 'lucide-react';
-import { Student, StudentObservation } from '../../types';
+import { Student, StudentDispositionData, StudentObservation } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { DEFAULT_CATEGORIES } from './GradebookMatrix';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -37,7 +37,11 @@ import {
   formatCourseDriveFolderName,
   getDirectDriveFolderUrl,
 } from '../../services/workspace/driveService';
-import { getStorageItemForUser, setStorageItemForUser } from '../../services/storageHelpers';
+import {
+  getAllDispositionStorage,
+  getStorageItemForUser,
+  setStorageItemForUser,
+} from '../../services/storageHelpers';
 import { firestoreSync, getActiveUserId } from '../../services/firestoreSync';
 import {
   getCourseAttendanceSettings,
@@ -68,6 +72,10 @@ export interface CourseReportModalProps {
   score1cMap: Record<string, { scoreStr: string; num: number | null }>;
   score2cMap: Record<string, { scoreStr: string; num: number | null }>;
   annualOverrides: Record<string, string>;
+  getStudentMetrics?: (
+    studentId: string,
+    targetTerm?: '1c' | '2c' | 'annual' | 'all'
+  ) => StudentDispositionData;
   driveFolderId?: string;
   driveFolderUrl?: string;
   initialTab?: 'course' | 'individual';
@@ -85,6 +93,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   score1cMap,
   score2cMap,
   annualOverrides,
+  getStudentMetrics,
   driveFolderId,
   driveFolderUrl,
   initialTab = 'course',
@@ -185,11 +194,49 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [includeDisposition, setIncludeDisposition] = useState<boolean>(
     initialPreset === 'grades' || initialPreset === 'attendance' ? false : true
   );
+  const [includeDispositionReasons, setIncludeDispositionReasons] = useState<boolean>(
+    initialPreset === 'grades' || initialPreset === 'attendance' ? false : true
+  );
+  const [excludedDispositionReasonIds, setExcludedDispositionReasonIds] = useState<Set<string>>(
+    () => new Set<string>()
+  );
   const [includeObservations, setIncludeObservations] = useState<boolean>(true);
   const [includeFamilySignature, setIncludeFamilySignature] = useState<boolean>(
     initialPreset !== 'all'
   );
   const effectiveReason = 'Informe de Trayectoria';
+
+  const handleToggleDispositionReason = (reasonId: string) => {
+    if (!includeDispositionReasons) {
+      setIncludeDispositionReasons(true);
+    }
+    setExcludedDispositionReasonIds((prev) => {
+      const next = new Set<string>(prev);
+      if (next.has(reasonId)) {
+        next.delete(reasonId);
+      } else {
+        next.add(reasonId);
+      }
+      return next;
+    });
+  };
+
+  const handleSelectAllStudentDispositionReasons = (reasonIds: string[], selectAll: boolean) => {
+    if (selectAll && !includeDispositionReasons) {
+      setIncludeDispositionReasons(true);
+    }
+    setExcludedDispositionReasonIds((prev) => {
+      const next = new Set<string>(prev);
+      reasonIds.forEach((id) => {
+        if (selectAll) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+      });
+      return next;
+    });
+  };
 
   const selectedElementsCount =
     (includeGrades ? 1 : 0) +
@@ -197,24 +244,52 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     (includeDisposition ? 1 : 0) +
     (includeObservations ? 1 : 0);
 
+  const dispositionHistory = useMemo(() => {
+    try {
+      const storedHistory = getAllDispositionStorage().history || [];
+      const seen = new Set<string>();
+      const merged: any[] = [];
+      for (const item of storedHistory) {
+        if (!item || !item.id) continue;
+        if (!seen.has(String(item.id))) {
+          seen.add(String(item.id));
+          merged.push(item);
+        }
+      }
+      return merged;
+    } catch {
+      return [];
+    }
+  }, [courseId, isOpen]);
+
   // Load attendance, disposition and observations maps strictly scoped to courseId
   const disp1cMap = useMemo(() => {
     try {
       const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_1c`);
-      return raw ? filterCourseDispositionMap(JSON.parse(raw), courseId) : {};
+      if (raw) {
+        const parsed = filterCourseDispositionMap(JSON.parse(raw), courseId);
+        if (Object.keys(parsed).length > 0) return parsed;
+      }
+      const globalDisp = getAllDispositionStorage().disposition || {};
+      return filterCourseDispositionMap(globalDisp, courseId);
     } catch {
       return {};
     }
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const disp2cMap = useMemo(() => {
     try {
       const raw = getStorageItemForUser(`fds_disposition_data_${courseId}_2c`);
-      return raw ? filterCourseDispositionMap(JSON.parse(raw), courseId) : {};
+      if (raw) {
+        const parsed = filterCourseDispositionMap(JSON.parse(raw), courseId);
+        if (Object.keys(parsed).length > 0) return parsed;
+      }
+      const global2cRaw = getStorageItemForUser('fds_disposition_data_2c');
+      return global2cRaw ? filterCourseDispositionMap(JSON.parse(global2cRaw), courseId) : {};
     } catch {
       return {};
     }
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   // Load Categories and Grades Maps from Pestaña Calificaciones (1°C and 2°C)
   const categories1c = useMemo<GradeCategory[]>(() => {
@@ -444,7 +519,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     [courseId]
   );
 
-  // Consolidate full student annual data + detailed exam/TP grades
+  // Consolidate full student annual data + detailed exam/TP grades + disposition deduction reasons
   const consolidatedStudents = useMemo(
     () =>
       buildConsolidatedReportStudents({
@@ -459,6 +534,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         gradesData2c,
         disp1cMap,
         disp2cMap,
+        dispositionHistory,
+        getStudentMetrics,
         courseAttendanceSettings,
         reportObservations,
         profileObservationsMap,
@@ -475,6 +552,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       gradesData2c,
       disp1cMap,
       disp2cMap,
+      dispositionHistory,
+      getStudentMetrics,
       courseAttendanceSettings,
       reportObservations,
       profileObservationsMap,
@@ -503,6 +582,12 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       ? consolidatedStudents
       : consolidatedStudents.filter((s) => s.student.id === selectedStudentId);
 
+  const displayedStudentsForHtml = displayedStudents.map((row) => ({
+    ...row,
+    dispositionReasons: includeDispositionReasons
+      ? row.dispositionReasons.filter((r) => !excludedDispositionReasonIds.has(r.id))
+      : [],
+  }));
 
   // Generate self-contained standalone HTML document for download or Drive upload
   const generateHtmlDocument = (type: 'course' | 'individual') =>
@@ -515,12 +600,13 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       effectiveReason,
       stats,
       consolidatedStudents,
-      displayedStudents,
+      displayedStudents: displayedStudentsForHtml,
       courseObservation,
       includeGrades,
       includeExamDetails,
       includeAttendance,
       includeDisposition,
+      includeDispositionReasons,
       includeObservations,
       includeFamilySignature,
     });
@@ -913,6 +999,30 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
               <span>{dispositionLabel}</span>
               <span className="text-[10px] opacity-75 font-normal">(Puntaje y actitud)</span>
             </button>
+
+            {/* 3b. Motivos de Disposición (solo en ficha individual cuando Disposición está activo) */}
+            {includeDisposition && activeTab === 'individual' && (
+              <button
+                type="button"
+                onClick={() => setIncludeDispositionReasons(!includeDispositionReasons)}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                  includeDispositionReasons
+                    ? 'bg-fuchsia-50 dark:bg-fuchsia-950/50 text-fuchsia-800 dark:text-fuchsia-300 border-fuchsia-300 dark:border-fuchsia-700 shadow-2xs font-bold'
+                    : isDarkMode
+                    ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
+                    : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
+                }`}
+                title={`Incluir y permitir marcar cada una de las razones (fecha y motivo) por las cuales se bajó ${dispositionLabel}`}
+              >
+                {includeDispositionReasons ? (
+                  <CheckSquare className="w-3.5 h-3.5 text-fuchsia-600 dark:text-fuchsia-400 shrink-0" />
+                ) : (
+                  <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                )}
+                <span>Motivos de {dispositionLabel}</span>
+                <span className="text-[10px] opacity-75 font-normal">(Fecha y motivo)</span>
+              </button>
+            )}
 
             {/* 4. Observaciones */}
             <button
@@ -1529,7 +1639,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                     ) : !includeAttendance && includeDisposition ? (
                       <div className="mb-4">
                         <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. {dispositionLabel} y Compromiso Áulico
+                          {includeGrades ? '2' : '1'}. {dispositionLabel}
                         </h4>
                         <table className="w-full text-xs border border-neutral-300">
                           <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
@@ -1540,11 +1650,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                               <th className="py-2 px-3 text-center border-r border-neutral-300">
                                 {dispositionLabel} {term2ShortLabel}
                               </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-purple-50 font-bold text-purple-900">
+                              <th className="py-2 px-3 text-center bg-purple-50 font-bold text-purple-900">
                                 Puntaje Promedio de {dispositionLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center font-bold">
-                                Valoración de Compromiso Áulico
                               </th>
                             </tr>
                           </thead>
@@ -1556,29 +1663,178 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                               <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
                                 {row.disp2} / 10
                               </td>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 font-bold text-base text-purple-700 bg-purple-50/50">
+                              <td className="py-2.5 px-3 text-center font-bold text-base text-purple-700 bg-purple-50/50">
                                 {row.avgDisp} / 10
-                              </td>
-                              <td
-                                className={`py-2.5 px-3 text-center font-semibold text-xs ${
-                                  row.avgDisp >= 8
-                                    ? 'text-emerald-700'
-                                    : row.avgDisp >= 6
-                                    ? 'text-amber-700'
-                                    : 'text-rose-700'
-                                }`}
-                              >
-                                {row.avgDisp >= 8
-                                  ? 'Favorable y participativo'
-                                  : row.avgDisp >= 6
-                                  ? 'Regular / Ajustar entrega de tareas'
-                                  : 'Requiere mayor compromiso en clase'}
                               </td>
                             </tr>
                           </tbody>
                         </table>
                       </div>
                     ) : null}
+
+                    {/* 2b. Detalle seleccionable de fechas y motivos por los cuales se bajó la Disposición */}
+                    {includeDisposition && row.dispositionReasons.length > 0 && (() => {
+                      const checkedReasons = includeDispositionReasons
+                        ? row.dispositionReasons.filter((r) => !excludedDispositionReasonIds.has(r.id))
+                        : [];
+                      const allStudentReasonIds = row.dispositionReasons.map((r) => r.id);
+                      const areAllSelected =
+                        includeDispositionReasons &&
+                        checkedReasons.length === row.dispositionReasons.length;
+
+                      return (
+                        <div className="mb-4">
+                          {/* Vista interactiva en pantalla: permite marcar/desmarcar cada fecha y motivo */}
+                          <div className="print:hidden border border-purple-200 rounded-lg overflow-hidden bg-purple-50/30">
+                            <div className="bg-purple-100/80 border-b border-purple-200 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 text-[11px] font-bold text-purple-900">
+                                <CheckSquare className="w-3.5 h-3.5 text-purple-700 shrink-0" />
+                                <span>
+                                  Motivos por los cuales se bajó {dispositionLabel} (marcá cuáles incluir en el informe):
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-purple-200 text-purple-900 font-bold">
+                                  {checkedReasons.length} de {row.dispositionReasons.length} seleccionados
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleSelectAllStudentDispositionReasons(allStudentReasonIds, true)
+                                  }
+                                  disabled={areAllSelected}
+                                  className="px-2 py-0.5 rounded text-[10px] font-semibold bg-white text-purple-800 border border-purple-300 hover:bg-purple-50 disabled:opacity-50 cursor-pointer transition-colors"
+                                >
+                                  Marcar todos
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleSelectAllStudentDispositionReasons(allStudentReasonIds, false)
+                                  }
+                                  disabled={checkedReasons.length === 0}
+                                  className="px-2 py-0.5 rounded text-[10px] font-semibold bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-100 disabled:opacity-50 cursor-pointer transition-colors"
+                                >
+                                  Desmarcar todos
+                                </button>
+                              </div>
+                            </div>
+
+                            <table className="w-full text-[11px]">
+                              <thead className="bg-neutral-50 border-b border-purple-200 text-neutral-600">
+                                <tr>
+                                  <th className="py-1.5 px-2.5 text-center font-semibold w-14">Incluir</th>
+                                  <th className="py-1.5 px-2.5 text-center font-semibold w-24">Fecha</th>
+                                  <th className="py-1.5 px-2 text-center font-semibold w-20">Período</th>
+                                  <th className="py-1.5 px-3 text-left font-semibold">
+                                    Motivo por el cual se bajó {dispositionLabel}
+                                  </th>
+                                  <th className="py-1.5 px-2.5 text-center font-semibold w-20">Puntaje</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-purple-100 bg-white">
+                                {row.dispositionReasons.map((item) => {
+                                  const isChecked =
+                                    includeDispositionReasons &&
+                                    !excludedDispositionReasonIds.has(item.id);
+                                  return (
+                                    <tr
+                                      key={item.id}
+                                      onClick={() => handleToggleDispositionReason(item.id)}
+                                      className={`cursor-pointer transition-colors ${
+                                        isChecked
+                                          ? 'hover:bg-purple-50/60 text-neutral-900'
+                                          : 'bg-neutral-50/80 text-neutral-400 hover:bg-neutral-100/70'
+                                      }`}
+                                    >
+                                      <td className="py-2 px-2.5 text-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={isChecked}
+                                          onChange={() => handleToggleDispositionReason(item.id)}
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="w-3.5 h-3.5 rounded border-purple-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
+                                        />
+                                      </td>
+                                      <td className="py-2 px-2.5 text-center font-mono font-semibold">
+                                        {item.date}
+                                      </td>
+                                      <td className="py-2 px-2 text-center">
+                                        {item.term === '2c' ? term2ShortLabel : term1ShortLabel}
+                                      </td>
+                                      <td className="py-2 px-3 font-medium">
+                                        <span>{item.reason}</span>
+                                        {!isChecked && (
+                                          <span className="ml-2 text-[10px] italic text-neutral-400">
+                                            (Omitido del informe)
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td
+                                        className={`py-2 px-2.5 text-center font-bold ${
+                                          isChecked ? 'text-rose-700' : 'text-neutral-400'
+                                        }`}
+                                      >
+                                        {item.pointsChange > 0
+                                          ? `+${item.pointsChange}`
+                                          : item.pointsChange}{' '}
+                                        pto
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          {/* Vista limpia de impresión: muestra solo las fechas y motivos marcados */}
+                          {checkedReasons.length > 0 && (
+                            <div className="hidden print:block mt-2">
+                              <div className="text-[11px] font-bold text-purple-900 uppercase tracking-wide mb-1.5">
+                                Detalle de motivos por los cuales se bajó {dispositionLabel} (Fecha y Motivo):
+                              </div>
+                              <table className="w-full text-[11px] border border-neutral-300">
+                                <thead className="bg-neutral-100 border-b border-neutral-300 text-neutral-700 font-semibold">
+                                  <tr>
+                                    <th className="py-1.5 px-2.5 text-center border-r border-neutral-300 w-24">
+                                      Fecha
+                                    </th>
+                                    <th className="py-1.5 px-2 text-center border-r border-neutral-300 w-20">
+                                      Período
+                                    </th>
+                                    <th className="py-1.5 px-3 text-left border-r border-neutral-300">
+                                      Motivo por el cual se bajó {dispositionLabel}
+                                    </th>
+                                    <th className="py-1.5 px-2.5 text-center w-20">Puntaje</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-neutral-200">
+                                  {checkedReasons.map((item) => (
+                                    <tr key={`print-${item.id}`}>
+                                      <td className="py-1.5 px-2.5 text-center border-r border-neutral-200 font-semibold">
+                                        {item.date}
+                                      </td>
+                                      <td className="py-1.5 px-2 text-center border-r border-neutral-200">
+                                        {item.term === '2c' ? term2ShortLabel : term1ShortLabel}
+                                      </td>
+                                      <td className="py-1.5 px-3 border-r border-neutral-200 text-neutral-800">
+                                        {item.reason}
+                                      </td>
+                                      <td className="py-1.5 px-2.5 text-center font-bold text-rose-700">
+                                        {item.pointsChange > 0
+                                          ? `+${item.pointsChange}`
+                                          : item.pointsChange}{' '}
+                                        pto
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {/* 3. Pedagogical Observations for Report (Conditional) */}
                     {includeObservations && (

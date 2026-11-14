@@ -104,6 +104,7 @@ async function flushSingleSettingWrite(entry: {
   const nowIso = new Date().toISOString();
   const cleanPayload = sanitizeForFirestore({ value: payload, updatedAt: nowIso });
 
+  const writes: Promise<void>[] = [];
   for (const targetDb of ALL_DBS) {
     for (const uid of writeIds) {
       const fpKey = `setting:${uid}:${settingKey}`;
@@ -111,17 +112,25 @@ async function flushSingleSettingWrite(entry: {
       if (!check.dirty) continue;
 
       const path = `users/${uid}/settings/${settingKey}`;
-      executeWithTimeout(
-        setDoc(doc(targetDb, 'users', uid, 'settings', settingKey), cleanPayload, { merge: true }),
-        FIRESTORE_TIMEOUT_MS,
-        true
-      )
-        .then((res) => {
-          if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
-        })
-        .catch((err) => handleFirestoreError(err, OperationType.WRITE, path));
+      writes.push(
+        executeWithTimeout(
+          setDoc(doc(targetDb, 'users', uid, 'settings', settingKey), cleanPayload, { merge: true }),
+          FIRESTORE_TIMEOUT_MS,
+          true
+        )
+          .then((res) => {
+            if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+          })
+          .catch((err) => handleFirestoreError(err, OperationType.WRITE, path))
+      );
     }
   }
+  await Promise.all(writes);
+}
+
+export interface OmittedNotificationsCloudData {
+  omittedIds: string[];
+  reactivatedIds?: string[];
 }
 
 registerCloudFlushHandler('snapshots_and_settings_flush', () => {
@@ -242,9 +251,14 @@ export const gradesAndSettingsRepo = {
   },
 
   /**
-   * Save user settings (conduct options, templates, observations, etc.) under /users/{uid}/settings/{settingKey}
+   * Save user settings (conduct options, templates, observations, notification_settings, etc.) under /users/{uid}/settings/{settingKey}
    */
-  async saveUserSetting(userId: string, settingKey: string, payload: any): Promise<void> {
+  async saveUserSetting(
+    userId: string,
+    settingKey: string,
+    payload: any,
+    immediate = false
+  ): Promise<void> {
     if (!userId || !settingKey) return;
     const cacheKey = `${userId}:${settingKey}`;
     settingsReadCache.set(cacheKey, { timestamp: Date.now(), value: payload });
@@ -254,7 +268,15 @@ export const gradesAndSettingsRepo = {
     const existing = pendingSettingWrites.get(queueKey);
     if (existing) {
       clearTimeout(existing.timer);
+      pendingSettingWrites.delete(queueKey);
     }
+
+    if (immediate) {
+      notifyDebouncedSyncPending(`set_${queueKey}`, false);
+      await flushSingleSettingWrite({ userId, settingKey, payload });
+      return;
+    }
+
     notifyDebouncedSyncPending(`set_${queueKey}`, true);
     const timer = setTimeout(() => {
       pendingSettingWrites.delete(queueKey);
@@ -262,6 +284,150 @@ export const gradesAndSettingsRepo = {
       flushSingleSettingWrite({ userId, settingKey, payload }).catch(() => {});
     }, 1800);
     pendingSettingWrites.set(queueKey, { timer, userId, settingKey, payload });
+  },
+
+  /**
+   * Immediately save omitted ("No enviar" / "No mandar") notification IDs to a dedicated lightweight Firestore document
+   * so they survive reloads, browser restarts, and 1500-item history truncation permanently.
+   */
+  async saveOmittedNotificationIds(
+    userId: string,
+    data: OmittedNotificationsCloudData
+  ): Promise<void> {
+    if (!userId) return;
+    const omittedSet = new Set(
+      Array.isArray(data.omittedIds)
+        ? data.omittedIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : []
+    );
+    const reactivatedSet = new Set(
+      Array.isArray(data.reactivatedIds)
+        ? data.reactivatedIds.filter(
+            (id): id is string =>
+              typeof id === 'string' && id.trim().length > 0 && !omittedSet.has(id)
+          )
+        : []
+    );
+
+    const cleanValue: OmittedNotificationsCloudData = {
+      omittedIds: Array.from(omittedSet).slice(-4000),
+      reactivatedIds: Array.from(reactivatedSet).slice(-1000),
+    };
+
+    const settingKey = 'omitted_notification_ids';
+    const cacheKey = `${userId}:${settingKey}`;
+    settingsReadCache.set(cacheKey, { timestamp: Date.now(), value: cleanValue });
+
+    if (!isFirestoreAvailable()) return;
+    const writeIds = getTargetWriteUserIds(userId);
+    const nowIso = new Date().toISOString();
+    const cleanPayload = sanitizeForFirestore({ value: cleanValue, updatedAt: nowIso });
+
+    const writes: Promise<void>[] = [];
+    for (const targetDb of ALL_DBS) {
+      for (const uid of writeIds) {
+        const fpKey = `setting:${uid}:${settingKey}`;
+        const check = isPayloadDirty(fpKey, cleanValue);
+        if (!check.dirty) continue;
+
+        const path = `users/${uid}/settings/${settingKey}`;
+        writes.push(
+          executeWithTimeout(
+            setDoc(doc(targetDb, 'users', uid, 'settings', settingKey), cleanPayload, { merge: true }),
+            FIRESTORE_TIMEOUT_MS,
+            true
+          )
+            .then((res) => {
+              if (res !== null) markPayloadSynced(fpKey, check.fingerprint);
+            })
+            .catch((err) => handleFirestoreError(err, OperationType.WRITE, path))
+        );
+      }
+    }
+    await Promise.all(writes);
+  },
+
+  /**
+   * Load and union-merge omitted ("No enviar") notification IDs across candidate accounts
+   */
+  async loadOmittedNotificationIds(userId: string): Promise<OmittedNotificationsCloudData> {
+    const empty: OmittedNotificationsCloudData = { omittedIds: [], reactivatedIds: [] };
+    if (!userId || !isFirestoreAvailable()) return empty;
+
+    const settingKey = 'omitted_notification_ids';
+    const candidateIds = getCandidateUserIds(userId);
+    const writeIds = getTargetWriteUserIds(userId);
+
+    try {
+      const queries: Promise<any>[] = [];
+      for (const targetDb of ALL_DBS) {
+        for (const uid of candidateIds) {
+          const path = `users/${uid}/settings/${settingKey}`;
+          queries.push(
+            executeWithTimeout(getDoc(doc(targetDb, 'users', uid, 'settings', settingKey))).catch(
+              (err) => {
+                handleFirestoreError(err, OperationType.GET, path);
+                return null;
+              }
+            )
+          );
+        }
+      }
+
+      const snaps = await Promise.all(queries);
+      const unionOmitted = new Set<string>();
+      let latestUpdatedAt = '';
+      let latestReactivated = new Set<string>();
+      let latestOmittedInNewestDoc = new Set<string>();
+
+      for (const docSnap of snaps) {
+        if (!docSnap || typeof docSnap.exists !== 'function' || !docSnap.exists()) continue;
+        const data = docSnap.data();
+        const val = data?.value;
+        if (!val || typeof val !== 'object') continue;
+
+        const docOmitted: string[] = Array.isArray(val.omittedIds)
+          ? val.omittedIds.filter((id: any): id is string => typeof id === 'string' && id.trim().length > 0)
+          : [];
+        const docReactivated: string[] = Array.isArray(val.reactivatedIds)
+          ? val.reactivatedIds.filter((id: any): id is string => typeof id === 'string' && id.trim().length > 0)
+          : [];
+
+        docOmitted.forEach((id) => unionOmitted.add(id));
+
+        const docUpdatedAt = typeof data.updatedAt === 'string' ? data.updatedAt : '';
+        if (!latestUpdatedAt || (docUpdatedAt && docUpdatedAt >= latestUpdatedAt)) {
+          latestUpdatedAt = docUpdatedAt;
+          latestReactivated = new Set(docReactivated);
+          latestOmittedInNewestDoc = new Set(docOmitted);
+        }
+      }
+
+      // Remove only IDs explicitly sent/reactivated in the authoritative latest document (and not re-omitted there)
+      latestReactivated.forEach((id) => {
+        if (!latestOmittedInNewestDoc.has(id)) {
+          unionOmitted.delete(id);
+        }
+      });
+
+      const merged: OmittedNotificationsCloudData = {
+        omittedIds: Array.from(unionOmitted).slice(-4000),
+        reactivatedIds: Array.from(latestReactivated).slice(-1000),
+      };
+
+      settingsReadCache.set(`${userId}:${settingKey}`, {
+        timestamp: Date.now(),
+        value: merged,
+      });
+      const fp = computePayloadFingerprint(merged);
+      for (const uid of writeIds) {
+        markPayloadSynced(`setting:${uid}:${settingKey}`, fp);
+      }
+      return merged;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, `users/${userId}/settings/${settingKey}`);
+      return empty;
+    }
   },
 
   /**

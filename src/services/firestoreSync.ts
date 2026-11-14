@@ -40,6 +40,7 @@ import {
 import {
   gradesAndSettingsRepo,
   invalidateGradesAndSettingsCaches,
+  type OmittedNotificationsCloudData,
 } from './firestore/gradesAndSettingsRepo';
 import { emitAppEvent } from '../utils/appEventBus';
 
@@ -62,7 +63,7 @@ export {
   getCandidateUserIds,
 };
 
-export type { FirestoreErrorInfo, CloudSyncState, CloudSyncStatusInfo };
+export type { FirestoreErrorInfo, CloudSyncState, CloudSyncStatusInfo, OmittedNotificationsCloudData };
 
 export function invalidateReadCachesForCrossDeviceSync(): void {
   invalidateCoursesAndStudentsCaches();

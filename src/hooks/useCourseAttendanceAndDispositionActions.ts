@@ -26,6 +26,7 @@ import { useManualDispositionAndAbsenceEditor } from './useManualDispositionAndA
 import { useStudentProfileAndObservationsActions } from './useStudentProfileAndObservationsActions';
 import { getTerminologySettings } from '../utils/terminologySettings';
 import { isPendingNotificationItem } from '../utils/historyMerge';
+import { useGlobalData } from '../context/GlobalDataContext';
 
 interface UseCourseAttendanceAndDispositionActionsProps {
   activeCourse: Course;
@@ -130,6 +131,12 @@ export function useCourseAttendanceAndDispositionActions({
   setToastMessage,
   studentObservationsProps,
 }: UseCourseAttendanceAndDispositionActionsProps) {
+  const {
+    omittedNotificationIds,
+    markNotificationsAsNoSend,
+    clearNotificationsNoSend,
+  } = useGlobalData();
+
   // Batch selection of students for notification at the end of class
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [selectedPendingHistoryIds, setSelectedPendingHistoryIds] = useState<string[]>([]);
@@ -141,25 +148,25 @@ export function useCourseAttendanceAndDispositionActions({
     studentObservationsProps.setSelectedStudentForProfile(null);
   }, [activeCourse?.id]);
 
-  // Pending absence items for current course (without sent notification)
+  // Pending absence items for current course (without sent notification or global "No enviar")
   const pendingAbsenceItems = useMemo(() => {
     if (!activeCourse) return [];
     return historyList.filter(
       (h) =>
         (h.category === 'Ausencia' || h.action === 'Ausencia') &&
-        isPendingNotificationItem(h, activeCourse.id)
+        isPendingNotificationItem(h, activeCourse.id, omittedNotificationIds)
     );
-  }, [historyList, activeCourse?.id]);
+  }, [historyList, activeCourse?.id, omittedNotificationIds]);
 
-  // Pending conduct items for current course (without sent notification)
+  // Pending conduct items for current course (without sent notification or global "No enviar")
   const pendingConductItems = useMemo(() => {
     if (!activeCourse) return [];
     return historyList.filter(
       (h) =>
         h.category === 'Disposición' &&
-        isPendingNotificationItem(h, activeCourse.id)
+        isPendingNotificationItem(h, activeCourse.id, omittedNotificationIds)
     );
-  }, [historyList, activeCourse?.id]);
+  }, [historyList, activeCourse?.id, omittedNotificationIds]);
 
   // All pending notification items for current course (both absences and conduct records)
   const pendingAllItems = useMemo(() => {
@@ -232,6 +239,7 @@ export function useCourseAttendanceAndDispositionActions({
       if (item.id === historyItem.id) {
         return {
           ...item,
+          omitNotification: false,
           messageSent: true,
           messageText,
           notificationMethod: channel,
@@ -242,6 +250,7 @@ export function useCourseAttendanceAndDispositionActions({
       return item;
     });
 
+    clearNotificationsNoSend([historyItem.id]);
     setHistoryList(updatedHistory);
     saveAllDispositionStorage(dispositionMap, updatedHistory, {
       courseId: activeCourse?.id,
@@ -250,6 +259,7 @@ export function useCourseAttendanceAndDispositionActions({
 
     api
       .updateDispositionHistoryNotification(historyItem.id, {
+        omitNotification: false,
         messageSent: true,
         messageText,
         notificationMethod: channel,
@@ -572,7 +582,7 @@ export function useCourseAttendanceAndDispositionActions({
         (h) =>
           h.studentId === student.id &&
           h.category === 'Ausencia' &&
-          isPendingNotificationItem(h, activeCourse.id)
+          isPendingNotificationItem(h, activeCourse.id, omittedNotificationIds)
       );
 
       if (existingPending) {
@@ -703,6 +713,7 @@ export function useCourseAttendanceAndDispositionActions({
     const total = batchAbsenceModal.selectedItems.length;
     let sentCount = 0;
 
+    const sentIds: string[] = [];
     const updatedHistoryItems: StudentHistoryItem[] = [...historyList];
 
     for (let i = 0; i < total; i++) {
@@ -748,6 +759,7 @@ export function useCourseAttendanceAndDispositionActions({
       if (idx !== -1) {
         updatedHistoryItems[idx] = {
           ...updatedHistoryItems[idx],
+          omitNotification: false,
           messageSent: true,
           messageText: personalizedMessage,
           notificationMethod: channel,
@@ -755,9 +767,11 @@ export function useCourseAttendanceAndDispositionActions({
           updatedAt,
         };
       }
+      sentIds.push(historyItem.id);
 
       api
         .updateDispositionHistoryNotification(historyItem.id, {
+          omitNotification: false,
           messageSent: true,
           messageText: personalizedMessage,
           notificationMethod: channel,
@@ -769,6 +783,7 @@ export function useCourseAttendanceAndDispositionActions({
       sentCount++;
     }
 
+    clearNotificationsNoSend(sentIds);
     setHistoryList(updatedHistoryItems);
     saveAllDispositionStorage(dispositionMap, updatedHistoryItems, {
       courseId: activeCourse?.id,
@@ -825,7 +840,7 @@ export function useCourseAttendanceAndDispositionActions({
 
   const toggleSelectAllPendingHistory = () => {
     const pendingIds = courseHistory
-      .filter((item) => isPendingNotificationItem(item))
+      .filter((item) => isPendingNotificationItem(item, undefined, omittedNotificationIds))
       .map((item) => item.id);
     if (selectedPendingHistoryIds.length === pendingIds.length && pendingIds.length > 0) {
       setSelectedPendingHistoryIds([]);
@@ -834,7 +849,7 @@ export function useCourseAttendanceAndDispositionActions({
     }
   };
 
-  // Marcar aviso como "No mandar" (sale de los pendientes pero queda en el historial docente)
+  // Marcar aviso como "No mandar" (sale de los pendientes pero queda en el historial docente y persiste globalmente en Firestore)
   const handleMarkOmitNotification = (item: StudentHistoryItem) => {
     const itemTerm: '1c' | '2c' = item.term === '2c' ? '2c' : activeConcreteTerm;
     const currentMetrics = getStudentMetrics(item.studentId, itemTerm);
@@ -850,6 +865,7 @@ export function useCourseAttendanceAndDispositionActions({
 
     const updatedHistory = historyList.map((h) => (h.id === item.id ? omittedEntry : h));
 
+    markNotificationsAsNoSend([item.id]);
     setHistoryList(updatedHistory);
     saveAllDispositionStorage(dispositionMap, updatedHistory, {
       courseId: activeCourse?.id,
@@ -916,6 +932,7 @@ export function useCourseAttendanceAndDispositionActions({
       return h;
     });
 
+    markNotificationsAsNoSend(omittedBatch.map((x) => x.id));
     setHistoryList(updatedHistory);
     saveAllDispositionStorage(dispositionMap, updatedHistory, {
       courseId: activeCourse?.id,
@@ -956,6 +973,7 @@ export function useCourseAttendanceAndDispositionActions({
       return h;
     });
 
+    markNotificationsAsNoSend(omittedBatch.map((x) => x.id));
     setHistoryList(updatedHistory);
     saveAllDispositionStorage(dispositionMap, updatedHistory, {
       courseId: activeCourse?.id,

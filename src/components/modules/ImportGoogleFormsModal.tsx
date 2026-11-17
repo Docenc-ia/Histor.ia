@@ -319,7 +319,11 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     explicitMaxScore?: number
   ) => {
     const detected = autoDetectGoogleFormsColumns(headers, rows, students);
-    const { filteredHeaders, filteredRows } = filterFormsToIdentityAndScoreOnly(rows, detected);
+    const { filteredHeaders, filteredRows } = filterFormsToIdentityAndScoreOnly(
+      rows,
+      detected,
+      true
+    );
 
     setAvailableHeaders(filteredHeaders.length > 0 ? filteredHeaders : headers);
     setRawRows(filteredRows.length > 0 ? filteredRows : rows);

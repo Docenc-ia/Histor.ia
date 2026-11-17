@@ -450,6 +450,15 @@ export function parseFlexibleCellNumber(
   }
 
   if (columnKind === 'grade') {
+    if (parsedNumber > MAX_GRADE_SCORE && parsedNumber <= 100) {
+      const scaledFromCentesimal = Number(
+        ((parsedNumber / 100) * MAX_GRADE_SCORE).toFixed(TWO_DECIMAL_PRECISION)
+      );
+      return {
+        numVal: scaledFromCentesimal,
+        isValid: true,
+      };
+    }
     return {
       numVal: parsedNumber,
       isValid: parsedNumber >= MIN_GRADE_SCORE && parsedNumber <= MAX_GRADE_SCORE,

@@ -430,7 +430,8 @@ export function filterFormsToIdentityAndScoreOnly(
   detectedColumns: Pick<
     DetectedGoogleFormsColumns,
     'nameCol' | 'secondaryNameCol' | 'emailCol' | 'scoreCol'
-  > & { detectedMaxScore?: number }
+  > & { detectedMaxScore?: number },
+  preserveRawScoreCell = false
 ): {
   filteredHeaders: string[];
   filteredRows: Array<Record<string, any>>;
@@ -467,7 +468,7 @@ export function filterFormsToIdentityAndScoreOnly(
     const cleanRowObject: Record<string, any> = {};
     filteredHeaders.forEach((headerName) => {
       const rawCellVal = rawRow[headerName] !== undefined ? rawRow[headerName] : '';
-      if (headerName === detectedColumns.scoreCol) {
+      if (!preserveRawScoreCell && headerName === detectedColumns.scoreCol) {
         const parsedScore = parseGoogleFormsScoreCell(rawCellVal);
         if (parsedScore.earned !== null) {
           const converted = formatConvertedFormsGrade(

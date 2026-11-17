@@ -128,20 +128,44 @@ export function buildGradeImportCommitPayload(params: {
     }
 
     let resolvedSubcategoryId = columnConfig.targetSubcategoryId || '';
-    const cleanSubcategoryName =
+    let cleanSubcategoryName =
       String(columnConfig.subcategoryName ?? '').trim() || columnConfig.colKey;
 
     if (columnConfig.targetSubcategoryMode === 'existing' && resolvedSubcategoryId) {
-      const existingSubcategory = targetCategory.subcategories.find(
-        (subcategory) => subcategory.id === resolvedSubcategoryId
-      );
-      if (!existingSubcategory) {
-        resolvedSubcategoryId = `sub-imp-${Date.now()}-${columnIndex}`;
-        targetCategory.subcategories.push({
-          id: resolvedSubcategoryId,
-          name: cleanSubcategoryName,
-          maxScore: STANDARD_MAX_SCORE,
-        });
+      if (
+        (resolvedSubcategoryId === '__CATEGORY_DIRECT__' ||
+          resolvedSubcategoryId === targetCategory.id) &&
+        targetCategory.subcategories.length === 0
+      ) {
+        resolvedSubcategoryId = targetCategory.id;
+        cleanSubcategoryName = `${targetCategory.name} (Nota General)`;
+      } else {
+        const existingSubcategory = targetCategory.subcategories.find(
+          (subcategory) => subcategory.id === resolvedSubcategoryId
+        );
+        if (existingSubcategory) {
+          cleanSubcategoryName = existingSubcategory.name;
+        } else {
+          const ownerCategory = workingCategories.find((category) =>
+            category.subcategories.some(
+              (subcategory) => subcategory.id === resolvedSubcategoryId
+            )
+          );
+          const ownerSubcategory = ownerCategory?.subcategories.find(
+            (subcategory) => subcategory.id === resolvedSubcategoryId
+          );
+          if (ownerCategory && ownerSubcategory) {
+            targetCategory = ownerCategory;
+            cleanSubcategoryName = ownerSubcategory.name;
+          } else {
+            resolvedSubcategoryId = `sub-imp-${Date.now()}-${columnIndex}`;
+            targetCategory.subcategories.push({
+              id: resolvedSubcategoryId,
+              name: cleanSubcategoryName,
+              maxScore: STANDARD_MAX_SCORE,
+            });
+          }
+        }
       }
     } else {
       const matchingSubcategoryByName = targetCategory.subcategories.find(
@@ -150,6 +174,7 @@ export function buildGradeImportCommitPayload(params: {
       );
       if (matchingSubcategoryByName) {
         resolvedSubcategoryId = matchingSubcategoryByName.id;
+        cleanSubcategoryName = matchingSubcategoryByName.name;
       } else {
         resolvedSubcategoryId = `sub-imp-${Date.now()}-${columnIndex}`;
         targetCategory.subcategories.push({

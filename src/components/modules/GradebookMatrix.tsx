@@ -424,6 +424,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isFormsModalOpen, setIsFormsModalOpen] = useState(false);
   const [importSourceType, setImportSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>('sheets');
+  const [importTargetColumn, setImportTargetColumn] = useState<{
+    categoryId: string;
+    subcategoryId: string;
+    subcategoryName: string;
+  } | null>(null);
 
   // Double Scrollbar Synchronization: Top scrollbar & Bottom Table scrollbar
   const topScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1176,6 +1181,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  setImportTargetColumn(null);
                   setImportSourceType('sheets');
                   setIsImportModalOpen(true);
                 }}
@@ -1887,6 +1893,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         onMoveCategory={handleMoveCategory}
         onMoveSubcategory={handleMoveSubcategory}
         onMoveSubcategoryToCategory={handleMoveSubcategoryToCategory}
+        onImportIntoColumn={(target, source) => {
+          setImportTargetColumn(target);
+          if (source === 'forms') {
+            setIsImportModalOpen(false);
+            setIsFormsModalOpen(true);
+          } else {
+            setImportSourceType(source);
+            setIsFormsModalOpen(false);
+            setIsImportModalOpen(true);
+          }
+        }}
       />
       {/* Modal: Generar Valoración Preliminar (TEA / TEP) */}
       {isPreliminaryModalOpen && (
@@ -1928,7 +1945,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             onApplyGrades={handleApplyImportedGrades}
             onApplyMultiImport={handleApplyMultiImport}
             historyEntries={gradeHistory}
-            onSwitchToForms={() => {
+            initialTargetColumn={importTargetColumn}
+            onSwitchToForms={(selectedTargetCol) => {
+              if (selectedTargetCol !== undefined) {
+                setImportTargetColumn(selectedTargetCol);
+              }
               setIsImportModalOpen(false);
               setIsFormsModalOpen(true);
             }}
@@ -1952,6 +1973,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             currentTerm={is2c ? '2c' : '1c'}
             isDarkMode={isDarkMode}
             onApplyMultiImport={handleApplyMultiImport}
+            initialTargetColumn={importTargetColumn}
           />
         </Suspense>
       )}

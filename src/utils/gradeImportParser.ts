@@ -1402,8 +1402,12 @@ export function computeMultiVerificationRows(
         columnConfig.targetSubcategoryMode === 'existing' &&
         columnConfig.targetSubcategoryId
       ) {
+        const lookupGradeKey =
+          columnConfig.targetSubcategoryId === '__CATEGORY_DIRECT__'
+            ? columnConfig.targetCategoryId
+            : columnConfig.targetSubcategoryId;
         currentStoredValue = String(
-          activeGradesMap[studentId]?.[columnConfig.targetSubcategoryId] ?? ''
+          activeGradesMap[studentId]?.[lookupGradeKey] ?? ''
         );
       }
     } else if (columnConfig.kind === 'absences') {

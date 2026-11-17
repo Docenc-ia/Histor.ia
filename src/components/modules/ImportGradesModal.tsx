@@ -92,7 +92,18 @@ export interface ImportGradesModalProps {
   }) => void;
   onApplyMultiImport?: (payload: MultiImportApplyPayload) => void;
   historyEntries?: GradeHistoryEntry[];
-  onSwitchToForms?: () => void;
+  onSwitchToForms?: (
+    targetColumn?: {
+      categoryId: string;
+      subcategoryId: string;
+      subcategoryName: string;
+    } | null
+  ) => void;
+  initialTargetColumn?: {
+    categoryId: string;
+    subcategoryId: string;
+    subcategoryName: string;
+  } | null;
 }
 
 function getColLetter(colIndex: number): string {
@@ -125,10 +136,16 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
   onApplyMultiImport,
   historyEntries = [],
   onSwitchToForms,
+  initialTargetColumn = null,
 }) => {
   const [activeStep, setActiveStep] = useState<'upload' | 'verify' | 'history'>('upload');
   const [sourceType, setSourceType] = useState<'file' | 'csv' | 'sheets' | 'paste'>(initialSourceType);
   const [attendanceTargetMode, setAttendanceTargetMode] = useState<'disposition' | 'absences' | 'both'>('disposition');
+  const [preferredTargetColumn, setPreferredTargetColumn] = useState<{
+    categoryId: string;
+    subcategoryId: string;
+    subcategoryName: string;
+  } | null>(initialTargetColumn);
 
   const [selectedTerm, setSelectedTerm] = useState<'1c' | '2c'>(initialTerm);
   const activeCategories = selectedTerm === '1c' ? categories1c : categories2c;
@@ -177,6 +194,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     if (isOpen) {
       setSourceType(initialSourceType);
       setActiveStep('upload');
+      setPreferredTargetColumn(initialTargetColumn || null);
       let defaultTarget: 'disposition' | 'absences' | 'both' = 'disposition';
       try {
         const storedTarget = sessionStorage.getItem('docencia_import_attendance_target_mode');
@@ -202,7 +220,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         setQuickPastePreset('auto');
       }
     }
-  }, [isOpen, initialSourceType, importContext]);
+  }, [isOpen, initialSourceType, importContext, initialTargetColumn]);
 
   // Multi-column auto-detection states
   const [detectedColumns, setDetectedColumns] = useState<DetectedColumnConfig[]>([]);
@@ -391,7 +409,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     setSelectedSecondaryNameColumn(secondaryNameCol);
     setSelectedEmailColumn(emailCol);
 
-    const detected =
+    const rawDetected =
       effectiveOverride?.colConfigs ||
       autoDetectColumnsConfiguration(
         effectiveCols,
@@ -403,6 +421,22 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         attendanceTargetMode,
         effectiveRows
       );
+
+    const detected =
+      importContext === 'grades' && preferredTargetColumn
+        ? rawDetected.map((c) =>
+            c.kind === 'grade'
+              ? {
+                  ...c,
+                  targetCategoryMode: 'existing' as const,
+                  targetCategoryId: preferredTargetColumn.categoryId,
+                  targetSubcategoryMode: 'existing' as const,
+                  targetSubcategoryId: preferredTargetColumn.subcategoryId,
+                  subcategoryName: preferredTargetColumn.subcategoryName,
+                }
+              : c
+          )
+        : rawDetected;
 
     setDetectedColumns(detected);
     buildMultiVerificationRows(
@@ -1079,6 +1113,117 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         {/* ========================================================================= */}
         {activeStep === 'upload' && (
           <div className="p-5 overflow-y-auto space-y-5 flex-1">
+            {/* Selector de Columna Destino en Calificaciones (permite elegir columna existente con notas como "Dictadura" o crear una nueva) */}
+            {importContext === 'grades' && (
+              <div
+                className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                  preferredTargetColumn
+                    ? isDarkMode
+                      ? 'bg-emerald-950/35 border-emerald-500/60'
+                      : 'bg-emerald-50/80 border-emerald-300'
+                    : isDarkMode
+                    ? 'bg-slate-850/70 border-slate-750'
+                    : 'bg-blue-50/40 border-blue-200'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <Layers
+                    className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      preferredTargetColumn
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-blue-600 dark:text-blue-400'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold flex items-center gap-2 flex-wrap">
+                      <span>Columna de destino para la nota:</span>
+                      {preferredTargetColumn && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-600 text-white">
+                          📌 Destino: {preferredTargetColumn.subcategoryName}
+                        </span>
+                      )}
+                    </div>
+                    <p
+                      className={`text-[11px] mt-0.5 ${
+                        isDarkMode ? 'text-slate-400' : 'text-neutral-600'
+                      }`}
+                    >
+                      Podés importar las notas dentro de una <strong>columna que ya exista</strong> (incluso si ya tiene notas cargadas) o generar una columna nueva.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="w-full sm:w-auto sm:min-w-[290px] shrink-0">
+                  <select
+                    value={
+                      preferredTargetColumn
+                        ? `${preferredTargetColumn.categoryId}:::${preferredTargetColumn.subcategoryId}`
+                        : '__NEW__'
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__NEW__') {
+                        setPreferredTargetColumn(null);
+                      } else {
+                        const [catId, subId] = val.split(':::');
+                        const catObj = activeCategories.find((c) => c.id === catId);
+                        if (!catObj) return;
+                        if (subId === '__CATEGORY_DIRECT__') {
+                          setPreferredTargetColumn({
+                            categoryId: catObj.id,
+                            subcategoryId: '__CATEGORY_DIRECT__',
+                            subcategoryName: catObj.name,
+                          });
+                        } else {
+                          const subObj = catObj.subcategories.find((s) => s.id === subId);
+                          if (subObj) {
+                            setPreferredTargetColumn({
+                              categoryId: catObj.id,
+                              subcategoryId: subObj.id,
+                              subcategoryName: subObj.name,
+                            });
+                          }
+                        }
+                      }
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl border text-xs font-bold outline-hidden cursor-pointer ${
+                      preferredTargetColumn
+                        ? isDarkMode
+                          ? 'bg-slate-900 border-emerald-500 text-emerald-300'
+                          : 'bg-white border-emerald-500 text-emerald-900 shadow-2xs'
+                        : isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-slate-200'
+                        : 'bg-white border-neutral-300 text-neutral-800'
+                    }`}
+                  >
+                    <option value="__NEW__">
+                      ✨ + Crear columna nueva (o elegir en el paso 2)
+                    </option>
+                    {activeCategories.map((cat) => (
+                      <optgroup key={cat.id} label={`Categoría: ${cat.name}`}>
+                        {cat.subcategories.map((sub) => {
+                          const existingCount = students.filter(
+                            (st) => String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
+                          ).length;
+                          return (
+                            <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
+                              📌 Columna existente: {sub.name}
+                              {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                            </option>
+                          );
+                        })}
+                        {cat.subcategories.length === 0 && (
+                          <option value={`${cat.id}:::__CATEGORY_DIRECT__`}>
+                            📌 {cat.name} (Nota General)
+                          </option>
+                        )}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+
             {/* Tarjetas de origen unificadas */}
             <div
               className={`grid grid-cols-1 ${
@@ -1088,7 +1233,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
               {importContext === 'grades' && onSwitchToForms && (
                 <button
                   type="button"
-                  onClick={onSwitchToForms}
+                  onClick={() => onSwitchToForms(preferredTargetColumn)}
                   className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5 ${
                     isDarkMode
                       ? 'bg-purple-950/40 border-purple-500/50 text-purple-200 hover:bg-purple-950/60'
@@ -2248,15 +2393,51 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                               }
                               onChange={(e) => {
                                 if (e.target.value === '__NEW_CAT__') {
+                                  setPreferredTargetColumn(null);
                                   handleUpdateColumnConfig(colCfg.colKey, {
                                     targetCategoryMode: 'new',
                                     newCategoryName: colCfg.newCategoryName || colCfg.colKey,
+                                    targetSubcategoryMode: 'new',
+                                    targetSubcategoryId: '',
                                   });
                                 } else {
-                                  handleUpdateColumnConfig(colCfg.colKey, {
-                                    targetCategoryMode: 'existing',
-                                    targetCategoryId: e.target.value,
-                                  });
+                                  const nextCatId = e.target.value;
+                                  const nextCat = activeCategories.find((c) => c.id === nextCatId);
+                                  if (colCfg.targetSubcategoryMode === 'existing' && nextCat) {
+                                    const firstSub = nextCat.subcategories[0];
+                                    if (firstSub) {
+                                      setPreferredTargetColumn({
+                                        categoryId: nextCat.id,
+                                        subcategoryId: firstSub.id,
+                                        subcategoryName: firstSub.name,
+                                      });
+                                      handleUpdateColumnConfig(colCfg.colKey, {
+                                        targetCategoryMode: 'existing',
+                                        targetCategoryId: nextCat.id,
+                                        targetSubcategoryMode: 'existing',
+                                        targetSubcategoryId: firstSub.id,
+                                        subcategoryName: firstSub.name,
+                                      });
+                                    } else {
+                                      setPreferredTargetColumn({
+                                        categoryId: nextCat.id,
+                                        subcategoryId: '__CATEGORY_DIRECT__',
+                                        subcategoryName: nextCat.name,
+                                      });
+                                      handleUpdateColumnConfig(colCfg.colKey, {
+                                        targetCategoryMode: 'existing',
+                                        targetCategoryId: nextCat.id,
+                                        targetSubcategoryMode: 'existing',
+                                        targetSubcategoryId: '__CATEGORY_DIRECT__',
+                                        subcategoryName: nextCat.name,
+                                      });
+                                    }
+                                  } else {
+                                    handleUpdateColumnConfig(colCfg.colKey, {
+                                      targetCategoryMode: 'existing',
+                                      targetCategoryId: nextCatId,
+                                    });
+                                  }
                                 }
                               }}
                               className={`w-full px-2.5 py-1.5 rounded-lg border font-medium outline-hidden ${
@@ -2290,24 +2471,217 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             )}
                           </div>
 
-                          {/* Nombre de la evaluación / subcategoría */}
+                          {/* Columna / Evaluación de destino (permite elegir cualquier columna existente con o sin notas, o crear una nueva) */}
                           <div>
-                            <span className="block font-semibold text-neutral-500 dark:text-slate-400 mb-0.5">
-                              Nombre de Evaluación / Nota:
-                            </span>
-                            <input
-                              type="text"
-                              value={colCfg.subcategoryName}
-                              onChange={(e) =>
-                                handleUpdateColumnConfig(colCfg.colKey, {
-                                  subcategoryName: e.target.value,
-                                })
-                              }
-                              placeholder="Ej. TP 1 / Parcial 1"
-                              className={`w-full px-2.5 py-1.5 rounded-lg border font-semibold ${
-                                isDarkMode ? 'bg-slate-900 border-slate-700' : 'bg-white border-neutral-300'
-                              }`}
-                            />
+                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                              <span className="font-semibold text-neutral-500 dark:text-slate-400">
+                                Columna / Evaluación de destino:
+                              </span>
+                              {colCfg.targetCategoryMode === 'existing' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const currentCat = activeCategories.find(
+                                      (c) => c.id === colCfg.targetCategoryId
+                                    );
+                                    const firstSub = currentCat?.subcategories[0];
+                                    if (colCfg.targetSubcategoryMode === 'existing') {
+                                      handleUpdateColumnConfig(colCfg.colKey, {
+                                        targetSubcategoryMode: 'new',
+                                        targetSubcategoryId: '',
+                                        subcategoryName: colCfg.subcategoryName || colCfg.colKey,
+                                      });
+                                    } else if (firstSub) {
+                                      handleUpdateColumnConfig(colCfg.colKey, {
+                                        targetSubcategoryMode: 'existing',
+                                        targetSubcategoryId: firstSub.id,
+                                        subcategoryName: firstSub.name,
+                                      });
+                                    } else if (currentCat && currentCat.subcategories.length === 0) {
+                                      handleUpdateColumnConfig(colCfg.colKey, {
+                                        targetSubcategoryMode: 'existing',
+                                        targetSubcategoryId: '__CATEGORY_DIRECT__',
+                                        subcategoryName: currentCat.name,
+                                      });
+                                    }
+                                  }}
+                                  className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                                >
+                                  {colCfg.targetSubcategoryMode === 'existing'
+                                    ? '+ Crear columna nueva'
+                                    : 'Elegir columna existente'}
+                                </button>
+                              )}
+                            </div>
+
+                            {colCfg.targetCategoryMode === 'existing' && (
+                              <select
+                                value={
+                                  colCfg.targetSubcategoryMode === 'existing' &&
+                                  colCfg.targetSubcategoryId
+                                    ? `${colCfg.targetCategoryId}:::${colCfg.targetSubcategoryId}`
+                                    : '__NEW_SUB__'
+                                }
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  if (val === '__NEW_SUB__') {
+                                    setPreferredTargetColumn(null);
+                                    handleUpdateColumnConfig(colCfg.colKey, {
+                                      targetSubcategoryMode: 'new',
+                                      targetSubcategoryId: '',
+                                      subcategoryName: colCfg.subcategoryName || colCfg.colKey,
+                                    });
+                                    return;
+                                  }
+
+                                  const [chosenCatId, chosenSubId] = val.split(':::');
+                                  const chosenCat = activeCategories.find(
+                                    (c) => c.id === chosenCatId
+                                  );
+                                  if (!chosenCat) return;
+
+                                  if (chosenSubId === '__CATEGORY_DIRECT__') {
+                                    const nextTarget = {
+                                      categoryId: chosenCat.id,
+                                      subcategoryId: '__CATEGORY_DIRECT__',
+                                      subcategoryName: chosenCat.name,
+                                    };
+                                    setPreferredTargetColumn(nextTarget);
+                                    handleUpdateColumnConfig(colCfg.colKey, {
+                                      targetCategoryMode: 'existing',
+                                      targetCategoryId: chosenCat.id,
+                                      targetSubcategoryMode: 'existing',
+                                      targetSubcategoryId: '__CATEGORY_DIRECT__',
+                                      subcategoryName: chosenCat.name,
+                                    });
+                                  } else {
+                                    const chosenSub = chosenCat.subcategories.find(
+                                      (s) => s.id === chosenSubId
+                                    );
+                                    if (!chosenSub) return;
+                                    const nextTarget = {
+                                      categoryId: chosenCat.id,
+                                      subcategoryId: chosenSub.id,
+                                      subcategoryName: chosenSub.name,
+                                    };
+                                    setPreferredTargetColumn(nextTarget);
+                                    handleUpdateColumnConfig(colCfg.colKey, {
+                                      targetCategoryMode: 'existing',
+                                      targetCategoryId: chosenCat.id,
+                                      targetSubcategoryMode: 'existing',
+                                      targetSubcategoryId: chosenSub.id,
+                                      subcategoryName: chosenSub.name,
+                                    });
+                                  }
+                                }}
+                                className={`w-full px-2.5 py-1.5 rounded-lg border font-semibold outline-hidden cursor-pointer ${
+                                  colCfg.targetSubcategoryMode === 'existing'
+                                    ? isDarkMode
+                                      ? 'bg-slate-900 border-emerald-600 text-emerald-300'
+                                      : 'bg-emerald-50/70 border-emerald-400 text-emerald-900'
+                                    : isDarkMode
+                                    ? 'bg-slate-900 border-slate-700'
+                                    : 'bg-neutral-50 border-neutral-300'
+                                }`}
+                              >
+                                {(() => {
+                                  const selectedCat = activeCategories.find(
+                                    (c) => c.id === colCfg.targetCategoryId
+                                  );
+                                  const otherCats = activeCategories.filter(
+                                    (c) => c.id !== colCfg.targetCategoryId
+                                  );
+                                  return (
+                                    <>
+                                      {selectedCat && selectedCat.subcategories.length > 0 && (
+                                        <optgroup
+                                          label={`Columnas existentes en "${selectedCat.name}"`}
+                                        >
+                                          {selectedCat.subcategories.map((sub) => {
+                                            const existingCount = students.filter(
+                                              (st) =>
+                                                String(
+                                                  activeGradesMap[st.id]?.[sub.id] ?? ''
+                                                ).trim() !== ''
+                                            ).length;
+                                            return (
+                                              <option
+                                                key={sub.id}
+                                                value={`${selectedCat.id}:::${sub.id}`}
+                                              >
+                                                📌 Columna existente: {sub.name}
+                                                {existingCount > 0
+                                                  ? ` (${existingCount} notas cargadas)`
+                                                  : ''}
+                                              </option>
+                                            );
+                                          })}
+                                        </optgroup>
+                                      )}
+                                      {selectedCat && selectedCat.subcategories.length === 0 && (
+                                        <option
+                                          value={`${selectedCat.id}:::__CATEGORY_DIRECT__`}
+                                        >
+                                          📌 Nota General de "{selectedCat.name}"
+                                        </option>
+                                      )}
+                                      {otherCats.map((otherCat) =>
+                                        otherCat.subcategories.length > 0 ? (
+                                          <optgroup
+                                            key={otherCat.id}
+                                            label={`Otras columnas (${otherCat.name})`}
+                                          >
+                                            {otherCat.subcategories.map((sub) => {
+                                              const existingCount = students.filter(
+                                                (st) =>
+                                                  String(
+                                                    activeGradesMap[st.id]?.[sub.id] ?? ''
+                                                  ).trim() !== ''
+                                              ).length;
+                                              return (
+                                                <option
+                                                  key={sub.id}
+                                                  value={`${otherCat.id}:::${sub.id}`}
+                                                >
+                                                  📌 {otherCat.name} → {sub.name}
+                                                  {existingCount > 0
+                                                    ? ` (${existingCount} notas cargadas)`
+                                                    : ''}
+                                                </option>
+                                              );
+                                            })}
+                                          </optgroup>
+                                        ) : null
+                                      )}
+                                      <option value="__NEW_SUB__">
+                                        ✨ + Crear nueva columna de evaluación...
+                                      </option>
+                                    </>
+                                  );
+                                })()}
+                              </select>
+                            )}
+
+                            {(colCfg.targetCategoryMode === 'new' ||
+                              colCfg.targetSubcategoryMode === 'new') && (
+                              <input
+                                type="text"
+                                value={colCfg.subcategoryName}
+                                onChange={(e) =>
+                                  handleUpdateColumnConfig(colCfg.colKey, {
+                                    subcategoryName: e.target.value,
+                                  })
+                                }
+                                placeholder="Nombre de la nueva columna (ej. Dictadura / TP 1)"
+                                className={`${
+                                  colCfg.targetCategoryMode === 'existing' ? 'mt-1 ' : ''
+                                }w-full px-2.5 py-1.5 rounded-lg border font-semibold ${
+                                  isDarkMode
+                                    ? 'bg-slate-900 border-slate-700'
+                                    : 'bg-white border-neutral-300'
+                                }`}
+                              />
+                            )}
                           </div>
                         </div>
                       )}

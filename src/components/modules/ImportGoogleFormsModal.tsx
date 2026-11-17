@@ -64,6 +64,11 @@ export interface ImportGoogleFormsModalProps {
   currentTerm: '1c' | '2c';
   isDarkMode: boolean;
   onApplyMultiImport: (payload: MultiImportApplyPayload) => void;
+  initialTargetColumn?: {
+    categoryId: string;
+    subcategoryId: string;
+    subcategoryName: string;
+  } | null;
 }
 
 export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
@@ -79,6 +84,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   currentTerm: initialTerm,
   isDarkMode,
   onApplyMultiImport,
+  initialTargetColumn = null,
 }) => {
   const [step, setStep] = useState<'source' | 'review'>('source');
   // 'forms_direct' = Cargar el Google Forms en sí (o Hoja de Google Drive)
@@ -98,6 +104,9 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   const [targetColumnMode, setTargetColumnMode] = useState<'existing_sub' | 'new_sub'>('new_sub');
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<string>('');
   const [newSubcategoryName, setNewSubcategoryName] = useState<string>('Evaluación Forms');
+  const [userLockedTargetColumn, setUserLockedTargetColumn] = useState<boolean>(
+    Boolean(initialTargetColumn)
+  );
 
   // Loaded data state
   const [sourceTitle, setSourceTitle] = useState<string>('');
@@ -143,10 +152,27 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
     setSelectedTerm(initialTerm);
     setStep('source');
     setRemoteError(null);
-  }, [isOpen, initialTerm]);
+    if (initialTargetColumn) {
+      setTargetCategoryMode('existing');
+      setSelectedCategoryId(initialTargetColumn.categoryId);
+      setTargetColumnMode('existing_sub');
+      setSelectedSubcategoryId(initialTargetColumn.subcategoryId);
+      setNewSubcategoryName(initialTargetColumn.subcategoryName);
+      setUserLockedTargetColumn(true);
+    } else {
+      setUserLockedTargetColumn(false);
+    }
+  }, [isOpen, initialTerm, initialTargetColumn]);
 
   useEffect(() => {
     const cats = selectedTerm === '1c' ? categories1c : categories2c;
+    if (initialTargetColumn && cats.some((c) => c.id === initialTargetColumn.categoryId)) {
+      setTargetCategoryMode('existing');
+      setSelectedCategoryId(initialTargetColumn.categoryId);
+      setTargetColumnMode('existing_sub');
+      setSelectedSubcategoryId(initialTargetColumn.subcategoryId);
+      return;
+    }
     if (cats.length > 0) {
       setTargetCategoryMode('existing');
       const evalCat =
@@ -165,7 +191,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
       setNewCategoryName('Evaluaciones');
       setTargetColumnMode('new_sub');
     }
-  }, [selectedTerm, categories1c, categories2c]);
+  }, [selectedTerm, categories1c, categories2c, initialTargetColumn]);
 
   const selectedCategoryObj = useMemo(
     () => activeCategories.find((c) => c.id === selectedCategoryId) || activeCategories[0],
@@ -322,24 +348,29 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
 
     const cats = selectedTerm === '1c' ? categories1c : categories2c;
     const currentCat = cats.find((c) => c.id === selectedCategoryId) || cats[0];
-    let initialColMode: 'existing_sub' | 'new_sub' =
-      currentCat && currentCat.subcategories.length > 0 ? 'existing_sub' : 'new_sub';
-    let initialSubId =
-      currentCat && currentCat.subcategories.length > 0
-        ? currentCat.subcategories[0].id
-        : '';
+    let initialColMode: 'existing_sub' | 'new_sub' = targetColumnMode;
+    let initialSubId = selectedSubcategoryId;
 
-    if (currentCat && cleanEvalTitle) {
-      const matchingSub = currentCat.subcategories.find(
-        (s) => normalizeImportText(s.name) === normalizeImportText(cleanEvalTitle)
-      );
-      if (matchingSub) {
-        initialColMode = 'existing_sub';
-        initialSubId = matchingSub.id;
+    if (!userLockedTargetColumn) {
+      initialColMode =
+        currentCat && currentCat.subcategories.length > 0 ? 'existing_sub' : 'new_sub';
+      initialSubId =
+        currentCat && currentCat.subcategories.length > 0
+          ? currentCat.subcategories[0].id
+          : '';
+
+      if (currentCat && cleanEvalTitle) {
+        const matchingSub = currentCat.subcategories.find(
+          (s) => normalizeImportText(s.name) === normalizeImportText(cleanEvalTitle)
+        );
+        if (matchingSub) {
+          initialColMode = 'existing_sub';
+          initialSubId = matchingSub.id;
+        }
       }
+      setTargetColumnMode(initialColMode);
+      setSelectedSubcategoryId(initialSubId);
     }
-    setTargetColumnMode(initialColMode);
-    setSelectedSubcategoryId(initialSubId);
 
     recomputeFormsMatching(
       filteredRows.length > 0 ? filteredRows : rows,
@@ -748,6 +779,94 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {step === 'source' ? (
             <div className="space-y-5">
+              {/* Selector rápido de columna de destino en Paso 1 */}
+              <div
+                className={`p-3.5 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                  targetColumnMode === 'existing_sub' && selectedSubcategoryId
+                    ? isDarkMode
+                      ? 'bg-purple-950/35 border-purple-500/60'
+                      : 'bg-purple-50/80 border-purple-300'
+                    : isDarkMode
+                    ? 'bg-slate-800/60 border-slate-700'
+                    : 'bg-neutral-50 border-neutral-200'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0">
+                  <Layers className="w-4 h-4 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold flex items-center gap-2 flex-wrap">
+                      <span>Columna de destino en Calificaciones:</span>
+                      {targetColumnMode === 'existing_sub' && selectedSubcategoryId && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-purple-600 text-white">
+                          📌{' '}
+                          {selectedSubcategoryId === '__CATEGORY_DIRECT__'
+                            ? selectedCategoryObj?.name
+                            : selectedCategoryObj?.subcategories.find(
+                                (s) => s.id === selectedSubcategoryId
+                              )?.name || 'Columna existente'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
+                      Podés volcar las notas en una <strong>columna que ya tenga notas</strong> (como Dictadura) o crear una columna nueva.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="w-full sm:w-auto sm:min-w-[290px] shrink-0">
+                  <select
+                    value={
+                      targetColumnMode === 'existing_sub' && selectedSubcategoryId
+                        ? `${selectedCategoryId}:::${selectedSubcategoryId}`
+                        : '__NEW_COL__'
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setUserLockedTargetColumn(true);
+                      if (val === '__NEW_COL__') {
+                        setTargetColumnMode('new_sub');
+                        setSelectedSubcategoryId('');
+                      } else {
+                        const [catId, subId] = val.split(':::');
+                        setTargetCategoryMode('existing');
+                        setSelectedCategoryId(catId);
+                        setTargetColumnMode('existing_sub');
+                        setSelectedSubcategoryId(subId);
+                      }
+                    }}
+                    className={`w-full px-3 py-2 rounded-xl border text-xs font-bold focus:outline-none cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-slate-900 border-slate-700 text-white'
+                        : 'bg-white border-neutral-300 text-neutral-900'
+                    }`}
+                  >
+                    <option value="__NEW_COL__">
+                      ✨ + Crear nueva columna de evaluación
+                    </option>
+                    {activeCategories.map((cat) => (
+                      <optgroup key={cat.id} label={`Categoría: ${cat.name}`}>
+                        {cat.subcategories.map((sub) => {
+                          const existingCount = students.filter(
+                            (st) => String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
+                          ).length;
+                          return (
+                            <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
+                              📌 Columna existente: {sub.name}
+                              {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                            </option>
+                          );
+                        })}
+                        {cat.subcategories.length === 0 && (
+                          <option value={`${cat.id}:::__CATEGORY_DIRECT__`}>
+                            📌 {cat.name} (Nota General)
+                          </option>
+                        )}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
               {/* Source Method Selector */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                 <button
@@ -1122,20 +1241,26 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                     </label>
                     <select
                       value={
-                        targetColumnMode === 'new_sub'
+                        targetColumnMode === 'new_sub' || !selectedSubcategoryId
                           ? '__NEW_COL__'
-                          : selectedSubcategoryId
+                          : `${selectedCategoryId}:::${selectedSubcategoryId}`
                       }
                       onChange={(e) => {
                         const val = e.target.value;
+                        setUserLockedTargetColumn(true);
                         if (val === '__NEW_COL__') {
                           handleMappingOrScaleChange({
                             nextColMode: 'new_sub',
                           });
                         } else {
+                          const [catId, subId] = val.split(':::');
+                          if (catId && catId !== selectedCategoryId) {
+                            setTargetCategoryMode('existing');
+                            setSelectedCategoryId(catId);
+                          }
                           handleMappingOrScaleChange({
                             nextColMode: 'existing_sub',
-                            nextSubId: val,
+                            nextSubId: subId,
                           });
                         }
                       }}
@@ -1147,18 +1272,54 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                     >
                       {targetCategoryMode === 'existing' &&
                         selectedCategoryObj &&
-                        selectedCategoryObj.subcategories.map((sub) => (
-                          <option key={sub.id} value={sub.id}>
-                            📌 Columna existente: {sub.name}
-                          </option>
-                        ))}
+                        selectedCategoryObj.subcategories.length > 0 && (
+                          <optgroup label={`Columnas en "${selectedCategoryObj.name}"`}>
+                            {selectedCategoryObj.subcategories.map((sub) => {
+                              const existingCount = students.filter(
+                                (st) =>
+                                  String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
+                              ).length;
+                              return (
+                                <option
+                                  key={sub.id}
+                                  value={`${selectedCategoryObj.id}:::${sub.id}`}
+                                >
+                                  📌 Columna existente: {sub.name}
+                                  {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                                </option>
+                              );
+                            })}
+                          </optgroup>
+                        )}
                       {targetCategoryMode === 'existing' &&
                         selectedCategoryObj &&
                         selectedCategoryObj.subcategories.length === 0 && (
-                          <option value="__CATEGORY_DIRECT__">
+                          <option value={`${selectedCategoryObj.id}:::__CATEGORY_DIRECT__`}>
                             📌 Nota General de "{selectedCategoryObj.name}"
                           </option>
                         )}
+                      {targetCategoryMode === 'existing' &&
+                        activeCategories
+                          .filter((c) => c.id !== selectedCategoryObj?.id && c.subcategories.length > 0)
+                          .map((otherCat) => (
+                            <optgroup
+                              key={otherCat.id}
+                              label={`Otras columnas (${otherCat.name})`}
+                            >
+                              {otherCat.subcategories.map((sub) => {
+                                const existingCount = students.filter(
+                                  (st) =>
+                                    String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
+                                ).length;
+                                return (
+                                  <option key={sub.id} value={`${otherCat.id}:::${sub.id}`}>
+                                    📌 {otherCat.name} → {sub.name}
+                                    {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                                  </option>
+                                );
+                              })}
+                            </optgroup>
+                          ))}
                       <option value="__NEW_COL__">✨ + Crear nueva columna de evaluación</option>
                     </select>
 

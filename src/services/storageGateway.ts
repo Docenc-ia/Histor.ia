@@ -154,7 +154,23 @@ export const storageGateway = {
   },
 
   /**
-   * Collects all teacher-scoped `fds_*` and `docencia_*` localStorage keys for full backup export.
+   * Returns true if a localStorage key holds authentication tokens, session secrets,
+   * password digests, or logout flags that must never be exported or overwritten by backups.
+   */
+  isSensitiveAuthStorageKey(key: string): boolean {
+    const lower = String(key || '').toLowerCase();
+    return (
+      lower.includes('token') ||
+      lower.includes('secret') ||
+      lower.includes('credential') ||
+      lower.includes('password') ||
+      lower.includes('explicit_logout')
+    );
+  },
+
+  /**
+   * Collects all teacher-scoped `fds_*` and `docencia_*` localStorage keys for full backup export,
+   * strictly excluding authentication tokens, session secrets, and password digests.
    */
   collectTeacherScopedSnapshot(): Record<string, any> {
     if (typeof window === 'undefined') return {};
@@ -167,7 +183,7 @@ export const storageGateway = {
       if (
         key &&
         (key.startsWith('fds_') || key.startsWith('docencia_')) &&
-        !key.includes('token')
+        !this.isSensitiveAuthStorageKey(key)
       ) {
         const belongsToTeacher = uid
           ? key.endsWith(`_${uid}`) || (isOwner && !key.includes('_usr_'))

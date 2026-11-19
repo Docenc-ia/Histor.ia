@@ -15,6 +15,7 @@ import {
   isValidGoogleAccessToken,
 } from './googleAuth';
 import { fetchArbitrarySpreadsheetDataHelper } from './sheetsHelpers';
+import { expressAuthFetch } from '../expressAuthHeaders';
 
 export interface GoogleFormListItem {
   id: string;
@@ -156,7 +157,7 @@ export const formsService = {
     let resolvedResponderId = responderIdHint;
 
     try {
-      const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+      const proxyRes = await expressAuthFetch('/api/workspace/fetch-remote-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

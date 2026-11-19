@@ -17,6 +17,8 @@ import { getUserScopedItem, setUserScopedItem } from '../services/storageHelpers
 import { AttendanceSettings, saveCourseAttendanceSettings } from '../utils/attendanceCalculations';
 import { touchCourseDataLru, putCourseSnapshotInLru } from '../utils/lruCourseCache';
 import { subscribeAppEvents } from '../utils/appEventBus';
+import { openExternalUrl } from '../utils/openExternalUrl';
+import { expressAuthFetch } from '../services/expressAuthHeaders';
 
 interface UseCourseRosterAndScheduleParams {
   courses: Course[];
@@ -274,7 +276,7 @@ export function useCourseRosterAndSchedule({
         } catch (_) {}
       }
 
-      await fetch('/api/calendar/sync-course-schedules', {
+      await expressAuthFetch('/api/calendar/sync-course-schedules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetCourseId: calendarModalCourse.id }),
@@ -539,8 +541,9 @@ export function useCourseRosterAndSchedule({
         }
         const res = await gmailService.sendEmail(student.email, subject, messageText);
         if (!res.success) {
-          window.open(
-            `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageText)}`
+          openExternalUrl(
+            `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(messageText)}`,
+            false
           );
         }
       } else if (channel === 'classroom') {
@@ -551,7 +554,7 @@ export function useCourseRosterAndSchedule({
         const waUrl = phone
           ? `https://wa.me/${phone}?text=${encodeURIComponent(messageText)}`
           : `https://wa.me/?text=${encodeURIComponent(messageText)}`;
-        window.open(waUrl, '_blank');
+        openExternalUrl(waUrl);
       }
 
       const now = new Date();

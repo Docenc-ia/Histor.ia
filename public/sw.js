@@ -1,5 +1,5 @@
 // Service Worker for Docenc.IA PWA - Instant Static Asset & Offline Caching
-const CACHE_VERSION = 'v2.0';
+const CACHE_VERSION = 'v2.1';
 const CACHE_PREFIX = 'docencia-pwa-';
 const SHELL_CACHE = `${CACHE_PREFIX}shell-${CACHE_VERSION}`;
 const STATIC_CODE_CACHE = `${CACHE_PREFIX}code-${CACHE_VERSION}`;
@@ -179,11 +179,18 @@ function shouldBypassRequest(request, url) {
     return true;
   }
 
-  // Bypass Vite HMR / dev virtual modules if running in dev
+  // Bypass Vite HMR, dev source modules, and preview virtual paths so dynamic imports never fail or go stale
   if (
     url.pathname.startsWith('/@vite') ||
     url.pathname.startsWith('/@react-refresh') ||
-    url.pathname.startsWith('/node_modules/')
+    url.pathname.startsWith('/@fs/') ||
+    url.pathname.startsWith('/@id/') ||
+    url.pathname.startsWith('/__vite_ping') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/node_modules/') ||
+    url.pathname.startsWith('/assets/aistudio/') ||
+    url.searchParams.has('t') ||
+    url.searchParams.has('import')
   ) {
     return true;
   }
@@ -213,6 +220,26 @@ function shouldBypassRequest(request, url) {
 }
 
 /**
+ * Validates whether a network response is safe to store in a given cache bucket.
+ * Prevents caching SPA HTML fallbacks (text/html) as JS/CSS bundles and respects Cache-Control: no-store.
+ */
+function isCacheableResponse(response, cacheName) {
+  if (!response) return false;
+  if (response.type === 'opaque') return true;
+  if (response.status !== 200) return false;
+
+  const cacheControl = (response.headers.get('cache-control') || '').toLowerCase();
+  if (cacheControl.includes('no-store')) return false;
+
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  if (cacheName === STATIC_CODE_CACHE) {
+    // Never poison JS/CSS cache with HTML error/fallback pages
+    if (contentType.includes('text/html')) return false;
+  }
+  return true;
+}
+
+/**
  * Cache-First strategy: returns cached response immediately if present;
  * otherwise fetches from network, stores in cache, and returns response.
  */
@@ -225,10 +252,7 @@ async function cacheFirst(request, cacheName, maxEntries) {
 
   try {
     const networkResponse = await fetch(request);
-    if (
-      networkResponse &&
-      (networkResponse.status === 200 || networkResponse.type === 'opaque')
-    ) {
+    if (isCacheableResponse(networkResponse, cacheName)) {
       cache.put(request, networkResponse.clone()).then(() => {
         if (maxEntries) trimCache(cacheName, maxEntries);
       }).catch(() => {});
@@ -251,10 +275,7 @@ async function staleWhileRevalidate(request, cacheName, maxEntries) {
 
   const networkPromise = fetch(request)
     .then((networkResponse) => {
-      if (
-        networkResponse &&
-        (networkResponse.status === 200 || networkResponse.type === 'opaque')
-      ) {
+      if (isCacheableResponse(networkResponse, cacheName)) {
         cache.put(request, networkResponse.clone()).then(() => {
           if (maxEntries) trimCache(cacheName, maxEntries);
         }).catch(() => {});
@@ -278,7 +299,8 @@ async function handleNavigationRequest(request) {
     (await shellCache.match('/'));
 
   const fetchAndUpdateShell = fetch(request).then((response) => {
-    if (response && response.status === 200) {
+    const contentType = (response?.headers?.get('content-type') || '').toLowerCase();
+    if (response && response.status === 200 && contentType.includes('text/html')) {
       shellCache.put('/index.html', response.clone()).catch(() => {});
     }
     return response;

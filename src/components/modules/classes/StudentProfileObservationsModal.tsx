@@ -240,9 +240,7 @@ export const StudentProfileObservationsModal: React.FC<StudentProfileObservation
 
           <div className="flex items-center gap-2 shrink-0">
             <a
-              href={`?course=${activeCourse?.id || ''}&view=course_detail&studentId=${selectedStudentForProfile.id}${
-                user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''
-              }`}
+              href={`?course=${activeCourse?.id || ''}&view=course_detail&studentId=${selectedStudentForProfile.id}`}
               target="_blank"
               rel="noopener noreferrer"
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shadow-2xs ${

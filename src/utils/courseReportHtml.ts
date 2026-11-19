@@ -47,6 +47,8 @@ export interface GenerateCourseReportHtmlParams {
   schoolName: string;
   teacherName: string;
   currentDate: string;
+  schoolYear?: string;
+  minAttendancePercent?: number;
   effectiveReason: string;
   stats: CourseReportStats;
   consolidatedStudents: ConsolidatedStudentReportRow[];
@@ -67,6 +69,8 @@ export function generateCourseReportHtml({
   schoolName,
   teacherName,
   currentDate,
+  schoolYear,
+  minAttendancePercent = 75,
   effectiveReason,
   stats,
   consolidatedStudents,
@@ -85,8 +89,15 @@ export function generateCourseReportHtml({
   const safeSchoolName = escapeHtml(schoolName);
   const safeTeacherName = escapeHtml(teacherName);
   const safeCurrentDate = escapeHtml(currentDate);
+  const safeSchoolYear = escapeHtml(schoolYear || String(new Date().getFullYear()));
   const safeEffectiveReason = escapeHtml(effectiveReason.toUpperCase());
   const safeCourseObservation = escapeHtml(courseObservation);
+  const getConditionBadgeClass = (condition: string) =>
+    condition.includes('Aprobado')
+      ? 'badge-approved'
+      : condition === 'Pendiente'
+      ? 'badge-pending'
+      : 'badge-comp';
   const title = `Informe — ${safeCourseName}`;
   const termSettings = getTerminologySettings();
   const attendanceLabel = escapeHtml(termSettings.attendanceLabel);
@@ -151,7 +162,7 @@ export function generateCourseReportHtml({
           <div class="header">
             <div class="school-brand">
               <h2>${safeSchoolName}</h2>
-              <p class="subtitle">${safeEffectiveReason} — CICLO LECTIVO 2026</p>
+              <p class="subtitle">${safeEffectiveReason} — CICLO LECTIVO ${safeSchoolYear}</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${safeCourseName}</div>
@@ -222,9 +233,7 @@ export function generateCourseReportHtml({
                     includeGrades
                       ? `
                     <td style="text-align: center;">
-                      <span class="badge ${
-                        row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
-                      }">
+                      <span class="badge ${getConditionBadgeClass(row.condition)}">
                         ${escapeHtml(row.condition)}
                       </span>
                     </td>
@@ -250,7 +259,7 @@ export function generateCourseReportHtml({
           }
 
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
-            <div><strong>Documento Oficial Institucional</strong> — Ciclo Lectivo 2026</div>
+            <div><strong>Documento Oficial Institucional</strong> — Ciclo Lectivo ${safeSchoolYear}</div>
             <div>Docente responsable: <strong>${safeTeacherName}</strong> — ${safeSchoolName}</div>
           </div>
         </div>
@@ -263,7 +272,7 @@ export function generateCourseReportHtml({
           <div class="header">
             <div class="school-brand">
               <h2>${safeSchoolName}</h2>
-              <p class="subtitle">${safeEffectiveReason} — CICLO 2026</p>
+              <p class="subtitle">${safeEffectiveReason} — CICLO ${safeSchoolYear}</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${safeCourseName}</div>
@@ -286,9 +295,7 @@ export function generateCourseReportHtml({
                 includeGrades
                   ? `
                 <div style="text-align: right;">
-                  <span class="badge ${
-                    row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'
-                  }" style="font-size: 12px; padding: 4px 10px;">
+                  <span class="badge ${getConditionBadgeClass(row.condition)}" style="font-size: 12px; padding: 4px 10px;">
                     ${escapeHtml(row.condition)}
                   </span>
                 </div>
@@ -321,7 +328,7 @@ export function generateCourseReportHtml({
                     ${escapeHtml(row.finalVal || '—')}
                   </td>
                   <td style="text-align: center;">
-                    <span class="badge ${row.condition.includes('Aprobado') ? 'badge-approved' : 'badge-comp'}" style="font-size: 12px; padding: 4px 10px;">
+                    <span class="badge ${getConditionBadgeClass(row.condition)}" style="font-size: 12px; padding: 4px 10px;">
                       ${escapeHtml(row.condition)}
                     </span>
                   </td>
@@ -398,7 +405,7 @@ export function generateCourseReportHtml({
                   <td style="text-align: center;">${escapeHtml(row.abs2)}</td>
                   <td style="text-align: center; font-weight: bold;">${escapeHtml(row.totalAbs)}</td>
                   <td style="text-align: center;">${escapeHtml(row.totalLat)}</td>
-                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
+                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < minAttendancePercent ? '#b91c1c' : '#15803d'};">
                     ${escapeHtml(row.estimatedAttendance)}%
                   </td>
                   <td style="text-align: center; font-weight: bold; color: #7c3aed;">
@@ -429,7 +436,7 @@ export function generateCourseReportHtml({
                     ${escapeHtml(row.totalAbs)} inasistencias
                   </td>
                   <td style="text-align: center;">${escapeHtml(row.totalLat)}</td>
-                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < 75 ? '#b91c1c' : '#15803d'};">
+                  <td style="text-align: center; font-weight: bold; color: ${row.estimatedAttendance < minAttendancePercent ? '#b91c1c' : '#15803d'};">
                     ${escapeHtml(row.estimatedAttendance)}%
                   </td>
                 </tr>
@@ -535,7 +542,7 @@ export function generateCourseReportHtml({
 
           <div style="margin-top: 36px; padding-top: 14px; border-top: 1px solid #cbd5e1; display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
             <div><strong>Constancia Oficial de Trayectoria</strong> — ${safeCourseName}</div>
-            <div>Docente a cargo: <strong>${safeTeacherName}</strong> — Ciclo Lectivo 2026</div>
+            <div>Docente a cargo: <strong>${safeTeacherName}</strong> — Ciclo Lectivo ${safeSchoolYear}</div>
           </div>
         </div>
       `
@@ -692,6 +699,11 @@ export function generateCourseReportHtml({
       background: #fee2e2;
       color: #b91c1c;
       border: 1px solid #fca5a5;
+    }
+    .badge-pending {
+      background: #f1f5f9;
+      color: #475569;
+      border: 1px solid #cbd5e1;
     }
     .observations-box {
       background: #fffbeb;

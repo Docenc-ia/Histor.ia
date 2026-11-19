@@ -17,6 +17,7 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../../../firebase-applet-config.json';
 import { api } from '../api';
+import { registerExpressAuthTokenProvider } from '../expressAuthHeaders';
 import { TeacherProfile } from '../../types';
 import {
   WORKSPACE_SCOPES,
@@ -62,13 +63,11 @@ const SAVED_TOKENS_BY_EMAIL_KEY = 'docencia_saved_oauth_tokens_by_email';
 const TOKEN_SYNC_CHANNEL_NAME = 'docencia_workspace_token_sync';
 const ENCODED_TOKEN_PREFIX = 'enc1:';
 
-const DAYS_IN_YEAR = 365;
-const HOURS_IN_DAY = 24;
-const MINUTES_IN_HOUR = 60;
+const MINUTES_IN_TOKEN_LIFETIME = 55;
 const SECONDS_IN_MINUTE = 60;
 const MILLISECONDS_IN_SECOND = 1000;
 const TOKEN_LIFETIME_MS =
-  DAYS_IN_YEAR * HOURS_IN_DAY * MINUTES_IN_HOUR * SECONDS_IN_MINUTE * MILLISECONDS_IN_SECOND;
+  MINUTES_IN_TOKEN_LIFETIME * SECONDS_IN_MINUTE * MILLISECONDS_IN_SECOND;
 const USER_GESTURE_VALIDITY_WINDOW_MS = 10000;
 const POPUP_DEBOUNCE_COOLDOWN_MS = 4000;
 const DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3540;
@@ -83,6 +82,7 @@ const INVALID_SYNTHETIC_TOKEN_PREFIXES = [
 ];
 const INVALID_SYNTHETIC_TOKEN_VALUES = ['token_authenticated', 'default_token'];
 
+const EVENT_GOOGLE_SESSION_EXPIRED = 'google_session_expired';
 const EVENT_GOOGLE_SESSION_RENEWED = 'google_session_renewed';
 const EVENT_GOOGLE_SESSION_CLEARED = 'google_session_cleared';
 const SYNC_MESSAGE_REQUEST_TOKEN = 'REQUEST_TOKEN';
@@ -184,11 +184,17 @@ const clearPersistedStorageTokens = (): void => {
 };
 
 export const isGoogleSessionExpired = (): boolean => {
-  return false;
+  if (!tokenExpiresAt) return false;
+  return Date.now() >= tokenExpiresAt;
 };
 
-export const notifyGoogleSessionExpired = (_reason = 'session_expired') => {
-  // Intencionalmente vacío para no interrumpir la clase del docente con carteles de expiración cuando trabaja en modo local.
+export const notifyGoogleSessionExpired = (reason = 'session_expired') => {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent(EVENT_GOOGLE_SESSION_EXPIRED, { detail: { reason } })
+    );
+  } catch (_) {}
 };
 
 const encodeStoredToken = (rawToken: string): string => {
@@ -211,15 +217,17 @@ const decodeStoredToken = (storedValue: string | null): string | null => {
   return storedValue;
 };
 
-const syncFirebaseAuthWithAccessToken = (accessToken: string): void => {
+const syncFirebaseAuthWithAccessToken = async (accessToken: string): Promise<void> => {
   if (!accessToken || !isValidGoogleAccessToken(accessToken)) return;
-  if (isSigningIn || auth.currentUser) return;
+  if (auth.currentUser) return;
   if (lastLinkedFirebaseToken === accessToken) return;
   lastLinkedFirebaseToken = accessToken;
   try {
     const firebaseCredential = GoogleAuthProvider.credential(null, accessToken);
-    signInWithCredential(auth, firebaseCredential).catch(() => {});
-  } catch (_) {}
+    await signInWithCredential(auth, firebaseCredential);
+  } catch (_) {
+    // Non-fatal: token may lack id_token or Firebase Auth may already be active
+  }
 };
 
 /**
@@ -417,6 +425,8 @@ export const getCachedAccessToken = (): string | null => {
   return null;
 };
 
+registerExpressAuthTokenProvider(getCachedAccessToken);
+
 /**
  * Actualiza el token OAuth 2.0 activo en memoria, almacenamiento persistente y pestañas hermanas vía `BroadcastChannel`.
  * Si se recibe `null`, limpia la sesión de acceso en todas las capas.
@@ -435,14 +445,15 @@ export const setCachedAccessToken = (
   if (accessToken && isValidGoogleAccessToken(accessToken)) {
     cachedAccessToken = accessToken;
     tokenIssuedAt = currentTimeMs;
-    const lifetimeDurationMs = expiresInSeconds
-      ? Math.max(expiresInSeconds * MILLISECONDS_IN_SECOND, TOKEN_LIFETIME_MS)
-      : TOKEN_LIFETIME_MS;
+    const lifetimeDurationMs =
+      expiresInSeconds && Number.isFinite(expiresInSeconds) && expiresInSeconds > 0
+        ? Math.max(60, expiresInSeconds - 60) * MILLISECONDS_IN_SECOND
+        : TOKEN_LIFETIME_MS;
     const computedExpiresAt = currentTimeMs + lifetimeDurationMs;
     tokenExpiresAt = computedExpiresAt;
     const encodedToken = encodeStoredToken(accessToken);
 
-    syncFirebaseAuthWithAccessToken(accessToken);
+    void syncFirebaseAuthWithAccessToken(accessToken);
 
     if (typeof window !== 'undefined') {
       try {
@@ -793,6 +804,7 @@ export const signInWithGoogleIdentityServices = (
               }
 
               setCachedAccessToken(accessToken, userEmail, expiresInSeconds);
+              await syncFirebaseAuthWithAccessToken(accessToken);
 
               const rememberedProfile = getRememberedProfile(userEmail);
               const teacherProfile: TeacherProfile = {
@@ -1156,6 +1168,7 @@ export const googleSignIn = async (
  * conservando en `localStorage` el token OAuth por correo para no exigir re-consentimiento de permisos en el próximo ingreso.
  */
 export const logoutUser = async (): Promise<void> => {
+  const emailBeingLoggedOut = getActiveTeacherEmail().trim().toLowerCase();
   if (typeof window !== 'undefined') {
     try {
       localStorage.setItem(EXPLICIT_LOGOUT_STORAGE_KEY, 'true');
@@ -1165,6 +1178,16 @@ export const logoutUser = async (): Promise<void> => {
       localStorage.removeItem(SESSION_ACTIVE_STORAGE_KEY);
       localStorage.removeItem(USER_PROFILE_STORAGE_KEY);
       localStorage.removeItem(TEACHER_EMAIL_STORAGE_KEY);
+      if (emailBeingLoggedOut) {
+        const rawMap = localStorage.getItem(SAVED_TOKENS_BY_EMAIL_KEY);
+        if (rawMap) {
+          const parsed: Record<string, string> = JSON.parse(rawMap);
+          if (parsed && parsed[emailBeingLoggedOut]) {
+            delete parsed[emailBeingLoggedOut];
+            localStorage.setItem(SAVED_TOKENS_BY_EMAIL_KEY, JSON.stringify(parsed));
+          }
+        }
+      }
     } catch (_) {}
   }
   clearAuthSession();
@@ -1173,7 +1196,7 @@ export const logoutUser = async (): Promise<void> => {
   } catch (signOutError) {
     console.warn('SignOut error:', signOutError);
   }
-  api.logoutAuth().catch(() => {});
+  api.logoutAuth(emailBeingLoggedOut || undefined).catch(() => {});
 };
 
 /**
@@ -1255,6 +1278,9 @@ export const fetchGoogleApiWithRetry = async (
         isRefreshingToken = false;
       }
     }
+    notifyGoogleSessionExpired(
+      response.status === HTTP_STATUS_UNAUTHORIZED ? 'token_expired_401' : 'insufficient_scope_403'
+    );
   }
 
   return response;

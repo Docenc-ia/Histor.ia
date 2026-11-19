@@ -18,6 +18,7 @@ import {
 } from '../services/workspace/driveService';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { isRealGoogleSpreadsheetId } from '../utils/sheetsUtils';
+import { safeSetLocalStorageItem } from '../utils/storageGuard';
 
 interface UseGoogleSheetsAndDriveSyncParams {
   activeCourse?: Course;
@@ -195,15 +196,15 @@ export function useGoogleSheetsAndDriveSync({
       if (!payload.fromGradebookEvent) {
         const catKey = getUserStorageKey(`fds_grades_categories_${activeCourse.id}_${payload.term}`);
         const gradesKey = getUserStorageKey(`fds_grades_data_${activeCourse.id}_${payload.term}`);
-        localStorage.setItem(catKey, JSON.stringify(payload.updatedCategories));
-        localStorage.setItem(gradesKey, JSON.stringify(payload.updatedGradesMap));
+        safeSetLocalStorageItem(catKey, JSON.stringify(payload.updatedCategories));
+        safeSetLocalStorageItem(gradesKey, JSON.stringify(payload.updatedGradesMap));
 
         if (Array.isArray(payload.historyEntries) && payload.historyEntries.length > 0) {
           const hKey = getUserStorageKey(`fds_grade_history_${activeCourse.id}`);
           const savedHist = localStorage.getItem(hKey);
           const prevHist = savedHist ? JSON.parse(savedHist) : [];
           const updatedHist = [...payload.historyEntries, ...prevHist];
-          localStorage.setItem(hKey, JSON.stringify(updatedHist));
+          safeSetLocalStorageItem(hKey, JSON.stringify(updatedHist));
         }
 
         const userId = getActiveUserId();

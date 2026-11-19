@@ -25,6 +25,7 @@ import {
 } from '../../../utils/attendanceCalculations';
 import { isSameCalendarDay, formatLocalDateDMY } from '../../../utils/dateUtils';
 import { firestoreSync, getActiveUserId } from '../../../services/firestoreSync';
+import { safeSetLocalStorageItem } from '../../../utils/storageGuard';
 
 export type RollCallStatus = 'present' | 'absent' | 'late' | 'unmarked';
 
@@ -91,9 +92,7 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
   const persistDailyMarks = useCallback(
     (marks: Record<string, RollCallStatus>) => {
       if (typeof window !== 'undefined') {
-        try {
-          localStorage.setItem(storageKey, JSON.stringify(marks));
-        } catch (_) {}
+        safeSetLocalStorageItem(storageKey, JSON.stringify(marks));
       }
       const uid = getActiveUserId();
       if (uid) {
@@ -182,9 +181,7 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
                   }
                 });
                 if (typeof window !== 'undefined') {
-                  try {
-                    localStorage.setItem(storageKey, JSON.stringify(merged));
-                  } catch (_) {}
+                  safeSetLocalStorageItem(storageKey, JSON.stringify(merged));
                 }
                 return merged;
               });

@@ -17,18 +17,22 @@ service cloud.firestore {
     function isPrimaryOwnerAuth() {
       return request.auth != null &&
              request.auth.token.email != null &&
-             (request.auth.token.email == 'jorge.cano@fds-esc.edu.ar' ||
-              request.auth.token.email == 'canomorenojj@gmail.com');
+             (request.auth.token.email.lower() == 'jorge.cano@fds-esc.edu.ar' ||
+              request.auth.token.email.lower() == 'canomorenojj@gmail.com');
+    }
+
+    function isOwnTeacherWorkspace(userId) {
+      return request.auth != null && (
+        request.auth.uid == userId ||
+        (request.auth.token.email != null &&
+         userId == ('teacher_' + request.auth.token.email.lower().replace('[^a-z0-9]', '_')))
+      );
     }
 
     function canAccessUserWorkspace(userId) {
-      return isValidWorkspaceId(userId) && (
-        // When Firebase Auth credential is active, enforce strict workspace ownership or primary owner multi-account link
-        request.auth == null ||
-        request.auth.uid == userId ||
-        isPrimaryOwnerAuth() ||
-        userId == 'global_shared_workspace' ||
-        userId.matches('^teacher_.*')
+      return isValidWorkspaceId(userId) && request.auth != null && (
+        isOwnTeacherWorkspace(userId) ||
+        isPrimaryOwnerAuth()
       );
     }
 

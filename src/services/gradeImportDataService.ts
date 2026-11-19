@@ -16,6 +16,7 @@ import {
   filterFormsToIdentityAndScoreOnly,
   filterSheetToStudentAndGradeOnly,
 } from '../utils/googleFormsEvaluationHelper';
+import { expressAuthFetch } from './expressAuthHeaders';
 
 const CSV_SAMPLE_LINES_COUNT = 5;
 const DELIMITER_COMMA = ',';
@@ -484,7 +485,7 @@ export async function loadRemoteImportDocument(params: {
 
       // Si el servidor externo bloquea CORS desde el navegador, se intenta recuperar el documento vía proxy backend.
       if (!fetchedDocumentText) {
-        const proxyResponse = await fetch(REMOTE_DOCUMENT_PROXY_ENDPOINT, {
+        const proxyResponse = await expressAuthFetch(REMOTE_DOCUMENT_PROXY_ENDPOINT, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ url: trimmedInputUrl }),

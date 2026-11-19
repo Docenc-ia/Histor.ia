@@ -43,7 +43,7 @@ export interface FirestoreErrorInfo {
 }
 
 export const READ_CACHE_TTL_MS = 12000;
-export const FIRESTORE_TIMEOUT_MS = 2200;
+export const FIRESTORE_TIMEOUT_MS = 8000;
 
 // Circuit breaker state to prevent hanging the UI or flooding backend when quota is exhausted
 let firestoreUnavailableUntil = (() => {
@@ -141,11 +141,10 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     try {
       disableNetwork(db).catch(() => {});
     } catch (_) {}
-    console.warn('Docenc.ia: Límite diario de Firestore alcanzado. La app continúa funcionando con persistencia local ultrarrápida sin pérdida de datos.');
+    console.warn('Docenc.ia: Límite diario de Firestore alcanzado. La app continúa funcionando con persistencia local sin pérdida de datos.');
     emitSyncStatus({
-      state: 'synced',
-      pendingCount: 0,
-      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      state: 'offline',
+      pendingCount: Math.max(1, currentSyncStatus.pendingCount),
     });
     return;
   }
@@ -167,10 +166,17 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
   if (msg.toLowerCase().includes('missing or insufficient permissions')) {
+    if (!auth.currentUser) {
+      // Teacher is signed in via local email-only mode without Firebase Auth; keep local persistence active without crashing
+      console.warn('Firestore requiere sesión de Google activa para sincronizar en la nube:', path);
+      emitSyncStatus({ state: 'offline' });
+      return;
+    }
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
     throw new Error(JSON.stringify(errInfo));
   }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
 }
 
 export function registerCloudFlushHandler(id: string, flushFn: () => void): () => void {
@@ -353,11 +359,10 @@ export async function executeWithTimeout<T>(
   }
   const allowedByQuotaGuard = recordFirestoreOperation(trackAsWrite ? 'write' : 'read', 1);
   if (!allowedByQuotaGuard && trackAsWrite) {
-    // Gracefully skip cloud burst write while keeping local state synced
+    // Burst limiter triggered: honestly report error/pending instead of falsely showing 'synced'
     emitSyncStatus({
-      state: 'synced',
-      pendingCount: Math.max(0, currentSyncStatus.pendingCount),
-      lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      state: 'error',
+      pendingCount: Math.max(1, currentSyncStatus.pendingCount),
     });
     return null;
   }
@@ -368,8 +373,10 @@ export async function executeWithTimeout<T>(
     });
   }
   let timer: any;
+  let timedOut = false;
   const timeoutPromise = new Promise<null>((resolve) => {
     timer = setTimeout(() => {
+      timedOut = true;
       resolve(null);
     }, timeoutMs);
   });
@@ -379,12 +386,19 @@ export async function executeWithTimeout<T>(
     if (trackAsWrite) {
       const nextPending = Math.max(0, currentSyncStatus.pendingCount - 1);
       const hasMore = nextPending > 0 || pendingDebouncedKeys.size > 0;
-      emitSyncStatus({
-        state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : hasMore ? 'syncing' : 'synced',
-        pendingCount: nextPending,
-        lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
-    } else if (!currentSyncStatus.lastSyncedAt) {
+      if (timedOut) {
+        emitSyncStatus({
+          state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : 'error',
+          pendingCount: nextPending,
+        });
+      } else {
+        emitSyncStatus({
+          state: typeof navigator !== 'undefined' && navigator.onLine === false ? 'offline' : hasMore ? 'syncing' : 'synced',
+          pendingCount: nextPending,
+          lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        });
+      }
+    } else if (!timedOut && !currentSyncStatus.lastSyncedAt) {
       emitSyncStatus({
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       });
@@ -403,7 +417,7 @@ export async function executeWithTimeout<T>(
     if (trackAsWrite) {
       const nextPending = Math.max(0, currentSyncStatus.pendingCount - 1);
       emitSyncStatus({
-        state: isFirestoreQuotaError(err) ? 'synced' : 'error',
+        state: isFirestoreQuotaError(err) ? 'offline' : 'error',
         pendingCount: nextPending,
       });
     }

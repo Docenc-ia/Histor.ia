@@ -5,43 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <script>
       (function() {
-        // Prevent browser extension conflicts (e.g. Zerion / Web3 wallet redefinition errors)
+        // Safely suppress uncaught third-party Web3 wallet extension conflicts (e.g. Zerion) without mutating Object.defineProperty
         try {
-          var origDefineProperty = Object.defineProperty;
-          Object.defineProperty = function(target, prop, descriptor) {
-            if (descriptor && typeof descriptor === 'object' && descriptor.configurable === false) {
-              descriptor.configurable = true;
-            }
-            try {
-              return origDefineProperty.call(this, target, prop, descriptor);
-            } catch (err) {
-              if (
-                err instanceof TypeError &&
-                (prop === 'isZerion' || (err.message && err.message.indexOf('Cannot redefine property') !== -1))
-              ) {
-                try {
-                  if (descriptor && 'value' in descriptor) {
-                    target[prop] = descriptor.value;
-                  }
-                } catch (_) {}
-                return target;
-              }
-              throw err;
-            }
-          };
-
-          var origDefineProperties = Object.defineProperties;
-          Object.defineProperties = function(target, props) {
-            try {
-              return origDefineProperties.call(this, target, props);
-            } catch (err) {
-              if (err instanceof TypeError && err.message && err.message.indexOf('Cannot redefine property') !== -1) {
-                return target;
-              }
-              throw err;
-            }
-          };
-
           window.addEventListener('error', function(event) {
             if (
               event.message &&

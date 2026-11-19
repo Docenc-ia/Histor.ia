@@ -7,7 +7,8 @@
  * Calendar Sync, Notifications, Reports, Backup, Roll Call) out of ClassesModule.tsx.
  */
 
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense } from 'react';
+import { lazyWithRetry } from '../../../utils/lazyWithRetry';
 import { Course, Student, StudentDispositionData } from '../../../types';
 import { storageGateway } from '../../../services/storageGateway';
 import { DEFAULT_ABSENCE_PRESETS } from '../../../hooks/useCourseNotifications';
@@ -31,29 +32,29 @@ import {
 } from './EditDispositionAndAbsencesModals';
 import { IndividualAbsenceNotificationModal } from './AbsenceAndConductNotificationModals';
 
-const ImportGradesModal = lazy(() =>
+const ImportGradesModal = lazyWithRetry(() =>
   import('../ImportGradesModal').then((m) => ({ default: m.ImportGradesModal }))
 );
-const CourseReportModal = lazy(() =>
+const CourseReportModal = lazyWithRetry(() =>
   import('../CourseReportModal').then((m) => ({ default: m.CourseReportModal }))
 );
-const AttendanceSettingsModal = lazy(() =>
+const AttendanceSettingsModal = lazyWithRetry(() =>
   import('./AttendanceSettingsModal').then((m) => ({ default: m.AttendanceSettingsModal }))
 );
-const QuickRollCallModal = lazy(() =>
+const QuickRollCallModal = lazyWithRetry(() =>
   import('./QuickRollCallModal').then((m) => ({ default: m.QuickRollCallModal }))
 );
-const StudentProfileObservationsModal = lazy(() =>
+const StudentProfileObservationsModal = lazyWithRetry(() =>
   import('./StudentProfileObservationsModal').then((m) => ({
     default: m.StudentProfileObservationsModal,
   }))
 );
-const BatchAbsenceNotificationModal = lazy(() =>
+const BatchAbsenceNotificationModal = lazyWithRetry(() =>
   import('./BatchAbsenceNotificationModal').then((m) => ({
     default: m.BatchAbsenceNotificationModal,
   }))
 );
-const NotificationPresetsConfigModal = lazy(() =>
+const NotificationPresetsConfigModal = lazyWithRetry(() =>
   import('./NotificationPresetsConfigModal').then((m) => ({
     default: m.NotificationPresetsConfigModal,
   }))

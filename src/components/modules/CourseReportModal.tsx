@@ -1,35 +1,19 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
-  Printer,
   Download,
-  Cloud,
   ExternalLink,
   X,
   CheckCircle2,
   FileText,
-  Users,
-  Award,
-  AlertTriangle,
+  AlertCircle,
   School,
-  Calendar,
-  Check,
   Folder,
   Loader2,
   UserCheck,
-  SlidersHorizontal,
-  CheckSquare,
-  Square,
-  PenLine,
-  Sparkles,
-  MessageSquare,
-  HeartHandshake,
-  Eye,
-  EyeOff,
   Save,
 } from 'lucide-react';
 import { Student, StudentDispositionData, StudentObservation } from '../../types';
-import { GradeCategory, StudentGradesMap } from '../../types/grades';
-import { DEFAULT_CATEGORIES } from './GradebookMatrix';
+import { GradeCategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { deriveSchoolFromEmail } from '../../services/workspace/googleAuth';
 import {
@@ -54,6 +38,10 @@ import {
   resolveEffectiveTermScoresMap,
 } from '../../utils/courseReportAggregator';
 import { useTerminologySettings } from '../../utils/terminologySettings';
+import { ReportElementsToolbar } from './courseReport/ReportElementsToolbar';
+import { CourseConsolidatedReportView } from './courseReport/CourseConsolidatedReportView';
+import { StudentIndividualReportList } from './courseReport/StudentIndividualReportList';
+import { SaveToDriveConfirmDialog } from './courseReport/SaveToDriveConfirmDialog';
 
 export interface ExamGradeDetailItem {
   id: string;
@@ -120,7 +108,17 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     url: string;
     isLiveGoogle: boolean;
     folderName: string;
+    errorMessage?: string;
   } | null>(null);
+
+  // Sync active tab, selected student, and clear stale Drive status whenever modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setSelectedStudentId(initialStudentId || 'all');
+      setDriveSavedResult(null);
+    }
+  }, [isOpen, initialTab, initialStudentId]);
   const [courseObservation, setCourseObservation] = useState<string>(() => {
     try {
       return getStorageItemForUser(`fds_report_course_observation_${courseId}`) || '';
@@ -303,7 +301,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       }
     } catch {}
     return DEFAULT_CATEGORIES;
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const categories2c = useMemo<GradeCategory[]>(() => {
     try {
@@ -318,7 +316,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       id: `c2-${cat.id}`,
       subcategories: cat.subcategories.map((sub) => ({ ...sub, id: `c2-${sub.id}` })),
     }));
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const gradesData1c = useMemo<StudentGradesMap>(() => {
     try {
@@ -329,7 +327,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     } catch {
       return {};
     }
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const gradesData2c = useMemo<StudentGradesMap>(() => {
     try {
@@ -338,7 +336,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     } catch {
       return {};
     }
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const calcMode1c = useMemo<'average_of_categories' | 'manual_final'>(() => {
     try {
@@ -348,7 +346,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
     return 'manual_final';
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   const calcMode2c = useMemo<'average_of_categories' | 'manual_final'>(() => {
     try {
@@ -356,7 +354,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       if (raw === 'average_of_categories' || raw === 'manual_final') return raw;
     } catch {}
     return 'manual_final';
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   // Load Student Profile observations from Ficha del Alumno as default fallback
   const profileObservationsMap = useMemo<Record<string, StudentObservation[]>>(() => {
@@ -380,7 +378,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     } catch {
       return {};
     }
-  }, [courseId]);
+  }, [courseId, isOpen]);
 
   // Dedicated observations for reports / certificates
   const [reportObservations, setReportObservations] = useState<Record<string, string>>(() => {
@@ -512,11 +510,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     } catch {
       return {};
     }
-  }, [annualOverrides, courseId]);
+  }, [annualOverrides, courseId, isOpen]);
 
   const courseAttendanceSettings = useMemo(
     () => getCourseAttendanceSettings(courseId),
-    [courseId]
+    [courseId, isOpen]
   );
 
   // Consolidate full student annual data + detailed exam/TP grades + disposition deduction reasons
@@ -570,6 +568,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
   const teacherName = user?.name || 'Profesor/a a cargo';
   const schoolName = user?.school || deriveSchoolFromEmail(user?.email) || 'Institución Educativa';
+  const currentSchoolYear = String(new Date().getFullYear());
+  const minAttendancePercent = Math.max(
+    0,
+    Math.min(100, Math.round(100 - (courseAttendanceSettings.maxAbsencePercent || 25)))
+  );
   const currentDate = new Date().toLocaleDateString('es-AR', {
     day: '2-digit',
     month: 'long',
@@ -597,6 +600,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       schoolName,
       teacherName,
       currentDate,
+      schoolYear: currentSchoolYear,
+      minAttendancePercent,
       effectiveReason,
       stats,
       consolidatedStudents,
@@ -622,10 +627,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           : null;
       const fileName =
         activeTab === 'course'
-          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_2026.html`
+          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`
           : singleStudent
           ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
-          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_2026.html`;
+          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`;
       driveService
         .uploadFileToCourseCategory({
           courseName,
@@ -659,10 +664,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         : null;
     const fileName =
       activeTab === 'course'
-        ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_2026.html`
+        ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`
         : singleStudent
         ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
-        : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_2026.html`;
+        : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`;
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -738,7 +743,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         isLiveGoogle: result.isLiveGoogle,
         folderName: targetFolderName,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error saving report as Google Doc to Google Drive:', err);
       setDriveSavedResult({
         success: false,
@@ -746,6 +751,9 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         url: '',
         isLiveGoogle: false,
         folderName: '',
+        errorMessage:
+          err?.message ||
+          'No se pudo guardar el informe en Google Drive. Verificá tu conexión e intentá nuevamente.',
       });
     } finally {
       setIsSavingToDrive(false);
@@ -778,7 +786,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                   {courseName}
                 </span>
                 <span className="text-xs text-neutral-500 dark:text-slate-400 font-medium">
-                  • Ciclo 2026
+                  • Ciclo {currentSchoolYear}
                 </span>
               </div>
             </div>
@@ -816,7 +824,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             </button>
 
             <a
-              href={`?course=${courseId}&view=course_detail&openReport=true&reportTab=${activeTab}${selectedStudentId !== 'all' ? `&studentId=${selectedStudentId}` : ''}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+              href={`?course=${courseId}&view=course_detail&openReport=true&reportTab=${activeTab}${selectedStudentId !== 'all' ? `&studentId=${selectedStudentId}` : ''}`}
               target="_blank"
               rel="noopener noreferrer"
               className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
@@ -906,166 +914,28 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         </div>
 
         {/* Panel de selección interactiva de elementos */}
-        <div
-          className={`px-5 py-3 border-b text-xs transition-colors shrink-0 ${
-            isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
-          }`}
-        >
-          {/* Botones / Checkboxes interactivos con clic directo */}
-          <div className="flex flex-wrap items-center gap-2">
-            {/* 1. Calificaciones */}
-            <button
-              type="button"
-              onClick={() => setIncludeGrades(!includeGrades)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                includeGrades
-                  ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-700 shadow-2xs font-bold'
-                  : isDarkMode
-                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-              }`}
-            >
-              {includeGrades ? (
-                <CheckSquare className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-              ) : (
-                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              )}
-              <span>Calificaciones</span>
-              <span className="text-[10px] opacity-75 font-normal">({term1ShortLabel}, {term2ShortLabel}, Final)</span>
-            </button>
-
-            {/* 1b. Notas de Exámenes y TPs (solo en ficha individual cuando Calificaciones está activo) */}
-            {includeGrades && activeTab === 'individual' && (
-              <button
-                type="button"
-                onClick={() => setIncludeExamDetails(!includeExamDetails)}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  includeExamDetails
-                    ? 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-300 border-indigo-300 dark:border-indigo-700 shadow-2xs font-bold'
-                    : isDarkMode
-                    ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                    : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-                }`}
-                title="Extraer e incluir el desglose de todas las notas de Exámenes y Trabajos Prácticos de la pestaña Calificaciones"
-              >
-                {includeExamDetails ? (
-                  <CheckSquare className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
-                ) : (
-                  <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                )}
-                <span>Notas de Exámenes y TPs</span>
-                <span className="text-[10px] opacity-75 font-normal">(Desglose completo)</span>
-              </button>
-            )}
-
-            {/* 2. Asistencia */}
-            <button
-              type="button"
-              onClick={() => setIncludeAttendance(!includeAttendance)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                includeAttendance
-                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 shadow-2xs font-bold'
-                  : isDarkMode
-                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-              }`}
-            >
-              {includeAttendance ? (
-                <CheckSquare className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              ) : (
-                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              )}
-              <span>{attendanceLabel}</span>
-              <span className="text-[10px] opacity-75 font-normal">(Faltas y %)</span>
-            </button>
-
-            {/* 3. Disposición */}
-            <button
-              type="button"
-              onClick={() => setIncludeDisposition(!includeDisposition)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                includeDisposition
-                  ? 'bg-purple-50 dark:bg-purple-950/50 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-700 shadow-2xs font-bold'
-                  : isDarkMode
-                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-              }`}
-            >
-              {includeDisposition ? (
-                <CheckSquare className="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
-              ) : (
-                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              )}
-              <span>{dispositionLabel}</span>
-              <span className="text-[10px] opacity-75 font-normal">(Puntaje y actitud)</span>
-            </button>
-
-            {/* 3b. Motivos de Disposición (solo en ficha individual cuando Disposición está activo) */}
-            {includeDisposition && activeTab === 'individual' && (
-              <button
-                type="button"
-                onClick={() => setIncludeDispositionReasons(!includeDispositionReasons)}
-                className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                  includeDispositionReasons
-                    ? 'bg-fuchsia-50 dark:bg-fuchsia-950/50 text-fuchsia-800 dark:text-fuchsia-300 border-fuchsia-300 dark:border-fuchsia-700 shadow-2xs font-bold'
-                    : isDarkMode
-                    ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                    : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-                }`}
-                title={`Incluir y permitir marcar cada una de las razones (fecha y motivo) por las cuales se bajó ${dispositionLabel}`}
-              >
-                {includeDispositionReasons ? (
-                  <CheckSquare className="w-3.5 h-3.5 text-fuchsia-600 dark:text-fuchsia-400 shrink-0" />
-                ) : (
-                  <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                )}
-                <span>Motivos de {dispositionLabel}</span>
-                <span className="text-[10px] opacity-75 font-normal">(Fecha y motivo)</span>
-              </button>
-            )}
-
-            {/* 4. Observaciones */}
-            <button
-              type="button"
-              onClick={() => setIncludeObservations(!includeObservations)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                includeObservations
-                  ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 shadow-2xs font-bold'
-                  : isDarkMode
-                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                  : 'bg-neutral-100 text-neutral-400 border-neutral-200 opacity-70'
-              }`}
-            >
-              {includeObservations ? (
-                <CheckSquare className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
-              ) : (
-                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              )}
-              <span>Observaciones</span>
-            </button>
-
-            {/* 5. Talón de firma de familias */}
-            <button
-              type="button"
-              onClick={() => setIncludeFamilySignature(!includeFamilySignature)}
-              className={`px-3 py-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
-                includeFamilySignature
-                  ? 'bg-neutral-800 text-white dark:bg-slate-700 dark:text-white border-neutral-800 dark:border-slate-600 shadow-2xs font-bold'
-                  : isDarkMode
-                  ? 'bg-slate-850 text-slate-500 border-slate-800 opacity-60'
-                  : 'bg-neutral-100 text-neutral-500 border-neutral-200 opacity-75'
-              }`}
-              title="Incluye talón con línea para firma del docente y notificación/firma del padre, madre o tutor"
-            >
-              {includeFamilySignature ? (
-                <CheckSquare className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              ) : (
-                <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-              )}
-              <span>Talón de Firma Familias</span>
-            </button>
-          </div>
-        </div>
+        <ReportElementsToolbar
+          isDarkMode={isDarkMode}
+          activeTab={activeTab}
+          attendanceLabel={attendanceLabel}
+          dispositionLabel={dispositionLabel}
+          term1ShortLabel={term1ShortLabel}
+          term2ShortLabel={term2ShortLabel}
+          includeGrades={includeGrades}
+          onToggleGrades={() => setIncludeGrades(!includeGrades)}
+          includeExamDetails={includeExamDetails}
+          onToggleExamDetails={() => setIncludeExamDetails(!includeExamDetails)}
+          includeAttendance={includeAttendance}
+          onToggleAttendance={() => setIncludeAttendance(!includeAttendance)}
+          includeDisposition={includeDisposition}
+          onToggleDisposition={() => setIncludeDisposition(!includeDisposition)}
+          includeDispositionReasons={includeDispositionReasons}
+          onToggleDispositionReasons={() => setIncludeDispositionReasons(!includeDispositionReasons)}
+          includeObservations={includeObservations}
+          onToggleObservations={() => setIncludeObservations(!includeObservations)}
+          includeFamilySignature={includeFamilySignature}
+          onToggleFamilySignature={() => setIncludeFamilySignature(!includeFamilySignature)}
+        />
 
         {/* Live Drive Result Notification Banner */}
         {driveSavedResult && (
@@ -1081,17 +951,29 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             }`}
           >
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
-              <span>
-                Google Doc editable <strong>"{driveSavedResult.name}"</strong> creado en tu Google Drive (carpeta{' '}
-                <strong>"{driveSavedResult.folderName}"</strong>)
-              </span>
+              {driveSavedResult.success ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                  <span>
+                    Google Doc editable <strong>"{driveSavedResult.name}"</strong> creado en tu Google Drive (carpeta{' '}
+                    <strong>"{driveSavedResult.folderName}"</strong>)
+                  </span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
+                  <span>
+                    {driveSavedResult.errorMessage ||
+                      'No se pudo guardar el informe en Google Drive. Verificá tu sesión de Google e intentá nuevamente.'}
+                  </span>
+                </>
+              )}
             </div>
-            {driveSavedResult.url && (
+            {driveSavedResult.success && driveSavedResult.url && (
               <a
                 href={driveSavedResult.url}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="inline-flex items-center gap-1 font-bold underline hover:opacity-80 shrink-0"
               >
                 <span>Abrir en Google Docs</span>
@@ -1105,818 +987,56 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-neutral-100 dark:bg-slate-950/70">
           <div id="printable-report" className="max-w-4xl mx-auto space-y-8">
             {activeTab === 'course' ? (
-              /* ========================================================= */
-              /* INFORME CONSOLIDADO DEL CURSO                             */
-              /* ========================================================= */
-              <div className="bg-white text-neutral-900 p-6 sm:p-8 rounded-xl border border-neutral-300 shadow-sm print:border-none print:shadow-none print:p-0">
-                {/* Header */}
-                <div className="border-b-2 border-blue-600 pb-4 mb-5 flex flex-col sm:flex-row justify-between items-start gap-4">
-                  <div>
-                    <h1 className="text-xl font-bold text-blue-900 tracking-tight">
-                      {schoolName}
-                    </h1>
-                    <p className="text-xs font-semibold text-neutral-500 uppercase tracking-wide mt-1">
-                      {effectiveReason} — Ciclo Lectivo 2026
-                    </p>
-                  </div>
-                  <div className="text-xs text-neutral-600 sm:text-right space-y-0.5">
-                    <div>
-                      <strong>Materia:</strong> {courseName}
-                    </div>
-                    <div>
-                      <strong>Docente:</strong> {teacherName}
-                    </div>
-                    <div>
-                      <strong>Fecha de emisión:</strong> {currentDate}
-                    </div>
-                    <div>
-                      <strong>Matrícula:</strong> {stats.total} estudiantes
-                    </div>
-                  </div>
-                </div>
-
-                {/* Warning if no elements are selected */}
-                {selectedElementsCount === 0 && (
-                  <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                    <span>
-                      Has desmarcado todos los elementos. Marcá al menos <strong>Calificaciones</strong>, <strong>{attendanceLabel}</strong> o <strong>{dispositionLabel}</strong> en la barra superior para generar el reporte.
-                    </span>
-                  </div>
-                )}
-
-                {/* KPI Strip (Conditional) */}
-                {(includeGrades || includeAttendance || includeDisposition) && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-                    {includeGrades && (
-                      <>
-                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            Aprobados
-                          </span>
-                          <span className="text-lg font-bold text-emerald-600">
-                            {stats.approvedCount}{' '}
-                            <span className="text-xs font-medium text-neutral-500">
-                              ({stats.approvedPercent}%)
-                            </span>
-                          </span>
-                        </div>
-                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            En Compensación
-                          </span>
-                          <span className="text-lg font-bold text-rose-600">
-                            {stats.compCount}
-                          </span>
-                        </div>
-                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            Promedio Anual Curso
-                          </span>
-                          <span className="text-lg font-bold text-purple-600">
-                            {stats.avgScore}
-                          </span>
-                        </div>
-                      </>
-                    )}
-                    {includeAttendance && (
-                      <>
-                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            {attendanceLabel} Promedio
-                          </span>
-                          <span className="text-lg font-bold text-blue-600">
-                            {stats.avgAttendance}%
-                          </span>
-                        </div>
-                        <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                          <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                            Total Inasistencias
-                          </span>
-                          <span className="text-lg font-bold text-rose-600">
-                            {stats.totalCourseAbsences}
-                          </span>
-                        </div>
-                      </>
-                    )}
-                    {includeDisposition && (
-                      <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
-                        <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                          {dispositionLabel} Promedio
-                        </span>
-                        <span className="text-lg font-bold text-purple-600">
-                          {(
-                            consolidatedStudents.reduce((acc, s) => acc + s.avgDisp, 0) /
-                            (consolidatedStudents.length || 1)
-                          ).toFixed(1)}{' '}
-                          / 10
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Table with conditional columns */}
-                <div className="overflow-x-auto mb-6">
-                  <table className="w-full text-left text-xs border border-neutral-300">
-                    <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                      <tr>
-                        <th className="py-2.5 px-2 text-center border-r border-neutral-300 w-8">#</th>
-                        <th className="py-2.5 px-3 border-r border-neutral-300">Estudiante</th>
-                        {includeGrades && (
-                          <>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term1ShortLabel}</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term2ShortLabel}</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
-                              Nota Definitiva
-                            </th>
-                          </>
-                        )}
-                        {includeAttendance && (
-                          <>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas {term1ShortLabel}</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas {term2ShortLabel}</th>
-                            <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas Totales</th>
-                          </>
-                        )}
-                        {includeDisposition && (
-                          <th className="py-2.5 px-2 text-center border-r border-neutral-300">{dispositionLabel}</th>
-                        )}
-                        {includeGrades && (
-                          <th className="py-2.5 px-3 text-center">Condición Final</th>
-                        )}
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-200">
-                      {consolidatedStudents.map((row, idx) => (
-                        <tr key={row.student.id} className="hover:bg-neutral-50/60">
-                          <td className="py-2 px-2 text-center text-neutral-500 border-r border-neutral-200 font-mono text-[11px]">
-                            {idx + 1}
-                          </td>
-                          <td className="py-2 px-3 border-r border-neutral-200 font-medium text-neutral-900">
-                            {row.student.lastName}, {row.student.firstName}
-                          </td>
-                          {includeGrades && (
-                            <>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200">
-                                {row.score1c || '—'}
-                              </td>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200">
-                                {row.score2c || '—'}
-                              </td>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200 font-bold text-neutral-800">
-                                {row.calcAvgStr || '—'}
-                              </td>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
-                                {row.finalVal || '—'}
-                              </td>
-                            </>
-                          )}
-                          {includeAttendance && (
-                            <>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200">
-                                {row.abs1}
-                              </td>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200">
-                                {row.abs2}
-                              </td>
-                              <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-neutral-900">
-                                {row.totalAbs}
-                              </td>
-                            </>
-                          )}
-                          {includeDisposition && (
-                            <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-purple-700">
-                              {row.avgDisp}/10
-                            </td>
-                          )}
-                          {includeGrades && (
-                            <td className="py-2 px-3 text-center">
-                              <span
-                                className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                                  row.condition.includes('Aprobado')
-                                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : 'bg-rose-100 text-rose-800 border-rose-300'
-                                }`}
-                              >
-                                {row.condition}
-                              </span>
-                            </td>
-                          )}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                {/* Course Pedagogical Observations (Conditional) */}
-                {includeObservations && (
-                  <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-8">
-                    <h4 className="text-xs font-bold text-amber-900 mb-2">
-                      Observaciones Pedagógicas y Síntesis:
-                    </h4>
-                    <div className="print:hidden">
-                      <textarea
-                        value={courseObservation}
-                        onChange={(e) => handleUpdateCourseObservation(e.target.value)}
-                        rows={4}
-                        className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
-                        placeholder="Escribí acá las observaciones pedagógicas y síntesis del curso..."
-                      />
-                    </div>
-                    <div className="hidden print:block">
-                      <p className="text-xs text-neutral-800 leading-relaxed whitespace-pre-wrap">
-                        {courseObservation || '—'}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Official Institutional Verification Footer */}
-                <div className="pt-6 mt-6 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between text-xs text-neutral-500 gap-2">
-                  <p>
-                    <strong className="text-neutral-700">Informe Institucional del Curso</strong> — {courseName}
-                  </p>
-                  <p>
-                    Docente responsable: <strong className="text-neutral-700">{teacherName}</strong> — {schoolName}
-                  </p>
-                </div>
-              </div>
+              <CourseConsolidatedReportView
+                schoolName={schoolName}
+                effectiveReason={effectiveReason}
+                currentSchoolYear={currentSchoolYear}
+                courseName={courseName}
+                teacherName={teacherName}
+                currentDate={currentDate}
+                attendanceLabel={attendanceLabel}
+                dispositionLabel={dispositionLabel}
+                term1ShortLabel={term1ShortLabel}
+                term2ShortLabel={term2ShortLabel}
+                selectedElementsCount={selectedElementsCount}
+                includeGrades={includeGrades}
+                includeAttendance={includeAttendance}
+                includeDisposition={includeDisposition}
+                includeObservations={includeObservations}
+                stats={stats}
+                consolidatedStudents={consolidatedStudents}
+                courseObservation={courseObservation}
+                onUpdateCourseObservation={handleUpdateCourseObservation}
+              />
             ) : (
-              /* ========================================================= */
-              /* BOLETINES INDIVIDUALES DE 1 PÁGINA POR ESTUDIANTE         */
-              /* ========================================================= */
-              <div>
-                {selectedElementsCount === 0 && (
-                  <div className="p-4 mb-6 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                    <span>
-                      Has desmarcado todos los bloques. Activá al menos <strong>Calificaciones</strong>, <strong>{attendanceLabel}</strong> o <strong>{dispositionLabel}</strong> en la barra superior para ver la ficha del alumno.
-                    </span>
-                  </div>
-                )}
-
-                {displayedStudents.map((row) => (
-                  <div
-                    key={row.student.id}
-                    className="print-page-break bg-white text-neutral-900 p-6 sm:p-8 rounded-xl border border-neutral-300 shadow-sm print:border-none print:shadow-none print:p-0 mb-8"
-                  >
-                    {/* Header */}
-                    <div className="border-b-2 border-blue-600 pb-3 mb-4 flex justify-between items-start">
-                      <div>
-                        <h2 className="text-lg font-bold text-blue-900 tracking-tight">
-                          {schoolName}
-                        </h2>
-                        <p className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide mt-0.5">
-                          {effectiveReason} — Ciclo 2026
-                        </p>
-                      </div>
-                      <div className="text-xs text-neutral-600 text-right space-y-0.5">
-                        <div>
-                          <strong>Materia:</strong> {courseName}
-                        </div>
-                        <div>
-                          <strong>Docente:</strong> {teacherName}
-                        </div>
-                        <div>
-                          <strong>Fecha:</strong> {currentDate}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Student Info Card */}
-                    <div className="bg-slate-100 p-3.5 rounded-lg border-l-4 border-blue-600 mb-4">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <h3 className="text-base font-bold text-neutral-900">
-                            {row.student.lastName}, {row.student.firstName}
-                          </h3>
-                          <p className="text-xs text-neutral-500 font-mono">
-                            {row.student.email || 'Estudiante Regular'}
-                          </p>
-                        </div>
-                        {includeGrades && (
-                          <div className="text-right">
-                            <span className="text-[10px] uppercase font-bold text-neutral-400 block">
-                              Condición
-                            </span>
-                            <span
-                              className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                                row.condition.includes('Aprobado')
-                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                                  : 'bg-rose-100 text-rose-800 border-rose-300'
-                              }`}
-                            >
-                              {row.condition}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* 1. Academics Block (Conditional) */}
-                    {includeGrades && (
-                      <div className="mb-4">
-                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          1. Rendimiento Académico y Calificaciones
-                        </h4>
-                        <table className="w-full text-xs border border-neutral-300 mb-3">
-                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                            <tr>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                {term1FullLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                {term2FullLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Promedio Ponderado
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
-                                Calificación Final Definitiva
-                              </th>
-                              <th className="py-2 px-3 text-center">Condición de Acreditación</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                                {row.score1c || '—'}
-                              </td>
-                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                                {row.score2c || '—'}
-                              </td>
-                              <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                                {row.calcAvgStr || '—'}
-                              </td>
-                              <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
-                                {row.finalVal || '—'}
-                              </td>
-                              <td className="py-3 px-3 text-center font-bold text-xs">
-                                {row.condition}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-
-                        {/* Detailed Breakdown of Exam & TP Grades from Pestaña Calificaciones */}
-                        {includeExamDetails && (row.examDetails1c.length > 0 || row.examDetails2c.length > 0) && (
-                          <div className="mt-2.5">
-                            <div className="text-[11px] font-bold text-indigo-900 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
-                              <Award className="w-3.5 h-3.5 text-indigo-600" />
-                              <span>Desglose de Evaluaciones, Exámenes y Trabajos Prácticos (Calificaciones)</span>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                              {/* 1° Cuatrimestre */}
-                              <div className="border border-neutral-300 rounded-lg overflow-hidden">
-                                <div className="bg-blue-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-blue-900 flex items-center justify-between">
-                                  <span>{term1FullLabel}</span>
-                                  <span>Nota {term1ShortLabel}: {row.score1c || '—'}</span>
-                                </div>
-                                <table className="w-full text-[11px]">
-                                  <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
-                                    <tr>
-                                      <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
-                                      <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
-                                      <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-neutral-200">
-                                    {row.examDetails1c.map((item) => (
-                                      <tr key={`1c-${item.id}`}>
-                                        <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
-                                        <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
-                                        <td className="py-1.5 px-2.5 text-center font-bold text-blue-800 bg-blue-50/30">
-                                          {item.score}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-
-                              {/* 2° Cuatrimestre */}
-                              <div className="border border-neutral-300 rounded-lg overflow-hidden">
-                                <div className="bg-indigo-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-indigo-900 flex items-center justify-between">
-                                  <span>{term2FullLabel}</span>
-                                  <span>Nota {term2ShortLabel}: {row.score2c || '—'}</span>
-                                </div>
-                                <table className="w-full text-[11px]">
-                                  <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
-                                    <tr>
-                                      <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
-                                      <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
-                                      <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-neutral-200">
-                                    {row.examDetails2c.map((item) => (
-                                      <tr key={`2c-${item.id}`}>
-                                        <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
-                                        <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
-                                        <td className="py-1.5 px-2.5 text-center font-bold text-indigo-800 bg-indigo-50/30">
-                                          {item.score}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* 2. Attendance & Disposition Blocks (Conditional) */}
-                    {includeAttendance && includeDisposition ? (
-                      <div className="mb-4">
-                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. {attendanceLabel}, Puntualidad y {dispositionLabel}
-                        </h4>
-                        <table className="w-full text-xs border border-neutral-300">
-                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                            <tr>
-                              <th className="py-2 px-2 text-center border-r border-neutral-300">
-                                Faltas {term1ShortLabel}
-                              </th>
-                              <th className="py-2 px-2 text-center border-r border-neutral-300">
-                                Faltas {term2ShortLabel}
-                              </th>
-                              <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
-                                Total Inasistencias
-                              </th>
-                              <th className="py-2 px-2 text-center border-r border-neutral-300">
-                                Tardanzas
-                              </th>
-                              <th className="py-2 px-2 text-center border-r border-neutral-300 font-bold">
-                                % {attendanceLabel} Estimada
-                              </th>
-                              <th className="py-2 px-2 text-center font-bold text-purple-700">
-                                {dispositionLabel}
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                                {row.abs1}
-                              </td>
-                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                                {row.abs2}
-                              </td>
-                              <td className="py-2.5 px-2 text-center border-r border-neutral-200 font-bold text-neutral-900">
-                                {row.totalAbs}
-                              </td>
-                              <td className="py-2.5 px-2 text-center border-r border-neutral-200">
-                                {row.totalLat}
-                              </td>
-                              <td
-                                className={`py-2.5 px-2 text-center border-r border-neutral-200 font-bold ${
-                                  row.estimatedAttendance < 75 ? 'text-rose-600' : 'text-emerald-600'
-                                }`}
-                              >
-                                {row.estimatedAttendance}%
-                              </td>
-                              <td className="py-2.5 px-2 text-center font-bold text-purple-700">
-                                {row.avgDisp} / 10
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : includeAttendance && !includeDisposition ? (
-                      <div className="mb-4">
-                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. Registro de {attendanceLabel} y Puntualidad Escolar
-                        </h4>
-                        <table className="w-full text-xs border border-neutral-300">
-                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                            <tr>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Faltas {term1FullLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Faltas {term2FullLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300 bg-rose-50 font-bold text-rose-900">
-                                Total Inasistencias Acumuladas
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                Tardanzas Registradas
-                              </th>
-                              <th className="py-2 px-3 text-center font-bold">
-                                % {attendanceLabel} Presencial
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
-                                {row.abs1}
-                              </td>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
-                                {row.abs2}
-                              </td>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 font-bold text-base text-rose-700 bg-rose-50/50">
-                                {row.totalAbs} faltas
-                              </td>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
-                                {row.totalLat}
-                              </td>
-                              <td
-                                className={`py-2.5 px-3 text-center font-bold text-sm ${
-                                  row.estimatedAttendance < 75 ? 'text-rose-600' : 'text-emerald-600'
-                                }`}
-                              >
-                                {row.estimatedAttendance}%
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : !includeAttendance && includeDisposition ? (
-                      <div className="mb-4">
-                        <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
-                          {includeGrades ? '2' : '1'}. {dispositionLabel}
-                        </h4>
-                        <table className="w-full text-xs border border-neutral-300">
-                          <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                            <tr>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                {dispositionLabel} {term1ShortLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center border-r border-neutral-300">
-                                {dispositionLabel} {term2ShortLabel}
-                              </th>
-                              <th className="py-2 px-3 text-center bg-purple-50 font-bold text-purple-900">
-                                Puntaje Promedio de {dispositionLabel}
-                              </th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
-                                {row.disp1} / 10
-                              </td>
-                              <td className="py-2.5 px-3 text-center border-r border-neutral-200 text-sm">
-                                {row.disp2} / 10
-                              </td>
-                              <td className="py-2.5 px-3 text-center font-bold text-base text-purple-700 bg-purple-50/50">
-                                {row.avgDisp} / 10
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-
-                    {/* 2b. Detalle seleccionable de fechas y motivos por los cuales se bajó la Disposición */}
-                    {includeDisposition && row.dispositionReasons.length > 0 && (() => {
-                      const checkedReasons = includeDispositionReasons
-                        ? row.dispositionReasons.filter((r) => !excludedDispositionReasonIds.has(r.id))
-                        : [];
-                      const allStudentReasonIds = row.dispositionReasons.map((r) => r.id);
-                      const areAllSelected =
-                        includeDispositionReasons &&
-                        checkedReasons.length === row.dispositionReasons.length;
-
-                      return (
-                        <div className="mb-4">
-                          {/* Vista interactiva en pantalla: permite marcar/desmarcar cada fecha y motivo */}
-                          <div className="print:hidden border border-purple-200 rounded-lg overflow-hidden bg-purple-50/30">
-                            <div className="bg-purple-100/80 border-b border-purple-200 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
-                              <div className="flex items-center gap-1.5 text-[11px] font-bold text-purple-900">
-                                <CheckSquare className="w-3.5 h-3.5 text-purple-700 shrink-0" />
-                                <span>
-                                  Motivos por los cuales se bajó {dispositionLabel} (marcá cuáles incluir en el informe):
-                                </span>
-                                <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-purple-200 text-purple-900 font-bold">
-                                  {checkedReasons.length} de {row.dispositionReasons.length} seleccionados
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSelectAllStudentDispositionReasons(allStudentReasonIds, true)
-                                  }
-                                  disabled={areAllSelected}
-                                  className="px-2 py-0.5 rounded text-[10px] font-semibold bg-white text-purple-800 border border-purple-300 hover:bg-purple-50 disabled:opacity-50 cursor-pointer transition-colors"
-                                >
-                                  Marcar todos
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleSelectAllStudentDispositionReasons(allStudentReasonIds, false)
-                                  }
-                                  disabled={checkedReasons.length === 0}
-                                  className="px-2 py-0.5 rounded text-[10px] font-semibold bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-100 disabled:opacity-50 cursor-pointer transition-colors"
-                                >
-                                  Desmarcar todos
-                                </button>
-                              </div>
-                            </div>
-
-                            <table className="w-full text-[11px]">
-                              <thead className="bg-neutral-50 border-b border-purple-200 text-neutral-600">
-                                <tr>
-                                  <th className="py-1.5 px-2.5 text-center font-semibold w-14">Incluir</th>
-                                  <th className="py-1.5 px-2.5 text-center font-semibold w-24">Fecha</th>
-                                  <th className="py-1.5 px-2 text-center font-semibold w-20">Período</th>
-                                  <th className="py-1.5 px-3 text-left font-semibold">
-                                    Motivo por el cual se bajó {dispositionLabel}
-                                  </th>
-                                  <th className="py-1.5 px-2.5 text-center font-semibold w-20">Puntaje</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-purple-100 bg-white">
-                                {row.dispositionReasons.map((item) => {
-                                  const isChecked =
-                                    includeDispositionReasons &&
-                                    !excludedDispositionReasonIds.has(item.id);
-                                  return (
-                                    <tr
-                                      key={item.id}
-                                      onClick={() => handleToggleDispositionReason(item.id)}
-                                      className={`cursor-pointer transition-colors ${
-                                        isChecked
-                                          ? 'hover:bg-purple-50/60 text-neutral-900'
-                                          : 'bg-neutral-50/80 text-neutral-400 hover:bg-neutral-100/70'
-                                      }`}
-                                    >
-                                      <td className="py-2 px-2.5 text-center">
-                                        <input
-                                          type="checkbox"
-                                          checked={isChecked}
-                                          onChange={() => handleToggleDispositionReason(item.id)}
-                                          onClick={(e) => e.stopPropagation()}
-                                          className="w-3.5 h-3.5 rounded border-purple-300 text-purple-600 focus:ring-purple-500 cursor-pointer"
-                                        />
-                                      </td>
-                                      <td className="py-2 px-2.5 text-center font-mono font-semibold">
-                                        {item.date}
-                                      </td>
-                                      <td className="py-2 px-2 text-center">
-                                        {item.term === '2c' ? term2ShortLabel : term1ShortLabel}
-                                      </td>
-                                      <td className="py-2 px-3 font-medium">
-                                        <span>{item.reason}</span>
-                                        {!isChecked && (
-                                          <span className="ml-2 text-[10px] italic text-neutral-400">
-                                            (Omitido del informe)
-                                          </span>
-                                        )}
-                                      </td>
-                                      <td
-                                        className={`py-2 px-2.5 text-center font-bold ${
-                                          isChecked ? 'text-rose-700' : 'text-neutral-400'
-                                        }`}
-                                      >
-                                        {item.pointsChange > 0
-                                          ? `+${item.pointsChange}`
-                                          : item.pointsChange}{' '}
-                                        pto
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-
-                          {/* Vista limpia de impresión: muestra solo las fechas y motivos marcados */}
-                          {checkedReasons.length > 0 && (
-                            <div className="hidden print:block mt-2">
-                              <div className="text-[11px] font-bold text-purple-900 uppercase tracking-wide mb-1.5">
-                                Detalle de motivos por los cuales se bajó {dispositionLabel} (Fecha y Motivo):
-                              </div>
-                              <table className="w-full text-[11px] border border-neutral-300">
-                                <thead className="bg-neutral-100 border-b border-neutral-300 text-neutral-700 font-semibold">
-                                  <tr>
-                                    <th className="py-1.5 px-2.5 text-center border-r border-neutral-300 w-24">
-                                      Fecha
-                                    </th>
-                                    <th className="py-1.5 px-2 text-center border-r border-neutral-300 w-20">
-                                      Período
-                                    </th>
-                                    <th className="py-1.5 px-3 text-left border-r border-neutral-300">
-                                      Motivo por el cual se bajó {dispositionLabel}
-                                    </th>
-                                    <th className="py-1.5 px-2.5 text-center w-20">Puntaje</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-neutral-200">
-                                  {checkedReasons.map((item) => (
-                                    <tr key={`print-${item.id}`}>
-                                      <td className="py-1.5 px-2.5 text-center border-r border-neutral-200 font-semibold">
-                                        {item.date}
-                                      </td>
-                                      <td className="py-1.5 px-2 text-center border-r border-neutral-200">
-                                        {item.term === '2c' ? term2ShortLabel : term1ShortLabel}
-                                      </td>
-                                      <td className="py-1.5 px-3 border-r border-neutral-200 text-neutral-800">
-                                        {item.reason}
-                                      </td>
-                                      <td className="py-1.5 px-2.5 text-center font-bold text-rose-700">
-                                        {item.pointsChange > 0
-                                          ? `+${item.pointsChange}`
-                                          : item.pointsChange}{' '}
-                                        pto
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {/* 3. Pedagogical Observations for Report (Conditional) */}
-                    {includeObservations && (
-                      <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3.5 mb-5">
-                        <div className="flex flex-wrap items-center justify-between gap-1 mb-2">
-                          <h4 className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
-                            <FileText className="w-3.5 h-3.5 text-amber-700" />
-                            {includeGrades && (includeAttendance || includeDisposition)
-                              ? '3'
-                              : includeGrades || includeAttendance || includeDisposition
-                              ? '2'
-                              : '1'}
-                            . Observaciones Pedagógicas y Síntesis:
-                          </h4>
-                        </div>
-
-                        {/* Screen View: Editable Textarea */}
-                        <div className="print:hidden">
-                          <textarea
-                            value={row.observation}
-                            onChange={(e) =>
-                              handleUpdateStudentReportObservation(row.student.id, e.target.value)
-                            }
-                            rows={4}
-                            className="w-full text-xs bg-white border border-amber-300 rounded-md p-2.5 text-neutral-800 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent leading-relaxed transition shadow-sm resize-y"
-                            placeholder="Escribí acá las observaciones pedagógicas y síntesis para este estudiante..."
-                          />
-                        </div>
-
-                        {/* Print View: Clean printed text without input controls */}
-                        <div className="hidden print:block">
-                          <p className="text-xs text-neutral-800 leading-relaxed font-sans whitespace-pre-wrap">
-                            {row.observation || '—'}
-                          </p>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 4. Family Signature Slip / Notificación Institucional (Conditional) */}
-                    {includeFamilySignature && (
-                      <div className="mt-6 pt-3 border-t border-dashed border-neutral-400 bg-neutral-50/50 p-3 rounded-lg">
-                        <div className="text-[11px] font-bold text-blue-900 uppercase tracking-wide mb-2">
-                          Acta de Notificación Institucional a la Familia
-                        </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-4">
-                          <div className="border border-neutral-300 rounded-lg p-3 bg-white">
-                            <div className="font-semibold text-neutral-700 mb-6">
-                              Constancia del Docente
-                            </div>
-                            <div className="border-t border-neutral-400 pt-1 text-[11px] text-neutral-600">
-                              Firma del Docente: <strong>{teacherName}</strong>
-                            </div>
-                            <div className="text-[10px] text-neutral-400 mt-0.5">{schoolName}</div>
-                          </div>
-                          <div className="border border-neutral-300 rounded-lg p-3 bg-white">
-                            <div className="font-semibold text-neutral-700 mb-6">
-                              Notificación del Adulto Responsable / Tutor
-                            </div>
-                            <div className="border-t border-neutral-400 pt-1 text-[11px] text-neutral-600">
-                              Firma: _________________________________________
-                            </div>
-                            <div className="text-[10px] text-neutral-500 mt-1 flex justify-between">
-                              <span>Aclaración: ___________________________</span>
-                              <span>DNI: _______________</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Official Document Footer */}
-                    <div className="pt-5 mt-4 border-t border-neutral-200 flex flex-col sm:flex-row items-center justify-between text-[11px] text-neutral-500 gap-2">
-                      <div>
-                        <strong className="text-neutral-700">Constancia Oficial de Trayectoria</strong> — {courseName}
-                      </div>
-                      <div>
-                        Docente: <strong className="text-neutral-700">{teacherName}</strong> — Ciclo Lectivo 2026
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <StudentIndividualReportList
+                schoolName={schoolName}
+                effectiveReason={effectiveReason}
+                currentSchoolYear={currentSchoolYear}
+                courseName={courseName}
+                teacherName={teacherName}
+                currentDate={currentDate}
+                minAttendancePercent={minAttendancePercent}
+                attendanceLabel={attendanceLabel}
+                dispositionLabel={dispositionLabel}
+                term1FullLabel={term1FullLabel}
+                term2FullLabel={term2FullLabel}
+                term1ShortLabel={term1ShortLabel}
+                term2ShortLabel={term2ShortLabel}
+                selectedElementsCount={selectedElementsCount}
+                includeGrades={includeGrades}
+                includeExamDetails={includeExamDetails}
+                includeAttendance={includeAttendance}
+                includeDisposition={includeDisposition}
+                includeDispositionReasons={includeDispositionReasons}
+                excludedDispositionReasonIds={excludedDispositionReasonIds}
+                includeObservations={includeObservations}
+                includeFamilySignature={includeFamilySignature}
+                displayedStudents={displayedStudents}
+                onToggleDispositionReason={handleToggleDispositionReason}
+                onSelectAllStudentDispositionReasons={handleSelectAllStudentDispositionReasons}
+                onUpdateStudentReportObservation={handleUpdateStudentReportObservation}
+              />
             )}
           </div>
         </div>
@@ -1978,54 +1098,13 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
 
         {/* Confirmation Dialog before creating/updating Google Doc in Drive */}
         {showDriveConfirmModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-            <div
-              className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4 ${
-                isDarkMode ? 'bg-slate-900 border-slate-700 text-white' : 'bg-white border-neutral-200 text-neutral-900'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="p-2.5 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
-                  <FileText className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold">
-                    ¿Crear archivo Google Doc editable en Google Drive?
-                  </h3>
-                  <p className="text-xs text-neutral-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Se creará un documento editable de <strong>Google Docs (.gdoc)</strong> en la subcarpeta <strong>"{formatCourseDriveFolderName(courseName)} / Informes"</strong> con el siguiente nombre:
-                  </p>
-                  <div
-                    className={`mt-2 p-2.5 rounded-xl border text-xs font-semibold ${
-                      isDarkMode ? 'bg-slate-800 border-slate-700 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                    }`}
-                  >
-                    {getTargetGoogleDocTitle()}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-neutral-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowDriveConfirmModal(false)}
-                  className={`px-3.5 py-1.5 rounded-xl border text-xs font-semibold cursor-pointer ${
-                    isDarkMode ? 'border-slate-700 text-slate-300 hover:bg-slate-800' : 'border-neutral-200 text-neutral-600 hover:bg-neutral-100'
-                  }`}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={executeSaveToDrive}
-                  className="px-4 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs cursor-pointer inline-flex items-center gap-1.5"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>Confirmar y Crear Google Doc</span>
-                </button>
-              </div>
-            </div>
-          </div>
+          <SaveToDriveConfirmDialog
+            isDarkMode={isDarkMode}
+            courseName={courseName}
+            targetGoogleDocTitle={getTargetGoogleDocTitle()}
+            onCancel={() => setShowDriveConfirmModal(false)}
+            onConfirm={executeSaveToDrive}
+          />
         )}
       </div>
     </div>

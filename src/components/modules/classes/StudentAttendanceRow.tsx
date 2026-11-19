@@ -185,7 +185,7 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
               </button>
 
               <a
-                href={`?course=${student.courseId}&view=course_detail&studentId=${student.id}${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                href={`?course=${student.courseId}&view=course_detail&studentId=${student.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}

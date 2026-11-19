@@ -465,7 +465,7 @@ export const CourseRosterTabView: React.FC<CourseRosterTabViewProps> = ({
                                   {student.lastName}, {student.firstName}
                                 </button>
                                 <a
-                                  href={`?course=${activeCourse.id}&view=course_detail&studentId=${student.id}${userEmail ? `&authEmail=${encodeURIComponent(userEmail)}` : ''}`}
+                                  href={`?course=${activeCourse.id}&view=course_detail&studentId=${student.id}`}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => e.stopPropagation()}

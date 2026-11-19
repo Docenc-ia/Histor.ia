@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import { WorkspaceAuthProvider, useWorkspaceAuth } from './context/WorkspaceAuthContext';
 import { GlobalDataContextProvider, useGlobalData } from './context/GlobalDataContext';
 import { Header } from './components/layout/Header';
@@ -13,7 +13,7 @@ import { PrivacyPolicyView } from './components/landing/PrivacyPolicyView';
 import { TeacherCoursesPanel } from './components/dashboard/TeacherCoursesPanel';
 import { Course } from './types';
 import { api } from './services/api';
-import { CheckCircle2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2 } from 'lucide-react';
 import { GoogleSessionExpiryBanner } from './components/modules/classes/GoogleSessionExpiryBanner';
 import { CourseWorkspaceView } from './components/modules/CourseWorkspaceView';
 import { subscribeAppEvents } from './utils/appEventBus';
@@ -22,19 +22,7 @@ import { findCourseMatch } from './utils/courseFormatting';
 import { useNavigationService } from './services/navigationService';
 import { areCoursesEqual } from './utils/entityEquality';
 import { PiiPrivacyShield } from './components/common/PiiPrivacyShield';
-
-// Safe lazy loading with retry for secondary modals and views
-const lazyWithRetry = (componentImport: () => Promise<any>) =>
-  lazy(async () => {
-    try {
-      return await componentImport();
-    } catch (error) {
-      console.warn('Retrying dynamic module load...', error);
-      // Wait 300ms and retry once
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      return await componentImport();
-    }
-  });
+import { lazyWithRetry } from './utils/lazyWithRetry';
 
 const CalendarModule = lazyWithRetry(() =>
   import('./components/modules/CalendarModule').then((m) => ({ default: m.CalendarModule }))
@@ -518,8 +506,18 @@ function AppContent() {
 
       {/* Global Toast Notification */}
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 p-4 bg-neutral-900 text-white text-xs font-medium rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-3 duration-200">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+        <div
+          className={`fixed bottom-6 right-6 z-50 p-4 text-white text-xs font-medium rounded-xl shadow-2xl flex items-center gap-3 animate-in slide-in-from-bottom-3 duration-200 ${
+            toast.type === 'error'
+              ? 'bg-rose-950 border border-rose-700/80'
+              : 'bg-neutral-900'
+          }`}
+        >
+          {toast.type === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          )}
           <span>{toast.message}</span>
         </div>
       )}

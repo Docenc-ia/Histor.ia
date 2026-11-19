@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import {
   Users,
   CheckCircle2,
@@ -16,14 +16,15 @@ import { ErrorBoundary } from '../common/ErrorBoundary';
 import { CourseWorkspaceProvider } from '../../context/CourseWorkspaceContext';
 import { storageGateway } from '../../services/storageGateway';
 import { ClassesModuleModalsHost } from './classes/ClassesModuleModalsHost';
+import { lazyWithRetry } from '../../utils/lazyWithRetry';
 
-const GradebookMatrix = lazy(() =>
+const GradebookMatrix = lazyWithRetry(() =>
   import('./GradebookMatrix').then((m) => ({ default: m.GradebookMatrix }))
 );
-const LibroDeTemasMatrix = lazy(() =>
+const LibroDeTemasMatrix = lazyWithRetry(() =>
   import('./LibroDeTemasMatrix').then((m) => ({ default: m.LibroDeTemasMatrix }))
 );
-const CourseHistoryTabView = lazy(() =>
+const CourseHistoryTabView = lazyWithRetry(() =>
   import('./classes/CourseHistoryTabView').then((m) => ({ default: m.CourseHistoryTabView }))
 );
 import { Course, Student } from '../../types';
@@ -1419,7 +1420,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
                       <span>Informes y Reportes</span>
                     </button>
                     <a
-                      href={`?course=${activeCourse.id}&view=course_detail&openReport=true${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                      href={`?course=${activeCourse.id}&view=course_detail&openReport=true`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className={`p-1.5 rounded-lg border transition-all cursor-pointer flex items-center justify-center shrink-0 ${

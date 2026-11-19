@@ -15,6 +15,21 @@ const ONE_DECIMAL_PRECISION = 1;
 const PASSING_EXCELLENT_SCORE_THRESHOLD = 7;
 const PASSING_REGULAR_SCORE_THRESHOLD = 6;
 
+/**
+ * Normaliza una calificación textual o numérica (aceptando tanto coma como punto decimal)
+ * a un número finito, o `null` si está vacía o no es numérica.
+ */
+export function parseGradeNumber(rawValue: unknown): number | null {
+  if (rawValue === undefined || rawValue === null) return null;
+  if (typeof rawValue === 'number') {
+    return Number.isFinite(rawValue) ? rawValue : null;
+  }
+  const normalized = String(rawValue).trim().replace(',', '.');
+  if (normalized === '') return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export type AnnualConditionTone = 'approved' | 'regular' | 'compensation' | 'pending';
 
 export interface StudentAnnualSummaryRow {
@@ -101,23 +116,15 @@ export function calculateCategoryAverageForStudent(
   termCategories.forEach((category) => {
     if (category.subcategories.length === 0) {
       // Cuando una categoría no tiene subcategorías hijas, la calificación se almacena indexada directamente bajo el ID de la categoría.
-      const directCategoryScore = studentGradeRecord[category.id];
-      if (
-        directCategoryScore !== undefined &&
-        directCategoryScore !== '' &&
-        !isNaN(Number(directCategoryScore))
-      ) {
-        numericScores.push(Number(directCategoryScore));
+      const parsedDirect = parseGradeNumber(studentGradeRecord[category.id]);
+      if (parsedDirect !== null) {
+        numericScores.push(parsedDirect);
       }
     } else {
       category.subcategories.forEach((subcategory) => {
-        const subcategoryScore = studentGradeRecord[subcategory.id];
-        if (
-          subcategoryScore !== undefined &&
-          subcategoryScore !== '' &&
-          !isNaN(Number(subcategoryScore))
-        ) {
-          numericScores.push(Number(subcategoryScore));
+        const parsedSub = parseGradeNumber(studentGradeRecord[subcategory.id]);
+        if (parsedSub !== null) {
+          numericScores.push(parsedSub);
         }
       });
     }
@@ -152,10 +159,7 @@ export function calculateFinalScoreForStudent(
   const studentGradeRecord = termGrades[studentId] || {};
   if (termCalculationMode === 'manual_final') {
     const manualFinalString = studentGradeRecord[MANUAL_FINAL_GRADE_KEY] || '';
-    const manualFinalNumber =
-      manualFinalString !== '' && !isNaN(Number(manualFinalString))
-        ? Number(manualFinalString)
-        : null;
+    const manualFinalNumber = parseGradeNumber(manualFinalString);
     return { scoreStr: manualFinalString, num: manualFinalNumber };
   }
 
@@ -165,9 +169,7 @@ export function calculateFinalScoreForStudent(
       ? String(studentGradeRecord[FINAL_AVERAGE_OVERRIDE_KEY]).trim()
       : '';
   if (averageOverrideString !== '') {
-    const overrideNumber = !isNaN(Number(averageOverrideString))
-      ? Number(averageOverrideString)
-      : null;
+    const overrideNumber = parseGradeNumber(averageOverrideString);
     return { scoreStr: averageOverrideString, num: overrideNumber };
   }
 
@@ -260,10 +262,10 @@ export function computeTermScoresMap(
  * @returns Clases de Tailwind CSS correspondientes al color de la calificación.
  */
 export function getScoreColorClass(scoreValueString: string, isDarkMode: boolean): string {
-  if (!scoreValueString || isNaN(Number(scoreValueString))) {
+  const numericScore = parseGradeNumber(scoreValueString);
+  if (numericScore === null) {
     return isDarkMode ? 'text-slate-200' : 'text-neutral-800';
   }
-  const numericScore = Number(scoreValueString);
   if (numericScore >= PASSING_EXCELLENT_SCORE_THRESHOLD) {
     return 'text-emerald-600 dark:text-emerald-400 font-bold';
   }
@@ -311,8 +313,7 @@ export function computeStudentAnnualSummaryRows(
 
     const hasOverride = manualOverride !== undefined && manualOverride !== '';
     const finalVal = hasOverride ? manualOverride : calcAvgStr;
-    const finalNum =
-      finalVal !== '' && !isNaN(Number(finalVal)) ? Number(finalVal) : null;
+    const finalNum = parseGradeNumber(finalVal);
 
     let condition = 'Pendiente';
     let conditionTone: AnnualConditionTone = 'pending';
@@ -393,7 +394,7 @@ export function computeAnnualCourseKpis(
   const with2c = studentAnnualRows.filter((row) => row.score2cNum !== null);
   const withFinal = studentAnnualRows.filter((row) => row.finalNum !== null);
   const approved = studentAnnualRows.filter(
-    (row) => row.finalNum !== null && row.finalNum >= PASSING_EXCELLENT_SCORE_THRESHOLD
+    (row) => row.finalNum !== null && row.finalNum >= PASSING_REGULAR_SCORE_THRESHOLD
   );
 
   const avg1c =

@@ -269,7 +269,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
                                 <span className="truncate flex-1">{displayLabel}</span>
                               </button>
                               <a
-                                href={`?course=${course.id}&view=course_detail${user?.email ? `&authEmail=${encodeURIComponent(user.email)}` : ''}`}
+                                href={`?course=${course.id}&view=course_detail`}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 onClick={(e) => e.stopPropagation()}

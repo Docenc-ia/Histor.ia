@@ -9,6 +9,7 @@ import {
 import { api } from '../services/api';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { useGlobalData } from '../context/GlobalDataContext';
+import { safeSetLocalStorageItem } from '../utils/storageGuard';
 
 export const DEFAULT_ABSENCE_PRESETS: AbsencePresetTemplate[] = [
   {
@@ -267,9 +268,7 @@ export function useCourseNotifications({
         if (remoteTemplates && typeof remoteTemplates === 'object' && Object.keys(remoteTemplates).length > 0) {
           setConductReasonTemplates((prev) => {
             const merged = { ...prev, ...remoteTemplates };
-            try {
-              localStorage.setItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(merged));
-            } catch (_) {}
+            safeSetLocalStorageItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(merged));
             return merged;
           });
         }
@@ -282,9 +281,7 @@ export function useCourseNotifications({
         if (!isMounted) return;
         if (Array.isArray(opts) && opts.length > 0) {
           setTeacherConductOptions(opts);
-          try {
-            localStorage.setItem(LOCAL_CONDUCT_OPTIONS_KEY, JSON.stringify(opts));
-          } catch (_) {}
+          safeSetLocalStorageItem(LOCAL_CONDUCT_OPTIONS_KEY, JSON.stringify(opts));
         }
       })
       .catch(() => {});
@@ -302,9 +299,7 @@ export function useCourseNotifications({
               if (p && p.id && p.text) byId.set(p.id, p);
             });
             const merged = Array.from(byId.values());
-            try {
-              localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(merged));
-            } catch (_) {}
+            safeSetLocalStorageItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(merged));
             return merged;
           });
         })
@@ -335,9 +330,7 @@ export function useCourseNotifications({
     };
     const updated = [...savedPresets, newPreset];
     setSavedPresets(updated);
-    try {
-      localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
-    } catch (_) {}
+    safeSetLocalStorageItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
     const uid = getActiveUserId();
     if (uid) {
       firestoreSync.saveUserSetting(uid, 'notification_presets', updated).catch(() => {});
@@ -353,9 +346,7 @@ export function useCourseNotifications({
     }
     const updated = savedPresets.filter((p) => p.id !== presetId);
     setSavedPresets(updated);
-    try {
-      localStorage.setItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
-    } catch (_) {}
+    safeSetLocalStorageItem(LOCAL_ABSENCE_PRESETS_KEY, JSON.stringify(updated));
     const uid = getActiveUserId();
     if (uid) {
       firestoreSync.saveUserSetting(uid, 'notification_presets', updated).catch(() => {});
@@ -460,9 +451,7 @@ export function useCourseNotifications({
   const handleSaveConductOptions = (newOptions: string[]) => {
     const cleaned = Array.from(new Set(newOptions.map((s) => s.trim()))).filter(Boolean);
     setTeacherConductOptions(cleaned);
-    try {
-      localStorage.setItem(LOCAL_CONDUCT_OPTIONS_KEY, JSON.stringify(cleaned));
-    } catch (_) {}
+    safeSetLocalStorageItem(LOCAL_CONDUCT_OPTIONS_KEY, JSON.stringify(cleaned));
     api.saveConductOptions(teacherEmail, cleaned).catch(() => {});
   };
 
@@ -494,9 +483,7 @@ export function useCourseNotifications({
       updatedTpls[trimmed] = updatedTpls[oldOpt];
       delete updatedTpls[oldOpt];
       setConductReasonTemplates(updatedTpls);
-      try {
-        localStorage.setItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updatedTpls));
-      } catch (_) {}
+      safeSetLocalStorageItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updatedTpls));
       api.saveConductTemplates(teacherEmail, updatedTpls).catch(() => {});
     }
 
@@ -526,9 +513,7 @@ export function useCourseNotifications({
       [trimmed]: genericText,
     };
     setConductReasonTemplates(updated);
-    try {
-      localStorage.setItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updated));
-    } catch (_) {}
+    safeSetLocalStorageItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updated));
     api.saveConductTemplates(teacherEmail, updated).catch(() => {});
 
     if (!teacherConductOptions.includes(trimmed)) {
@@ -550,9 +535,7 @@ export function useCourseNotifications({
     const updated = { ...conductReasonTemplates };
     delete updated[trimmed];
     setConductReasonTemplates(updated);
-    try {
-      localStorage.setItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updated));
-    } catch (_) {}
+    safeSetLocalStorageItem(LOCAL_REASON_TEMPLATES_KEY, JSON.stringify(updated));
     api.saveConductTemplates(teacherEmail, updated).catch(() => {});
 
     onShowToast(`Mensaje de "${trimmed}" restablecido a la plantilla estándar.`, 3000);
@@ -569,9 +552,7 @@ export function useCourseNotifications({
   const handleSaveNotifSettings = useCallback(
     (newSettings: AbsenceNotificationSettings) => {
       updateNotificationSettings(newSettings, { syncCloud: true, immediate: true });
-      try {
-        localStorage.setItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(newSettings));
-      } catch (_) {}
+      safeSetLocalStorageItem(LOCAL_NOTIF_SETTINGS_KEY, JSON.stringify(newSettings));
       onShowToast('Configuración de avisos guardada correctamente.', 3000);
     },
     [updateNotificationSettings, LOCAL_NOTIF_SETTINGS_KEY, onShowToast]

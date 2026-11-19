@@ -5,6 +5,8 @@
  */
 
 import { getCachedAccessToken, requestGoogleAccessToken, fetchGoogleApiWithRetry } from './googleAuth';
+import { expressAuthFetch } from '../expressAuthHeaders';
+import { safeSetLocalStorageItem } from '../../utils/storageGuard';
 import { DriveResource } from '../../types';
 
 export interface CourseFolderStructure {
@@ -207,7 +209,7 @@ function writeSavedDriveRegistryEntry(entry: SavedDriveRegistryEntry): void {
   try {
     const list = readSavedDriveRegistry().filter((item) => item.id !== entry.id);
     list.unshift(entry);
-    localStorage.setItem(SAVED_DRIVE_FILES_REGISTRY_KEY, JSON.stringify(list.slice(0, 120)));
+    safeSetLocalStorageItem(SAVED_DRIVE_FILES_REGISTRY_KEY, JSON.stringify(list.slice(0, 120)));
   } catch {}
 }
 
@@ -1068,7 +1070,7 @@ export const driveService = {
 
     // Fallback to local server files (wrapped in try/catch for static/serverless hosts like Vercel)
     try {
-      const res = await fetch('/api/drive/files');
+      const res = await expressAuthFetch('/api/drive/files');
       if (res.ok) {
         const contentType = res.headers.get('content-type') || '';
         if (contentType.includes('application/json')) {
@@ -1273,7 +1275,7 @@ export const driveService = {
 
     // Fallback 1: Server-side proxy (bypasses browser CORS on docs.google.com)
     try {
-      const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+      const proxyRes = await expressAuthFetch('/api/workspace/fetch-remote-document', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1401,7 +1403,7 @@ export const driveService = {
 
           // Also register in local server drive resources
           try {
-            await fetch('/api/drive/upload', {
+            await expressAuthFetch('/api/drive/upload', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -1431,7 +1433,7 @@ export const driveService = {
 
     // Fallback: register in local server resources
     try {
-      const res = await fetch('/api/drive/upload', {
+      const res = await expressAuthFetch('/api/drive/upload', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

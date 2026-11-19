@@ -382,19 +382,20 @@ export function computeStudentAttendanceTrafficLight(
   let status: 'regular' | 'warning' | 'alert';
   let statusLabel: string;
 
-  // Criterios de semáforo:
-  // Verde: si no hay riesgo (> 80% de asistencia)
-  // Amarillo: (80% - 75%) si está al límite
-  // Rojo: (menos de 75%) si no cuenta con el mínimo de asistencia
-  if (percentage < 75 || computedAbsences > maxAllowedAbsences) {
+  // Criterios de semáforo dinámicos derivados de settings.maxAbsencePercent
+  // (por defecto 25% máx. inasistencias -> mínimo 75% asistencia, alerta amarilla hasta 80%)
+  const minAttendancePercent = Math.max(0, Math.min(100, Math.round(100 - settings.maxAbsencePercent)));
+  const warningThresholdPercent = Math.min(100, minAttendancePercent + 5);
+
+  if (percentage < minAttendancePercent || computedAbsences > maxAllowedAbsences) {
     status = 'alert';
-    statusLabel = 'Riesgo (< 75% asistencia)';
-  } else if (percentage <= 80 || remainingAbsences <= 1) {
+    statusLabel = `Riesgo (< ${minAttendancePercent}% asistencia)`;
+  } else if (percentage <= warningThresholdPercent || remainingAbsences <= 1) {
     status = 'warning';
-    statusLabel = 'Al límite (75% - 80% asistencia)';
+    statusLabel = `Al límite (${minAttendancePercent}% - ${warningThresholdPercent}% asistencia)`;
   } else {
     status = 'regular';
-    statusLabel = 'Sin riesgo (> 80% asistencia)';
+    statusLabel = `Sin riesgo (> ${warningThresholdPercent}% asistencia)`;
   }
 
   return {

@@ -611,6 +611,17 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
                   </>
                 )}
               </button>
+              <p
+                className={`text-[11px] text-center leading-snug pt-1 ${
+                  isDarkMode ? 'text-slate-400' : 'text-slate-500'
+                }`}
+              >
+                El acceso con correo guarda en este dispositivo. Iniciá con{' '}
+                <strong className={isDarkMode ? 'text-slate-200' : 'text-slate-700'}>
+                  Google Workspace
+                </strong>{' '}
+                para sincronización en la nube, Drive, Classroom y Gmail.
+              </p>
             </form>
 
             {/* Footer text centered */}

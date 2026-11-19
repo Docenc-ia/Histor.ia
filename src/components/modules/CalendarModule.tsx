@@ -28,6 +28,7 @@ import {
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { calendarService } from '../../services/workspace/calendarService';
 import { getUserStorageKey, isPrimaryOwnerAccount } from '../../services/storageHelpers';
+import { safeSetLocalStorageItem } from '../../utils/storageGuard';
 import { GoogleCalendarInfo, Course } from '../../types';
 
 export interface CalendarModuleProps {
@@ -187,13 +188,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
         if (mounted && Array.isArray(cloudCals) && cloudCals.length > 0) {
           const updated = normalizeConfiguredCalendars(cloudCals, institutionalEmail);
           setCalendars(updated);
-          try {
-            const scopedKey = getUserStorageKey(STORAGE_KEY);
-            localStorage.setItem(scopedKey, JSON.stringify(updated));
-            if (isPrimaryOwnerAccount()) {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-            }
-          } catch (_) {}
+          const scopedKey = getUserStorageKey(STORAGE_KEY);
+          const serialized = JSON.stringify(updated);
+          safeSetLocalStorageItem(scopedKey, serialized);
+          if (isPrimaryOwnerAccount()) {
+            safeSetLocalStorageItem(STORAGE_KEY, serialized);
+          }
         }
       })
       .catch(() => {})
@@ -207,13 +207,12 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
 
   // Save to localStorage and Firestore whenever calendars state changes
   useEffect(() => {
-    try {
-      const scopedKey = getUserStorageKey(STORAGE_KEY);
-      localStorage.setItem(scopedKey, JSON.stringify(calendars));
-      if (isPrimaryOwnerAccount()) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(calendars));
-      }
-    } catch (_) {}
+    const scopedKey = getUserStorageKey(STORAGE_KEY);
+    const serialized = JSON.stringify(calendars);
+    safeSetLocalStorageItem(scopedKey, serialized);
+    if (isPrimaryOwnerAccount()) {
+      safeSetLocalStorageItem(STORAGE_KEY, serialized);
+    }
     if (!hasHydratedFromCloud) return;
     import('../../services/firestoreSync')
       .then(({ firestoreSync, getActiveUserId }) => {

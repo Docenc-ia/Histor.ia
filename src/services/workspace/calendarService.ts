@@ -12,6 +12,7 @@ import { getCachedAccessToken, fetchGoogleApiWithRetry, renewGoogleSessionSilent
 import { CalendarEventItem, GoogleCalendarInfo, Course, CalendarEventCategory } from '../../types';
 import { extractDailySlotsFromSchedule, extractWeekdaysFromSchedule } from '../../utils/schoolHolidays';
 import { getLocalCourses, getUserScopedItem } from '../storageHelpers';
+import { expressAuthFetch } from '../expressAuthHeaders';
 
 export function isBusyOrGenericTitle(title?: string | null): boolean {
   if (!title) return true;
@@ -395,7 +396,7 @@ export const calendarService = {
       if (options.courseId) query.set('courseId', options.courseId);
       if (options.category) query.set('category', options.category);
 
-      const localRes = await fetch(`/api/calendar/events?${query.toString()}`);
+      const localRes = await expressAuthFetch(`/api/calendar/events?${query.toString()}`);
       if (localRes.ok) {
         const localData = await localRes.json();
         const localEvents: CalendarEventItem[] = localData.events || [];
@@ -502,7 +503,7 @@ export const calendarService = {
     }
 
     // 2. Persist to backend
-    const localRes = await fetch('/api/calendar/events', {
+    const localRes = await expressAuthFetch('/api/calendar/events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -543,7 +544,7 @@ export const calendarService = {
       }
     }
 
-    const res = await fetch(`/api/calendar/events/${encodeURIComponent(eventId)}`, {
+    const res = await expressAuthFetch(`/api/calendar/events/${encodeURIComponent(eventId)}`, {
       method: 'DELETE',
     });
     return res.json();
@@ -558,7 +559,7 @@ export const calendarService = {
     events: CalendarEventItem[];
     message: string;
   }> {
-    const res = await fetch('/api/calendar/sync-course-schedules', {
+    const res = await expressAuthFetch('/api/calendar/sync-course-schedules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetCourseId }),
@@ -1180,7 +1181,7 @@ export const calendarService = {
         };
 
         try {
-          const saveRes = await fetch('/api/calendar/events', {
+          const saveRes = await expressAuthFetch('/api/calendar/events', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(eventPayload),
@@ -1206,7 +1207,7 @@ export const calendarService = {
 
         if (autoUpdateCourseScheduleStrings && scheduleStr) {
           try {
-            const patchRes = await fetch(`/api/courses/${encodeURIComponent(courseId)}`, {
+            const patchRes = await expressAuthFetch(`/api/courses/${encodeURIComponent(courseId)}`, {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ schedule: scheduleStr }),
@@ -1253,7 +1254,7 @@ export const calendarService = {
    */
   async deduplicateEvents(): Promise<{ success: boolean; removedCount: number; remainingCount: number; message: string }> {
     try {
-      const res = await fetch('/api/calendar/deduplicate', {
+      const res = await expressAuthFetch('/api/calendar/deduplicate', {
         method: 'POST',
       });
       if (res.ok) {
@@ -1275,7 +1276,7 @@ export const calendarService = {
    */
   async clearClassSchedules(): Promise<{ success: boolean; clearedCount: number; remainingCount: number; message: string }> {
     try {
-      const res = await fetch('/api/calendar/clear-classes', {
+      const res = await expressAuthFetch('/api/calendar/clear-classes', {
         method: 'POST',
       });
       if (res.ok) {

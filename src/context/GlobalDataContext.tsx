@@ -21,7 +21,12 @@ import { api } from '../services/api';
 import { useWorkspaceAuth } from './WorkspaceAuthContext';
 import { navigationService } from '../services/navigationService';
 import { subscribeAppEvents } from '../utils/appEventBus';
-import { computeQuickStudentAttendanceRate } from '../utils/attendanceCalculations';
+import { safeSetLocalStorageItem } from '../utils/storageGuard';
+import {
+  computeQuickStudentAttendanceRate,
+  getCourseAttendanceSettings,
+  getCurrentCalendarTerm,
+} from '../utils/attendanceCalculations';
 import {
   reconcileCourseList,
   reconcileStudentList,
@@ -104,11 +109,11 @@ function persistLocalOmittedState(
 ): void {
   if (typeof window === 'undefined' || !uid) return;
   try {
-    localStorage.setItem(
+    safeSetLocalStorageItem(
       `docencia_omitted_notification_ids_${uid}`,
       JSON.stringify(Array.from(omitted).slice(-4000))
     );
-    localStorage.setItem(
+    safeSetLocalStorageItem(
       `docencia_reactivated_notification_ids_${uid}`,
       JSON.stringify(Array.from(reactivated).slice(-1000))
     );
@@ -158,9 +163,9 @@ function persistLocalNotificationSettings(
   if (typeof window === 'undefined' || !uid) return;
   try {
     const serialized = JSON.stringify(settings);
-    localStorage.setItem(`docencia_notification_settings_${uid}`, serialized);
+    safeSetLocalStorageItem(`docencia_notification_settings_${uid}`, serialized);
     if (email) {
-      localStorage.setItem(`fds_absence_notif_settings_v1_${email}`, serialized);
+      safeSetLocalStorageItem(`fds_absence_notif_settings_v1_${email}`, serialized);
     }
   } catch (_) {}
 }
@@ -548,7 +553,13 @@ export const GlobalDataContextProvider: React.FC<{ children: React.ReactNode }> 
           if (c.id && c.schedule) scheduleByCourseId.set(c.id, c.schedule);
           if (c.id) {
             try {
-              const rawCourseDisp = api.getUserScopedItem(`fds_disposition_data_${c.id}_1c`);
+              const courseSettings = getCourseAttendanceSettings(c.id, c.schedule);
+              const activeTerm = getCurrentCalendarTerm(courseSettings);
+              const rawCourseDisp =
+                api.getUserScopedItem(`fds_disposition_data_${c.id}_${activeTerm}`) ||
+                (activeTerm === '2c'
+                  ? api.getUserScopedItem(`fds_disposition_data_${c.id}_1c`)
+                  : null);
               if (rawCourseDisp) {
                 const parsed = JSON.parse(rawCourseDisp);
                 if (parsed && typeof parsed === 'object') {

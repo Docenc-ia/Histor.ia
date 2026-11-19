@@ -8,6 +8,7 @@ import { Student } from '../../types';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import { sanitizeSpreadsheetFormulaCell } from '../../utils/htmlEscape';
+import { expressAuthFetch } from '../expressAuthHeaders';
 
 /**
  * Crea o sincroniza en Google Sheets la planilla de Valoración Preliminar del cuatrimestre
@@ -406,7 +407,7 @@ export async function fetchArbitrarySpreadsheetDataHelper(
   }
 
   try {
-    const proxyRes = await fetch('/api/workspace/fetch-remote-document', {
+    const proxyRes = await expressAuthFetch('/api/workspace/fetch-remote-document', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

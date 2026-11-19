@@ -24,6 +24,7 @@ import { sheetsService } from '../services/workspace/sheetsService';
 import { classroomService } from '../services/workspace/classroomService';
 import { gmailService } from '../services/workspace/gmailService';
 import { formatLocalDateDMY } from '../utils/dateUtils';
+import { openExternalUrl } from '../utils/openExternalUrl';
 import { getTerminologySettings } from '../utils/terminologySettings';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 import { DEFAULT_ABSENCE_PRESETS } from './useCourseNotifications';
@@ -418,8 +419,9 @@ export function useManualDispositionAndAbsenceEditor({
               const subject = `Notificación de Inasistencia - ${activeCourse.name}`;
               const res = await gmailService.sendEmail(student.email, subject, msgToSend);
               if (!res.success) {
-                window.open(
-                  `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msgToSend)}`
+                openExternalUrl(
+                  `mailto:${encodeURIComponent(student.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(msgToSend)}`,
+                  false
                 );
               }
               notifSent = true;

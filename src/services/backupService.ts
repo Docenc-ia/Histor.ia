@@ -133,7 +133,7 @@ export const backupService = {
 
     if (data.settingsAndGradesSnapshot && typeof data.settingsAndGradesSnapshot === 'object') {
       for (const [k, v] of Object.entries(data.settingsAndGradesSnapshot)) {
-        if (FORBIDDEN_KEYS.has(k)) continue;
+        if (FORBIDDEN_KEYS.has(k) || storageGateway.isSensitiveAuthStorageKey(k)) continue;
         if (k.startsWith('fds_') || k.startsWith('docencia_')) {
           let targetKey = k;
           if (uid) {

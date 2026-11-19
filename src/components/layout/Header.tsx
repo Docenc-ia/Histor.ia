@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Suspense } from 'react';
 import {
   Menu,
   Search,
@@ -27,8 +27,9 @@ import { syncCoordinator } from '../../services/syncCoordinator';
 import { subscribePiiMaskState, toggleManualPiiMask } from '../common/PiiPrivacyShield';
 import { getRemovedStudentIds } from '../../services/api';
 import { useNavigationService } from '../../services/navigationService';
+import { lazyWithRetry } from '../../utils/lazyWithRetry';
 
-const HeaderSystemModals = lazy(() =>
+const HeaderSystemModals = lazyWithRetry(() =>
   import('./HeaderSystemModals').then((m) => ({ default: m.HeaderSystemModals }))
 );
 

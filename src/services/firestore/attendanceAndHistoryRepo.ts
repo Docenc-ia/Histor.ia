@@ -178,14 +178,25 @@ function computeTotalsFromHistoryList(history: any[]): {
     if (!studentId || studentId === 'all') continue;
     const targetMap = data.term === '2c' ? disposition2c : disposition1c;
     if (!targetMap[studentId]) {
-      targetMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: 10 };
+      const initialScore =
+        typeof data.previousDisposition === 'number' && Number.isFinite(data.previousDisposition)
+          ? data.previousDisposition
+          : 10;
+      targetMap[studentId] = { totalAbsences: 0, totalLates: 0, totalDisposition: initialScore };
     }
     const isReset =
       data.category === 'Sistema' ||
       String(data.action || '').toLowerCase().includes('restablecid') ||
       String(data.action || '').toLowerCase().includes('reinicio');
     if (isReset) {
-      targetMap[studentId].totalDisposition = 10;
+      if (typeof data.resultingDisposition === 'number' && Number.isFinite(data.resultingDisposition)) {
+        targetMap[studentId].totalDisposition = data.resultingDisposition;
+      } else if (
+        String(data.action || '').toLowerCase().includes('restablecid') ||
+        String(data.action || '').toLowerCase().includes('reinicio')
+      ) {
+        targetMap[studentId].totalDisposition = 10;
+      }
       continue;
     }
 
@@ -210,15 +221,38 @@ function computeTotalsFromHistoryList(history: any[]): {
       data.category === 'Disposición' ||
       (!isAbsence && !isLate && data.category !== 'Sistema' && data.category !== 'Calificación')
     ) {
-      const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
-      targetMap[studentId].totalDisposition = Math.min(
-        10,
-        Math.max(0, targetMap[studentId].totalDisposition + delta)
-      );
+      if (typeof data.resultingDisposition === 'number' && Number.isFinite(data.resultingDisposition)) {
+        targetMap[studentId].totalDisposition = Math.max(0, data.resultingDisposition);
+      } else {
+        const delta = typeof data.pointsChange === 'number' ? data.pointsChange : -1;
+        targetMap[studentId].totalDisposition = Math.min(
+          10,
+          Math.max(0, targetMap[studentId].totalDisposition + delta)
+        );
+      }
     }
   }
 
   return { disposition1c, disposition2c };
+}
+
+/**
+ * Fits as many compacted history items as safely stay under Firestore's 1 MB single-document limit (~820 KB budget).
+ */
+function buildSizeSafeCompactHistory(rawHistory: any[]): any[] {
+  const MAX_HISTORY_BYTES = 820_000;
+  const MAX_HISTORY_ITEMS = 3500;
+  const result: any[] = [];
+  let approxBytes = 256;
+  const limit = Math.min(rawHistory.length, MAX_HISTORY_ITEMS);
+  for (let i = 0; i < limit; i++) {
+    const compacted = compactHistoryItemForCloud(rawHistory[i]);
+    const itemBytes = JSON.stringify(compacted).length + 2;
+    if (approxBytes + itemBytes > MAX_HISTORY_BYTES) break;
+    result.push(compacted);
+    approxBytes += itemBytes;
+  }
+  return result;
 }
 
 async function flushCompactDispositionToCloud(
@@ -252,9 +286,8 @@ async function flushCompactDispositionToCloud(
   const computed = computeTotalsFromHistoryList(localBundle.history);
   const mergedDisp1c = { ...computed.disposition1c, ...localBundle.disposition };
   const mergedDisp2c = { ...computed.disposition2c, ...localBundle.disposition2c };
-  // Keep up to 1500 compacted items in the single Firestore doc to stay safely below the 1 MB limit
-  const cleanHistory = localBundle.history.slice(0, 1500).map(compactHistoryItemForCloud);
-  const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1200);
+  const cleanHistory = buildSizeSafeCompactHistory(localBundle.history);
+  const cleanDeletedIds = Array.from(localBundle.deletedIds).slice(-1500);
 
   dispositionReadCache = {
     userId,
@@ -262,7 +295,7 @@ async function flushCompactDispositionToCloud(
     data: {
       disposition: mergedDisp1c,
       disposition2c: mergedDisp2c,
-      history: localBundle.history.slice(0, 2500),
+      history: localBundle.history.slice(0, 3500),
     },
   };
 
@@ -290,6 +323,9 @@ async function flushCompactDispositionToCloud(
     ...historyCore,
     updatedAt: nowIso,
   });
+
+  const pendingSnapshotIds = Array.from(inMemoryPendingRecords.keys());
+  let allBatchesSucceeded = true;
 
   try {
     for (const targetDb of ALL_DBS) {
@@ -327,10 +363,16 @@ async function flushCompactDispositionToCloud(
         const res = await executeWithTimeout(batch.commit(), FIRESTORE_TIMEOUT_MS, true);
         if (res !== null) {
           pendingMarks.forEach((m) => markPayloadSynced(m.key, m.fp));
+        } else {
+          allBatchesSucceeded = false;
         }
       }
     }
-    inMemoryPendingRecords.clear();
+    if (allBatchesSucceeded) {
+      for (const recId of pendingSnapshotIds) {
+        inMemoryPendingRecords.delete(recId);
+      }
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `users/${userId}/settings/${COMPACT_SUMMARY_DOC_ID}`);
   } finally {

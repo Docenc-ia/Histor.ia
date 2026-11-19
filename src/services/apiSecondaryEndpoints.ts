@@ -6,20 +6,11 @@ import {
   TeacherTask,
   StudentSubmission,
 } from '../types';
-import { firestoreSync, getActiveUserId, getActiveUserEmail } from './firestoreSync';
+import { firestoreSync, getActiveUserId } from './firestoreSync';
 import { getUserStorageKey } from './storageHelpers';
 import { safeSetLocalStorageItem } from '../utils/storageGuard';
-
-function authFetch(url: string, init?: RequestInit): Promise<Response> {
-  const activeUserId = getActiveUserId() || '';
-  const activeEmail = getActiveUserEmail() || '';
-  const headers: Record<string, string> = {
-    ...(init?.headers ? (init.headers as Record<string, string>) : {}),
-  };
-  if (activeUserId && !headers['X-User-Id']) headers['X-User-Id'] = activeUserId;
-  if (activeEmail && !headers['X-User-Email']) headers['X-User-Email'] = activeEmail;
-  return fetch(url, { ...init, headers });
-}
+import { expressAuthFetch as authFetch } from './expressAuthHeaders';
+import { fetchExpressJson } from './apiModules/expressTransport';
 
 /**
  * Secondary API endpoints for Tasks, Conduct Options/Templates, Lesson Plans,
@@ -117,15 +108,9 @@ export const apiSecondaryEndpoints = {
       }
     }
 
-    try {
-      const url = teacher ? `/api/conduct-options?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-options';
-      const res = await fetch(url);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return Array.isArray(data.options) ? data.options : [];
-    } catch {
-      return [];
-    }
+    const url = teacher ? `/api/conduct-options?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-options';
+    const data = await fetchExpressJson<{ options?: string[] }>(url);
+    return data && Array.isArray(data.options) ? data.options : [];
   },
 
   async saveConductOptions(teacher: string, options: string[]): Promise<boolean> {
@@ -135,16 +120,12 @@ export const apiSecondaryEndpoints = {
     if (userId) {
       firestoreSync.saveUserSetting(userId, 'conduct_options', options).catch(() => {});
     }
-    try {
-      const res = await fetch('/api/conduct-options', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacher, options }),
-      });
-      return res.ok;
-    } catch {
-      return true;
-    }
+    await fetchExpressJson('/api/conduct-options', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teacher, options }),
+    });
+    return true;
   },
 
   async getConductTemplates(teacher?: string): Promise<Record<string, string>> {
@@ -168,15 +149,9 @@ export const apiSecondaryEndpoints = {
       }
     }
 
-    try {
-      const url = teacher ? `/api/conduct-templates?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-templates';
-      const res = await fetch(url);
-      if (!res.ok) return {};
-      const data = await res.json();
-      return data.templates && typeof data.templates === 'object' ? data.templates : {};
-    } catch {
-      return {};
-    }
+    const url = teacher ? `/api/conduct-templates?teacher=${encodeURIComponent(teacher)}` : '/api/conduct-templates';
+    const data = await fetchExpressJson<{ templates?: Record<string, string> }>(url);
+    return data?.templates && typeof data.templates === 'object' ? data.templates : {};
   },
 
   async saveConductTemplates(teacher: string, templates: Record<string, string>): Promise<boolean> {
@@ -186,29 +161,25 @@ export const apiSecondaryEndpoints = {
     if (userId) {
       firestoreSync.saveUserSetting(userId, 'conduct_templates', templates).catch(() => {});
     }
-    try {
-      const res = await fetch('/api/conduct-templates', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teacher, templates }),
-      });
-      return res.ok;
-    } catch {
-      return true;
-    }
+    await fetchExpressJson('/api/conduct-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ teacher, templates }),
+    });
+    return true;
   },
 
   // Lesson Plans (Google Docs ready)
   async getLessonPlans(courseId?: string): Promise<LessonPlan[]> {
     const url = courseId ? `/api/lesson-plans?courseId=${encodeURIComponent(courseId)}` : '/api/lesson-plans';
-    const res = await fetch(url);
+    const res = await authFetch(url);
     if (!res.ok) throw new Error('Error al cargar planificaciones');
     const data = await res.json();
     return data.lessonPlans;
   },
 
   async createLessonPlan(planData: Partial<LessonPlan>): Promise<LessonPlan> {
-    const res = await fetch('/api/lesson-plans', {
+    const res = await authFetch('/api/lesson-plans', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(planData),
@@ -221,14 +192,14 @@ export const apiSecondaryEndpoints = {
   // Gradebook (Google Sheets ready)
   async getGrades(courseId?: string): Promise<GradeEntry[]> {
     const url = courseId ? `/api/gradebook?courseId=${encodeURIComponent(courseId)}` : '/api/gradebook';
-    const res = await fetch(url);
+    const res = await authFetch(url);
     if (!res.ok) throw new Error('Error al cargar calificaciones');
     const data = await res.json();
     return data.grades;
   },
 
   async updateGrade(gradeData: Partial<GradeEntry>): Promise<GradeEntry> {
-    const res = await fetch('/api/gradebook/update', {
+    const res = await authFetch('/api/gradebook/update', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(gradeData),
@@ -243,14 +214,14 @@ export const apiSecondaryEndpoints = {
     const params = new URLSearchParams();
     if (courseId) params.append('courseId', courseId);
     if (folder) params.append('folder', folder);
-    const res = await fetch(`/api/drive/files?${params.toString()}`);
+    const res = await authFetch(`/api/drive/files?${params.toString()}`);
     if (!res.ok) throw new Error('Error al obtener archivos de Drive');
     const data = await res.json();
     return data.files;
   },
 
   async uploadDriveFile(fileData: { name: string; type: string; folder: string; courseId?: string }): Promise<DriveResource> {
-    const res = await fetch('/api/drive/upload', {
+    const res = await authFetch('/api/drive/upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(fileData),
@@ -263,14 +234,14 @@ export const apiSecondaryEndpoints = {
   // Classroom Tasks
   async getClassroomTasks(courseId?: string): Promise<ClassroomTask[]> {
     const url = courseId ? `/api/classroom/tasks?courseId=${encodeURIComponent(courseId)}` : '/api/classroom/tasks';
-    const res = await fetch(url);
+    const res = await authFetch(url);
     if (!res.ok) throw new Error('Error al cargar tareas de Classroom');
     const data = await res.json();
     return data.tasks;
   },
 
   async publishClassroomTask(taskData: Partial<ClassroomTask>): Promise<ClassroomTask> {
-    const res = await fetch('/api/classroom/publish-task', {
+    const res = await authFetch('/api/classroom/publish-task', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(taskData),
@@ -291,14 +262,14 @@ export const apiSecondaryEndpoints = {
     const q = new URLSearchParams();
     if (params?.courseId) q.set('courseId', params.courseId);
     if (params?.category) q.set('category', params.category);
-    const res = await fetch(`/api/calendar/events?${q.toString()}`);
+    const res = await authFetch(`/api/calendar/events?${q.toString()}`);
     if (!res.ok) throw new Error('Error al obtener eventos del calendario');
     const data = await res.json();
     return data.events || [];
   },
 
   async createCalendarEvent(eventData: any): Promise<any> {
-    const res = await fetch('/api/calendar/events', {
+    const res = await authFetch('/api/calendar/events', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(eventData),
@@ -309,14 +280,14 @@ export const apiSecondaryEndpoints = {
   },
 
   async deleteCalendarEvent(id: string): Promise<void> {
-    const res = await fetch(`/api/calendar/events/${encodeURIComponent(id)}`, {
+    const res = await authFetch(`/api/calendar/events/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Error al eliminar evento');
   },
 
   async syncCourseSchedules(targetCourseId?: string): Promise<{ success: boolean; syncedCount: number; message: string }> {
-    const res = await fetch('/api/calendar/sync-course-schedules', {
+    const res = await authFetch('/api/calendar/sync-course-schedules', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetCourseId }),

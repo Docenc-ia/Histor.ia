@@ -354,9 +354,39 @@ export function autoDetectIdentityColumns(
  * @param columnKind Tipo semántico asignado a la columna (`grade`, `disposition`, `disposition_deduction`, `absences`, `lates`).
  * @returns El valor numérico normalizado (`numVal`) y un indicador booleano de validez (`isValid`) dentro del rango permitido.
  */
+/**
+ * Detecta si una columna de calificaciones está expresada en escala centesimal (0–100)
+ * inspeccionando las filas del archivo: si al menos un valor numérico puro está en `(10, 100]`,
+ * toda la columna se trata en escala 0–100 para que también puntajes `<= 10` (ej. 8 sobre 100)
+ * se conviertan consistentemente (0.8) en lugar de quedar como 8.
+ */
+export function detectColumnGradeScale(
+  rawRows: Array<Record<string, any>>,
+  colKey: string
+): '10' | '100' {
+  if (!colKey || !Array.isArray(rawRows) || rawRows.length === 0) return '10';
+  for (const row of rawRows) {
+    const rawStr = String(row?.[colKey] ?? '').trim();
+    if (!rawStr || rawStr === EMPTY_CELL_DASH) continue;
+    // Ignorar fracciones explícitas ("8 / 10", "80 / 100") porque ya indican su propio denominador
+    if (/^(-?\d+(?:[.,]\d+)?)\s*(?:\/|de|sobre)\s*(\d+(?:[.,]\d+)?)$/i.test(rawStr)) {
+      continue;
+    }
+    const normalized = rawStr.replace(',', '.');
+    const match = normalized.match(/-?\d+(?:\.\d+)?/);
+    if (!match) continue;
+    const val = parseFloat(match[0]);
+    if (!isNaN(val) && val > MAX_GRADE_SCORE && val <= 100) {
+      return '100';
+    }
+  }
+  return '10';
+}
+
 export function parseFlexibleCellNumber(
   rawCellValue: any,
-  columnKind: DetectedColumnConfig['kind']
+  columnKind: DetectedColumnConfig['kind'],
+  columnScale: '10' | '100' = '10'
 ): { numVal: number; isValid: boolean } {
   const rawCellString = String(rawCellValue ?? '').trim();
   if (!rawCellString || rawCellString === EMPTY_CELL_DASH) {
@@ -450,7 +480,10 @@ export function parseFlexibleCellNumber(
   }
 
   if (columnKind === 'grade') {
-    if (parsedNumber > MAX_GRADE_SCORE && parsedNumber <= 100) {
+    const shouldScaleFrom100 =
+      (parsedNumber > MAX_GRADE_SCORE && parsedNumber <= 100) ||
+      (columnScale === '100' && parsedNumber >= MIN_GRADE_SCORE && parsedNumber <= 100);
+    if (shouldScaleFrom100) {
       const scaledFromCentesimal = Number(
         ((parsedNumber / 100) * MAX_GRADE_SCORE).toFixed(TWO_DECIMAL_PRECISION)
       );
@@ -1398,6 +1431,14 @@ export function computeMultiVerificationRows(
     });
   }
 
+  // Precalculamos la escala (0–10 vs 0–100) por columna de calificación para evitar incoherencias en notas <= 10 dentro de exámenes sobre 100
+  const detectedScaleByColKey: Record<string, '10' | '100'> = {};
+  columnConfigs.forEach((cfg) => {
+    if (cfg.kind === 'grade') {
+      detectedScaleByColKey[cfg.colKey] = detectColumnGradeScale(rawRows, cfg.colKey);
+    }
+  });
+
   const evaluateStudentCell = (
     studentId: string,
     rawCellValue: any,
@@ -1448,7 +1489,11 @@ export function computeMultiVerificationRows(
       };
     }
 
-    const { numVal, isValid } = parseFlexibleCellNumber(rawCellValue, columnConfig.kind);
+    const { numVal, isValid } = parseFlexibleCellNumber(
+      rawCellValue,
+      columnConfig.kind,
+      detectedScaleByColKey[columnConfig.colKey] || '10'
+    );
 
     if (isValid && (columnConfig.kind === 'absences' || columnConfig.kind === 'lates')) {
       const formattedAttendanceValue = String(Number(numVal.toFixed(TWO_DECIMAL_PRECISION)));

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback, Suspense, lazy } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback, Suspense } from 'react';
 import {
   Plus,
   Trash2,
@@ -19,17 +19,18 @@ import {
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
 import type { PreliminaryValuationRecord } from './PreliminaryValuationModal';
+import { lazyWithRetry } from '../../utils/lazyWithRetry';
 
-const AnnualSummaryView = lazy(() =>
+const AnnualSummaryView = lazyWithRetry(() =>
   import('./AnnualSummaryView').then((m) => ({ default: m.AnnualSummaryView }))
 );
-const PreliminaryValuationModal = lazy(() =>
+const PreliminaryValuationModal = lazyWithRetry(() =>
   import('./PreliminaryValuationModal').then((m) => ({ default: m.PreliminaryValuationModal }))
 );
-const ImportGradesModal = lazy(() =>
+const ImportGradesModal = lazyWithRetry(() =>
   import('./ImportGradesModal').then((m) => ({ default: m.ImportGradesModal }))
 );
-const ImportGoogleFormsModal = lazy(() =>
+const ImportGoogleFormsModal = lazyWithRetry(() =>
   import('./ImportGoogleFormsModal').then((m) => ({ default: m.ImportGoogleFormsModal }))
 );
 import {
@@ -56,6 +57,7 @@ import {
   DriveSaveFormat,
   SavedDriveFileResult,
 } from '../../utils/driveFormatExporters';
+import { safeSetLocalStorageItem } from '../../utils/storageGuard';
 
 export type { GradebookTerm };
 
@@ -380,7 +382,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const setTerm = (t: GradebookTerm) => {
     setInternalTerm(t);
     if (typeof window !== 'undefined') {
-      localStorage.setItem(`fds_grades_active_term_${courseId}`, t);
+      safeSetLocalStorageItem(`fds_grades_active_term_${courseId}`, t);
     }
     if (onTermChange) {
       onTermChange(t);

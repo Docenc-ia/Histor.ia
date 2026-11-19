@@ -7,6 +7,7 @@
 
 import { safeSetLocalStorageItem } from '../utils/storageGuard';
 import { emitAppEvent } from '../utils/appEventBus';
+import { getActiveUserId, isPrimaryOwnerAccount } from './firestore/firestoreClient';
 
 export interface QueuedOfflineAction {
   id: string;
@@ -17,9 +18,14 @@ export interface QueuedOfflineAction {
   retryCount: number;
 }
 
-const STORAGE_QUEUE_KEY = 'docencia_offline_sync_queue_v1';
+const LEGACY_STORAGE_QUEUE_KEY = 'docencia_offline_sync_queue_v1';
 const MAX_OFFLINE_QUEUE_ITEMS = 300;
 let isFlushing = false;
+
+function getScopedQueueKey(): string {
+  const uid = getActiveUserId();
+  return uid ? `${LEGACY_STORAGE_QUEUE_KEY}_${uid}` : LEGACY_STORAGE_QUEUE_KEY;
+}
 
 /**
  * Computes a logical deduplication key so multiple offline edits to the same
@@ -52,28 +58,51 @@ function computeActionDedupKey(
   }
 }
 
-// Read queue from persistent local storage
+// Read queue from persistent local storage (strictly scoped per active user, preserving any legacy items for primary owner)
 export function getOfflineSyncQueue(): QueuedOfflineAction[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORAGE_QUEUE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const scopedKey = getScopedQueueKey();
+    const raw = localStorage.getItem(scopedKey);
+    const scopedItems: QueuedOfflineAction[] = raw ? JSON.parse(raw) : [];
+
+    // One-time non-destructive migration of legacy unscoped queue items for primary owner
+    if (scopedKey !== LEGACY_STORAGE_QUEUE_KEY && isPrimaryOwnerAccount()) {
+      const legacyRaw = localStorage.getItem(LEGACY_STORAGE_QUEUE_KEY);
+      if (legacyRaw) {
+        const legacyItems: QueuedOfflineAction[] = JSON.parse(legacyRaw);
+        if (Array.isArray(legacyItems) && legacyItems.length > 0) {
+          const existingIds = new Set(scopedItems.map((i) => i.id));
+          const merged = [
+            ...legacyItems.filter((item) => item && !existingIds.has(item.id)),
+            ...scopedItems,
+          ];
+          safeSetLocalStorageItem(scopedKey, JSON.stringify(merged));
+          localStorage.removeItem(LEGACY_STORAGE_QUEUE_KEY);
+          return merged;
+        }
+        localStorage.removeItem(LEGACY_STORAGE_QUEUE_KEY);
+      }
+    }
+
+    return Array.isArray(scopedItems) ? scopedItems : [];
   } catch (_) {
     return [];
   }
 }
 
 // Save queue to local storage using quota guard
-function saveOfflineSyncQueue(queue: QueuedOfflineAction[]): void {
+function saveOfflineSyncQueue(queue: QueuedOfflineAction[], explicitKey?: string): void {
   if (typeof window === 'undefined') return;
   try {
+    const targetKey = explicitKey || getScopedQueueKey();
     if (queue.length === 0) {
-      localStorage.removeItem(STORAGE_QUEUE_KEY);
+      localStorage.removeItem(targetKey);
     } else {
       const bounded = queue.length > MAX_OFFLINE_QUEUE_ITEMS
         ? queue.slice(queue.length - MAX_OFFLINE_QUEUE_ITEMS)
         : queue;
-      safeSetLocalStorageItem(STORAGE_QUEUE_KEY, JSON.stringify(bounded));
+      safeSetLocalStorageItem(targetKey, JSON.stringify(bounded));
     }
     emitAppEvent('docencia_offline_queue_changed', { pendingCount: queue.length }, 0);
   } catch (_) {}
@@ -136,7 +165,7 @@ export function getPendingQueueCount(): number {
 }
 
 /**
- * Process pending queue items
+ * Process pending queue items safely without losing items enqueued concurrently during async execution
  */
 export async function flushOfflineSyncQueue(
   executor: (action: QueuedOfflineAction) => Promise<boolean>
@@ -144,34 +173,64 @@ export async function flushOfflineSyncQueue(
   if (isFlushing) return 0;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return 0;
 
-  const queue = getOfflineSyncQueue();
-  if (queue.length === 0) return 0;
+  const targetKey = getScopedQueueKey();
+  const snapshot = getOfflineSyncQueue();
+  if (snapshot.length === 0) return 0;
 
   isFlushing = true;
   let successfulCount = 0;
-  const remainingQueue: QueuedOfflineAction[] = [];
+  const processedSnapshot = new Map<string, number>();
+  const retryById = new Map<string, QueuedOfflineAction>();
 
-  for (const action of queue) {
-    try {
-      const ok = await executor(action);
-      if (ok) {
-        successfulCount++;
-      } else {
-        action.retryCount = (action.retryCount || 0) + 1;
-        if (action.retryCount < 5) {
-          remainingQueue.push(action);
+  try {
+    for (const action of snapshot) {
+      processedSnapshot.set(action.id, action.createdAt);
+      try {
+        const ok = await executor(action);
+        if (ok) {
+          successfulCount++;
+        } else {
+          const nextRetry = (action.retryCount || 0) + 1;
+          if (nextRetry < 5) {
+            retryById.set(action.id, { ...action, retryCount: nextRetry });
+          }
+        }
+      } catch (_) {
+        const nextRetry = (action.retryCount || 0) + 1;
+        if (nextRetry < 5) {
+          retryById.set(action.id, { ...action, retryCount: nextRetry });
         }
       }
+    }
+
+    // Re-read the latest queue so any actions enqueued or updated while flushing are preserved
+    let latestQueue: QueuedOfflineAction[] = [];
+    try {
+      const latestRaw = localStorage.getItem(targetKey);
+      latestQueue = latestRaw ? JSON.parse(latestRaw) : [];
     } catch (_) {
-      action.retryCount = (action.retryCount || 0) + 1;
-      if (action.retryCount < 5) {
-        remainingQueue.push(action);
+      latestQueue = [];
+    }
+
+    const mergedRemaining: QueuedOfflineAction[] = [];
+    for (const item of latestQueue) {
+      const processedAt = processedSnapshot.get(item.id);
+      if (processedAt === undefined) {
+        // Brand-new action enqueued while flush was running -> preserve it!
+        mergedRemaining.push(item);
+      } else if (item.createdAt > processedAt) {
+        // Existing dedupKey item was updated with newer data while flushing -> preserve latest version!
+        mergedRemaining.push(item);
+      } else if (retryById.has(item.id)) {
+        // Failed action eligible for retry
+        mergedRemaining.push(retryById.get(item.id)!);
       }
     }
-  }
 
-  saveOfflineSyncQueue(remainingQueue);
-  isFlushing = false;
+    saveOfflineSyncQueue(mergedRemaining, targetKey);
+  } finally {
+    isFlushing = false;
+  }
 
   if (successfulCount > 0 && typeof window !== 'undefined') {
     emitAppEvent('docencia_queue_flushed', { count: successfulCount }, 0);

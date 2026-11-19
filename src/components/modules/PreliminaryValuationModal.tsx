@@ -24,6 +24,7 @@ import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import { sheetsService } from '../../services/workspace/sheetsService';
 import { driveService } from '../../services/workspace/driveService';
 import { escapeHtml } from '../../utils/htmlEscape';
+import { openExternalUrl } from '../../utils/openExternalUrl';
 import {
   QualitativeTrajectory,
   flattenEvaluativeItems,
@@ -235,11 +236,11 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 
       if (res.isLiveGoogle) {
         setToastMessage(`¡Planilla sincronizada con éxito en Google Sheets!`);
-        window.open(res.url, '_blank');
+        openExternalUrl(res.url);
       } else {
         // Fallback: Copy TSV to clipboard and open sheets.new so user pastes in one click!
         handleCopyForSheets();
-        window.open('https://sheets.new', '_blank');
+        openExternalUrl('https://sheets.new');
         setToastMessage(
           'Se abrió una nueva hoja en Google Sheets. ¡Los datos ya están en el portapapeles, solo presiona Ctrl+V para pegarlos!'
         );

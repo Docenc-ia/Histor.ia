@@ -1,6 +1,10 @@
 import { Course, Student, StudentDispositionData, StudentHistoryItem, StudentObservation } from '../types';
 import { GradeCategory, DEFAULT_CATEGORIES } from '../types/grades';
 import { getUserScopedItem } from '../services/api';
+import {
+  getEffectiveIntensificationCell,
+  getIntensificationDisplayLabel,
+} from './gradeCalculations';
 import { escapeHtml, sanitizeSafeUrl } from './htmlEscape';
 
 export function buildStudentTrackingDocHtml(
@@ -139,6 +143,25 @@ export function buildStudentTrackingDocHtml(
               name: sub.name,
               weight: (sub as any).weight ?? (cat as any).weight ?? 0,
               score: !isNaN(parsedNum) ? parsedNum : null,
+            });
+
+            const stGradesStr: Record<string, string> = {};
+            for (const [k, v] of Object.entries(stGrades)) {
+              stGradesStr[k] = v !== undefined && v !== null ? String(v) : '';
+            }
+            (sub.intensifications || []).forEach((inst, instIdx) => {
+              const effective = getEffectiveIntensificationCell(sub, instIdx, stGradesStr);
+              if (effective.isNI) return;
+              const instParsed =
+                effective.value.trim() !== ''
+                  ? Number(effective.value.trim().replace(',', '.'))
+                  : NaN;
+              items.push({
+                id: inst.id,
+                name: getIntensificationDisplayLabel(sub, inst),
+                weight: (sub as any).weight ?? (cat as any).weight ?? 0,
+                score: !isNaN(instParsed) ? instParsed : null,
+              });
             });
           }
         }

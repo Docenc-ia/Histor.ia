@@ -1,6 +1,10 @@
 import { Student } from '../types';
 import { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
-import { DispositionReasonDetailItem } from './courseReportAggregator';
+import {
+  DispositionReasonDetailItem,
+  getConditionForScore,
+  type ReportGradesPeriod,
+} from './courseReportAggregator';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import { escapeHtml } from './htmlEscape';
 
@@ -55,6 +59,7 @@ export interface GenerateCourseReportHtmlParams {
   displayedStudents: ConsolidatedStudentReportRow[];
   courseObservation: string;
   includeGrades: boolean;
+  gradesPeriod?: ReportGradesPeriod;
   includeExamDetails: boolean;
   includeAttendance: boolean;
   includeDisposition: boolean;
@@ -77,6 +82,7 @@ export function generateCourseReportHtml({
   displayedStudents,
   courseObservation,
   includeGrades,
+  gradesPeriod = 'both',
   includeExamDetails,
   includeAttendance,
   includeDisposition,
@@ -85,6 +91,8 @@ export function generateCourseReportHtml({
   includeFamilySignature,
 }: GenerateCourseReportHtmlParams): string {
   const isCourse = type === 'course';
+  const show1c = gradesPeriod === 'both' || gradesPeriod === '1c';
+  const show2c = gradesPeriod === 'both' || gradesPeriod === '2c';
   const safeCourseName = escapeHtml(courseName);
   const safeSchoolName = escapeHtml(schoolName);
   const safeTeacherName = escapeHtml(teacherName);
@@ -98,6 +106,12 @@ export function generateCourseReportHtml({
       : condition === 'Pendiente'
       ? 'badge-pending'
       : 'badge-comp';
+  const getRowCondition = (row: ConsolidatedStudentReportRow) =>
+    gradesPeriod === '1c'
+      ? getConditionForScore(row.score1cNum)
+      : gradesPeriod === '2c'
+      ? getConditionForScore(row.score2cNum)
+      : row.condition;
   const title = `Informe — ${safeCourseName}`;
   const termSettings = getTerminologySettings();
   const attendanceLabel = escapeHtml(termSettings.attendanceLabel);
@@ -108,12 +122,24 @@ export function generateCourseReportHtml({
   const term2FullLabel = escapeHtml(rawPeriodLabels.term2FullLabel);
   const term1ShortLabel = escapeHtml(rawPeriodLabels.term1ShortLabel);
   const term2ShortLabel = escapeHtml(rawPeriodLabels.term2ShortLabel);
+  const periodSubtitleSuffix =
+    includeGrades && gradesPeriod === '1c'
+      ? ` · ${term1FullLabel.toUpperCase()}`
+      : includeGrades && gradesPeriod === '2c'
+      ? ` · ${term2FullLabel.toUpperCase()}`
+      : '';
 
   let bodyContent = '';
 
   if (isCourse) {
     let kpiBoxes = '';
     if (includeGrades) {
+      const avgLabel =
+        gradesPeriod === '1c'
+          ? `Promedio ${term1ShortLabel}`
+          : gradesPeriod === '2c'
+          ? `Promedio ${term2ShortLabel}`
+          : 'Promedio General';
       kpiBoxes += `
           <div class="stat-box">
             <div class="stat-label">Aprobados</div>
@@ -124,7 +150,7 @@ export function generateCourseReportHtml({
             <div class="stat-val text-red">${escapeHtml(stats.compCount)}</div>
           </div>
           <div class="stat-box">
-            <div class="stat-label">Promedio General</div>
+            <div class="stat-label">${avgLabel}</div>
             <div class="stat-val text-purple">${escapeHtml(stats.avgScore)}</div>
           </div>
         `;
@@ -162,7 +188,7 @@ export function generateCourseReportHtml({
           <div class="header">
             <div class="school-brand">
               <h2>${safeSchoolName}</h2>
-              <p class="subtitle">${safeEffectiveReason} — CICLO LECTIVO ${safeSchoolYear}</p>
+              <p class="subtitle">${safeEffectiveReason}${periodSubtitleSuffix} — CICLO LECTIVO ${safeSchoolYear}</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${safeCourseName}</div>
@@ -181,11 +207,15 @@ export function generateCourseReportHtml({
                 <th>Estudiante</th>
                 ${
                   includeGrades
-                    ? `
+                    ? gradesPeriod === 'both'
+                      ? `
                   <th style="text-align: center;">${term1FullLabel}</th>
                   <th style="text-align: center;">${term2FullLabel}</th>
                   <th style="text-align: center;">Promedio</th>
                   <th style="text-align: center;">Nota Definitiva</th>
+                `
+                      : `
+                  <th style="text-align: center;">Nota ${gradesPeriod === '1c' ? term1FullLabel : term2FullLabel}</th>
                 `
                     : ''
                 }
@@ -199,23 +229,37 @@ export function generateCourseReportHtml({
                     : ''
                 }
                 ${includeDisposition ? `<th style="text-align: center;">${dispositionLabel}</th>` : ''}
-                ${includeGrades ? `<th style="text-align: center;">Condición Final</th>` : ''}
+                ${
+                  includeGrades
+                    ? `<th style="text-align: center;">${
+                        gradesPeriod === 'both'
+                          ? 'Condición Final'
+                          : `Condición (${gradesPeriod === '1c' ? term1ShortLabel : term2ShortLabel})`
+                      }</th>`
+                    : ''
+                }
               </tr>
             </thead>
             <tbody>
               ${consolidatedStudents
-                .map(
-                  (row, idx) => `
+                .map((row, idx) => {
+                  const rowCondition = getRowCondition(row);
+                  const singleTermScore = gradesPeriod === '1c' ? row.score1c : row.score2c;
+                  return `
                 <tr>
                   <td style="text-align: center; color: #666;">${idx + 1}</td>
                   <td><strong>${escapeHtml(row.student.lastName)}, ${escapeHtml(row.student.firstName)}</strong></td>
                   ${
                     includeGrades
-                      ? `
+                      ? gradesPeriod === 'both'
+                        ? `
                     <td style="text-align: center;">${escapeHtml(row.score1c || '—')}</td>
                     <td style="text-align: center;">${escapeHtml(row.score2c || '—')}</td>
                     <td style="text-align: center; font-weight: bold;">${escapeHtml(row.calcAvgStr || '—')}</td>
                     <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${escapeHtml(row.finalVal || '—')}</td>
+                  `
+                        : `
+                    <td style="text-align: center; font-weight: bold; font-size: 13px; color: #1e3a8a;">${escapeHtml(singleTermScore || '—')}</td>
                   `
                       : ''
                   }
@@ -233,16 +277,16 @@ export function generateCourseReportHtml({
                     includeGrades
                       ? `
                     <td style="text-align: center;">
-                      <span class="badge ${getConditionBadgeClass(row.condition)}">
-                        ${escapeHtml(row.condition)}
+                      <span class="badge ${getConditionBadgeClass(rowCondition)}">
+                        ${escapeHtml(rowCondition)}
                       </span>
                     </td>
                   `
                       : ''
                   }
                 </tr>
-              `
-                )
+              `;
+                })
                 .join('')}
             </tbody>
           </table>
@@ -266,13 +310,21 @@ export function generateCourseReportHtml({
       `;
   } else {
     bodyContent = displayedStudents
-      .map(
-        (row) => `
+      .map((row) => {
+        const rowCondition = getRowCondition(row);
+        const visibleExamDetails1c = show1c ? row.examDetails1c : [];
+        const visibleExamDetails2c = show2c ? row.examDetails2c : [];
+        const hasVisibleExamDetails =
+          visibleExamDetails1c.length > 0 || visibleExamDetails2c.length > 0;
+        const singleTermScore = gradesPeriod === '1c' ? row.score1c : row.score2c;
+        const singleTermLabel = gradesPeriod === '1c' ? term1FullLabel : term2FullLabel;
+
+        return `
         <div class="student-page">
           <div class="header">
             <div class="school-brand">
               <h2>${safeSchoolName}</h2>
-              <p class="subtitle">${safeEffectiveReason} — CICLO ${safeSchoolYear}</p>
+              <p class="subtitle">${safeEffectiveReason}${periodSubtitleSuffix} — CICLO ${safeSchoolYear}</p>
             </div>
             <div class="meta-box">
               <div><strong>Materia:</strong> ${safeCourseName}</div>
@@ -295,8 +347,8 @@ export function generateCourseReportHtml({
                 includeGrades
                   ? `
                 <div style="text-align: right;">
-                  <span class="badge ${getConditionBadgeClass(row.condition)}" style="font-size: 12px; padding: 4px 10px;">
-                    ${escapeHtml(row.condition)}
+                  <span class="badge ${getConditionBadgeClass(rowCondition)}" style="font-size: 12px; padding: 4px 10px;">
+                    ${escapeHtml(rowCondition)}
                   </span>
                 </div>
               `
@@ -308,7 +360,12 @@ export function generateCourseReportHtml({
           ${
             includeGrades
               ? `
-            <div class="section-title">1. Rendimiento Académico y Calificaciones</div>
+            <div class="section-title">1. Rendimiento Académico y Calificaciones${
+              gradesPeriod === 'both' ? '' : ` (${singleTermLabel})`
+            }</div>
+            ${
+              gradesPeriod === 'both'
+                ? `
             <table class="data-table" style="margin-bottom: 12px;">
               <thead>
                 <tr>
@@ -328,15 +385,39 @@ export function generateCourseReportHtml({
                     ${escapeHtml(row.finalVal || '—')}
                   </td>
                   <td style="text-align: center;">
-                    <span class="badge ${getConditionBadgeClass(row.condition)}" style="font-size: 12px; padding: 4px 10px;">
-                      ${escapeHtml(row.condition)}
+                    <span class="badge ${getConditionBadgeClass(rowCondition)}" style="font-size: 12px; padding: 4px 10px;">
+                      ${escapeHtml(rowCondition)}
                     </span>
                   </td>
                 </tr>
               </tbody>
             </table>
+            `
+                : `
+            <table class="data-table" style="margin-bottom: 12px;">
+              <thead>
+                <tr>
+                  <th style="text-align: center; background: #e0e7ff;">Calificación ${singleTermLabel}</th>
+                  <th style="text-align: center;">Condición</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style="text-align: center; font-size: 18px; font-weight: bold; color: #1e40af; background: #eef2ff;">
+                    ${escapeHtml(singleTermScore || '—')}
+                  </td>
+                  <td style="text-align: center;">
+                    <span class="badge ${getConditionBadgeClass(rowCondition)}" style="font-size: 12px; padding: 4px 10px;">
+                      ${escapeHtml(rowCondition)}
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            `
+            }
             ${
-              includeExamDetails && (row.examDetails1c.length > 0 || row.examDetails2c.length > 0)
+              includeExamDetails && hasVisibleExamDetails
                 ? `
               <div style="font-size: 11.5px; font-weight: bold; color: #334155; margin: 8px 0 6px 0;">
                 Detalle de Evaluaciones, Exámenes y Trabajos Prácticos:
@@ -344,18 +425,18 @@ export function generateCourseReportHtml({
               <table class="data-table" style="margin-bottom: 16px;">
                 <thead>
                   <tr>
-                    <th style="width: 22%;">Período</th>
+                    ${gradesPeriod === 'both' ? '<th style="width: 22%;">Período</th>' : ''}
                     <th style="width: 28%;">Categoría</th>
-                    <th style="width: 32%;">Examen / Trabajo Práctico</th>
+                    <th style="width: ${gradesPeriod === 'both' ? '32%' : '54%'};">Examen / Trabajo Práctico</th>
                     <th style="width: 18%; text-align: center;">Calificación</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${row.examDetails1c
+                  ${visibleExamDetails1c
                     .map(
                       (item) => `
                     <tr>
-                      <td><strong>${term1FullLabel}</strong></td>
+                      ${gradesPeriod === 'both' ? `<td><strong>${term1FullLabel}</strong></td>` : ''}
                       <td>${escapeHtml(item.categoryName)}</td>
                       <td>${escapeHtml(item.itemName)}</td>
                       <td style="text-align: center; font-weight: bold; color: #1e3a8a;">${escapeHtml(item.score)}</td>
@@ -363,11 +444,11 @@ export function generateCourseReportHtml({
                   `
                     )
                     .join('')}
-                  ${row.examDetails2c
+                  ${visibleExamDetails2c
                     .map(
                       (item) => `
                     <tr>
-                      <td><strong>${term2FullLabel}</strong></td>
+                      ${gradesPeriod === 'both' ? `<td><strong>${term2FullLabel}</strong></td>` : ''}
                       <td>${escapeHtml(item.categoryName)}</td>
                       <td>${escapeHtml(item.itemName)}</td>
                       <td style="text-align: center; font-weight: bold; color: #4338ca;">${escapeHtml(item.score)}</td>
@@ -545,8 +626,8 @@ export function generateCourseReportHtml({
             <div>Docente a cargo: <strong>${safeTeacherName}</strong> — Ciclo Lectivo ${safeSchoolYear}</div>
           </div>
         </div>
-      `
-      )
+      `;
+      })
       .join('');
   }
 

@@ -708,6 +708,7 @@ export function useGradebookSync({
       subcategories: cat.subcategories.map((sub, subIdx) => ({
         ...sub,
         id: `c2-${Date.now()}-${subIdx}-${sub.id}`,
+        intensifications: undefined,
       })),
     }));
     saveCategories(cloned);

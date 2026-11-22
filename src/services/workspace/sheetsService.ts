@@ -10,7 +10,12 @@ import {
   fetchGoogleApiWithRetry,
 } from './googleAuth';
 import { Student } from '../../types';
-import { GradeCategory } from '../../types/grades';
+import { GradeCategory, GradeSubcategory } from '../../types/grades';
+import {
+  getEffectiveIntensificationCell,
+  getIntensificationDisplayLabel,
+  INTENSIFICATION_EXEMPT_LABEL,
+} from '../../utils/gradeCalculations';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import { getUserStorageKey, getUserScopedItem, setUserScopedItem } from '../storageHelpers';
@@ -233,8 +238,14 @@ export const sheetsService = {
       return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
     });
 
-    // Flatten all subcategories from categories
-    const assessmentColumns: { id: string; header: string; maxScore?: number }[] = [];
+    // Flatten all subcategories and intensifications from categories
+    const assessmentColumns: {
+      id: string;
+      header: string;
+      maxScore?: number;
+      sub?: GradeSubcategory;
+      instIndex?: number;
+    }[] = [];
     categories.forEach((cat) => {
       if (!cat.subcategories || cat.subcategories.length === 0) {
         assessmentColumns.push({ id: cat.id, header: cat.name });
@@ -244,6 +255,15 @@ export const sheetsService = {
             id: sub.id,
             header: `${cat.name} - ${sub.name}`,
             maxScore: sub.maxScore,
+          });
+          (sub.intensifications || []).forEach((inst, instIndex) => {
+            assessmentColumns.push({
+              id: inst.id,
+              header: `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`,
+              maxScore: sub.maxScore,
+              sub,
+              instIndex,
+            });
           });
         });
       }
@@ -263,11 +283,17 @@ export const sheetsService = {
 
     const rows = sortedStudents.map((st) => {
       const stGrades = gradesMap[st.id] || {};
-      const scoreValues = assessmentColumns.map((col) => stGrades[col.id] || '');
+      const scoreValues = assessmentColumns.map((col) => {
+        if (col.sub && col.instIndex !== undefined) {
+          const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, stGrades);
+          return effective.isNI ? INTENSIFICATION_EXEMPT_LABEL : effective.value || '';
+        }
+        return stGrades[col.id] || '';
+      });
 
       const validNumScores = scoreValues
-        .filter((s) => s !== '' && !isNaN(Number(s)))
-        .map((s) => Number(s));
+        .filter((s) => s !== '' && s !== INTENSIFICATION_EXEMPT_LABEL && !isNaN(Number(String(s).replace(',', '.'))))
+        .map((s) => Number(String(s).replace(',', '.')));
 
       const avg =
         validNumScores.length > 0
@@ -492,8 +518,13 @@ export const sheetsService = {
         };
       }
 
-      // Flatten assessment columns
-      const assessmentColumns: { id: string; header: string }[] = [];
+      // Flatten assessment columns (including intensifications)
+      const assessmentColumns: {
+        id: string;
+        header: string;
+        sub?: GradeSubcategory;
+        instIndex?: number;
+      }[] = [];
       categories.forEach((cat) => {
         if (!cat.subcategories || cat.subcategories.length === 0) {
           assessmentColumns.push({ id: cat.id, header: cat.name });
@@ -503,13 +534,24 @@ export const sheetsService = {
               id: sub.id,
               header: `${cat.name} - ${sub.name}`,
             });
+            (sub.intensifications || []).forEach((inst, instIndex) => {
+              assessmentColumns.push({
+                id: inst.id,
+                header: `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`,
+                sub,
+                instIndex,
+              });
+            });
           });
         }
       });
 
       // Map columns from sheet header
       const headerRow = rows[0] || [];
-      const colIndexToAssessment: Record<number, { id: string; header: string }> = {};
+      const colIndexToAssessment: Record<
+        number,
+        { id: string; header: string; sub?: GradeSubcategory; instIndex?: number }
+      > = {};
 
       headerRow.forEach((hVal, idx) => {
         if (idx < 2) return; // 0: Name, 1: Email
@@ -588,6 +630,15 @@ export const sheetsService = {
         Object.entries(colIndexToAssessment).forEach(([colIdxStr, colInfo]) => {
           const colIdx = Number(colIdxStr);
           const rawCellVal = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
+          if (rawCellVal.toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) return;
+          if (colInfo.sub && colInfo.instIndex !== undefined) {
+            const effective = getEffectiveIntensificationCell(
+              colInfo.sub,
+              colInfo.instIndex,
+              updatedGradesMap[student.id]
+            );
+            if (effective.isNI) return;
+          }
           const currentVal = String(updatedGradesMap[student.id][colInfo.id] || '').trim();
 
           const normalizedCell = rawCellVal.replace(',', '.');

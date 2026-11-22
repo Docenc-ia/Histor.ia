@@ -15,7 +15,11 @@ import {
 } from './attendanceCalculations';
 import type { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
 import { getTerminologySettings } from './terminologySettings';
-import { findDispositionColumnKey } from './gradeCalculations';
+import {
+  findDispositionColumnKey,
+  getEffectiveIntensificationCell,
+  getIntensificationDisplayLabel,
+} from './gradeCalculations';
 import {
   buildStudentHistoryIndex,
   calculateStudentMetrics,
@@ -57,6 +61,8 @@ export interface ConsolidatedReportStudent {
   observation: string;
 }
 
+export type ReportGradesPeriod = 'both' | '1c' | '2c';
+
 export interface CourseReportStats {
   total: number;
   approvedCount: number;
@@ -65,6 +71,13 @@ export interface CourseReportStats {
   avgScore: string;
   avgAttendance: number;
   totalCourseAbsences: number;
+}
+
+export function getConditionForScore(num: number | null): string {
+  if (num === null) return 'Pendiente';
+  if (num >= 7) return 'Aprobado';
+  if (num >= 6) return 'Aprobado (Regular)';
+  return 'Compensación Diciembre / Feb';
 }
 
 export function parseScoreNumber(val: unknown): number | null {
@@ -115,6 +128,15 @@ export function computeTermScoreForStudent(
         if (num !== null) {
           numericScores.push(num);
         }
+        const instList = sub.intensifications || [];
+        instList.forEach((_, instIdx) => {
+          const effective = getEffectiveIntensificationCell(sub, instIdx, stGrades);
+          if (effective.isNI) return;
+          const instNum = parseScoreNumber(effective.value);
+          if (instNum !== null) {
+            numericScores.push(instNum);
+          }
+        });
       });
     }
   });
@@ -178,6 +200,18 @@ export function extractStudentExamDetails(
             rawScore !== undefined && String(rawScore).trim() !== ''
               ? String(rawScore).trim()
               : '—',
+        });
+
+        const instList = sub.intensifications || [];
+        instList.forEach((inst, instIdx) => {
+          const effective = getEffectiveIntensificationCell(sub, instIdx, stGrades);
+          const trimmedVal = String(effective.value || '').trim();
+          items.push({
+            id: inst.id,
+            categoryName: cat.name,
+            itemName: getIntensificationDisplayLabel(sub, inst),
+            score: effective.isNI ? 'NI' : trimmedVal !== '' ? trimmedVal : '—',
+          });
         });
       });
     }
@@ -477,16 +511,30 @@ export function buildConsolidatedReportStudents(params: {
 }
 
 export function computeCourseReportStats(
-  consolidatedStudents: ConsolidatedReportStudent[]
+  consolidatedStudents: ConsolidatedReportStudent[],
+  gradesPeriod: ReportGradesPeriod = 'both'
 ): CourseReportStats {
   const total = consolidatedStudents.length;
-  const withFinal = consolidatedStudents.filter((s) => s.finalNum !== null);
-  const approved = consolidatedStudents.filter((s) => s.finalNum !== null && s.finalNum >= 6);
-  const inComp = consolidatedStudents.filter((s) => s.finalNum !== null && s.finalNum < 6);
+  const getTargetNum = (s: ConsolidatedReportStudent): number | null => {
+    if (gradesPeriod === '1c') return s.score1cNum;
+    if (gradesPeriod === '2c') return s.score2cNum;
+    return s.finalNum;
+  };
+  const withFinal = consolidatedStudents.filter((s) => getTargetNum(s) !== null);
+  const approved = consolidatedStudents.filter((s) => {
+    const num = getTargetNum(s);
+    return num !== null && num >= 6;
+  });
+  const inComp = consolidatedStudents.filter((s) => {
+    const num = getTargetNum(s);
+    return num !== null && num < 6;
+  });
 
   const avgScore =
     withFinal.length > 0
-      ? (withFinal.reduce((acc, s) => acc + (s.finalNum || 0), 0) / withFinal.length).toFixed(1)
+      ? (
+          withFinal.reduce((acc, s) => acc + (getTargetNum(s) || 0), 0) / withFinal.length
+        ).toFixed(1)
       : '—';
 
   const avgAttendance =

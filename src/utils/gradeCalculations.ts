@@ -4,7 +4,12 @@
  */
 
 import { Student } from '../types';
-import { GradeCategory, StudentGradesMap } from '../types/grades';
+import {
+  GradeCategory,
+  GradeSubcategory,
+  GradeIntensification,
+  StudentGradesMap,
+} from '../types/grades';
 import { sanitizeSpreadsheetFormulaCell } from './htmlEscape';
 
 const MANUAL_FINAL_GRADE_KEY = '__final__';
@@ -14,6 +19,8 @@ const MIN_CUSTOM_LABEL_MATCH_LENGTH = 3;
 const ONE_DECIMAL_PRECISION = 1;
 const PASSING_EXCELLENT_SCORE_THRESHOLD = 7;
 const PASSING_REGULAR_SCORE_THRESHOLD = 6;
+export const INTENSIFICATION_EXEMPT_THRESHOLD = PASSING_EXCELLENT_SCORE_THRESHOLD;
+export const INTENSIFICATION_EXEMPT_LABEL = 'NI';
 
 /**
  * Normaliza una calificación textual o numérica (aceptando tanto coma como punto decimal)
@@ -28,6 +35,120 @@ export function parseGradeNumber(rawValue: unknown): number | null {
   if (normalized === '') return null;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Genera el título legible de una instancia de intensificación/recuperación combinando el título
+ * de la evaluación padre (o la especificación editada por el docente) y el nombre de la instancia.
+ */
+export function getIntensificationDisplayLabel(
+  subcategory: GradeSubcategory,
+  intensification: GradeIntensification
+): string {
+  const custom = (intensification.customTitle || '').trim();
+  const instName = (intensification.name || '').trim() || 'Intensificación';
+  if (custom) {
+    if (custom.toLowerCase().includes(instName.toLowerCase())) {
+      return custom;
+    }
+    return `${custom} — ${instName}`;
+  }
+  return `${subcategory.name} — ${instName}`;
+}
+
+/**
+ * Determina si un estudiante está exento de rendir la instancia de intensificación `instIndex`
+ * (es decir, ya aprobó la evaluación original o una instancia previa con nota >= 7).
+ * En ese caso corresponde mostrar la sigla `NI` (No intensifica) y excluirla del promedio.
+ */
+export function isStudentExemptFromIntensification(
+  subcategory: GradeSubcategory,
+  instIndex: number,
+  studentGrades: Record<string, string> | undefined
+): { exempt: boolean; passingScore: number | null } {
+  const grades = studentGrades || {};
+  const originalScore = parseGradeNumber(grades[subcategory.id]);
+  if (originalScore !== null && originalScore >= INTENSIFICATION_EXEMPT_THRESHOLD) {
+    return { exempt: true, passingScore: originalScore };
+  }
+
+  const instList = Array.isArray(subcategory.intensifications)
+    ? subcategory.intensifications
+    : [];
+  for (let i = 0; i < instIndex && i < instList.length; i++) {
+    const prevScore = parseGradeNumber(grades[instList[i].id]);
+    if (prevScore !== null && prevScore >= INTENSIFICATION_EXEMPT_THRESHOLD) {
+      return { exempt: true, passingScore: prevScore };
+    }
+  }
+
+  return { exempt: false, passingScore: null };
+}
+
+/**
+ * Devuelve el valor visible efectivo de una celda de intensificación para un estudiante:
+ * `'NI'` si está exento por haber aprobado con >= 7, o el valor cargado en el mapa.
+ */
+export function getEffectiveIntensificationCell(
+  subcategory: GradeSubcategory,
+  instIndex: number,
+  studentGrades: Record<string, string> | undefined
+): { value: string; isNI: boolean; passingScore: number | null } {
+  const check = isStudentExemptFromIntensification(subcategory, instIndex, studentGrades);
+  if (check.exempt) {
+    return {
+      value: INTENSIFICATION_EXEMPT_LABEL,
+      isNI: true,
+      passingScore: check.passingScore,
+    };
+  }
+  const inst = subcategory.intensifications?.[instIndex];
+  const raw = inst ? studentGrades?.[inst.id] ?? '' : '';
+  return {
+    value: raw,
+    isNI: String(raw).trim().toUpperCase() === INTENSIFICATION_EXEMPT_LABEL,
+    passingScore: null,
+  };
+}
+
+/**
+ * Busca una columna calificable por ID dentro de todas las categorías, subcategorías
+ * y sus instancias de intensificación/recuperación.
+ */
+export function findGradeColumnById(
+  categories: GradeCategory[],
+  columnId: string
+): {
+  category: GradeCategory;
+  subcategory?: GradeSubcategory;
+  intensification?: GradeIntensification;
+  intensificationIndex?: number;
+  displayLabel: string;
+} | null {
+  if (!columnId || !Array.isArray(categories)) return null;
+  for (const category of categories) {
+    if (category.id === columnId && category.subcategories.length === 0) {
+      return { category, displayLabel: category.name };
+    }
+    for (const subcategory of category.subcategories || []) {
+      if (subcategory.id === columnId) {
+        return { category, subcategory, displayLabel: subcategory.name };
+      }
+      const instList = subcategory.intensifications || [];
+      for (let i = 0; i < instList.length; i++) {
+        if (instList[i].id === columnId) {
+          return {
+            category,
+            subcategory,
+            intensification: instList[i],
+            intensificationIndex: i,
+            displayLabel: getIntensificationDisplayLabel(subcategory, instList[i]),
+          };
+        }
+      }
+    }
+  }
+  return null;
 }
 
 export type AnnualConditionTone = 'approved' | 'regular' | 'compensation' | 'pending';
@@ -126,6 +247,22 @@ export function calculateCategoryAverageForStudent(
         if (parsedSub !== null) {
           numericScores.push(parsedSub);
         }
+        const instList = Array.isArray(subcategory.intensifications)
+          ? subcategory.intensifications
+          : [];
+        instList.forEach((inst, instIdx) => {
+          // Los estudiantes con >= 7 muestran NI (No intensifica) y nunca se contabilizan en el promedio.
+          const exempt = isStudentExemptFromIntensification(
+            subcategory,
+            instIdx,
+            studentGradeRecord
+          );
+          if (exempt.exempt) return;
+          const parsedInst = parseGradeNumber(studentGradeRecord[inst.id]);
+          if (parsedInst !== null) {
+            numericScores.push(parsedInst);
+          }
+        });
       });
     }
   });
@@ -262,6 +399,9 @@ export function computeTermScoresMap(
  * @returns Clases de Tailwind CSS correspondientes al color de la calificación.
  */
 export function getScoreColorClass(scoreValueString: string, isDarkMode: boolean): string {
+  if (String(scoreValueString || '').trim().toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) {
+    return isDarkMode ? 'text-slate-400 font-bold' : 'text-slate-500 font-bold';
+  }
   const numericScore = parseGradeNumber(scoreValueString);
   if (numericScore === null) {
     return isDarkMode ? 'text-slate-200' : 'text-neutral-800';

@@ -1,6 +1,10 @@
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
+import {
+  getEffectiveIntensificationCell,
+  getIntensificationDisplayLabel,
+} from './gradeCalculations';
 import { driveService } from '../services/workspace/driveService';
 
 export interface GradeHistoryEntry {
@@ -272,6 +276,25 @@ export async function exportGradebookMatrixToExcel(
           totalScore += num;
           scoredCount += 1;
         }
+
+        (sub.intensifications || []).forEach((inst, instIdx) => {
+          const effective = getEffectiveIntensificationCell(sub, instIdx, studentGrades);
+          const instHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
+            getIntensificationDisplayLabel(sub, inst)
+          )}`;
+          if (effective.isNI) {
+            rowObj[instHeader] = 'NI';
+            return;
+          }
+          const instVal = effective.value;
+          rowObj[instHeader] =
+            instVal !== undefined && instVal !== '' ? sanitizeExcelText(instVal) : '-';
+          const instNum = parseFloat(String(instVal).replace(',', '.'));
+          if (!isNaN(instNum)) {
+            totalScore += instNum;
+            scoredCount += 1;
+          }
+        });
       });
     });
 
@@ -296,6 +319,10 @@ export async function exportGradebookMatrixToExcel(
   categories.forEach((cat) => {
     cat.subcategories.forEach((sub) => {
       cols.push({ wch: Math.max(16, `${cat.name} - ${sub.name}`.length + 2) });
+      (sub.intensifications || []).forEach((inst) => {
+        const instHeader = `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`;
+        cols.push({ wch: Math.max(16, instHeader.length + 2) });
+      });
     });
   });
   cols.push({ wch: 18 });

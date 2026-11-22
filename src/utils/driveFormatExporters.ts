@@ -1,6 +1,10 @@
 import { Student } from '../types';
-import { GradeCategory, StudentGradesMap } from '../types/grades';
+import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
+import {
+  getEffectiveIntensificationCell,
+  getIntensificationDisplayLabel,
+} from './gradeCalculations';
 import {
   CourseDriveCategory,
   driveService,
@@ -518,10 +522,23 @@ export function buildGradebookHtml(params: {
     title?.trim() ||
     `Planilla de Calificaciones (${termLabel}) - ${courseName} (${new Date().toLocaleDateString('es-AR')})`;
 
-  const subColumns: Array<{ id: string; label: string }> = [];
+  const subColumns: Array<{
+    id: string;
+    label: string;
+    sub?: GradeSubcategory;
+    instIndex?: number;
+  }> = [];
   categories.forEach((cat) => {
     cat.subcategories.forEach((sub) => {
       subColumns.push({ id: sub.id, label: `${cat.name}: ${sub.name}` });
+      (sub.intensifications || []).forEach((inst, instIndex) => {
+        subColumns.push({
+          id: inst.id,
+          label: `${cat.name}: ${getIntensificationDisplayLabel(sub, inst)}`,
+          sub,
+          instIndex,
+        });
+      });
     });
   });
 
@@ -540,6 +557,22 @@ export function buildGradebookHtml(params: {
 
       const cellsHtml = subColumns
         .map((col) => {
+          if (col.sub && col.instIndex !== undefined) {
+            const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
+            if (effective.isNI) {
+              return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;color:#64748b;font-weight:bold;">NI</td>`;
+            }
+            const val = effective.value;
+            const num = parseFloat(String(val).replace(',', '.'));
+            if (!isNaN(num)) {
+              totalScore += num;
+              scoredCount += 1;
+            }
+            return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${
+              val !== undefined && val !== '' ? escapeHtml(val) : '-'
+            }</td>`;
+          }
+
           const val = studentGrades[col.id];
           const num = parseFloat(String(val).replace(',', '.'));
           if (!isNaN(num)) {
@@ -602,10 +635,23 @@ export function buildGradebookCsv(params: {
   gradesMap: StudentGradesMap;
 }): string {
   const { students, categories, gradesMap } = params;
-  const subColumns: Array<{ id: string; label: string }> = [];
+  const subColumns: Array<{
+    id: string;
+    label: string;
+    sub?: GradeSubcategory;
+    instIndex?: number;
+  }> = [];
   categories.forEach((cat) => {
     cat.subcategories.forEach((sub) => {
       subColumns.push({ id: sub.id, label: `${cat.name} - ${sub.name}` });
+      (sub.intensifications || []).forEach((inst, instIndex) => {
+        subColumns.push({
+          id: inst.id,
+          label: `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`,
+          sub,
+          instIndex,
+        });
+      });
     });
   });
 
@@ -624,6 +670,18 @@ export function buildGradebookCsv(params: {
     let totalScore = 0;
     let scoredCount = 0;
     const subVals = subColumns.map((col) => {
+      if (col.sub && col.instIndex !== undefined) {
+        const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
+        if (effective.isNI) return 'NI';
+        const val = effective.value;
+        const num = parseFloat(String(val).replace(',', '.'));
+        if (!isNaN(num)) {
+          totalScore += num;
+          scoredCount += 1;
+        }
+        return val !== undefined && val !== '' ? val : '-';
+      }
+
       const val = studentGrades[col.id];
       const num = parseFloat(String(val).replace(',', '.'));
       if (!isNaN(num)) {

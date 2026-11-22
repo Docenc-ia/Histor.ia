@@ -1,5 +1,6 @@
 import React from 'react';
 import { CheckSquare, Square } from 'lucide-react';
+import type { ReportGradesPeriod } from '../../../utils/courseReportAggregator';
 
 export interface ReportElementsToolbarProps {
   isDarkMode: boolean;
@@ -10,6 +11,8 @@ export interface ReportElementsToolbarProps {
   term2ShortLabel: string;
   includeGrades: boolean;
   onToggleGrades: () => void;
+  gradesPeriod: ReportGradesPeriod;
+  onChangeGradesPeriod: (period: ReportGradesPeriod) => void;
   includeExamDetails: boolean;
   onToggleExamDetails: () => void;
   includeAttendance: boolean;
@@ -33,6 +36,8 @@ export const ReportElementsToolbar: React.FC<ReportElementsToolbarProps> = ({
   term2ShortLabel,
   includeGrades,
   onToggleGrades,
+  gradesPeriod,
+  onChangeGradesPeriod,
   includeExamDetails,
   onToggleExamDetails,
   includeAttendance,
@@ -46,9 +51,16 @@ export const ReportElementsToolbar: React.FC<ReportElementsToolbarProps> = ({
   includeFamilySignature,
   onToggleFamilySignature,
 }) => {
+  const gradesPeriodHint =
+    gradesPeriod === '1c'
+      ? term1ShortLabel
+      : gradesPeriod === '2c'
+      ? term2ShortLabel
+      : `${term1ShortLabel}, ${term2ShortLabel}, Final`;
+
   return (
     <div
-      className={`px-5 py-3 border-b text-xs transition-colors shrink-0 ${
+      className={`px-5 py-3 border-b text-xs transition-colors shrink-0 space-y-2.5 ${
         isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
       }`}
     >
@@ -72,8 +84,43 @@ export const ReportElementsToolbar: React.FC<ReportElementsToolbarProps> = ({
             <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           )}
           <span>Calificaciones</span>
-          <span className="text-[10px] opacity-75 font-normal">({term1ShortLabel}, {term2ShortLabel}, Final)</span>
+          <span className="text-[10px] opacity-75 font-normal">({gradesPeriodHint})</span>
         </button>
+
+        {/* 1a. Selector de período de notas (1°C, 2°C o Ambos) */}
+        {includeGrades && (
+          <div
+            className={`inline-flex items-center p-0.5 rounded-lg border ${
+              isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-neutral-100 border-neutral-200'
+            }`}
+            role="group"
+            aria-label="Período de notas en el informe"
+          >
+            {(
+              [
+                { id: '1c', label: term1ShortLabel, activeClass: 'bg-blue-600 text-white' },
+                { id: '2c', label: term2ShortLabel, activeClass: 'bg-emerald-600 text-white' },
+                { id: 'both', label: 'Ambos', activeClass: 'bg-violet-600 text-white' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => onChangeGradesPeriod(opt.id)}
+                className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer whitespace-nowrap ${
+                  gradesPeriod === opt.id
+                    ? `${opt.activeClass} shadow-2xs`
+                    : isDarkMode
+                    ? 'text-slate-400 hover:text-slate-200'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+                title={`Incluir solo notas de: ${opt.label}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 1b. Notas de Exámenes y TPs (solo en ficha individual cuando Calificaciones está activo) */}
         {includeGrades && activeTab === 'individual' && (
@@ -95,7 +142,7 @@ export const ReportElementsToolbar: React.FC<ReportElementsToolbarProps> = ({
               <Square className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
             )}
             <span>Notas de Exámenes y TPs</span>
-            <span className="text-[10px] opacity-75 font-normal">(Desglose completo)</span>
+            <span className="text-[10px] opacity-75 font-normal">(Desglose)</span>
           </button>
         )}
 

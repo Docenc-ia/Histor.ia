@@ -39,6 +39,7 @@ export interface AnnualSummaryViewProps {
   onSwitchTerm: (term: '1c' | '2c') => void;
   driveFolderId?: string;
   driveFolderUrl?: string;
+  onSelectStudent?: (student: Student) => void;
 }
 
 export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
@@ -53,6 +54,7 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
   onSwitchTerm,
   driveFolderId,
   driveFolderUrl,
+  onSelectStudent,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [reportModalOpen, setReportModalOpen] = useState(false);
@@ -389,14 +391,22 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
                     </td>
 
                     <td data-pii="student" className="py-3 px-4 font-semibold text-neutral-900 dark:text-white">
-                      <div>
+                      {onSelectStudent ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectStudent(row.student)}
+                          className={`text-left font-semibold hover:underline cursor-pointer transition-colors ${
+                            isDarkMode
+                              ? 'text-slate-100 hover:text-blue-400'
+                              : 'text-neutral-900 hover:text-blue-600'
+                          }`}
+                          title={`Ver desglose de notas de ${row.student.lastName}, ${row.student.firstName}`}
+                        >
+                          {row.student.lastName}, {row.student.firstName}
+                        </button>
+                      ) : (
                         <span>{row.student.lastName}, {row.student.firstName}</span>
-                        {row.student.email && (
-                          <span className={`block text-[10px] font-normal font-mono ${isDarkMode ? 'text-slate-500' : 'text-neutral-400'}`}>
-                            {row.student.email}
-                          </span>
-                        )}
-                      </div>
+                      )}
                     </td>
 
                     <td data-pii="student" className="py-3 px-4 text-center">

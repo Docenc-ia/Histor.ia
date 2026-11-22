@@ -8,6 +8,7 @@ export interface TerminologySettings {
   dispositionLabel: string;
   periodNameSingular: string;
   initialDispositionScore: number;
+  intensificationLabel: string;
 }
 
 export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
@@ -15,7 +16,16 @@ export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
   dispositionLabel: 'Disposición',
   periodNameSingular: 'Cuatrimestre',
   initialDispositionScore: 10,
+  intensificationLabel: 'Intensificación',
 };
+
+export const INTENSIFICATION_LABEL_PRESETS: string[] = [
+  'Intensificación',
+  'Recuperación',
+  'Recuperatorio',
+  'Instancia de Revisión',
+  'Compensación',
+];
 
 export const DISPOSITION_LABEL_PRESETS: string[] = [
   'Disposición',
@@ -82,6 +92,10 @@ export function getTerminologySettings(): TerminologySettings {
           saved.initialDispositionScore,
           DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore
         ),
+        intensificationLabel: sanitizeLabel(
+          saved.intensificationLabel,
+          DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel
+        ),
       };
     }
   } catch (_) {}
@@ -107,6 +121,10 @@ export function saveTerminologySettings(next: Partial<TerminologySettings>): Ter
       next.initialDispositionScore !== undefined
         ? sanitizeInitialScore(next.initialDispositionScore, DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore)
         : current.initialDispositionScore,
+    intensificationLabel:
+      next.intensificationLabel !== undefined
+        ? sanitizeLabel(next.intensificationLabel, DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel)
+        : current.intensificationLabel,
   };
 
   try {
@@ -153,6 +171,10 @@ export async function hydrateTerminologySettingsFromCloud(uid: string): Promise<
           initialDispositionScore: sanitizeInitialScore(
             (cloudVal as any).initialDispositionScore,
             DEFAULT_TERMINOLOGY_SETTINGS.initialDispositionScore
+          ),
+          intensificationLabel: sanitizeLabel(
+            (cloudVal as any).intensificationLabel,
+            DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel
           ),
         };
         const key = getUserStorageKey(STORAGE_BASE_KEY);
@@ -227,6 +249,7 @@ export function useTerminologySettings() {
     term1ShortLabel: periodLabels.term1ShortLabel,
     term2ShortLabel: periodLabels.term2ShortLabel,
     initialDispositionScore: settings.initialDispositionScore,
+    intensificationLabel: settings.intensificationLabel,
     combinedTabLabel: `${settings.attendanceLabel} y ${settings.dispositionLabel}`,
     updateTerminology,
     resetTerminology,

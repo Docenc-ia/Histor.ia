@@ -1,6 +1,10 @@
 import React from 'react';
 import { AlertTriangle, Award, CheckSquare, FileText } from 'lucide-react';
-import type { ConsolidatedReportStudent } from '../../../utils/courseReportAggregator';
+import {
+  getConditionForScore,
+  type ConsolidatedReportStudent,
+  type ReportGradesPeriod,
+} from '../../../utils/courseReportAggregator';
 
 export interface StudentIndividualReportListProps {
   schoolName: string;
@@ -16,6 +20,7 @@ export interface StudentIndividualReportListProps {
   term2FullLabel: string;
   term1ShortLabel: string;
   term2ShortLabel: string;
+  gradesPeriod?: ReportGradesPeriod;
   selectedElementsCount: number;
   includeGrades: boolean;
   includeExamDetails: boolean;
@@ -45,6 +50,7 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
   term2FullLabel,
   term1ShortLabel,
   term2ShortLabel,
+  gradesPeriod = 'both',
   selectedElementsCount,
   includeGrades,
   includeExamDetails,
@@ -59,6 +65,15 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
   onSelectAllStudentDispositionReasons,
   onUpdateStudentReportObservation,
 }) => {
+  const show1c = gradesPeriod === 'both' || gradesPeriod === '1c';
+  const show2c = gradesPeriod === 'both' || gradesPeriod === '2c';
+  const periodSubtitleSuffix =
+    includeGrades && gradesPeriod === '1c'
+      ? ` · ${term1FullLabel}`
+      : includeGrades && gradesPeriod === '2c'
+      ? ` · ${term2FullLabel}`
+      : '';
+
   return (
     <div>
       {selectedElementsCount === 0 && (
@@ -70,7 +85,17 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
         </div>
       )}
 
-      {displayedStudents.map((row) => (
+      {displayedStudents.map((row) => {
+        const activeCondition =
+          gradesPeriod === '1c'
+            ? getConditionForScore(row.score1cNum)
+            : gradesPeriod === '2c'
+            ? getConditionForScore(row.score2cNum)
+            : row.condition;
+        const hasVisibleExamDetails =
+          (show1c && row.examDetails1c.length > 0) || (show2c && row.examDetails2c.length > 0);
+
+        return (
         <div
           key={row.student.id}
           className="print-page-break bg-white text-neutral-900 p-6 sm:p-8 rounded-xl border border-neutral-300 shadow-sm print:border-none print:shadow-none print:p-0 mb-8"
@@ -82,7 +107,7 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
                 {schoolName}
               </h2>
               <p className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wide mt-0.5">
-                {effectiveReason} — Ciclo {currentSchoolYear}
+                {effectiveReason}{periodSubtitleSuffix} — Ciclo {currentSchoolYear}
               </p>
             </div>
             <div className="text-xs text-neutral-600 text-right space-y-0.5">
@@ -116,14 +141,14 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
                   </span>
                   <span
                     className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold border ${
-                      row.condition.includes('Aprobado')
+                      activeCondition.includes('Aprobado')
                         ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                        : row.condition === 'Pendiente'
+                        : activeCondition === 'Pendiente'
                         ? 'bg-neutral-100 text-neutral-600 border-neutral-300'
                         : 'bg-rose-100 text-rose-800 border-rose-300'
                     }`}
                   >
-                    {row.condition}
+                    {activeCondition}
                   </span>
                 </div>
               )}
@@ -135,109 +160,141 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
             <div className="mb-4">
               <h4 className="text-xs font-bold uppercase tracking-wide text-neutral-700 mb-2">
                 1. Rendimiento Académico y Calificaciones
+                {gradesPeriod === '1c'
+                  ? ` (${term1FullLabel})`
+                  : gradesPeriod === '2c'
+                  ? ` (${term2FullLabel})`
+                  : ''}
               </h4>
-              <table className="w-full text-xs border border-neutral-300 mb-3">
-                <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
-                  <tr>
-                    <th className="py-2 px-3 text-center border-r border-neutral-300">
-                      {term1FullLabel}
-                    </th>
-                    <th className="py-2 px-3 text-center border-r border-neutral-300">
-                      {term2FullLabel}
-                    </th>
-                    <th className="py-2 px-3 text-center border-r border-neutral-300">
-                      Promedio Ponderado
-                    </th>
-                    <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
-                      Calificación Final Definitiva
-                    </th>
-                    <th className="py-2 px-3 text-center">Condición de Acreditación</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                      {row.score1c || '—'}
-                    </td>
-                    <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                      {row.score2c || '—'}
-                    </td>
-                    <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
-                      {row.calcAvgStr || '—'}
-                    </td>
-                    <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
-                      {row.finalVal || '—'}
-                    </td>
-                    <td className="py-3 px-3 text-center font-bold text-xs">
-                      {row.condition}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              {gradesPeriod === 'both' ? (
+                <table className="w-full text-xs border border-neutral-300 mb-3">
+                  <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                    <tr>
+                      <th className="py-2 px-3 text-center border-r border-neutral-300">
+                        {term1FullLabel}
+                      </th>
+                      <th className="py-2 px-3 text-center border-r border-neutral-300">
+                        {term2FullLabel}
+                      </th>
+                      <th className="py-2 px-3 text-center border-r border-neutral-300">
+                        Promedio Ponderado
+                      </th>
+                      <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
+                        Calificación Final Definitiva
+                      </th>
+                      <th className="py-2 px-3 text-center">Condición de Acreditación</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                        {row.score1c || '—'}
+                      </td>
+                      <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                        {row.score2c || '—'}
+                      </td>
+                      <td className="py-3 px-3 text-center border-r border-neutral-200 font-bold text-sm">
+                        {row.calcAvgStr || '—'}
+                      </td>
+                      <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
+                        {row.finalVal || '—'}
+                      </td>
+                      <td className="py-3 px-3 text-center font-bold text-xs">
+                        {activeCondition}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              ) : (
+                <table className="w-full text-xs border border-neutral-300 mb-3">
+                  <thead className="bg-neutral-100 border-b border-neutral-300 font-semibold text-neutral-700">
+                    <tr>
+                      <th className="py-2 px-3 text-center border-r border-neutral-300 bg-blue-100 font-bold text-blue-900">
+                        Calificación {gradesPeriod === '1c' ? term1FullLabel : term2FullLabel}
+                      </th>
+                      <th className="py-2 px-3 text-center">Condición</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="py-3 px-3 text-center border-r border-neutral-200 bg-blue-50 font-bold text-xl text-blue-700">
+                        {(gradesPeriod === '1c' ? row.score1c : row.score2c) || '—'}
+                      </td>
+                      <td className="py-3 px-3 text-center font-bold text-xs">
+                        {activeCondition}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
 
               {/* Detailed Breakdown of Exam & TP Grades from Pestaña Calificaciones */}
-              {includeExamDetails && (row.examDetails1c.length > 0 || row.examDetails2c.length > 0) && (
+              {includeExamDetails && hasVisibleExamDetails && (
                 <div className="mt-2.5">
                   <div className="text-[11px] font-bold text-indigo-900 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
                     <Award className="w-3.5 h-3.5 text-indigo-600" />
                     <span>Desglose de Evaluaciones, Exámenes y Trabajos Prácticos (Calificaciones)</span>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className={`grid grid-cols-1 ${gradesPeriod === 'both' ? 'sm:grid-cols-2' : ''} gap-3`}>
                     {/* 1° Cuatrimestre */}
-                    <div className="border border-neutral-300 rounded-lg overflow-hidden">
-                      <div className="bg-blue-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-blue-900 flex items-center justify-between">
-                        <span>{term1FullLabel}</span>
-                        <span>Nota {term1ShortLabel}: {row.score1c || '—'}</span>
-                      </div>
-                      <table className="w-full text-[11px]">
-                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
-                          <tr>
-                            <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
-                            <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
-                            <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-200">
-                          {row.examDetails1c.map((item) => (
-                            <tr key={`1c-${item.id}`}>
-                              <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
-                              <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
-                              <td className="py-1.5 px-2.5 text-center font-bold text-blue-800 bg-blue-50/30">
-                                {item.score}
-                              </td>
+                    {show1c && (
+                      <div className="border border-neutral-300 rounded-lg overflow-hidden">
+                        <div className="bg-blue-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-blue-900 flex items-center justify-between">
+                          <span>{term1FullLabel}</span>
+                          <span>Nota {term1ShortLabel}: {row.score1c || '—'}</span>
+                        </div>
+                        <table className="w-full text-[11px]">
+                          <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
+                            <tr>
+                              <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
+                              <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
+                              <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-200">
+                            {row.examDetails1c.map((item) => (
+                              <tr key={`1c-${item.id}`}>
+                                <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
+                                <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
+                                <td className="py-1.5 px-2.5 text-center font-bold text-blue-800 bg-blue-50/30">
+                                  {item.score}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
 
                     {/* 2° Cuatrimestre */}
-                    <div className="border border-neutral-300 rounded-lg overflow-hidden">
-                      <div className="bg-indigo-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-indigo-900 flex items-center justify-between">
-                        <span>{term2FullLabel}</span>
-                        <span>Nota {term2ShortLabel}: {row.score2c || '—'}</span>
-                      </div>
-                      <table className="w-full text-[11px]">
-                        <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
-                          <tr>
-                            <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
-                            <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
-                            <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-200">
-                          {row.examDetails2c.map((item) => (
-                            <tr key={`2c-${item.id}`}>
-                              <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
-                              <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
-                              <td className="py-1.5 px-2.5 text-center font-bold text-indigo-800 bg-indigo-50/30">
-                                {item.score}
-                              </td>
+                    {show2c && (
+                      <div className="border border-neutral-300 rounded-lg overflow-hidden">
+                        <div className="bg-indigo-50/80 border-b border-neutral-300 px-3 py-1.5 font-bold text-[11px] text-indigo-900 flex items-center justify-between">
+                          <span>{term2FullLabel}</span>
+                          <span>Nota {term2ShortLabel}: {row.score2c || '—'}</span>
+                        </div>
+                        <table className="w-full text-[11px]">
+                          <thead className="bg-neutral-50 border-b border-neutral-200 text-neutral-600">
+                            <tr>
+                              <th className="py-1.5 px-2.5 text-left font-semibold">Examen / TP</th>
+                              <th className="py-1.5 px-2 text-left font-semibold">Categoría</th>
+                              <th className="py-1.5 px-2.5 text-center font-semibold w-16">Nota</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-200">
+                            {row.examDetails2c.map((item) => (
+                              <tr key={`2c-${item.id}`}>
+                                <td className="py-1.5 px-2.5 font-medium text-neutral-800">{item.itemName}</td>
+                                <td className="py-1.5 px-2 text-neutral-500 text-[10px]">{item.categoryName}</td>
+                                <td className="py-1.5 px-2.5 text-center font-bold text-indigo-800 bg-indigo-50/30">
+                                  {item.score}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -630,7 +687,8 @@ export const StudentIndividualReportList: React.FC<StudentIndividualReportListPr
             </div>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 };

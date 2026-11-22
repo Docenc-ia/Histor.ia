@@ -2,7 +2,11 @@ import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { MultiImportApplyPayload } from '../types/gradeImport';
 import { GradeHistoryEntry } from './excelExport';
-import { CATEGORY_COLORS } from './gradeCalculations';
+import {
+  CATEGORY_COLORS,
+  findGradeColumnById,
+  isStudentExemptFromIntensification,
+} from './gradeCalculations';
 import {
   normalizeImportText,
   findBestStudentMatchInRoster,
@@ -741,7 +745,14 @@ export function buildGoogleFormsCommitPayload(params: {
     .filter((category) => category && typeof category === 'object')
     .map((category) => ({
       ...category,
-      subcategories: Array.isArray(category.subcategories) ? [...category.subcategories] : [],
+      subcategories: Array.isArray(category.subcategories)
+        ? category.subcategories.map((sub) => ({
+            ...sub,
+            intensifications: Array.isArray(sub.intensifications)
+              ? sub.intensifications.map((inst) => ({ ...inst }))
+              : undefined,
+          }))
+        : [],
     }));
 
   let targetCategory: GradeCategory | undefined;
@@ -783,12 +794,15 @@ export function buildGoogleFormsCommitPayload(params: {
       finalSubcategoryId = targetCategory.id;
       finalSubcategoryName = targetCategory.name;
     } else {
-      const existingSubcategory = targetCategory.subcategories.find(
-        (subcategory) => subcategory.id === selectedSubcategoryId
-      );
-      if (existingSubcategory) {
-        finalSubcategoryId = existingSubcategory.id;
-        finalSubcategoryName = existingSubcategory.name;
+      const matchedColumn = findGradeColumnById(workingCategories, selectedSubcategoryId);
+      if (matchedColumn) {
+        targetCategory = matchedColumn.category;
+        finalSubcategoryId = matchedColumn.intensification
+          ? matchedColumn.intensification.id
+          : matchedColumn.subcategory
+          ? matchedColumn.subcategory.id
+          : matchedColumn.category.id;
+        finalSubcategoryName = matchedColumn.displayLabel;
       }
     }
   }
@@ -820,9 +834,24 @@ export function buildGoogleFormsCommitPayload(params: {
     workingGradesMap[studentId] = { ...(safeGradesMap[studentId] || {}) };
   });
 
+  const matchedTargetCol = findGradeColumnById(workingCategories, finalSubcategoryId);
+
   rowsToSave.forEach((reviewRow) => {
     const studentId = reviewRow.student.id;
     if (!workingGradesMap[studentId]) workingGradesMap[studentId] = {};
+    // Si el destino es una instancia de intensificación y el estudiante ya aprobó (>= 7), queda en NI.
+    if (
+      matchedTargetCol?.intensification &&
+      matchedTargetCol.subcategory &&
+      matchedTargetCol.intensificationIndex !== undefined &&
+      isStudentExemptFromIntensification(
+        matchedTargetCol.subcategory,
+        matchedTargetCol.intensificationIndex,
+        workingGradesMap[studentId]
+      ).exempt
+    ) {
+      return;
+    }
     const editedScoreString = String(reviewRow.editedScore ?? '').trim();
     const parsedScoreNumber = parseFloat(editedScoreString.replace(',', '.'));
     workingGradesMap[studentId][finalSubcategoryId] = Number.isFinite(parsedScoreNumber)

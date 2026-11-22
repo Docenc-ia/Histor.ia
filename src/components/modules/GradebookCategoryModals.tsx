@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Trash2,
   Edit2,
@@ -19,9 +19,15 @@ import {
   FileCheck,
   Link2,
   ClipboardPaste,
+  RotateCcw,
+  Bookmark,
 } from 'lucide-react';
 import { GradeCategory } from '../../types/grades';
-import { CATEGORY_COLORS } from '../../utils/gradeCalculations';
+import {
+  CATEGORY_COLORS,
+  getIntensificationDisplayLabel,
+} from '../../utils/gradeCalculations';
+import { INTENSIFICATION_LABEL_PRESETS } from '../../utils/terminologySettings';
 
 export interface GradebookCategoryModalsProps {
   isDarkMode: boolean;
@@ -58,6 +64,31 @@ export interface GradebookCategoryModalsProps {
     target: { categoryId: string; subcategoryId: string; subcategoryName: string },
     source: 'forms' | 'sheets' | 'file' | 'paste'
   ) => void;
+  intensificationDefaultLabel?: string;
+  onUpdateDefaultIntensificationLabel?: (nextLabel: string) => void;
+  onAddIntensification?: (
+    catId: string,
+    subId: string,
+    name: string,
+    customTitle?: string
+  ) => void;
+  intensificationToEdit?: { catId: string; subId: string; instId: string } | null;
+  setIntensificationToEdit?: (
+    val: { catId: string; subId: string; instId: string } | null
+  ) => void;
+  onUpdateIntensification?: (
+    catId: string,
+    subId: string,
+    instId: string,
+    updates: { name: string; customTitle?: string }
+  ) => void;
+  onDeleteIntensification?: (catId: string, subId: string, instId: string) => void;
+  onMoveIntensification?: (
+    catId: string,
+    subId: string,
+    fromIndex: number,
+    toIndex: number
+  ) => void;
 }
 
 export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = ({
@@ -88,6 +119,14 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   onMoveSubcategory,
   onMoveSubcategoryToCategory,
   onImportIntoColumn,
+  intensificationDefaultLabel = 'Intensificación',
+  onUpdateDefaultIntensificationLabel,
+  onAddIntensification,
+  intensificationToEdit,
+  setIntensificationToEdit,
+  onUpdateIntensification,
+  onDeleteIntensification,
+  onMoveIntensification,
 }) => {
   const activeEditCatIndex = categoryToEdit
     ? categories.findIndex((c) => c.id === categoryToEdit.id)
@@ -102,6 +141,86 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
     activeSubcatParentCat && subcatToEdit
       ? activeSubcatParentCat.subcategories.findIndex((s) => s.id === subcatToEdit.subId)
       : -1;
+  const activeSubcatLive =
+    activeSubcatParentCat && activeSubcatIndex >= 0
+      ? activeSubcatParentCat.subcategories[activeSubcatIndex]
+      : null;
+
+  // Draft state for adding a new intensification inside the Evaluation Edit modal
+  const [newInstName, setNewInstName] = useState('');
+  const [newInstCustomTitle, setNewInstCustomTitle] = useState('');
+  const [saveAsDefaultTerm, setSaveAsDefaultTerm] = useState(false);
+
+  const existingInstCount = activeSubcatLive?.intensifications?.length || 0;
+
+  useEffect(() => {
+    if (subcatToEdit) {
+      const nextDefault =
+        existingInstCount === 0
+          ? intensificationDefaultLabel
+          : `${intensificationDefaultLabel} ${existingInstCount + 1}`;
+      setNewInstName(nextDefault);
+      setNewInstCustomTitle('');
+      setSaveAsDefaultTerm(false);
+    }
+  }, [subcatToEdit?.subId, existingInstCount, intensificationDefaultLabel]);
+
+  // Live resolution for Editing an Intensification modal
+  const activeInstParentCat = intensificationToEdit
+    ? categories.find((c) => c.id === intensificationToEdit.catId)
+    : null;
+  const activeInstParentSub =
+    activeInstParentCat && intensificationToEdit
+      ? activeInstParentCat.subcategories.find((s) => s.id === intensificationToEdit.subId)
+      : null;
+  const activeInstList = activeInstParentSub?.intensifications || [];
+  const activeInstIndex =
+    intensificationToEdit
+      ? activeInstList.findIndex((inst) => inst.id === intensificationToEdit.instId)
+      : -1;
+  const activeInstLive = activeInstIndex >= 0 ? activeInstList[activeInstIndex] : null;
+
+  const [editInstName, setEditInstName] = useState('');
+  const [editInstCustomTitle, setEditInstCustomTitle] = useState('');
+  const [savedDefaultFeedback, setSavedDefaultFeedback] = useState(false);
+
+  useEffect(() => {
+    if (activeInstLive) {
+      setEditInstName(activeInstLive.name);
+      setEditInstCustomTitle(activeInstLive.customTitle || '');
+      setSavedDefaultFeedback(false);
+    }
+  }, [activeInstLive?.id]);
+
+  const handleConfirmAddIntensification = () => {
+    if (!subcatToEdit || !onAddIntensification) return;
+    const cleanName = newInstName.trim() || intensificationDefaultLabel;
+    if (saveAsDefaultTerm && onUpdateDefaultIntensificationLabel) {
+      const baseTerm = cleanName.replace(/\s+\d+$/, '').trim() || cleanName;
+      onUpdateDefaultIntensificationLabel(baseTerm);
+    }
+    onAddIntensification(
+      subcatToEdit.catId,
+      subcatToEdit.subId,
+      cleanName,
+      newInstCustomTitle.trim() || undefined
+    );
+    setNewInstCustomTitle('');
+  };
+
+  const handleSaveEditIntensification = () => {
+    if (!intensificationToEdit || !onUpdateIntensification || !editInstName.trim()) return;
+    onUpdateIntensification(
+      intensificationToEdit.catId,
+      intensificationToEdit.subId,
+      intensificationToEdit.instId,
+      {
+        name: editInstName.trim(),
+        customTitle: editInstCustomTitle.trim() || undefined,
+      }
+    );
+    setIntensificationToEdit?.(null);
+  };
 
   return (
     <>
@@ -653,7 +772,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
       {subcatToEdit && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
           <div
-            className={`w-full max-w-md rounded-2xl border shadow-2xl p-5 space-y-4 ${
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto ${
               isDarkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-neutral-200 text-neutral-900'
             }`}
           >
@@ -665,7 +784,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                 <div>
                   <h3 className="text-base font-bold">Editar Columna / Evaluación</h3>
                   <p className={`text-xs ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-                    Cambiá el nombre, movela de lugar o pasala a otra categoría.
+                    Editá el título, agregá {intensificationDefaultLabel.toLowerCase()}es o importá notas.
                   </p>
                 </div>
               </div>
@@ -694,6 +813,211 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                   autoFocus
                 />
               </div>
+
+              {/* Sección: Instancias de Intensificación / Recuperación */}
+              {onAddIntensification && activeSubcatLive && (
+                <div
+                  className={`p-3.5 rounded-xl border space-y-2.5 ${
+                    isDarkMode
+                      ? 'bg-amber-950/25 border-amber-500/40'
+                      : 'bg-amber-50/70 border-amber-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-800 dark:text-amber-300">
+                      <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        Instancias de {intensificationDefaultLabel} / Recuperación
+                      </span>
+                    </div>
+                    {existingInstCount > 0 && (
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                          isDarkMode
+                            ? 'bg-amber-900/60 text-amber-200'
+                            : 'bg-amber-200/70 text-amber-900'
+                        }`}
+                      >
+                        {existingInstCount} activa{existingInstCount > 1 ? 's' : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  <p
+                    className={`text-[11px] leading-snug ${
+                      isDarkMode ? 'text-slate-300' : 'text-neutral-600'
+                    }`}
+                  >
+                    Divide la columna bajo el título <strong>"{editSubcatName.trim() || subcatToEdit.name}"</strong>. Quienes tengan nota <strong>≥ 7</strong> mostrarán automáticamente <strong>NI</strong> (No intensifica) y no afectará su promedio.
+                  </p>
+
+                  {/* Lista de intensificaciones ya creadas */}
+                  {activeSubcatLive.intensifications && activeSubcatLive.intensifications.length > 0 && (
+                    <div
+                      className={`rounded-lg border divide-y ${
+                        isDarkMode
+                          ? 'bg-slate-900/80 border-slate-700 divide-slate-800'
+                          : 'bg-white border-amber-200/80 divide-neutral-100'
+                      }`}
+                    >
+                      {activeSubcatLive.intensifications.map((inst, iIdx) => (
+                        <div
+                          key={inst.id}
+                          className="px-2.5 py-2 flex items-center justify-between gap-2"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const catId = subcatToEdit.catId;
+                              const subId = subcatToEdit.subId;
+                              setSubcatToEdit(null);
+                              setIntensificationToEdit?.({
+                                catId,
+                                subId,
+                                instId: inst.id,
+                              });
+                            }}
+                            className="text-left min-w-0 flex-1 hover:underline cursor-pointer"
+                            title="Hacé clic para editar esta instancia o importar notas directamente"
+                          >
+                            <div className="font-bold text-xs truncate">
+                              {iIdx + 1}. {inst.name}
+                            </div>
+                            {inst.customTitle && (
+                              <div className="text-[10px] opacity-75 truncate">
+                                Detalle: {inst.customTitle}
+                              </div>
+                            )}
+                          </button>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const catId = subcatToEdit.catId;
+                                const subId = subcatToEdit.subId;
+                                setSubcatToEdit(null);
+                                setIntensificationToEdit?.({
+                                  catId,
+                                  subId,
+                                  instId: inst.id,
+                                });
+                              }}
+                              className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
+                                isDarkMode
+                                  ? 'bg-slate-800 hover:bg-slate-700 text-blue-300'
+                                  : 'bg-blue-50 hover:bg-blue-100 text-blue-700'
+                              }`}
+                              title="Editar nombre o importar notas en esta instancia"
+                            >
+                              Editar / Importar
+                            </button>
+                            {onDeleteIntensification && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onDeleteIntensification(
+                                    subcatToEdit.catId,
+                                    subcatToEdit.subId,
+                                    inst.id
+                                  )
+                                }
+                                className="p-1 text-neutral-400 hover:text-red-500 rounded cursor-pointer"
+                                title={`Eliminar "${inst.name}"`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Agregar nueva instancia */}
+                  <div className="space-y-2 pt-1">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] font-semibold text-neutral-500 dark:text-slate-400 mr-0.5">
+                        Nombre sugerido:
+                      </span>
+                      {INTENSIFICATION_LABEL_PRESETS.slice(0, 3).map((preset) => {
+                        const suggested =
+                          existingInstCount === 0
+                            ? preset
+                            : `${preset} ${existingInstCount + 1}`;
+                        return (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setNewInstName(suggested)}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors cursor-pointer ${
+                              newInstName.toLowerCase().startsWith(preset.toLowerCase())
+                                ? 'bg-amber-600 text-white border-amber-600'
+                                : isDarkMode
+                                ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                : 'bg-white border-amber-200 text-amber-900 hover:bg-amber-100/70'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={newInstName}
+                        onChange={(e) => setNewInstName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleConfirmAddIntensification();
+                          }
+                        }}
+                        placeholder={`Ej: ${intensificationDefaultLabel}, Recuperación...`}
+                        className={`flex-1 px-2.5 py-1.5 text-xs rounded-lg border focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                          isDarkMode
+                            ? 'bg-slate-900 border-slate-700 text-white'
+                            : 'bg-white border-amber-300 text-neutral-900'
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={handleConfirmAddIntensification}
+                        className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg shadow-2xs transition-colors cursor-pointer inline-flex items-center gap-1 shrink-0"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Agregar</span>
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      value={newInstCustomTitle}
+                      onChange={(e) => setNewInstCustomTitle(e.target.value)}
+                      placeholder={`Especificación opcional (por defecto comparte "${editSubcatName.trim() || subcatToEdit.name}")`}
+                      className={`w-full px-2.5 py-1.5 text-[11px] rounded-lg border focus:outline-none focus:ring-1 focus:ring-amber-500 ${
+                        isDarkMode
+                          ? 'bg-slate-900/70 border-slate-700 text-slate-200 placeholder-slate-500'
+                          : 'bg-white/90 border-amber-200/90 text-neutral-800 placeholder-neutral-400'
+                      }`}
+                    />
+
+                    {onUpdateDefaultIntensificationLabel && (
+                      <label className="inline-flex items-center gap-1.5 text-[11px] text-neutral-600 dark:text-slate-300 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={saveAsDefaultTerm}
+                          onChange={(e) => setSaveAsDefaultTerm(e.target.checked)}
+                          className="rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                        />
+                        <span>Guardar este nombre como predeterminado (por cambios de normativa)</span>
+                      </label>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Importar notas directamente con esta columna como destino */}
               {onImportIntoColumn && (
@@ -947,6 +1271,370 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                   type="button"
                   disabled={!editSubcatName.trim()}
                   onClick={handleSaveEditSubcategory}
+                  className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer flex items-center gap-1"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Guardar Cambios</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Editar / Importar en Instancia de Intensificación o Recuperación */}
+      {intensificationToEdit && activeInstParentCat && activeInstParentSub && activeInstLive && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in"
+          onClick={() => setIntensificationToEdit?.(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-lg rounded-2xl border shadow-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto ${
+              isDarkMode
+                ? 'bg-slate-900 border-slate-800 text-white'
+                : 'bg-white border-neutral-200 text-neutral-900'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-2 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 shrink-0">
+                  <RotateCcw className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold truncate">
+                    {activeInstLive.name}
+                  </h3>
+                  <p className={`text-xs truncate ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                    Evaluación: <strong>{activeInstParentSub.name}</strong> ({activeInstParentCat.name})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIntensificationToEdit?.(null)}
+                className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white p-1 rounded-lg cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              {/* Nombre de la instancia (por normativa o costumbre) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                    Nombre de esta instancia (etiqueta de la columna)
+                  </label>
+                  {onUpdateDefaultIntensificationLabel &&
+                    editInstName.trim() &&
+                    editInstName.trim().replace(/\s+\d+$/, '').toLowerCase() !==
+                      intensificationDefaultLabel.toLowerCase() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const base =
+                            editInstName.trim().replace(/\s+\d+$/, '').trim() ||
+                            editInstName.trim();
+                          onUpdateDefaultIntensificationLabel(base);
+                          setSavedDefaultFeedback(true);
+                          setTimeout(() => setSavedDefaultFeedback(false), 2000);
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 dark:text-amber-400 hover:underline cursor-pointer"
+                        title="Usar este nombre por defecto cada vez que agregues nuevas instancias"
+                      >
+                        <Bookmark className="w-3 h-3" />
+                        <span>
+                          {savedDefaultFeedback
+                            ? 'Guardado por defecto'
+                            : 'Usar como predeterminado'}
+                        </span>
+                      </button>
+                    )}
+                </div>
+                <input
+                  type="text"
+                  value={editInstName}
+                  onChange={(e) => setEditInstName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveEditIntensification()}
+                  placeholder="Ej: Intensificación, Recuperación, Recuperatorio..."
+                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                    isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-white'
+                      : 'bg-white border-neutral-300 text-neutral-900'
+                  }`}
+                  autoFocus
+                />
+                <div className="flex flex-wrap items-center gap-1">
+                  {INTENSIFICATION_LABEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() =>
+                        setEditInstName(
+                          activeInstIndex > 0 ? `${preset} ${activeInstIndex + 1}` : preset
+                        )
+                      }
+                      className={`px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors cursor-pointer ${
+                        editInstName.toLowerCase().startsWith(preset.toLowerCase())
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                          : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                      }`}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Especificación / Título editable */}
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                  Título / especificación (opcional — si queda vacío comparte "{activeInstParentSub.name}")
+                </label>
+                <input
+                  type="text"
+                  value={editInstCustomTitle}
+                  onChange={(e) => setEditInstCustomTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSaveEditIntensification()}
+                  placeholder={`Ej: ${activeInstParentSub.name} (Solo punto 2 / Oral / Diciembre)`}
+                  className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                    isDarkMode
+                      ? 'bg-slate-800 border-slate-700 text-white placeholder-slate-500'
+                      : 'bg-white border-neutral-300 text-neutral-900 placeholder-neutral-400'
+                  }`}
+                />
+                <p className={`text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                  En informes y desglose figurará como:{' '}
+                  <strong className={isDarkMode ? 'text-slate-200' : 'text-neutral-800'}>
+                    {getIntensificationDisplayLabel(activeInstParentSub, {
+                      ...activeInstLive,
+                      name: editInstName.trim() || activeInstLive.name,
+                      customTitle: editInstCustomTitle.trim() || undefined,
+                    })}
+                  </strong>
+                </p>
+              </div>
+
+              {/* TODAS las opciones de importar notas (idénticas a evaluaciones y trabajos prácticos) */}
+              {onImportIntoColumn && (
+                <div
+                  className={`p-3 rounded-xl border space-y-2 ${
+                    isDarkMode
+                      ? 'bg-emerald-950/30 border-emerald-500/40'
+                      : 'bg-emerald-50/70 border-emerald-200'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      Importar notas directamente en "{editInstName.trim() || activeInstLive.name}":
+                    </span>
+                  </div>
+                  <p
+                    className={`text-[11px] leading-snug ${
+                      isDarkMode ? 'text-slate-300' : 'text-neutral-600'
+                    }`}
+                  >
+                    Las notas se cargarán solo a quienes intensifican (los estudiantes con ≥ 7 permanecen en <strong>NI</strong>):
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
+                    {(
+                      [
+                        {
+                          source: 'forms' as const,
+                          title: 'Google Forms',
+                          subtitle: 'Formulario o planilla de respuestas',
+                          icon: FileCheck,
+                          iconColor: 'text-purple-500',
+                          darkCls: 'bg-slate-900/90 hover:bg-purple-950/60 border-purple-500/40 text-purple-200',
+                          lightCls: 'bg-white hover:bg-purple-50 border-purple-200 text-purple-900 shadow-2xs',
+                        },
+                        {
+                          source: 'sheets' as const,
+                          title: 'Google Sheets / Docs',
+                          subtitle: 'Link o archivo de Google Drive',
+                          icon: Link2,
+                          iconColor: 'text-emerald-500',
+                          darkCls: 'bg-slate-900/90 hover:bg-emerald-950/60 border-emerald-500/40 text-emerald-200',
+                          lightCls: 'bg-white hover:bg-emerald-50 border-emerald-200 text-emerald-900 shadow-2xs',
+                        },
+                        {
+                          source: 'file' as const,
+                          title: 'Subir Archivo',
+                          subtitle: 'Excel (.xlsx), Word (.docx) o CSV',
+                          icon: Upload,
+                          iconColor: 'text-blue-500',
+                          darkCls: 'bg-slate-900/90 hover:bg-blue-950/60 border-blue-500/40 text-blue-200',
+                          lightCls: 'bg-white hover:bg-blue-50 border-blue-200 text-blue-900 shadow-2xs',
+                        },
+                        {
+                          source: 'paste' as const,
+                          title: 'Pegar Notas (Ctrl+V)',
+                          subtitle: 'Copiar y pegar alumnos y notas',
+                          icon: ClipboardPaste,
+                          iconColor: 'text-indigo-500',
+                          darkCls: 'bg-slate-900/90 hover:bg-indigo-950/60 border-indigo-500/40 text-indigo-200',
+                          lightCls: 'bg-white hover:bg-indigo-50 border-indigo-200 text-indigo-900 shadow-2xs',
+                        },
+                      ] as const
+                    ).map((item) => {
+                      const IconComp = item.icon;
+                      return (
+                        <button
+                          key={item.source}
+                          type="button"
+                          onClick={() => {
+                            const displayLabel = getIntensificationDisplayLabel(
+                              activeInstParentSub,
+                              {
+                                ...activeInstLive,
+                                name: editInstName.trim() || activeInstLive.name,
+                                customTitle: editInstCustomTitle.trim() || undefined,
+                              }
+                            );
+                            const target = {
+                              categoryId: activeInstParentCat.id,
+                              subcategoryId: activeInstLive.id,
+                              subcategoryName: displayLabel,
+                            };
+                            setIntensificationToEdit?.(null);
+                            onImportIntoColumn(target, item.source);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                            isDarkMode ? item.darkCls : item.lightCls
+                          }`}
+                        >
+                          <IconComp className={`w-4 h-4 ${item.iconColor} shrink-0`} />
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs truncate">{item.title}</div>
+                            <div className="text-[10px] opacity-75 truncate">{item.subtitle}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Reordenar si hay más de una intensificación */}
+              {onMoveIntensification && activeInstList.length > 1 && activeInstIndex >= 0 && (
+                <div className="space-y-1.5">
+                  <label className="font-semibold text-neutral-700 dark:text-slate-300">
+                    Orden de instancia ({activeInstIndex + 1} de {activeInstList.length})
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={activeInstIndex <= 0}
+                      onClick={() =>
+                        onMoveIntensification(
+                          activeInstParentCat.id,
+                          activeInstParentSub.id,
+                          activeInstIndex,
+                          activeInstIndex - 1
+                        )
+                      }
+                      className={`flex-1 py-1.5 px-3 rounded-xl border font-semibold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-200'
+                          : 'bg-neutral-50 border-neutral-300 hover:bg-neutral-100 text-neutral-700'
+                      }`}
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                      <span>Mover antes</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={activeInstIndex >= activeInstList.length - 1}
+                      onClick={() =>
+                        onMoveIntensification(
+                          activeInstParentCat.id,
+                          activeInstParentSub.id,
+                          activeInstIndex,
+                          activeInstIndex + 1
+                        )
+                      }
+                      className={`flex-1 py-1.5 px-3 rounded-xl border font-semibold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 hover:bg-slate-750 text-slate-200'
+                          : 'bg-neutral-50 border-neutral-300 hover:bg-neutral-100 text-neutral-700'
+                      }`}
+                    >
+                      <span>Mover después</span>
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Atajo para agregar otra instancia a la misma evaluación */}
+              {onAddIntensification && (
+                <div className="pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextIdx = activeInstList.length + 1;
+                      onAddIntensification(
+                        activeInstParentCat.id,
+                        activeInstParentSub.id,
+                        `${intensificationDefaultLabel} ${nextIdx}`
+                      );
+                    }}
+                    className={`w-full py-2 px-3 rounded-xl border border-dashed text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'border-amber-500/40 text-amber-300 hover:bg-amber-950/30'
+                        : 'border-amber-300 text-amber-800 hover:bg-amber-50'
+                    }`}
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>
+                      Agregar otra instancia ({intensificationDefaultLabel} {activeInstList.length + 1}) a "{activeInstParentSub.name}"
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-neutral-100 dark:border-slate-800">
+              {onDeleteIntensification ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onDeleteIntensification(
+                      activeInstParentCat.id,
+                      activeInstParentSub.id,
+                      activeInstLive.id
+                    );
+                    setIntensificationToEdit?.(null);
+                  }}
+                  className="text-xs text-red-500 hover:text-red-600 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Eliminar instancia</span>
+                </button>
+              ) : (
+                <span />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIntensificationToEdit?.(null)}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded-lg border cursor-pointer ${
+                    isDarkMode
+                      ? 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                      : 'border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                  }`}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={!editInstName.trim()}
+                  onClick={handleSaveEditIntensification}
                   className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white cursor-pointer flex items-center gap-1"
                 >
                   <Check className="w-3.5 h-3.5" />

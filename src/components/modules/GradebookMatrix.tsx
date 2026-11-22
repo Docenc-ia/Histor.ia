@@ -16,10 +16,19 @@ import {
   Cloud,
   GripVertical,
   UserCheck,
+  Columns,
+  RotateCcw,
 } from 'lucide-react';
 import { Student } from '../../types';
-import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
+import {
+  GradeCategory,
+  GradeSubcategory,
+  GradeIntensification,
+  StudentGradesMap,
+  DEFAULT_CATEGORIES,
+} from '../../types/grades';
 import type { PreliminaryValuationRecord } from './PreliminaryValuationModal';
+import { StudentGradeBreakdownModal, BreakdownPeriod } from './StudentGradeBreakdownModal';
 import { lazyWithRetry } from '../../utils/lazyWithRetry';
 
 const AnnualSummaryView = lazyWithRetry(() =>
@@ -40,14 +49,18 @@ import {
 import { getCurrentCalendarTerm, getGlobalAttendanceSettings } from '../../utils/attendanceCalculations';
 import {
   CATEGORY_COLORS,
+  INTENSIFICATION_EXEMPT_LABEL,
   calculateCategoryAverageForStudent,
   calculateFinalScoreForStudent,
   computeTermScoresMap,
   getScoreColorClass as computeScoreColorClass,
+  getIntensificationDisplayLabel,
+  isStudentExemptFromIntensification,
   reorderCategoriesList,
   reorderSubcategoriesInCategory,
   moveSubcategoryAcrossCategories,
 } from '../../utils/gradeCalculations';
+import { useTerminologySettings } from '../../utils/terminologySettings';
 import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
 import { GradebookCategoryModals } from './GradebookCategoryModals';
 import { driveService } from '../../services/workspace/driveService';
@@ -78,6 +91,24 @@ export { DEFAULT_CATEGORIES };
 
 const EMPTY_STUDENT_GRADES: Record<string, string> = {};
 
+type ColumnDensity = 'compact' | 'normal' | 'wide';
+
+const COLUMN_DENSITY_PRESETS: Record<
+  ColumnDensity,
+  { student: number; grade: number; prelim: number; final: number }
+> = {
+  compact: { student: 152, grade: 64, prelim: 84, final: 92 },
+  normal: { student: 192, grade: 92, prelim: 104, final: 118 },
+  wide: { student: 238, grade: 124, prelim: 128, final: 142 },
+};
+
+const COLUMN_MIN_MAX: Record<'student' | 'grade' | 'prelim' | 'final', { min: number; max: number }> = {
+  student: { min: 115, max: 340 },
+  grade: { min: 52, max: 240 },
+  prelim: { min: 70, max: 180 },
+  final: { min: 78, max: 210 },
+};
+
 interface GradebookStudentRowProps {
   student: Student;
   idx: number;
@@ -92,6 +123,7 @@ interface GradebookStudentRowProps {
   onCellBlur: () => void;
   onCellKeyDown: (e: React.KeyboardEvent<HTMLInputElement>, rowIdx: number, colIdx: number) => void;
   onOpenPreliminaryModal: () => void;
+  onSelectStudent: (student: Student) => void;
   onDeleteStudent?: (student: Student) => void;
 }
 
@@ -110,6 +142,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
     onCellBlur,
     onCellKeyDown,
     onOpenPreliminaryModal,
+    onSelectStudent,
     onDeleteStudent,
   }) => {
     const [isFinalFocused, setIsFinalFocused] = useState(false);
@@ -122,36 +155,46 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
           isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'
         }`}
       >
-        {/* Student Name (Sticky on horizontal scroll) */}
+        {/* Student Name (Sticky on horizontal scroll, clickable for breakdown) */}
         <td
-          className={`sticky left-0 z-10 p-3 border-r font-medium flex items-center justify-between gap-2 transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] ${
+          className={`sticky left-0 z-10 py-2 px-2.5 border-r font-medium transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] overflow-hidden ${
             isDarkMode
               ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
               : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
           }`}
         >
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="text-[10px] text-neutral-400 w-4">{idx + 1}</span>
-            <div data-pii="student" className="min-w-0">
-              <p className="font-semibold text-xs truncate">
+          <div className="flex items-center justify-between gap-1.5 min-w-0">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <span className="text-[10px] text-neutral-400 w-4 shrink-0 tabular-nums">{idx + 1}</span>
+              <button
+                type="button"
+                data-pii="student"
+                onClick={() => onSelectStudent(student)}
+                className={`font-semibold text-xs truncate text-left hover:underline cursor-pointer transition-colors min-w-0 ${
+                  isDarkMode
+                    ? 'text-slate-100 hover:text-blue-400'
+                    : 'text-neutral-800 hover:text-blue-600'
+                }`}
+                title={`Ver desglose de calificaciones de ${student.lastName}, ${student.firstName}`}
+              >
                 {student.lastName}, {student.firstName}
-              </p>
-              <p className="text-[10px] text-neutral-400 dark:text-slate-500 truncate">
-                {student.email || 'Sin correo'}
-              </p>
+              </button>
             </div>
-          </div>
 
-          {onDeleteStudent && (
-            <button
-              type="button"
-              onClick={() => onDeleteStudent(student)}
-              className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-500 transition-all cursor-pointer shrink-0"
-              title={`Quitar a ${student.lastName}, ${student.firstName} de la lista de esta materia`}
-            >
-              <Trash2 className="w-3.5 h-3.5 text-red-500" />
-            </button>
-          )}
+            {onDeleteStudent && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDeleteStudent(student);
+                }}
+                className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-950/60 text-red-500 transition-all cursor-pointer shrink-0"
+                title={`Quitar a ${student.lastName}, ${student.firstName} de la lista de esta materia`}
+              >
+                <Trash2 className="w-3.5 h-3.5 text-red-500" />
+              </button>
+            )}
+          </div>
         </td>
 
         {/* Grade Cells per Category & Subcategory */}
@@ -160,7 +203,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
             const val = studentGrades[cat.id] || '';
             const thisColIdx = runningColIdx++;
             return (
-              <td key={cat.id} data-pii="student" className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800">
+              <td key={cat.id} data-pii="student" className="p-1 border-r text-center border-neutral-200 dark:border-slate-800 overflow-hidden">
                 <input
                   type="text"
                   data-grade-row={idx}
@@ -170,7 +213,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                   onBlur={onCellBlur}
                   onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
                   placeholder="-"
-                  className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                  className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
                     isDarkMode
                       ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
                       : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
@@ -185,28 +228,93 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
               {cat.subcategories.map((sub) => {
                 const val = studentGrades[sub.id] || '';
                 const thisColIdx = runningColIdx++;
+                const instList = sub.intensifications || [];
                 return (
-                  <td
-                    key={sub.id}
-                    data-pii="student"
-                    className="p-1.5 border-r text-center border-neutral-200 dark:border-slate-800"
-                  >
-                    <input
-                      type="text"
-                      data-grade-row={idx}
-                      data-grade-col={thisColIdx}
-                      value={val}
-                      onChange={(e) => onScoreChange(student.id, sub.id, e.target.value)}
-                      onBlur={onCellBlur}
-                      onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
-                      placeholder="-"
-                      className={`w-14 text-center py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                        isDarkMode
-                          ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
-                          : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
-                      } ${getScoreColorClass(val)}`}
-                    />
-                  </td>
+                  <React.Fragment key={sub.id}>
+                    <td
+                      data-pii="student"
+                      className="p-1 border-r text-center border-neutral-200 dark:border-slate-800 overflow-hidden"
+                    >
+                      <input
+                        type="text"
+                        data-grade-row={idx}
+                        data-grade-col={thisColIdx}
+                        value={val}
+                        onChange={(e) => onScoreChange(student.id, sub.id, e.target.value)}
+                        onBlur={onCellBlur}
+                        onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
+                        placeholder="-"
+                        className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                          isDarkMode
+                            ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
+                            : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
+                        } ${getScoreColorClass(val)}`}
+                      />
+                    </td>
+
+                    {instList.map((inst, instIdx) => {
+                      const instColIdx = runningColIdx++;
+                      const exemptCheck = isStudentExemptFromIntensification(
+                        sub,
+                        instIdx,
+                        studentGrades
+                      );
+                      if (exemptCheck.exempt) {
+                        return (
+                          <td
+                            key={inst.id}
+                            data-pii="student"
+                            className={`p-1 border-r text-center overflow-hidden ${
+                              isDarkMode
+                                ? 'bg-slate-900/50 border-slate-800'
+                                : 'bg-neutral-50/70 border-neutral-200'
+                            }`}
+                          >
+                            <span
+                              className={`inline-flex items-center justify-center w-full max-w-[58px] px-1 py-1 rounded-lg text-[11px] font-bold tracking-wide border select-none ${
+                                isDarkMode
+                                  ? 'bg-slate-800/80 border-slate-700 text-slate-400'
+                                  : 'bg-neutral-100 border-neutral-200/90 text-neutral-500'
+                              }`}
+                              title={`No intensifica (aprobado con ${exemptCheck.passingScore}) — No se tiene en cuenta para el promedio`}
+                            >
+                              {INTENSIFICATION_EXEMPT_LABEL}
+                            </span>
+                          </td>
+                        );
+                      }
+
+                      const instVal = studentGrades[inst.id] || '';
+                      return (
+                        <td
+                          key={inst.id}
+                          data-pii="student"
+                          className={`p-1 border-r text-center overflow-hidden ${
+                            isDarkMode
+                              ? 'bg-amber-950/15 border-slate-800'
+                              : 'bg-amber-50/35 border-neutral-200'
+                          }`}
+                        >
+                          <input
+                            type="text"
+                            data-grade-row={idx}
+                            data-grade-col={instColIdx}
+                            value={instVal}
+                            onChange={(e) => onScoreChange(student.id, inst.id, e.target.value)}
+                            onBlur={onCellBlur}
+                            onKeyDown={(e) => onCellKeyDown(e, idx, instColIdx)}
+                            placeholder="-"
+                            title={`${getIntensificationDisplayLabel(sub, inst)} — Ingresá la calificación`}
+                            className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                              isDarkMode
+                                ? 'bg-slate-800/80 border-amber-700/60 focus:border-amber-400'
+                                : 'bg-white border-amber-300/80 focus:border-amber-500'
+                            } ${getScoreColorClass(instVal)}`}
+                          />
+                        </td>
+                      );
+                    })}
+                  </React.Fragment>
                 );
               })}
             </React.Fragment>
@@ -289,7 +397,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
         {/* Final Grade Cell */}
         <td
           data-pii="student"
-          className={`p-2 border-l text-center font-extrabold text-sm ${
+          className={`p-1.5 border-l text-center font-extrabold text-sm overflow-hidden ${
             isDarkMode ? 'bg-blue-950/20 border-slate-800' : 'bg-blue-50/40 border-neutral-200'
           }`}
         >
@@ -307,7 +415,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                   onBlur={onCellBlur}
                   onKeyDown={(e) => onCellKeyDown(e, idx, finalColIdx)}
                   placeholder="-"
-                  className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
+                  className={`w-full max-w-[64px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
                     isDarkMode
                       ? 'bg-purple-950/40 border-purple-800/80 focus:border-purple-500'
                       : 'bg-purple-50 border-purple-200 focus:border-purple-400'
@@ -342,7 +450,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                 }}
                 onKeyDown={(e) => onCellKeyDown(e, idx, finalColIdx)}
                 placeholder={autoAverageScore || '-'}
-                className={`w-16 text-center py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
+                className={`w-full max-w-[64px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-black focus:outline-none transition-all border ${
                   hasManualOverride && overrideVal !== autoAverageScore
                     ? isDarkMode
                       ? 'bg-purple-950/40 border-purple-700 focus:border-purple-500'
@@ -433,6 +541,165 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     subcategoryName: string;
   } | null>(null);
 
+  // Selected student for individual grade breakdown modal
+  const [selectedBreakdownStudent, setSelectedBreakdownStudent] = useState<Student | null>(null);
+  const [breakdownInitialPeriod, setBreakdownInitialPeriod] = useState<BreakdownPeriod>('1c');
+
+  const handleOpenStudentBreakdown = useCallback(
+    (student: Student, forcedPeriod?: BreakdownPeriod) => {
+      const period: BreakdownPeriod =
+        forcedPeriod ?? (currentTerm === 'annual' ? 'both' : currentTerm);
+      setBreakdownInitialPeriod(period);
+      setSelectedBreakdownStudent(student);
+    },
+    [currentTerm]
+  );
+
+  // Editable column widths & density preset (persisted per course in localStorage)
+  const [colDensity, setColDensity] = useState<ColumnDensity>(() => {
+    try {
+      const saved = window.localStorage.getItem(`fds_grades_col_density_${courseId}`);
+      if (saved === 'compact' || saved === 'normal' || saved === 'wide') return saved;
+    } catch {}
+    return 'normal';
+  });
+
+  const [customColWidths, setCustomColWidths] = useState<Record<string, number>>(() => {
+    try {
+      const saved = window.localStorage.getItem(`fds_grades_col_widths_${courseId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch {}
+    return {};
+  });
+
+  const [isResizingColumn, setIsResizingColumn] = useState(false);
+
+  // Reload density & custom widths when switching courses
+  useEffect(() => {
+    try {
+      const savedDensity = window.localStorage.getItem(`fds_grades_col_density_${courseId}`);
+      if (savedDensity === 'compact' || savedDensity === 'normal' || savedDensity === 'wide') {
+        setColDensity(savedDensity);
+      } else {
+        setColDensity('normal');
+      }
+      const savedWidths = window.localStorage.getItem(`fds_grades_col_widths_${courseId}`);
+      setCustomColWidths(savedWidths ? JSON.parse(savedWidths) : {});
+    } catch {
+      setColDensity('normal');
+      setCustomColWidths({});
+    }
+  }, [courseId]);
+
+  const handleSelectDensity = (next: ColumnDensity) => {
+    setColDensity(next);
+    safeSetLocalStorageItem(`fds_grades_col_density_${courseId}`, next);
+  };
+
+  const getColWidth = useCallback(
+    (colKey: string, kind: 'student' | 'grade' | 'prelim' | 'final') => {
+      const custom = customColWidths[colKey];
+      if (typeof custom === 'number' && !isNaN(custom)) return custom;
+      return COLUMN_DENSITY_PRESETS[colDensity][kind];
+    },
+    [customColWidths, colDensity]
+  );
+
+  const handleResetSingleColWidth = useCallback(
+    (colKey: string) => {
+      setCustomColWidths((prev) => {
+        if (!(colKey in prev)) return prev;
+        const next = { ...prev };
+        delete next[colKey];
+        safeSetLocalStorageItem(`fds_grades_col_widths_${courseId}`, JSON.stringify(next));
+        return next;
+      });
+    },
+    [courseId]
+  );
+
+  const handleResetAllColWidths = useCallback(() => {
+    setCustomColWidths({});
+    safeSetLocalStorageItem(`fds_grades_col_widths_${courseId}`, JSON.stringify({}));
+  }, [courseId]);
+
+  const startColumnResize = useCallback(
+    (e: React.MouseEvent, colKey: string, kind: 'student' | 'grade' | 'prelim' | 'final') => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startWidth = getColWidth(colKey, kind);
+      const { min, max } = COLUMN_MIN_MAX[kind];
+      let latestWidth = startWidth;
+
+      setIsResizingColumn(true);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const handleMouseMove = (moveEvt: MouseEvent) => {
+        const delta = moveEvt.clientX - startX;
+        latestWidth = Math.max(min, Math.min(max, Math.round(startWidth + delta)));
+        setCustomColWidths((prev) =>
+          prev[colKey] === latestWidth ? prev : { ...prev, [colKey]: latestWidth }
+        );
+      };
+
+      const handleMouseUp = () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+        setIsResizingColumn(false);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        setCustomColWidths((prev) => {
+          const updated = { ...prev, [colKey]: latestWidth };
+          safeSetLocalStorageItem(`fds_grades_col_widths_${courseId}`, JSON.stringify(updated));
+          return updated;
+        });
+      };
+
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    },
+    [courseId, getColWidth]
+  );
+
+  const { intensificationLabel, updateTerminology } = useTerminologySettings();
+
+  const hasAnyIntensifications = useMemo(
+    () =>
+      categories.some((cat) =>
+        cat.subcategories.some((sub) => (sub.intensifications?.length || 0) > 0)
+      ),
+    [categories]
+  );
+
+  const headerRowSpan = hasAnyIntensifications ? 3 : 2;
+
+  const totalTableWidth = useMemo(() => {
+    let total = getColWidth('__student__', 'student');
+    categories.forEach((cat) => {
+      if (cat.subcategories.length === 0) {
+        total += getColWidth(cat.id, 'grade');
+      } else {
+        cat.subcategories.forEach((sub) => {
+          total += getColWidth(sub.id, 'grade');
+          (sub.intensifications || []).forEach((inst) => {
+            total += getColWidth(inst.id, 'grade');
+          });
+        });
+      }
+    });
+    if (activePreliminaryValuation && activePreliminaryValuation.showInMatrix) {
+      total += getColWidth('__prelim__', 'prelim');
+    }
+    total += getColWidth('__final__', 'final');
+    return total;
+  }, [categories, activePreliminaryValuation, getColWidth]);
+
   // Double Scrollbar Synchronization: Top scrollbar & Bottom Table scrollbar
   const topScrollRef = useRef<HTMLDivElement | null>(null);
   const bottomScrollRef = useRef<HTMLDivElement | null>(null);
@@ -478,7 +745,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     };
     updateWidth();
 
-    // Use ResizeObserver for responsive table width changes (e.g. columns added/removed)
+    // Use ResizeObserver for responsive table width changes (e.g. columns added/removed/resized)
     if (tableRef.current && typeof ResizeObserver !== 'undefined') {
       const ro = new ResizeObserver(() => {
         if (rafId) cancelAnimationFrame(rafId);
@@ -490,7 +757,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         ro.disconnect();
       };
     }
-  }, [categories, students]);
+  }, [categories, students, totalTableWidth]);
 
   // Quick arrow scroll buttons
   const scrollTableBy = (delta: number) => {
@@ -563,42 +830,48 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     });
   }, []);
 
-  // Excel-like keyboard navigation across grade cells (Enter / ArrowUp / ArrowDown / ArrowLeft / ArrowRight)
+  // Excel-like keyboard navigation across grade cells (skips non-editable NI cells smoothly)
   const handleGradeCellKeyDown = useCallback(
     (
       e: React.KeyboardEvent<HTMLInputElement>,
       rowIdx: number,
       colIdx: number
     ) => {
-      let nextRow = rowIdx;
-      let nextCol = colIdx;
+      let rowStep = 0;
+      let colStep = 0;
 
       if (e.key === 'Enter' || e.key === 'ArrowDown') {
         e.preventDefault();
-        nextRow = rowIdx + 1;
+        rowStep = 1;
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
-        nextRow = rowIdx - 1;
+        rowStep = -1;
       } else if (
         e.key === 'ArrowRight' &&
         e.currentTarget.selectionStart === e.currentTarget.value.length
       ) {
         e.preventDefault();
-        nextCol = colIdx + 1;
+        colStep = 1;
       } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
         e.preventDefault();
-        nextCol = colIdx - 1;
+        colStep = -1;
       } else {
         return;
       }
 
       if (tableRef.current) {
-        const target = tableRef.current.querySelector<HTMLInputElement>(
-          `input[data-grade-row="${nextRow}"][data-grade-col="${nextCol}"]`
-        );
-        if (target) {
-          target.focus();
-          target.select();
+        for (let step = 1; step <= 60; step++) {
+          const nextRow = rowIdx + rowStep * step;
+          const nextCol = colIdx + colStep * step;
+          if (nextRow < 0 || nextCol < 0) break;
+          const target = tableRef.current.querySelector<HTMLInputElement>(
+            `input[data-grade-row="${nextRow}"][data-grade-col="${nextCol}"]`
+          );
+          if (target) {
+            target.focus();
+            target.select();
+            break;
+          }
         }
       }
     },
@@ -623,6 +896,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   // Subcategory Edit state
   const [subcatToEdit, setSubcatToEdit] = useState<{ catId: string; subId: string; name: string } | null>(null);
   const [editSubcatName, setEditSubcatName] = useState('');
+
+  // Intensification / Recuperación Edit state
+  const [intensificationToEdit, setIntensificationToEdit] = useState<{
+    catId: string;
+    subId: string;
+    instId: string;
+  } | null>(null);
 
   const [addingSubcatForCatId, setAddingSubcatForCatId] = useState<string | null>(null);
   const [newSubcatName, setNewSubcatName] = useState('');
@@ -710,6 +990,123 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     });
     saveCategories(updated);
   };
+
+  // Add Intensification / Recuperación to an evaluation
+  const handleAddIntensification = useCallback(
+    (catId: string, subId: string, name: string, customTitle?: string) => {
+      const cleanName = name.trim() || intensificationLabel;
+      const newInst: GradeIntensification = {
+        id: `int-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: cleanName,
+        ...(customTitle?.trim() ? { customTitle: customTitle.trim() } : {}),
+      };
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const prevInsts = Array.isArray(sub.intensifications) ? sub.intensifications : [];
+            return {
+              ...sub,
+              intensifications: [...prevInsts, newInst],
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories, intensificationLabel]
+  );
+
+  // Update Intensification / Recuperación label or custom specification
+  const handleUpdateIntensification = useCallback(
+    (
+      catId: string,
+      subId: string,
+      instId: string,
+      updates: { name: string; customTitle?: string }
+    ) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            return {
+              ...sub,
+              intensifications: (sub.intensifications || []).map((inst) =>
+                inst.id === instId
+                  ? {
+                      ...inst,
+                      name: updates.name.trim() || inst.name,
+                      customTitle: updates.customTitle?.trim() || undefined,
+                    }
+                  : inst
+              ),
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Delete Intensification / Recuperación
+  const handleDeleteIntensification = useCallback(
+    (catId: string, subId: string, instId: string) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const nextInsts = (sub.intensifications || []).filter((inst) => inst.id !== instId);
+            return {
+              ...sub,
+              intensifications: nextInsts.length > 0 ? nextInsts : undefined,
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Reorder Intensifications within an evaluation
+  const handleMoveIntensification = useCallback(
+    (catId: string, subId: string, fromIndex: number, toIndex: number) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const list = [...(sub.intensifications || [])];
+            if (
+              fromIndex < 0 ||
+              toIndex < 0 ||
+              fromIndex >= list.length ||
+              toIndex >= list.length ||
+              fromIndex === toIndex
+            ) {
+              return sub;
+            }
+            const [moved] = list.splice(fromIndex, 1);
+            list.splice(toIndex, 0, moved);
+            return {
+              ...sub,
+              intensifications: list,
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
 
   // Reorder Major Categories (moves the category along with all its subcolumns and grades)
   const handleMoveCategory = useCallback(
@@ -1078,6 +1475,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             onSwitchTerm={(t) => setTerm(t)}
             driveFolderId={driveFolderId}
             driveFolderUrl={driveFolderUrl}
+            onSelectStudent={(st) => handleOpenStudentBreakdown(st, 'both')}
           />
         </Suspense>
       ) : (
@@ -1320,20 +1718,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         </div>
       )}
 
-      {/* TOP HORIZONTAL SCROLLBAR & CONTROLS */}
+      {/* TOP HORIZONTAL SCROLLBAR & COLUMN WIDTH CONTROLS */}
       <div
-        className={`px-4 py-2.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition-colors ${
+        className={`px-3.5 py-2 rounded-xl border flex flex-wrap items-center justify-between gap-2.5 shadow-2xs transition-colors ${
           isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className={`text-[11px] font-bold uppercase tracking-wider ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
-            Desplazamiento horizontal:
-          </span>
           <div className="flex items-center gap-1">
             <button
               type="button"
-              onClick={() => scrollTableBy(-250)}
+              onClick={() => scrollTableBy(-220)}
               className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
                 isDarkMode
                   ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
@@ -1342,11 +1737,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               title="Desplazar a la izquierda"
               aria-label="Desplazar a la izquierda"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-3.5 h-3.5" />
             </button>
             <button
               type="button"
-              onClick={() => scrollTableBy(250)}
+              onClick={() => scrollTableBy(220)}
               className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
                 isDarkMode
                   ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
@@ -1355,7 +1750,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               title="Desplazar a la derecha"
               aria-label="Desplazar a la derecha"
             >
-              <ChevronRight className="w-4 h-4" />
+              <ChevronRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
@@ -1364,28 +1759,74 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         <div
           ref={topScrollRef}
           onScroll={handleTopScroll}
-          className="flex-1 overflow-x-auto overflow-y-hidden h-4 rounded-md scrollbar-thin transition-colors"
+          className="flex-1 min-w-[120px] overflow-x-auto overflow-y-hidden h-4 rounded-md scrollbar-thin transition-colors"
           style={{
             scrollbarWidth: 'auto',
           }}
         >
           {/* Invisible placeholder matching the exact width of the table */}
-          <div style={{ width: `${Math.max(tableWidth, 900)}px`, height: '1px' }} />
+          <div style={{ width: `${Math.max(tableWidth, totalTableWidth)}px`, height: '1px' }} />
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsAddCategoryOpen(true)}
-          className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer shrink-0 ${
-            isDarkMode
-              ? 'bg-blue-950/60 hover:bg-blue-900/80 text-blue-300 border-blue-800'
-              : 'bg-blue-50 hover:bg-blue-100 text-blue-700 border-blue-200'
-          }`}
-          title="Agregar una nueva Categoría Mayor a la planilla de calificaciones"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>+ Categoría Mayor</span>
-        </button>
+        {/* Column Width Preset + Reset Controls */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span
+            className={`inline-flex items-center gap-1 text-[11px] font-semibold ${
+              isDarkMode ? 'text-slate-400' : 'text-neutral-500'
+            }`}
+            title="Cambiá el ancho general de las columnas o arrastrá el borde derecho de cualquier encabezado para ajustarlo a medida"
+          >
+            <Columns className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">Columnas:</span>
+          </span>
+          <div
+            className={`inline-flex items-center p-0.5 rounded-lg border ${
+              isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-200'
+            }`}
+            role="group"
+            aria-label="Ancho de columnas"
+          >
+            {(
+              [
+                { id: 'compact', label: 'Compacto' },
+                { id: 'normal', label: 'Normal' },
+                { id: 'wide', label: 'Amplio' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => handleSelectDensity(opt.id)}
+                className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-all cursor-pointer ${
+                  colDensity === opt.id
+                    ? isDarkMode
+                      ? 'bg-blue-600 text-white shadow-2xs'
+                      : 'bg-blue-600 text-white shadow-2xs'
+                    : isDarkMode
+                    ? 'text-slate-400 hover:text-slate-200'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {Object.keys(customColWidths).length > 0 && (
+            <button
+              type="button"
+              onClick={handleResetAllColWidths}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition-colors cursor-pointer ${
+                isDarkMode
+                  ? 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  : 'border-neutral-200 bg-white text-neutral-600 hover:bg-neutral-100'
+              }`}
+              title="Restablecer anchos personalizados de columnas"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span className="hidden lg:inline">Restablecer</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main Gradebook Matrix Table */}
@@ -1399,34 +1840,70 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           onScroll={handleBottomScroll}
           className="overflow-x-auto max-w-full"
         >
-          <table ref={tableRef} className="w-full text-left text-xs border-collapse">
+          <table
+            ref={tableRef}
+            className="table-fixed text-left text-xs border-collapse"
+            style={{ width: `${totalTableWidth}px` }}
+          >
+            <colgroup>
+              <col style={{ width: `${getColWidth('__student__', 'student')}px` }} />
+              {categories.map((cat) =>
+                cat.subcategories.length === 0 ? (
+                  <col key={`col-${cat.id}`} style={{ width: `${getColWidth(cat.id, 'grade')}px` }} />
+                ) : (
+                  cat.subcategories.map((sub) => (
+                    <React.Fragment key={`colgroup-${sub.id}`}>
+                      <col style={{ width: `${getColWidth(sub.id, 'grade')}px` }} />
+                      {(sub.intensifications || []).map((inst) => (
+                        <col
+                          key={`col-${inst.id}`}
+                          style={{ width: `${getColWidth(inst.id, 'grade')}px` }}
+                        />
+                      ))}
+                    </React.Fragment>
+                  ))
+                )
+              )}
+              {activePreliminaryValuation && activePreliminaryValuation.showInMatrix && (
+                <col style={{ width: `${getColWidth('__prelim__', 'prelim')}px` }} />
+              )}
+              <col style={{ width: `${getColWidth('__final__', 'final')}px` }} />
+            </colgroup>
             <thead>
               {/* ROW 1: Super Header - Categories */}
               <tr className={`border-b ${isDarkMode ? 'bg-slate-950/80 border-slate-800' : 'bg-neutral-100 border-neutral-200'}`}>
-                {/* Student info fixed cols */}
+                {/* Student info fixed col */}
                 <th
-                  rowSpan={2}
-                  className={`sticky left-0 z-20 p-3 font-bold border-r uppercase tracking-wider text-[11px] min-w-[200px] w-64 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.08)] ${
+                  rowSpan={headerRowSpan}
+                  className={`sticky left-0 z-20 p-2.5 font-bold border-r uppercase tracking-wider text-[11px] shadow-[2px_0_5px_-2px_rgba(0,0,0,0.08)] relative select-none ${
                     isDarkMode ? 'bg-slate-950 border-slate-800 text-slate-300' : 'bg-neutral-100 border-neutral-200 text-neutral-700'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span>Estudiante ({students.length})</span>
-                    <button
-                      type="button"
-                      onClick={() => setIsAddCategoryOpen(true)}
-                      className="px-2 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[10px] font-bold normal-case tracking-normal inline-flex items-center gap-1 shadow-2xs transition-all cursor-pointer shrink-0"
-                      title="Agregar una nueva Categoría Mayor (ej: Evaluaciones, Trabajos Prácticos)"
-                    >
-                      <Plus className="w-3 h-3" />
-                      <span>+ Categoría</span>
-                    </button>
+                  <div className="flex items-center justify-between gap-1 pr-1.5 min-w-0">
+                    <span className="truncate">Estudiante ({students.length})</span>
                   </div>
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    onMouseDown={(e) => startColumnResize(e, '__student__', 'student')}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      handleResetSingleColWidth('__student__');
+                    }}
+                    className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-30"
+                    title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                  />
                 </th>
 
                 {/* Major Categories */}
                 {categories.map((cat, catIdx) => {
-                  const colSpan = Math.max(1, cat.subcategories.length);
+                  const colSpan =
+                    cat.subcategories.length === 0
+                      ? 1
+                      : cat.subcategories.reduce(
+                          (acc, sub) => acc + 1 + (sub.intensifications?.length || 0),
+                          0
+                        );
                   const colorTheme = CATEGORY_COLORS[catIdx % CATEGORY_COLORS.length];
                   const isDragOverCat =
                     dragOverCatIdx === catIdx &&
@@ -1470,13 +1947,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         setDraggedCatIdx(null);
                         setDragOverCatIdx(null);
                       }}
-                      className={`group/cat p-2 text-center font-bold border-r border-b-2 transition-all min-w-[140px] ${
+                      className={`group/cat p-1.5 text-center font-bold border-r border-b-2 transition-all overflow-hidden ${
                         colorTheme.border
                       } ${colorTheme.headerBg} ${
                         draggedCatIdx === catIdx ? 'opacity-50' : ''
                       } ${isDragOverCat ? 'ring-2 ring-inset ring-blue-500' : ''}`}
                     >
-                      <div className="flex items-center justify-center px-1.5 gap-1">
+                      <div className="flex items-center justify-center px-1 gap-0.5 min-w-0">
                         {categories.length > 1 && (
                           <button
                             type="button"
@@ -1488,13 +1965,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-20 disabled:pointer-events-none text-current opacity-60 group-hover/cat:opacity-100 transition-opacity cursor-pointer shrink-0"
                             title={`Mover categoría "${cat.name}" y sus subcolumnas hacia la izquierda`}
                           >
-                            <ChevronLeft className="w-3.5 h-3.5" />
+                            <ChevronLeft className="w-3 h-3" />
                           </button>
                         )}
 
                         {categories.length > 1 && (
                           <span
-                            className="cursor-grab active:cursor-grabbing opacity-40 group-hover/cat:opacity-80 transition-opacity shrink-0"
+                            className="cursor-grab active:cursor-grabbing opacity-40 group-hover/cat:opacity-80 transition-opacity shrink-0 hidden sm:inline"
                             title="Arrastrá para cambiar de lugar esta Categoría Mayor con todas sus subcolumnas"
                           >
                             <GripVertical className="w-3 h-3" />
@@ -1508,7 +1985,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             setEditCatName(cat.name);
                             setEditCatColor(cat.color);
                           }}
-                          className="text-xs uppercase tracking-wide font-extrabold whitespace-nowrap hover:underline cursor-pointer transition-opacity hover:opacity-80"
+                          className="text-[11px] uppercase tracking-wide font-extrabold truncate hover:underline cursor-pointer transition-opacity hover:opacity-80 min-w-0"
                           title={`Hacé clic para editar, ordenar subcolumnas o eliminar "${cat.name}"`}
                         >
                           {cat.name}
@@ -1518,7 +1995,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         <button
                           type="button"
                           onClick={() => setAddingSubcatForCatId(cat.id)}
-                          className="p-1 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                          className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer transition-colors shrink-0"
                           title={`Agregar columna a "${cat.name}"`}
                         >
                           <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -1535,7 +2012,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-20 disabled:pointer-events-none text-current opacity-60 group-hover/cat:opacity-100 transition-opacity cursor-pointer shrink-0"
                             title={`Mover categoría "${cat.name}" y sus subcolumnas hacia la derecha`}
                           >
-                            <ChevronRight className="w-3.5 h-3.5" />
+                            <ChevronRight className="w-3 h-3" />
                           </button>
                         )}
                       </div>
@@ -1546,8 +2023,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {/* Preliminary Valuation Col (TEA / TEP) if enabled */}
                 {activePreliminaryValuation && activePreliminaryValuation.showInMatrix && (
                   <th
-                    rowSpan={2}
-                    className={`p-2.5 font-extrabold text-center uppercase tracking-wider text-[11px] min-w-[130px] border-l ${
+                    rowSpan={headerRowSpan}
+                    className={`p-2 font-extrabold text-center uppercase tracking-wider text-[10px] border-l relative select-none overflow-hidden ${
                       isDarkMode
                         ? 'bg-amber-950/40 text-amber-300 border-slate-800'
                         : 'bg-amber-50/80 text-amber-900 border-neutral-200'
@@ -1556,31 +2033,44 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsPreliminaryModalOpen(true)}
-                      className="inline-flex flex-col items-center hover:opacity-80 transition-opacity cursor-pointer mx-auto"
+                      className="inline-flex flex-col items-center hover:opacity-80 transition-opacity cursor-pointer mx-auto max-w-full"
                       title="Haz clic para editar la Valoración Preliminar (TEA / TEP)"
                     >
-                      <div className="flex items-center gap-1 text-amber-700 dark:text-amber-400">
-                        <ClipboardCheck className="w-3.5 h-3.5" />
-                        <span>Val. Preliminar</span>
+                      <div className="flex items-center gap-1 text-amber-700 dark:text-amber-400 max-w-full">
+                        <ClipboardCheck className="w-3 h-3 shrink-0" />
+                        <span className="truncate">Preliminar</span>
                       </div>
-                      <div className="text-[10px] font-bold text-amber-600 dark:text-amber-400 opacity-90 mt-0.5">
-                        (TEA / TEP)
+                      <div className="text-[10px] font-bold text-amber-600 dark:text-amber-400 opacity-90 mt-0.5 truncate">
+                        (TEA/TEP)
                       </div>
                     </button>
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      onMouseDown={(e) => startColumnResize(e, '__prelim__', 'prelim')}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        handleResetSingleColWidth('__prelim__');
+                      }}
+                      className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                      title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                    />
                   </th>
                 )}
 
                 {/* Final Grade Col */}
                 <th
-                  rowSpan={2}
-                  className={`p-2.5 font-extrabold text-center uppercase tracking-wider text-[11px] min-w-[140px] ${
+                  rowSpan={headerRowSpan}
+                  className={`p-2 font-extrabold text-center uppercase tracking-wider text-[10px] relative select-none overflow-hidden ${
                     isDarkMode
                       ? 'bg-blue-950/40 text-blue-300 border-l border-slate-800'
                       : 'bg-blue-50 text-blue-800 border-l border-neutral-200'
                   }`}
                 >
-                  <div className="flex flex-col items-center justify-center gap-1.5">
-                    <span>Calificación Final</span>
+                  <div className="flex flex-col items-center justify-center gap-1 min-w-0">
+                    <span className="truncate max-w-full" title="Calificación Final">
+                      Nota Final
+                    </span>
                     <button
                       type="button"
                       onClick={() =>
@@ -1590,7 +2080,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             : 'manual_final'
                         )
                       }
-                      className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg font-bold text-[11px] normal-case tracking-normal transition-all cursor-pointer shadow-2xs ${
+                      className={`inline-flex items-center justify-center gap-1 px-2 py-0.5 rounded-md font-bold text-[10px] normal-case tracking-normal transition-all cursor-pointer shadow-2xs max-w-full ${
                         overallCalculation === 'manual_final'
                           ? 'bg-purple-600 hover:bg-purple-700 text-white'
                           : 'bg-blue-600 hover:bg-blue-700 text-white'
@@ -1599,27 +2089,39 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     >
                       {overallCalculation === 'manual_final' ? (
                         <>
-                          <UserCheck className="w-3.5 h-3.5 shrink-0" />
-                          <span>Criterio docente</span>
+                          <UserCheck className="w-3 h-3 shrink-0" />
+                          <span className="truncate">Criterio</span>
                         </>
                       ) : (
                         <>
-                          <Calculator className="w-3.5 h-3.5 shrink-0" />
-                          <span>Promedio</span>
+                          <Calculator className="w-3 h-3 shrink-0" />
+                          <span className="truncate">Promedio</span>
                         </>
                       )}
                     </button>
                   </div>
+                  <div
+                    role="separator"
+                    aria-orientation="vertical"
+                    onMouseDown={(e) => startColumnResize(e, '__final__', 'final')}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      handleResetSingleColWidth('__final__');
+                    }}
+                    className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                    title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                  />
                 </th>
               </tr>
 
-              {/* ROW 2: Subcategories Header */}
+              {/* ROW 2: Subcategories / Evaluations Header (spans 1 + N intensifications when split) */}
               <tr className={`border-b ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'}`}>
                 {categories.map((cat) => {
                   if (cat.subcategories.length === 0) {
                     return (
                       <th
                         key={`${cat.id}-empty`}
+                        rowSpan={hasAnyIntensifications ? 2 : 1}
                         onDragOver={(e) => {
                           if (draggedSubcat && draggedSubcat.catId !== cat.id) {
                             e.preventDefault();
@@ -1639,11 +2141,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           setDraggedSubcat(null);
                           setDragOverSubcat(null);
                         }}
-                        className={`p-2 text-center font-medium border-r text-[11px] min-w-[120px] ${
+                        className={`p-1.5 text-center font-medium border-r text-[11px] relative select-none overflow-hidden ${
                           isDarkMode ? 'border-slate-800 text-slate-400' : 'border-neutral-200 text-neutral-500'
                         }`}
                       >
-                        <div className="flex items-center justify-center gap-1 text-center">
+                        <div className="flex items-center justify-center gap-0.5 pr-1 min-w-0">
                           <button
                             type="button"
                             onClick={() => {
@@ -1651,20 +2153,31 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               setEditCatName(cat.name);
                               setEditCatColor(cat.color);
                             }}
-                            className="hover:underline cursor-pointer transition-opacity hover:opacity-80"
-                            title={`Hacé clic para editar o eliminar "${cat.name}"`}
+                            className="hover:underline cursor-pointer transition-opacity hover:opacity-80 truncate"
+                            title={`Nota General — Hacé clic para editar o eliminar "${cat.name}"`}
                           >
-                            Nota General
+                            Nota
                           </button>
                           <button
                             type="button"
                             onClick={() => setAddingSubcatForCatId(cat.id)}
-                            className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer"
+                            className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-emerald-600 dark:text-emerald-400 inline-flex items-center justify-center cursor-pointer shrink-0"
                             title={`Agregar subcolumna a "${cat.name}"`}
                           >
                             <Plus className="w-3 h-3 stroke-[2.5]" />
                           </button>
                         </div>
+                        <div
+                          role="separator"
+                          aria-orientation="vertical"
+                          onMouseDown={(e) => startColumnResize(e, cat.id, 'grade')}
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            handleResetSingleColWidth(cat.id);
+                          }}
+                          className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                          title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                        />
                       </th>
                     );
                   }
@@ -1672,6 +2185,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   return (
                     <React.Fragment key={`${cat.id}-subs`}>
                       {cat.subcategories.map((sub, subIdx) => {
+                        const instList = sub.intensifications || [];
+                        const hasInsts = instList.length > 0;
+                        const colW = getColWidth(sub.id, 'grade');
+                        const totalGroupW = hasInsts
+                          ? colW + instList.reduce((acc, inst) => acc + getColWidth(inst.id, 'grade'), 0)
+                          : colW;
+                        const showInlineArrows = cat.subcategories.length > 1 && totalGroupW >= 88;
                         const isDraggingThisSub =
                           draggedSubcat?.catId === cat.id && draggedSubcat?.subId === sub.id;
                         const isDragOverThisSub =
@@ -1682,8 +2202,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         return (
                           <th
                             key={sub.id}
-                            draggable
+                            colSpan={hasInsts ? 1 + instList.length : 1}
+                            rowSpan={hasInsts ? 1 : hasAnyIntensifications ? 2 : 1}
+                            draggable={!isResizingColumn}
                             onDragStart={(e) => {
+                              if (isResizingColumn) {
+                                e.preventDefault();
+                                return;
+                              }
                               e.stopPropagation();
                               setDraggedSubcat({ catId: cat.id, subId: sub.id, subIdx });
                               setDraggedCatIdx(null);
@@ -1735,14 +2261,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               setDraggedSubcat(null);
                               setDragOverSubcat(null);
                             }}
-                            className={`group/sub p-1.5 text-center font-medium border-r text-[11px] min-w-[125px] transition-all ${
+                            className={`group/sub p-1.5 text-center font-medium border-r text-[11px] transition-all relative select-none overflow-hidden ${
                               isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
                             } ${isDraggingThisSub ? 'opacity-45' : ''} ${
                               isDragOverThisSub ? 'ring-2 ring-inset ring-blue-500 bg-blue-500/10' : ''
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-0.5 px-0.5 text-center">
-                              {cat.subcategories.length > 1 ? (
+                            <div className="flex items-center justify-center gap-0.5 pr-1 text-center min-w-0">
+                              {showInlineArrows && (
                                 <button
                                   type="button"
                                   disabled={subIdx === 0}
@@ -1750,13 +2276,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     e.stopPropagation();
                                     handleMoveSubcategory(cat.id, subIdx, subIdx - 1);
                                   }}
-                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-55 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
                                   title={`Mover "${sub.name}" hacia la izquierda (antes)`}
                                 >
                                   <ChevronLeft className="w-3 h-3" />
                                 </button>
-                              ) : (
-                                <span className="w-3" />
                               )}
 
                               <button
@@ -1765,8 +2289,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                   setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
                                   setEditSubcatName(sub.name);
                                 }}
-                                className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0"
-                                title={`Hacé clic para editar, cambiar de lugar o eliminar "${sub.name}" (o arrastrá la columna)`}
+                                className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0 max-w-full"
+                                title={`${sub.name} — Hacé clic para editar, agregar ${intensificationLabel.toLowerCase()} / recuperación o importar notas`}
                               >
                                 {(sub.name.toLowerCase().includes('disposición') ||
                                   sub.name.toLowerCase().includes('disposicion')) && (
@@ -1775,7 +2299,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                 <span className="truncate">{sub.name}</span>
                               </button>
 
-                              {cat.subcategories.length > 1 ? (
+                              {showInlineArrows && (
                                 <button
                                   type="button"
                                   disabled={subIdx === cat.subcategories.length - 1}
@@ -1783,15 +2307,29 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     e.stopPropagation();
                                     handleMoveSubcategory(cat.id, subIdx, subIdx + 1);
                                   }}
-                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-55 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
                                   title={`Mover "${sub.name}" hacia la derecha (después)`}
                                 >
                                   <ChevronRight className="w-3 h-3" />
                                 </button>
-                              ) : (
-                                <span className="w-3" />
                               )}
                             </div>
+
+                            {/* Column resize handle (only when unsplit; split sub-columns have their own handles in Row 3) */}
+                            {!hasInsts && (
+                              <div
+                                role="separator"
+                                aria-orientation="vertical"
+                                draggable={false}
+                                onMouseDown={(e) => startColumnResize(e, sub.id, 'grade')}
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handleResetSingleColWidth(sub.id);
+                                }}
+                                className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                              />
+                            )}
                           </th>
                         );
                       })}
@@ -1799,6 +2337,101 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   );
                 })}
               </tr>
+
+              {/* ROW 3: Split Sub-headers for evaluations that have Intensification / Recuperación instances */}
+              {hasAnyIntensifications && (
+                <tr className={`border-b ${isDarkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-neutral-50/80 border-neutral-200'}`}>
+                  {categories.map((cat) =>
+                    cat.subcategories.map((sub) => {
+                      const instList = sub.intensifications || [];
+                      if (instList.length === 0) return null;
+                      return (
+                        <React.Fragment key={`${sub.id}-split-row`}>
+                          {/* Original Exam Sub-header */}
+                          <th
+                            className={`py-1 px-1.5 text-center font-semibold border-r text-[10px] relative select-none overflow-hidden ${
+                              isDarkMode
+                                ? 'border-slate-800 text-slate-400 bg-slate-900'
+                                : 'border-neutral-200 text-neutral-600 bg-white'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
+                                setEditSubcatName(sub.name);
+                              }}
+                              className="w-full truncate hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer pr-1"
+                              title={`Nota original de "${sub.name}" — Hacé clic para editar o importar`}
+                            >
+                              Nota
+                            </button>
+                            <div
+                              role="separator"
+                              aria-orientation="vertical"
+                              onMouseDown={(e) => startColumnResize(e, sub.id, 'grade')}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                handleResetSingleColWidth(sub.id);
+                              }}
+                              className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                              title="Arrastrá para ajustar el ancho de esta subcolumna (doble clic para restablecer)"
+                            />
+                          </th>
+
+                          {/* Intensification / Recuperación Sub-headers */}
+                          {instList.map((inst) => {
+                            const fullLabel = getIntensificationDisplayLabel(sub, inst);
+                            return (
+                              <th
+                                key={inst.id}
+                                className={`py-1 px-1.5 text-center font-bold border-r text-[10px] relative select-none overflow-hidden ${
+                                  isDarkMode
+                                    ? 'border-slate-800 bg-amber-950/35 text-amber-300'
+                                    : 'border-neutral-200 bg-amber-50/90 text-amber-900'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setIntensificationToEdit({
+                                      catId: cat.id,
+                                      subId: sub.id,
+                                      instId: inst.id,
+                                    })
+                                  }
+                                  className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
+                                  title={`${fullLabel} — Hacé clic para renombrar, especificar detalle o importar notas`}
+                                >
+                                  <span className="truncate max-w-full leading-tight">
+                                    {inst.name}
+                                  </span>
+                                  {inst.customTitle && (
+                                    <span className="text-[9px] font-medium opacity-75 truncate max-w-full leading-tight">
+                                      {inst.customTitle}
+                                    </span>
+                                  )}
+                                </button>
+                                <div
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  onMouseDown={(e) => startColumnResize(e, inst.id, 'grade')}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    handleResetSingleColWidth(inst.id);
+                                  }}
+                                  className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                  title="Arrastrá para ajustar el ancho de esta subcolumna (doble clic para restablecer)"
+                                />
+                              </th>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
+                </tr>
+              )}
             </thead>
 
             {/* TABLE BODY: Students Rows */}
@@ -1829,6 +2462,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     onCellBlur={flushPendingGradesSave}
                     onCellKeyDown={handleGradeCellKeyDown}
                     onOpenPreliminaryModal={handleOpenPreliminaryModal}
+                    onSelectStudent={handleOpenStudentBreakdown}
                     onDeleteStudent={onDeleteStudent}
                   />
                 ))
@@ -1849,7 +2483,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           <span>• Puedes ingresar notas numéricas (1 al 10 con decimales) o conceptuales.</span>
           <span>• Si una categoría o la nota final está en modo manual, eres libre de ponderar según tu criterio.</span>
         </div>
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
           <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
             <span className="w-2 h-2 rounded-full bg-emerald-500" /> Aprobado (≥ 7)
           </span>
@@ -1859,6 +2493,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           <span className="flex items-center gap-1 text-red-600 dark:text-red-400 font-bold">
             <span className="w-2 h-2 rounded-full bg-red-500" /> Desaprobado (&lt; 6)
           </span>
+          {hasAnyIntensifications && (
+            <span className="flex items-center gap-1 font-bold text-slate-600 dark:text-slate-300">
+              <span className="px-1.5 py-0.5 rounded bg-neutral-200/80 dark:bg-slate-800 text-[10px]">
+                NI
+              </span>{' '}
+              No intensifica (≥ 7, no promedia)
+            </span>
+          )}
         </div>
       </div>
 
@@ -1889,6 +2531,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         onMoveCategory={handleMoveCategory}
         onMoveSubcategory={handleMoveSubcategory}
         onMoveSubcategoryToCategory={handleMoveSubcategoryToCategory}
+        intensificationDefaultLabel={intensificationLabel}
+        onUpdateDefaultIntensificationLabel={(nextLabel) =>
+          updateTerminology({ intensificationLabel: nextLabel })
+        }
+        onAddIntensification={handleAddIntensification}
+        intensificationToEdit={intensificationToEdit}
+        setIntensificationToEdit={setIntensificationToEdit}
+        onUpdateIntensification={handleUpdateIntensification}
+        onDeleteIntensification={handleDeleteIntensification}
+        onMoveIntensification={handleMoveIntensification}
         onImportIntoColumn={(target, source) => {
           setImportTargetColumn(target);
           if (source === 'forms') {
@@ -1975,6 +2627,23 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       )}
         </>
       )}
+
+      {/* Modal: Desglose de Calificaciones por Alumno (1°C, 2°C o Ambos en tabla) */}
+      <StudentGradeBreakdownModal
+        student={selectedBreakdownStudent}
+        students={students}
+        onSelectStudent={setSelectedBreakdownStudent}
+        courseName={courseName}
+        isDarkMode={isDarkMode}
+        initialPeriod={breakdownInitialPeriod}
+        categories1c={categories1c}
+        categories2c={categories2c}
+        gradesMap1c={currentTerm === '1c' ? draftGradesMap : gradesMap1c}
+        gradesMap2c={currentTerm === '2c' ? draftGradesMap : gradesMap2c}
+        score1cMap={score1cMap}
+        score2cMap={score2cMap}
+        annualOverrides={annualOverrides}
+      />
     </div>
   );
 };

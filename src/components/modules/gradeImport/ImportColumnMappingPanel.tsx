@@ -4,6 +4,10 @@ import { Student } from '../../../types';
 import { GradeCategory, StudentGradesMap } from '../../../types/grades';
 import type { DetectedColumnConfig, DetectedColumnKind } from '../../../types/gradeImport';
 import type { PreferredTargetColumn } from './ImportUploadStep';
+import {
+  findGradeColumnById,
+  getIntensificationDisplayLabel,
+} from '../../../utils/gradeCalculations';
 
 export interface ImportColumnMappingPanelProps {
   isDarkMode: boolean;
@@ -403,22 +407,20 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                               subcategoryName: chosenCat.name,
                             });
                           } else {
-                            const chosenSub = chosenCat.subcategories.find(
-                              (s) => s.id === chosenSubId
-                            );
-                            if (!chosenSub) return;
+                            const matched = findGradeColumnById(activeCategories, chosenSubId);
+                            if (!matched) return;
                             const nextTarget = {
-                              categoryId: chosenCat.id,
-                              subcategoryId: chosenSub.id,
-                              subcategoryName: chosenSub.name,
+                              categoryId: matched.category.id,
+                              subcategoryId: chosenSubId,
+                              subcategoryName: matched.displayLabel,
                             };
                             onSetPreferredTargetColumn(nextTarget);
                             onUpdateColumnConfig(colCfg.colKey, {
                               targetCategoryMode: 'existing',
-                              targetCategoryId: chosenCat.id,
+                              targetCategoryId: matched.category.id,
                               targetSubcategoryMode: 'existing',
-                              targetSubcategoryId: chosenSub.id,
-                              subcategoryName: chosenSub.name,
+                              targetSubcategoryId: chosenSubId,
+                              subcategoryName: matched.displayLabel,
                             });
                           }
                         }}
@@ -452,16 +454,35 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                           activeGradesMap[st.id]?.[sub.id] ?? ''
                                         ).trim() !== ''
                                     ).length;
+                                    const instList = sub.intensifications || [];
                                     return (
-                                      <option
-                                        key={sub.id}
-                                        value={`${selectedCat.id}:::${sub.id}`}
-                                      >
-                                        Columna existente: {sub.name}
-                                        {existingCount > 0
-                                          ? ` (${existingCount} notas cargadas)`
-                                          : ''}
-                                      </option>
+                                      <React.Fragment key={sub.id}>
+                                        <option
+                                          value={`${selectedCat.id}:::${sub.id}`}
+                                        >
+                                          Columna existente: {sub.name}
+                                          {existingCount > 0
+                                            ? ` (${existingCount} notas cargadas)`
+                                            : ''}
+                                        </option>
+                                        {instList.map((inst) => {
+                                          const instCount = students.filter(
+                                            (st) =>
+                                              String(
+                                                activeGradesMap[st.id]?.[inst.id] ?? ''
+                                              ).trim() !== ''
+                                          ).length;
+                                          return (
+                                            <option
+                                              key={inst.id}
+                                              value={`${selectedCat.id}:::${inst.id}`}
+                                            >
+                                              ↳ {getIntensificationDisplayLabel(sub, inst)}
+                                              {instCount > 0 ? ` (${instCount} notas)` : ''}
+                                            </option>
+                                          );
+                                        })}
+                                      </React.Fragment>
                                     );
                                   })}
                                 </optgroup>
@@ -486,16 +507,35 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                             activeGradesMap[st.id]?.[sub.id] ?? ''
                                           ).trim() !== ''
                                       ).length;
+                                      const instList = sub.intensifications || [];
                                       return (
-                                        <option
-                                          key={sub.id}
-                                          value={`${otherCat.id}:::${sub.id}`}
-                                        >
-                                          {otherCat.name} → {sub.name}
-                                          {existingCount > 0
-                                            ? ` (${existingCount} notas cargadas)`
-                                            : ''}
-                                        </option>
+                                        <React.Fragment key={sub.id}>
+                                          <option
+                                            value={`${otherCat.id}:::${sub.id}`}
+                                          >
+                                            {otherCat.name} → {sub.name}
+                                            {existingCount > 0
+                                              ? ` (${existingCount} notas cargadas)`
+                                              : ''}
+                                          </option>
+                                          {instList.map((inst) => {
+                                            const instCount = students.filter(
+                                              (st) =>
+                                                String(
+                                                  activeGradesMap[st.id]?.[inst.id] ?? ''
+                                                ).trim() !== ''
+                                            ).length;
+                                            return (
+                                              <option
+                                                key={inst.id}
+                                                value={`${otherCat.id}:::${inst.id}`}
+                                              >
+                                                {otherCat.name} → {getIntensificationDisplayLabel(sub, inst)}
+                                                {instCount > 0 ? ` (${instCount} notas)` : ''}
+                                              </option>
+                                            );
+                                          })}
+                                        </React.Fragment>
                                       );
                                     })}
                                   </optgroup>

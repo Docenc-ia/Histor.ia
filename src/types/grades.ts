@@ -1,8 +1,16 @@
+export interface GradeIntensification {
+  id: string;
+  name: string;
+  customTitle?: string;
+  date?: string;
+}
+
 export interface GradeSubcategory {
   id: string;
   name: string;
   date?: string;
   maxScore?: number; // default 10
+  intensifications?: GradeIntensification[];
 }
 
 export interface GradeCategory {

@@ -6,6 +6,10 @@ import {
 } from '../types/gradeImport';
 import { GradeHistoryEntry } from './excelExport';
 import { normalizeImportText, parseFlexibleCellNumber } from './gradeImportParser';
+import {
+  findGradeColumnById,
+  isStudentExemptFromIntensification,
+} from './gradeCalculations';
 
 const DEFAULT_CATEGORY_NAME = 'Calificaciones';
 const DEFAULT_CATEGORY_WEIGHT = 100;
@@ -85,7 +89,14 @@ export function buildGradeImportCommitPayload(params: {
     .filter((category) => category && typeof category === 'object')
     .map((category) => ({
       ...category,
-      subcategories: Array.isArray(category.subcategories) ? [...category.subcategories] : [],
+      subcategories: Array.isArray(category.subcategories)
+        ? category.subcategories.map((sub) => ({
+            ...sub,
+            intensifications: Array.isArray(sub.intensifications)
+              ? sub.intensifications.map((inst) => ({ ...inst }))
+              : undefined,
+          }))
+        : [],
     }));
 
   const columnKeyToSubcategoryMap: Record<
@@ -140,31 +151,17 @@ export function buildGradeImportCommitPayload(params: {
         resolvedSubcategoryId = targetCategory.id;
         cleanSubcategoryName = `${targetCategory.name} (Nota General)`;
       } else {
-        const existingSubcategory = targetCategory.subcategories.find(
-          (subcategory) => subcategory.id === resolvedSubcategoryId
-        );
-        if (existingSubcategory) {
-          cleanSubcategoryName = existingSubcategory.name;
+        const matchedColumn = findGradeColumnById(workingCategories, resolvedSubcategoryId);
+        if (matchedColumn) {
+          targetCategory = matchedColumn.category;
+          cleanSubcategoryName = matchedColumn.displayLabel;
         } else {
-          const ownerCategory = workingCategories.find((category) =>
-            category.subcategories.some(
-              (subcategory) => subcategory.id === resolvedSubcategoryId
-            )
-          );
-          const ownerSubcategory = ownerCategory?.subcategories.find(
-            (subcategory) => subcategory.id === resolvedSubcategoryId
-          );
-          if (ownerCategory && ownerSubcategory) {
-            targetCategory = ownerCategory;
-            cleanSubcategoryName = ownerSubcategory.name;
-          } else {
-            resolvedSubcategoryId = `sub-imp-${Date.now()}-${columnIndex}`;
-            targetCategory.subcategories.push({
-              id: resolvedSubcategoryId,
-              name: cleanSubcategoryName,
-              maxScore: STANDARD_MAX_SCORE,
-            });
-          }
+          resolvedSubcategoryId = `sub-imp-${Date.now()}-${columnIndex}`;
+          targetCategory.subcategories.push({
+            id: resolvedSubcategoryId,
+            name: cleanSubcategoryName,
+            maxScore: STANDARD_MAX_SCORE,
+          });
         }
       }
     } else {
@@ -228,6 +225,23 @@ export function buildGradeImportCommitPayload(params: {
       if (columnConfig.kind === 'grade') {
         const targetSubcategoryInfo = columnKeyToSubcategoryMap[columnConfig.colKey];
         if (targetSubcategoryInfo) {
+          const matchedTarget = findGradeColumnById(
+            workingCategories,
+            targetSubcategoryInfo.subcategoryId
+          );
+          // Si la columna destino es una intensificación y el alumno ya aprobó (>= 7), queda en NI y no se sobrescribe.
+          if (
+            matchedTarget?.intensification &&
+            matchedTarget.subcategory &&
+            matchedTarget.intensificationIndex !== undefined &&
+            isStudentExemptFromIntensification(
+              matchedTarget.subcategory,
+              matchedTarget.intensificationIndex,
+              workingGradesMap[studentRow.studentId]
+            ).exempt
+          ) {
+            return;
+          }
           workingGradesMap[studentRow.studentId][targetSubcategoryInfo.subcategoryId] =
             Number.isFinite(numericValue)
               ? String(Number(numericValue.toFixed(TWO_DECIMAL_PRECISION)))

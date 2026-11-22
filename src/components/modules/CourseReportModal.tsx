@@ -36,6 +36,7 @@ import {
   computeCourseReportStats,
   filterCourseDispositionMap,
   resolveEffectiveTermScoresMap,
+  type ReportGradesPeriod,
 } from '../../utils/courseReportAggregator';
 import { useTerminologySettings } from '../../utils/terminologySettings';
 import { ReportElementsToolbar } from './courseReport/ReportElementsToolbar';
@@ -69,6 +70,7 @@ export interface CourseReportModalProps {
   initialTab?: 'course' | 'individual';
   initialStudentId?: string;
   initialPreset?: 'all' | 'attendance' | 'grades' | 'disposition';
+  initialGradesPeriod?: ReportGradesPeriod;
 }
 
 export const CourseReportModal: React.FC<CourseReportModalProps> = ({
@@ -87,6 +89,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   initialTab = 'course',
   initialStudentId,
   initialPreset = 'all',
+  initialGradesPeriod = 'both',
 }) => {
   const { user } = useWorkspaceAuth();
   const {
@@ -99,6 +102,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   } = useTerminologySettings();
   const [activeTab, setActiveTab] = useState<'course' | 'individual'>(initialTab);
   const [selectedStudentId, setSelectedStudentId] = useState<string>(initialStudentId || 'all');
+  const [gradesPeriod, setGradesPeriod] = useState<ReportGradesPeriod>(initialGradesPeriod);
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
   const [showDriveConfirmModal, setShowDriveConfirmModal] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -111,14 +115,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     errorMessage?: string;
   } | null>(null);
 
-  // Sync active tab, selected student, and clear stale Drive status whenever modal opens
+  // Sync active tab, selected student, grades period, and clear stale Drive status whenever modal opens
   useEffect(() => {
     if (isOpen) {
       setActiveTab(initialTab);
       setSelectedStudentId(initialStudentId || 'all');
+      setGradesPeriod(initialGradesPeriod);
       setDriveSavedResult(null);
     }
-  }, [isOpen, initialTab, initialStudentId]);
+  }, [isOpen, initialTab, initialStudentId, initialGradesPeriod]);
   const [courseObservation, setCourseObservation] = useState<string>(() => {
     try {
       return getStorageItemForUser(`fds_report_course_observation_${courseId}`) || '';
@@ -558,10 +563,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
     ]
   );
 
-  // Overall Statistics
+  // Overall Statistics (period-aware when 1°C or 2°C is selected)
   const stats = useMemo(
-    () => computeCourseReportStats(consolidatedStudents),
-    [consolidatedStudents]
+    () => computeCourseReportStats(consolidatedStudents, gradesPeriod),
+    [consolidatedStudents, gradesPeriod]
   );
 
   if (!isOpen) return null;
@@ -592,6 +597,19 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       : [],
   }));
 
+  const periodFileSuffix =
+    includeGrades && gradesPeriod === '1c'
+      ? '_1C'
+      : includeGrades && gradesPeriod === '2c'
+      ? '_2C'
+      : '';
+  const periodTitleSuffix =
+    includeGrades && gradesPeriod === '1c'
+      ? ` (${term1ShortLabel})`
+      : includeGrades && gradesPeriod === '2c'
+      ? ` (${term2ShortLabel})`
+      : '';
+
   // Generate self-contained standalone HTML document for download or Drive upload
   const generateHtmlDocument = (type: 'course' | 'individual') =>
     generateCourseReportHtml({
@@ -608,6 +626,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       displayedStudents: displayedStudentsForHtml,
       courseObservation,
       includeGrades,
+      gradesPeriod,
       includeExamDetails,
       includeAttendance,
       includeDisposition,
@@ -627,10 +646,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           : null;
       const fileName =
         activeTab === 'course'
-          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`
+          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`
           : singleStudent
-          ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
-          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`;
+          ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}.html`
+          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`;
       driveService
         .uploadFileToCourseCategory({
           courseName,
@@ -664,10 +683,10 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
         : null;
     const fileName =
       activeTab === 'course'
-        ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`
+        ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`
         : singleStudent
-        ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}.html`
-        : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}_${currentSchoolYear}.html`;
+        ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}.html`
+        : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`;
 
     const blob = new Blob([html], { type: 'text/html;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -694,15 +713,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Compute the target Google Doc title
   const getTargetGoogleDocTitle = () => {
     if (activeTab === 'course') {
-      return `Informe Consolidado Anual - ${courseName}`;
+      return `Informe Consolidado${periodTitleSuffix || ' Anual'} - ${courseName}`;
     }
     if (selectedStudentId !== 'all') {
       const single = consolidatedStudents.find((s) => s.student.id === selectedStudentId);
       if (single) {
-        return `Ficha de Trayectoria - ${single.student.lastName}, ${single.student.firstName} (${courseName})`;
+        return `Ficha de Trayectoria${periodTitleSuffix} - ${single.student.lastName}, ${single.student.firstName} (${courseName})`;
       }
     }
-    return `Fichas Individuales de Trayectoria - ${courseName}`;
+    return `Fichas Individuales de Trayectoria${periodTitleSuffix} - ${courseName}`;
   };
 
   // Save directly as a native editable Google Doc (.gdoc) in the course's Google Drive folder
@@ -903,11 +922,19 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 }`}
               >
                 <option value="all">Todos los alumnos (Lote de 1 página c/u)</option>
-                {consolidatedStudents.map((s) => (
-                  <option key={s.student.id} value={s.student.id}>
-                    {s.student.lastName}, {s.student.firstName} ({s.finalVal || 'Sin nota'})
-                  </option>
-                ))}
+                {consolidatedStudents.map((s) => {
+                  const displayScore =
+                    gradesPeriod === '1c'
+                      ? s.score1c
+                      : gradesPeriod === '2c'
+                      ? s.score2c
+                      : s.finalVal;
+                  return (
+                    <option key={s.student.id} value={s.student.id}>
+                      {s.student.lastName}, {s.student.firstName} ({displayScore || 'Sin nota'})
+                    </option>
+                  );
+                })}
               </select>
             </div>
           )}
@@ -923,6 +950,8 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
           term2ShortLabel={term2ShortLabel}
           includeGrades={includeGrades}
           onToggleGrades={() => setIncludeGrades(!includeGrades)}
+          gradesPeriod={gradesPeriod}
+          onChangeGradesPeriod={setGradesPeriod}
           includeExamDetails={includeExamDetails}
           onToggleExamDetails={() => setIncludeExamDetails(!includeExamDetails)}
           includeAttendance={includeAttendance}
@@ -996,8 +1025,11 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 currentDate={currentDate}
                 attendanceLabel={attendanceLabel}
                 dispositionLabel={dispositionLabel}
+                term1FullLabel={term1FullLabel}
+                term2FullLabel={term2FullLabel}
                 term1ShortLabel={term1ShortLabel}
                 term2ShortLabel={term2ShortLabel}
+                gradesPeriod={gradesPeriod}
                 selectedElementsCount={selectedElementsCount}
                 includeGrades={includeGrades}
                 includeAttendance={includeAttendance}
@@ -1023,6 +1055,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
                 term2FullLabel={term2FullLabel}
                 term1ShortLabel={term1ShortLabel}
                 term2ShortLabel={term2ShortLabel}
+                gradesPeriod={gradesPeriod}
                 selectedElementsCount={selectedElementsCount}
                 includeGrades={includeGrades}
                 includeExamDetails={includeExamDetails}

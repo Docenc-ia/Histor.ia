@@ -20,6 +20,10 @@ import {
 import { Student } from '../../../types';
 import { GradeCategory, StudentGradesMap } from '../../../types/grades';
 import type { QuickPastePreset } from '../../../types/gradeImport';
+import {
+  findGradeColumnById,
+  getIntensificationDisplayLabel,
+} from '../../../utils/gradeCalculations';
 
 export interface PreferredTargetColumn {
   categoryId: string;
@@ -183,12 +187,12 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                       subcategoryName: catObj.name,
                     });
                   } else {
-                    const subObj = catObj.subcategories.find((s) => s.id === subId);
-                    if (subObj) {
+                    const matched = findGradeColumnById(activeCategories, subId);
+                    if (matched) {
                       onChangePreferredTargetColumn({
-                        categoryId: catObj.id,
-                        subcategoryId: subObj.id,
-                        subcategoryName: subObj.name,
+                        categoryId: matched.category.id,
+                        subcategoryId: subId,
+                        subcategoryName: matched.displayLabel,
                       });
                     }
                   }
@@ -213,11 +217,26 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                     const existingCount = students.filter(
                       (st) => String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                     ).length;
+                    const instList = sub.intensifications || [];
                     return (
-                      <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
-                        Columna existente: {sub.name}
-                        {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
-                      </option>
+                      <React.Fragment key={sub.id}>
+                        <option value={`${cat.id}:::${sub.id}`}>
+                          Columna existente: {sub.name}
+                          {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                        </option>
+                        {instList.map((inst) => {
+                          const instCount = students.filter(
+                            (st) => String(activeGradesMap[st.id]?.[inst.id] ?? '').trim() !== ''
+                          ).length;
+                          const label = getIntensificationDisplayLabel(sub, inst);
+                          return (
+                            <option key={inst.id} value={`${cat.id}:::${inst.id}`}>
+                              ↳ {label}
+                              {instCount > 0 ? ` (${instCount} notas)` : ''}
+                            </option>
+                          );
+                        })}
+                      </React.Fragment>
                     );
                   })}
                   {cat.subcategories.length === 0 && (

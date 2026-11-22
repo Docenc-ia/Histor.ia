@@ -1,8 +1,10 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
-import type {
-  ConsolidatedReportStudent,
-  CourseReportStats,
+import {
+  getConditionForScore,
+  type ConsolidatedReportStudent,
+  type CourseReportStats,
+  type ReportGradesPeriod,
 } from '../../../utils/courseReportAggregator';
 
 export interface CourseConsolidatedReportViewProps {
@@ -14,8 +16,11 @@ export interface CourseConsolidatedReportViewProps {
   currentDate: string;
   attendanceLabel: string;
   dispositionLabel: string;
+  term1FullLabel?: string;
+  term2FullLabel?: string;
   term1ShortLabel: string;
   term2ShortLabel: string;
+  gradesPeriod?: ReportGradesPeriod;
   selectedElementsCount: number;
   includeGrades: boolean;
   includeAttendance: boolean;
@@ -36,8 +41,11 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
   currentDate,
   attendanceLabel,
   dispositionLabel,
+  term1FullLabel,
+  term2FullLabel,
   term1ShortLabel,
   term2ShortLabel,
+  gradesPeriod = 'both',
   selectedElementsCount,
   includeGrades,
   includeAttendance,
@@ -48,6 +56,13 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
   courseObservation,
   onUpdateCourseObservation,
 }) => {
+  const periodSubtitleSuffix =
+    includeGrades && gradesPeriod === '1c'
+      ? ` · ${term1FullLabel || term1ShortLabel}`
+      : includeGrades && gradesPeriod === '2c'
+      ? ` · ${term2FullLabel || term2ShortLabel}`
+      : '';
+
   return (
     <div className="bg-white text-neutral-900 p-6 sm:p-8 rounded-xl border border-neutral-300 shadow-sm print:border-none print:shadow-none print:p-0">
       {/* Header */}
@@ -57,7 +72,7 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
             {schoolName}
           </h1>
           <p className="text-xs font-semibold text-neutral-500 uppercase tracking-wide mt-1">
-            {effectiveReason} — Ciclo Lectivo {currentSchoolYear}
+            {effectiveReason}{periodSubtitleSuffix} — Ciclo Lectivo {currentSchoolYear}
           </p>
         </div>
         <div className="text-xs text-neutral-600 sm:text-right space-y-0.5">
@@ -112,7 +127,11 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
               </div>
               <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 text-center">
                 <span className="text-[10px] uppercase font-bold text-neutral-500 block">
-                  Promedio Anual Curso
+                  {gradesPeriod === '1c'
+                    ? `Promedio ${term1ShortLabel}`
+                    : gradesPeriod === '2c'
+                    ? `Promedio ${term2ShortLabel}`
+                    : 'Promedio Anual Curso'}
                 </span>
                 <span className="text-lg font-bold text-purple-600">
                   {stats.avgScore}
@@ -164,16 +183,21 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
             <tr>
               <th className="py-2.5 px-2 text-center border-r border-neutral-300 w-8">#</th>
               <th className="py-2.5 px-3 border-r border-neutral-300">Estudiante</th>
-              {includeGrades && (
-                <>
-                  <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term1ShortLabel}</th>
-                  <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term2ShortLabel}</th>
-                  <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
+              {includeGrades &&
+                (gradesPeriod === 'both' ? (
+                  <>
+                    <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term1ShortLabel}</th>
+                    <th className="py-2.5 px-2 text-center border-r border-neutral-300">{term2ShortLabel}</th>
+                    <th className="py-2.5 px-2 text-center border-r border-neutral-300">Promedio</th>
+                    <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
+                      Nota Definitiva
+                    </th>
+                  </>
+                ) : (
                   <th className="py-2.5 px-2 text-center border-r border-neutral-300 bg-blue-50/60 font-bold">
-                    Nota Definitiva
+                    Nota {gradesPeriod === '1c' ? term1ShortLabel : term2ShortLabel}
                   </th>
-                </>
-              )}
+                ))}
               {includeAttendance && (
                 <>
                   <th className="py-2.5 px-2 text-center border-r border-neutral-300">Faltas {term1ShortLabel}</th>
@@ -185,70 +209,89 @@ export const CourseConsolidatedReportView: React.FC<CourseConsolidatedReportView
                 <th className="py-2.5 px-2 text-center border-r border-neutral-300">{dispositionLabel}</th>
               )}
               {includeGrades && (
-                <th className="py-2.5 px-3 text-center">Condición Final</th>
+                <th className="py-2.5 px-3 text-center">
+                  {gradesPeriod === 'both'
+                    ? 'Condición Final'
+                    : `Condición (${gradesPeriod === '1c' ? term1ShortLabel : term2ShortLabel})`}
+                </th>
               )}
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-200">
-            {consolidatedStudents.map((row, idx) => (
-              <tr key={row.student.id} className="hover:bg-neutral-50/60">
-                <td className="py-2 px-2 text-center text-neutral-500 border-r border-neutral-200 font-mono text-[11px]">
-                  {idx + 1}
-                </td>
-                <td className="py-2 px-3 border-r border-neutral-200 font-medium text-neutral-900">
-                  {row.student.lastName}, {row.student.firstName}
-                </td>
-                {includeGrades && (
-                  <>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200">
-                      {row.score1c || '—'}
-                    </td>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200">
-                      {row.score2c || '—'}
-                    </td>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200 font-bold text-neutral-800">
-                      {row.calcAvgStr || '—'}
-                    </td>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
-                      {row.finalVal || '—'}
-                    </td>
-                  </>
-                )}
-                {includeAttendance && (
-                  <>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200">
-                      {row.abs1}
-                    </td>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200">
-                      {row.abs2}
-                    </td>
-                    <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-neutral-900">
-                      {row.totalAbs}
-                    </td>
-                  </>
-                )}
-                {includeDisposition && (
-                  <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-purple-700">
-                    {row.avgDisp}/10
+            {consolidatedStudents.map((row, idx) => {
+              const rowCondition =
+                gradesPeriod === '1c'
+                  ? getConditionForScore(row.score1cNum)
+                  : gradesPeriod === '2c'
+                  ? getConditionForScore(row.score2cNum)
+                  : row.condition;
+              const singleTermScore = gradesPeriod === '1c' ? row.score1c : row.score2c;
+
+              return (
+                <tr key={row.student.id} className="hover:bg-neutral-50/60">
+                  <td className="py-2 px-2 text-center text-neutral-500 border-r border-neutral-200 font-mono text-[11px]">
+                    {idx + 1}
                   </td>
-                )}
-                {includeGrades && (
-                  <td className="py-2 px-3 text-center">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                        row.condition.includes('Aprobado')
-                          ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                          : row.condition === 'Pendiente'
-                          ? 'bg-neutral-100 text-neutral-600 border-neutral-300'
-                          : 'bg-rose-100 text-rose-800 border-rose-300'
-                      }`}
-                    >
-                      {row.condition}
-                    </span>
+                  <td className="py-2 px-3 border-r border-neutral-200 font-medium text-neutral-900">
+                    {row.student.lastName}, {row.student.firstName}
                   </td>
-                )}
-              </tr>
-            ))}
+                  {includeGrades &&
+                    (gradesPeriod === 'both' ? (
+                      <>
+                        <td className="py-2 px-2 text-center border-r border-neutral-200">
+                          {row.score1c || '—'}
+                        </td>
+                        <td className="py-2 px-2 text-center border-r border-neutral-200">
+                          {row.score2c || '—'}
+                        </td>
+                        <td className="py-2 px-2 text-center border-r border-neutral-200 font-bold text-neutral-800">
+                          {row.calcAvgStr || '—'}
+                        </td>
+                        <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
+                          {row.finalVal || '—'}
+                        </td>
+                      </>
+                    ) : (
+                      <td className="py-2 px-2 text-center border-r border-neutral-200 bg-blue-50/30 font-bold text-blue-900 text-sm">
+                        {singleTermScore || '—'}
+                      </td>
+                    ))}
+                  {includeAttendance && (
+                    <>
+                      <td className="py-2 px-2 text-center border-r border-neutral-200">
+                        {row.abs1}
+                      </td>
+                      <td className="py-2 px-2 text-center border-r border-neutral-200">
+                        {row.abs2}
+                      </td>
+                      <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-neutral-900">
+                        {row.totalAbs}
+                      </td>
+                    </>
+                  )}
+                  {includeDisposition && (
+                    <td className="py-2 px-2 text-center border-r border-neutral-200 font-semibold text-purple-700">
+                      {row.avgDisp}/10
+                    </td>
+                  )}
+                  {includeGrades && (
+                    <td className="py-2 px-3 text-center">
+                      <span
+                        className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                          rowCondition.includes('Aprobado')
+                            ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                            : rowCondition === 'Pendiente'
+                            ? 'bg-neutral-100 text-neutral-600 border-neutral-300'
+                            : 'bg-rose-100 text-rose-800 border-rose-300'
+                        }`}
+                      >
+                        {rowCondition}
+                      </span>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

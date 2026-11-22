@@ -24,7 +24,10 @@ import { sheetsService } from '../../services/workspace/sheetsService';
 import { formsService, GoogleFormListItem } from '../../services/workspace/formsService';
 import { parseUploadedImportFile } from '../../services/gradeImportDataService';
 import { normalizeImportText } from '../../utils/gradeImportParser';
-import { getScoreColorClass } from '../../utils/gradeCalculations';
+import {
+  getScoreColorClass,
+  getIntensificationDisplayLabel,
+} from '../../utils/gradeCalculations';
 import {
   FormsScaleMode,
   FormsRoundingMode,
@@ -1283,14 +1286,31 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                 (st) =>
                                   String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                               ).length;
+                              const instList = sub.intensifications || [];
                               return (
-                                <option
-                                  key={sub.id}
-                                  value={`${selectedCategoryObj.id}:::${sub.id}`}
-                                >
-                                  Columna existente: {sub.name}
-                                  {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
-                                </option>
+                                <React.Fragment key={sub.id}>
+                                  <option
+                                    value={`${selectedCategoryObj.id}:::${sub.id}`}
+                                  >
+                                    Columna existente: {sub.name}
+                                    {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                                  </option>
+                                  {instList.map((inst) => {
+                                    const instCount = students.filter(
+                                      (st) =>
+                                        String(activeGradesMap[st.id]?.[inst.id] ?? '').trim() !== ''
+                                    ).length;
+                                    return (
+                                      <option
+                                        key={inst.id}
+                                        value={`${selectedCategoryObj.id}:::${inst.id}`}
+                                      >
+                                        ↳ {getIntensificationDisplayLabel(sub, inst)}
+                                        {instCount > 0 ? ` (${instCount} notas)` : ''}
+                                      </option>
+                                    );
+                                  })}
+                                </React.Fragment>
                               );
                             })}
                           </optgroup>
@@ -1315,11 +1335,26 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                   (st) =>
                                     String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                                 ).length;
+                                const instList = sub.intensifications || [];
                                 return (
-                                  <option key={sub.id} value={`${otherCat.id}:::${sub.id}`}>
-                                    {otherCat.name} → {sub.name}
-                                    {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
-                                  </option>
+                                  <React.Fragment key={sub.id}>
+                                    <option value={`${otherCat.id}:::${sub.id}`}>
+                                      {otherCat.name} → {sub.name}
+                                      {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                                    </option>
+                                    {instList.map((inst) => {
+                                      const instCount = students.filter(
+                                        (st) =>
+                                          String(activeGradesMap[st.id]?.[inst.id] ?? '').trim() !== ''
+                                      ).length;
+                                      return (
+                                        <option key={inst.id} value={`${otherCat.id}:::${inst.id}`}>
+                                          {otherCat.name} → {getIntensificationDisplayLabel(sub, inst)}
+                                          {instCount > 0 ? ` (${instCount} notas)` : ''}
+                                        </option>
+                                      );
+                                    })}
+                                  </React.Fragment>
                                 );
                               })}
                             </optgroup>

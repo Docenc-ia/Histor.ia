@@ -496,7 +496,7 @@ export const AddStudentModal: React.FC<AddStudentModalProps> = ({
           <div className="space-y-4">
             <div className="p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-xs">
               <p className="font-semibold text-emerald-900 dark:text-emerald-300">
-                📋 Pegá una lista completa de alumnos desde Excel o Word:
+                Pegá una lista completa de alumnos desde Excel o Word:
               </p>
               <p className="text-neutral-600 dark:text-slate-400 mt-1">
                 Cada renglón debe tener el formato: <code>Apellido, Nombre, correo@ejemplo.com</code>

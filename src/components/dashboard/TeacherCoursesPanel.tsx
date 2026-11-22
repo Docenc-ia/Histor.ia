@@ -396,71 +396,57 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
         />
         
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div
-              className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold backdrop-blur-xs border transition-colors ${
-                isDarkMode
-                  ? 'bg-blue-950/70 text-blue-200 border-blue-600/50'
-                  : 'bg-white/20 text-blue-50 border-white/30 shadow-2xs'
-              }`}
-            >
-              <GraduationCap className="w-4 h-4 text-white" />
-              <span>{user?.school || 'Colegio Secundario FDS'} • Ciclo Lectivo {new Date().getFullYear()}</span>
+          <div className="space-y-1.5">
+            <div className="inline-flex items-center gap-2 text-xs font-medium text-blue-100/90">
+              <GraduationCap className="w-4 h-4 text-blue-200 shrink-0" />
+              <span>{user?.school || 'Colegio Secundario FDS'}</span>
+              <span aria-hidden="true" className="opacity-60">·</span>
+              <span>Ciclo Lectivo {new Date().getFullYear()}</span>
             </div>
-            <h1
-              className="text-2xl sm:text-3xl font-bold tracking-tight text-white"
-            >
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
               Mis materias
             </h1>
             <p
               className={`text-sm max-w-2xl font-normal leading-relaxed ${
-                isDarkMode ? 'text-blue-100/90' : 'text-blue-100'
+                isDarkMode ? 'text-blue-100/85' : 'text-blue-100'
               }`}
             >
               Seleccioná una materia para continuar.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setIsImportModalOpen(true)}
-              className={`px-3.5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-2 border cursor-pointer ${
-                isDarkMode
-                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-400 shadow-md shadow-emerald-950/50'
-                  : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300 shadow-xs'
-              }`}
+              className="px-3.5 py-2.5 text-xs font-semibold rounded-xl transition-all flex items-center gap-2 border cursor-pointer bg-emerald-400/20 hover:bg-emerald-400/30 text-white border-emerald-300/40 backdrop-blur-xs whitespace-nowrap"
             >
-              <GraduationCap className={`w-4 h-4 ${isDarkMode ? 'text-white' : 'text-emerald-700'}`} />
-              <span>Cargar desde Google Classroom</span>
+              <GraduationCap className="w-4 h-4 text-emerald-200 shrink-0" />
+              <span>Cargar desde Classroom</span>
             </button>
 
             <button
               type="button"
               onClick={() => handleSyncRealClassroomStudents(true)}
               disabled={isSyncingRoster}
-              className={`px-3.5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-2 border cursor-pointer ${
-                isDarkMode
-                  ? 'bg-blue-600/90 hover:bg-blue-600 text-white border-blue-400/60 shadow-md shadow-blue-950/40'
-                  : 'bg-white/20 hover:bg-white/30 text-white border-white/40 shadow-xs'
-              }`}
+              className="px-3.5 py-2.5 text-xs font-semibold rounded-xl transition-all flex items-center gap-2 border cursor-pointer bg-white/12 hover:bg-white/22 text-white border-white/25 backdrop-blur-xs whitespace-nowrap disabled:opacity-60"
               title="Sincronizar materias y estudiantes con Google Classroom"
             >
-              <RefreshCw className={`w-4 h-4 ${isSyncingRoster ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 text-blue-100 shrink-0 ${isSyncingRoster ? 'animate-spin' : ''}`} />
               <span>{isSyncingRoster ? 'Sincronizando...' : 'Sincronizar'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setIsCreateModalOpen(true)}
-              className={`px-3.5 py-2.5 text-xs font-bold rounded-xl shadow-xs transition-all flex items-center gap-2 border cursor-pointer ${
+              className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-2 border cursor-pointer whitespace-nowrap ${
                 isDarkMode
-                  ? 'bg-blue-500 hover:bg-blue-400 text-white border-blue-400 shadow-md shadow-blue-950/50'
-                  : 'bg-white hover:bg-blue-50 text-blue-700 border-white/80 shadow-md'
+                  ? 'bg-white hover:bg-slate-100 text-slate-900 border-white'
+                  : 'bg-white hover:bg-blue-50 text-blue-700 border-white'
               }`}
             >
-              <Plus className="w-4 h-4 text-blue-700" />
-              <span>Agregar Nueva Materia</span>
+              <Plus className="w-4 h-4 shrink-0" />
+              <span>Nueva Materia</span>
             </button>
           </div>
         </div>
@@ -592,9 +578,10 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
           <button
             type="button"
             onClick={() => setRosterSyncMsg(null)}
-            className="text-xs hover:opacity-75 font-semibold cursor-pointer"
+            className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/10 transition-colors cursor-pointer"
+            aria-label="Cerrar aviso"
           >
-            ✕
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}

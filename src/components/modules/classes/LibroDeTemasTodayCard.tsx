@@ -1,5 +1,5 @@
 import React from 'react';
-import { Calendar, Trash2 } from 'lucide-react';
+import { Calendar, Check, Trash2 } from 'lucide-react';
 import {
   DEFAULT_CHARACTER_OPTIONS,
   LibroDeTemasEntry,
@@ -225,7 +225,7 @@ export const LibroDeTemasTodayCard: React.FC<LibroDeTemasTodayCardProps> = ({
                   >
                     N° {tr.computedClassNumber}
                   </span>
-                  {hasContent && <span className="text-emerald-400 font-bold">✓</span>}
+                  {hasContent && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
                 </button>
               );
             })}

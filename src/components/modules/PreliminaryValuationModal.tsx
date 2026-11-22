@@ -316,7 +316,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
     try {
       const folderStructure = await driveService.setupCourseFolderStructure(courseName, driveFolderId);
       const targetFolderId = folderStructure.reportsFolder?.id || folderStructure.mainFolder.id;
-      const docTitle = `📋 Valoración Preliminar (${termLabel}) - ${courseName}`;
+      const docTitle = `Valoración Preliminar (${termLabel}) - ${courseName}`;
       const safeDocTitle = escapeHtml(docTitle);
 
       const rowsHtml = studentRows

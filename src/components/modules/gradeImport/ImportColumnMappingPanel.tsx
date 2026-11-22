@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, UserPlus } from 'lucide-react';
+import { Layers, UserPlus, Calendar, Star, Clock } from 'lucide-react';
 import { Student } from '../../../types';
 import { GradeCategory, StudentGradesMap } from '../../../types/grades';
 import type { DetectedColumnConfig, DetectedColumnKind } from '../../../types/gradeImport';
@@ -128,12 +128,12 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                         : 'bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800'
                     }`}
                   >
-                    <option value="absences">📅 Total Ausencias / Cantidad de Faltas</option>
-                    <option value="lates">⏰ Llegadas Tarde / Tardanzas</option>
-                    <option value="disposition">⭐ Nota de Disposición (1-10)</option>
-                    <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
-                    <option value="grade">📊 Nota / Calificación</option>
-                    <option value="ignore">🚫 Ignorar columna</option>
+                    <option value="absences">Total Ausencias / Cantidad de Faltas</option>
+                    <option value="lates">Llegadas Tarde / Tardanzas</option>
+                    <option value="disposition">Nota de Disposición (1-10)</option>
+                    <option value="disposition_deduction">Descuento Disposición (resta de 10)</option>
+                    <option value="grade">Nota / Calificación</option>
+                    <option value="ignore">Ignorar columna</option>
                   </select>
                 </div>
               )}
@@ -151,15 +151,16 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                         isIncluded: true,
                       })
                     }
-                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors cursor-pointer ${
                       colCfg.isIncluded && colCfg.kind === 'absences'
-                        ? 'bg-amber-600 text-white border-amber-600'
+                        ? 'bg-blue-600 text-white border-blue-600'
                         : isDarkMode
                         ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-amber-50'
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
                     }`}
                   >
-                    📅 Cantidad de Faltas
+                    <Calendar className="w-3 h-3 shrink-0" />
+                    <span>Cantidad de Faltas</span>
                   </button>
                   <button
                     type="button"
@@ -169,15 +170,16 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                         isIncluded: true,
                       })
                     }
-                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors cursor-pointer ${
                       colCfg.isIncluded && colCfg.kind === 'disposition'
-                        ? 'bg-purple-600 text-white border-purple-600'
+                        ? 'bg-blue-600 text-white border-blue-600'
                         : isDarkMode
                         ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-purple-50'
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
                     }`}
                   >
-                    ⭐ Nota de Disposición
+                    <Star className="w-3 h-3 shrink-0" />
+                    <span>Nota de Disposición</span>
                   </button>
                   <button
                     type="button"
@@ -187,15 +189,16 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                         isIncluded: true,
                       })
                     }
-                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${
+                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors cursor-pointer ${
                       colCfg.isIncluded && colCfg.kind === 'lates'
-                        ? 'bg-amber-700 text-white border-amber-700'
+                        ? 'bg-blue-600 text-white border-blue-600'
                         : isDarkMode
                         ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
-                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-amber-50'
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
                     }`}
                   >
-                    ⏰ Tardanzas
+                    <Clock className="w-3 h-3 shrink-0" />
+                    <span>Tardanzas</span>
                   </button>
                 </div>
               )}
@@ -294,7 +297,7 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                           {c.name}
                         </option>
                       ))}
-                      <option value="__NEW_CAT__">➕ + Crear Nueva Categoría Mayor...</option>
+                      <option value="__NEW_CAT__">+ Crear Nueva Categoría Mayor...</option>
                     </select>
 
                     {colCfg.targetCategoryMode === 'new' && (
@@ -454,7 +457,7 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                         key={sub.id}
                                         value={`${selectedCat.id}:::${sub.id}`}
                                       >
-                                        📌 Columna existente: {sub.name}
+                                        Columna existente: {sub.name}
                                         {existingCount > 0
                                           ? ` (${existingCount} notas cargadas)`
                                           : ''}
@@ -467,7 +470,7 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                 <option
                                   value={`${selectedCat.id}:::__CATEGORY_DIRECT__`}
                                 >
-                                  📌 Nota General de "{selectedCat.name}"
+                                  Nota General de "{selectedCat.name}"
                                 </option>
                               )}
                               {otherCats.map((otherCat) =>
@@ -488,7 +491,7 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                           key={sub.id}
                                           value={`${otherCat.id}:::${sub.id}`}
                                         >
-                                          📌 {otherCat.name} → {sub.name}
+                                          {otherCat.name} → {sub.name}
                                           {existingCount > 0
                                             ? ` (${existingCount} notas cargadas)`
                                             : ''}
@@ -499,7 +502,7 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                 ) : null
                               )}
                               <option value="__NEW_SUB__">
-                                ✨ + Crear nueva columna de evaluación...
+                                + Crear nueva columna de evaluación...
                               </option>
                             </>
                           );

@@ -571,8 +571,9 @@ export const ImportClassroomModal: React.FC<ImportClassroomModalProps> = ({
                                   {c.name}
                                 </p>
                                 {alreadyLoaded && (
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
-                                    ✓ Ya cargada en tu panel
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                    Ya cargada en tu panel
                                   </span>
                                 )}
                               </div>

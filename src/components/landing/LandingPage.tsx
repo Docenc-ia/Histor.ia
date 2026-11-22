@@ -302,16 +302,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
       <main className="flex-1 max-w-6xl mx-auto px-6 py-12 sm:py-16 space-y-20">
         {/* Brand & Hook Header */}
         <div className="text-center max-w-3xl mx-auto flex flex-col items-center">
-          {/* 1. Arriba de Docenc.ia: "✨ Tu asistente IA pedagógico ✨" */}
           <div className="mb-4">
             <span
-              className={`inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs sm:text-sm font-caslon font-medium tracking-wide border shadow-2xs ${
-                isDarkMode
-                  ? 'bg-blue-950/70 border-blue-800/80 text-blue-300'
-                  : 'bg-blue-50 border-blue-200 text-blue-800'
+              className={`inline-flex items-center gap-2 text-xs sm:text-sm font-caslon font-medium tracking-wide ${
+                isDarkMode ? 'text-blue-300' : 'text-blue-700'
               }`}
             >
-              ✨ Tu asistente IA pedagógico ✨
+              Tu asistente IA pedagógico
             </span>
           </div>
 

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, Users, X, RotateCcw } from 'lucide-react';
+import { Trash2, Users, X, RotateCcw, Filter, Check } from 'lucide-react';
 import { Course, Student } from '../../../types';
 import { api, getRemovedStudentIds, getRemovedStudentsList } from '../../../services/api';
 
@@ -73,14 +73,16 @@ export const RemovedStudentsModals: React.FC<RemovedStudentsModalsProps> = ({
             </div>
 
             <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-300 space-y-1">
-              <p className="font-bold flex items-center gap-1">
-                <span>📌 Pareja pedagógica / Filtro de visor</span>
+              <p className="font-bold flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 shrink-0" />
+                <span>Pareja pedagógica / Filtro de visor</span>
               </p>
               <p>
                 El alumno ya no figurará en tus listas de <strong>Asistencia</strong> ni <strong>Calificaciones</strong> en esta aplicación.
               </p>
-              <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 italic">
-                ✓ No se eliminará de Google Classroom ni afectará a otros docentes.
+              <p className="text-[11px] text-amber-700/80 dark:text-amber-400/80 italic flex items-center gap-1">
+                <Check className="w-3 h-3 shrink-0" />
+                <span>No se eliminará de Google Classroom ni afectará a otros docentes.</span>
               </p>
             </div>
 

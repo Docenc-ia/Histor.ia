@@ -9,6 +9,8 @@ import {
   FileCheck,
   Calendar,
   History,
+  Star,
+  Layers,
 } from 'lucide-react';
 import type * as XLSXType from 'xlsx';
 import { Student } from '../../types';
@@ -1043,41 +1045,44 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
               <button
                 type="button"
                 onClick={() => handleSwitchAttendanceTargetMode('absences')}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
                   attendanceTargetMode === 'absences'
-                    ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                     : isDarkMode
                     ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
-                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-amber-50'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <span>📅 Importar / Actualizar Asistencia (Cantidad de Faltas)</span>
+                <Calendar className="w-3.5 h-3.5 shrink-0" />
+                <span>Asistencia (Cantidad de Faltas)</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleSwitchAttendanceTargetMode('disposition')}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
                   attendanceTargetMode === 'disposition'
-                    ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                     : isDarkMode
                     ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
-                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-purple-50'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <span>⭐ Importar / Actualizar Disposición (1 a 10)</span>
+                <Star className="w-3.5 h-3.5 shrink-0" />
+                <span>Disposición (1 a 10)</span>
               </button>
               <button
                 type="button"
                 onClick={() => handleSwitchAttendanceTargetMode('both')}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
                   attendanceTargetMode === 'both'
-                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                     : isDarkMode
                     ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-750'
-                    : 'bg-white border-neutral-300 text-neutral-700 hover:bg-emerald-50'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <span>📅 + ⭐ Ambos (Faltas y Disposición)</span>
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span>Ambos (Faltas y Disposición)</span>
               </button>
             </div>
           </div>
@@ -1211,7 +1216,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
                             isDarkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-neutral-300'
                           }`}
                         >
-                          <option value="__ORDER__">🔢 Sin columna de nombre (Seguir orden de lista)</option>
+                          <option value="__ORDER__">Sin columna de nombre (Seguir orden de lista)</option>
                           {availableColumns.map((col) => (
                             <option key={col} value={col}>
                               {col}

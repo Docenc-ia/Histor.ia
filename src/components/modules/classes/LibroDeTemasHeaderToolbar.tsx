@@ -193,7 +193,7 @@ export const LibroDeTemasHeaderToolbar: React.FC<LibroDeTemasHeaderToolbarProps>
                   ? 'Guardando cambios...'
                   : cloudStatus.state === 'offline'
                   ? 'Guardado local (sin red)'
-                  : `✓ Guardado automático${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
+                  : `Guardado automático${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
               </span>
             </span>
           </div>

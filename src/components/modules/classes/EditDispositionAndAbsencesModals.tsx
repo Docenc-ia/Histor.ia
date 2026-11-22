@@ -7,6 +7,8 @@ import {
   MessageSquare,
   Mail,
   Loader2,
+  FileText,
+  ClipboardList,
 } from 'lucide-react';
 import {
   Course,
@@ -84,8 +86,8 @@ export const EditStudentDispositionModal: React.FC<EditStudentDispositionModalPr
           </button>
         </div>
 
-        <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/60 text-xs flex items-start gap-2.5">
-          <span className="text-base leading-none">📝</span>
+        <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900/60 text-xs flex items-start gap-2.5">
+          <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
           <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
             <strong>Carga manual o notas en papel:</strong> Podés definir directamente la nota de disposición de este estudiante. Es ideal para pasar notas tomadas en papel o cuaderno. Se guarda directamente en la planilla sin enviar avisos ni notificaciones al alumno.
           </p>
@@ -436,7 +438,7 @@ export const EditStudentAbsencesModal: React.FC<EditStudentAbsencesModalProps> =
         </div>
 
         <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-neutral-200 dark:border-slate-700 text-xs flex items-start gap-2.5">
-          <span className="text-base leading-none">📋</span>
+          <ClipboardList className="w-4 h-4 text-neutral-500 dark:text-slate-400 shrink-0 mt-0.5" />
           <p className="text-neutral-700 dark:text-slate-300 leading-relaxed">
             <strong>Carga de planilla / notas en papel:</strong> Podés definir directamente el total de faltas y la fecha. Se actualiza inmediatamente en la app y en tu Google Sheet sin enviar avisos ni mensajes a los alumnos.
           </p>
@@ -686,7 +688,7 @@ export const EditStudentAbsencesModal: React.FC<EditStudentAbsencesModalProps> =
         {/* Direct adjustment confirmation: no messaging prompts on edit */}
         <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-neutral-200/80 dark:border-slate-700/80 text-xs flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-neutral-600 dark:text-slate-300">
-            <span className="text-emerald-500 font-bold">✓</span>
+            <Check className="w-4 h-4 text-emerald-500 shrink-0" />
             <span>Edición directa: impacta en la planilla y Google Sheets sin enviar avisos a los alumnos.</span>
           </div>
         </div>

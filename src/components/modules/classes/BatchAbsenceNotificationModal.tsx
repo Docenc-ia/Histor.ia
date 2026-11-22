@@ -8,6 +8,7 @@ import {
   Send,
   SlidersHorizontal,
   CheckCheck,
+  X,
 } from 'lucide-react';
 import {
   Course,
@@ -92,9 +93,10 @@ export const BatchAbsenceNotificationModal: React.FC<BatchAbsenceNotificationMod
             type="button"
             disabled={batchAbsenceModal.isSending}
             onClick={() => setBatchAbsenceModal((prev) => ({ ...prev, isOpen: false }))}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer disabled:opacity-30"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-30"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -188,10 +190,10 @@ export const BatchAbsenceNotificationModal: React.FC<BatchAbsenceNotificationMod
                           selectedItems: prev.selectedItems.filter((i) => i.historyItem.id !== h.id),
                         }));
                       }}
-                      className="text-neutral-400 hover:text-red-500 dark:hover:text-red-400 cursor-pointer disabled:opacity-30 ml-1"
+                      className="text-neutral-400 hover:text-red-500 dark:hover:text-red-400 cursor-pointer disabled:opacity-30 ml-1 inline-flex items-center"
                       title="Quitar este aviso del lote"
                     >
-                      ✕
+                      <X className="w-3 h-3" />
                     </button>
                   </span>
                 );
@@ -420,9 +422,10 @@ export const BatchAbsenceNotificationModal: React.FC<BatchAbsenceNotificationMod
                       <button
                         type="button"
                         onClick={() => setBatchAbsenceModal((prev) => ({ ...prev, showSavePresetInput: false, newPresetName: '' }))}
-                        className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white text-xs cursor-pointer"
+                        className="p-1 rounded-md text-neutral-400 hover:text-neutral-600 dark:hover:text-white transition-colors cursor-pointer"
+                        aria-label="Cancelar"
                       >
-                        ✕
+                        <X className="w-3.5 h-3.5" />
                       </button>
                     </div>
                     <div className="flex gap-2">

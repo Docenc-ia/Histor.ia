@@ -1,5 +1,5 @@
 import React from 'react';
-import { Calendar, XCircle, RefreshCw, Pencil } from 'lucide-react';
+import { Calendar, XCircle, RefreshCw, Pencil, Check, Plus } from 'lucide-react';
 import { Course } from '../../../types';
 
 interface CalendarSyncModalProps {
@@ -181,7 +181,7 @@ export const CalendarSyncModal: React.FC<CalendarSyncModalProps> = ({
                             : 'bg-white hover:bg-neutral-100 text-neutral-800 border-neutral-200'
                         }`}
                       >
-                        <span>{isSelected ? '✓' : '+'}</span>
+                        {isSelected ? <Check className="w-3 h-3 shrink-0" /> : <Plus className="w-3 h-3 shrink-0" />}
                         <span className="font-bold">{slot.displayText}</span>
                         <span className="opacity-70 text-[10px] truncate max-w-[100px]">({slot.title})</span>
                       </button>

@@ -15,6 +15,7 @@ import {
   Upload,
   Cloud,
   GripVertical,
+  UserCheck,
 } from 'lucide-react';
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap, DEFAULT_CATEGORIES } from '../../types/grades';
@@ -976,99 +977,88 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Interruptor de Cuatrimestres */}
+      {/* Interruptor de Cuatrimestres Unificado */}
       <div
-        className={`p-3 rounded-2xl border flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs ${
+        className={`px-3.5 py-2.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
           isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-neutral-200'
         }`}
       >
-        <div className="flex items-center gap-2.5">
-          <div
-            className={`p-2 rounded-xl ${
+        <div className="flex items-center gap-2 text-xs font-semibold text-neutral-500 dark:text-slate-400">
+          <Calendar
+            className={`w-4 h-4 shrink-0 ${
               currentTerm === '1c'
-                ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                ? 'text-blue-600 dark:text-blue-400'
                 : currentTerm === '2c'
-                ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                : 'bg-purple-500/10 text-purple-600 dark:text-purple-400'
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-violet-600 dark:text-violet-400'
             }`}
-          >
-            <Calendar className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold uppercase tracking-wider text-neutral-500 dark:text-slate-400">
-                Período Académico:
-              </span>
-              <span
-                className={`text-xs px-2.5 py-0.5 rounded-full font-bold border ${
-                  currentTerm === '1c'
-                    ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/60 dark:text-blue-300 dark:border-blue-800'
-                    : currentTerm === '2c'
-                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
-                    : 'bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/60 dark:text-purple-300 dark:border-purple-800'
-                }`}
-              >
-                {currentTerm === '1c'
-                  ? '📘 1° Cuatrimestre Activo'
-                  : currentTerm === '2c'
-                  ? '📗 2° Cuatrimestre Activo'
-                  : '🎓 Cierre y Calificación Anual'}
-              </span>
-            </div>
-          </div>
+          />
+          <span>Período Académico</span>
         </div>
 
-        {/* Interruptor segmentado */}
+        {/* Interruptor segmentado sobrio con acento por período */}
         <div
-          className={`p-1 rounded-xl border flex items-center gap-1 shadow-2xs ${
-            isDarkMode ? 'bg-slate-800/90 border-slate-700' : 'bg-neutral-100 border-neutral-200'
+          className={`inline-flex items-center p-1 rounded-lg border ${
+            isDarkMode ? 'bg-slate-800/90 border-slate-700/80' : 'bg-neutral-100 border-neutral-200/80'
           }`}
+          role="tablist"
+          aria-label="Período de calificaciones"
         >
           <button
             type="button"
             id="switch-term-1c"
+            role="tab"
+            aria-selected={currentTerm === '1c'}
             onClick={() => setTerm('1c')}
-            className={`px-3.5 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md font-semibold text-xs transition-all cursor-pointer whitespace-nowrap ${
               currentTerm === '1c'
-                ? 'bg-blue-600 text-white shadow-sm scale-102 ring-2 ring-blue-400/30'
+                ? isDarkMode
+                  ? 'bg-blue-950/80 text-blue-300 ring-1 ring-blue-700/70 shadow-xs'
+                  : 'bg-white text-blue-700 ring-1 ring-blue-200 shadow-xs'
                 : isDarkMode
                 ? 'text-slate-400 hover:text-slate-200'
                 : 'text-neutral-600 hover:text-neutral-900'
             }`}
           >
-            <span className={`w-2 h-2 rounded-full ${currentTerm === '1c' ? 'bg-white' : 'bg-blue-400'}`} />
-            <span>1° Cuatrimestre</span>
+            1° Cuatrimestre
           </button>
 
           <button
             type="button"
             id="switch-term-2c"
+            role="tab"
+            aria-selected={currentTerm === '2c'}
             onClick={() => setTerm('2c')}
-            className={`px-3.5 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md font-semibold text-xs transition-all cursor-pointer whitespace-nowrap ${
               currentTerm === '2c'
-                ? 'bg-emerald-600 text-white shadow-sm scale-102 ring-2 ring-emerald-400/30'
+                ? isDarkMode
+                  ? 'bg-emerald-950/80 text-emerald-300 ring-1 ring-emerald-700/70 shadow-xs'
+                  : 'bg-white text-emerald-700 ring-1 ring-emerald-200 shadow-xs'
                 : isDarkMode
                 ? 'text-slate-400 hover:text-slate-200'
                 : 'text-neutral-600 hover:text-neutral-900'
             }`}
           >
-            <span className={`w-2 h-2 rounded-full ${currentTerm === '2c' ? 'bg-white' : 'bg-emerald-400'}`} />
-            <span>2° Cuatrimestre</span>
+            2° Cuatrimestre
           </button>
 
           <button
             type="button"
             id="switch-term-annual"
+            role="tab"
+            aria-selected={currentTerm === 'annual'}
             onClick={() => setTerm('annual')}
-            className={`px-3.5 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition-all cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md font-semibold text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
               currentTerm === 'annual'
-                ? 'bg-purple-600 text-white shadow-sm scale-102 ring-2 ring-purple-400/30'
+                ? isDarkMode
+                  ? 'bg-violet-950/80 text-violet-300 ring-1 ring-violet-700/70 shadow-xs'
+                  : 'bg-white text-violet-700 ring-1 ring-violet-200 shadow-xs'
                 : isDarkMode
                 ? 'text-slate-400 hover:text-slate-200'
                 : 'text-neutral-600 hover:text-neutral-900'
             }`}
           >
-            <Award className="w-3.5 h-3.5" />
+            <Award className="w-3.5 h-3.5 shrink-0" />
             <span>Cierre Anual</span>
           </button>
         </div>
@@ -1126,23 +1116,39 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                       ? 'Guardando...'
                       : cloudStatus.state === 'offline'
                       ? 'Guardado local'
-                      : `✓ Guardado${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
+                      : `Guardado${cloudStatus.lastSyncedAt ? ` (${cloudStatus.lastSyncedAt})` : ''}`}
                   </span>
                 </span>
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
+                {is2c && (
+                  <button
+                    type="button"
+                    onClick={handleCopyCategoriesFrom1c}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                      isDarkMode
+                        ? 'bg-emerald-950/35 hover:bg-emerald-950/60 text-emerald-300 border-emerald-800/60'
+                        : 'bg-emerald-50/70 hover:bg-emerald-100/80 text-emerald-800 border-emerald-200/80'
+                    }`}
+                    title="Copiar las categorías creadas en el 1° Cuatrimestre para utilizarlas en este 2° Cuatrimestre"
+                  >
+                    <Copy className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span>Copiar de 1° C</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   onClick={() => setIsManageCategoriesOpen(true)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                     isDarkMode
-                      ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700'
-                      : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700 border-neutral-200'
+                      ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 border-slate-700'
+                      : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
                   }`}
                   title="Ordenar o administrar todas las Categorías Mayores y sus columnas"
                 >
-                  <Settings className="w-3.5 h-3.5 shrink-0" />
+                  <Settings className="w-3.5 h-3.5 shrink-0 text-neutral-500 dark:text-slate-400" />
                   <span>Ordenar Categorías</span>
                 </button>
 
@@ -1150,35 +1156,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   type="button"
                   id="btn-agregar-categoria-mayor"
                   onClick={() => setIsAddCategoryOpen((prev) => !prev)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition-all cursor-pointer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-colors cursor-pointer whitespace-nowrap"
                   title="Crear una nueva Categoría Mayor en la planilla (ej: Evaluaciones, Trabajos Prácticos, Concepto, etc.)"
                 >
                   <Plus className="w-3.5 h-3.5 shrink-0" />
-                  <span>+ Agregar Categoría Mayor</span>
+                  <span>Agregar Categoría</span>
                 </button>
-
-                <span className={`text-xs font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-                  {currentTerm === '1c' ? '1º Cuatrimestre' : '2º Cuatrimestre'}
-                </span>
-                {is2c && (
-                  <button
-                    type="button"
-                    onClick={handleCopyCategoriesFrom1c}
-                    className={`inline-flex items-center gap-1 px-2 py-0.5 border rounded-lg text-[11px] font-medium transition-all cursor-pointer ${
-                      isDarkMode
-                        ? 'bg-slate-800 hover:bg-slate-700 text-emerald-400 border-slate-700'
-                        : 'bg-white hover:bg-emerald-50 text-emerald-700 border-neutral-200'
-                    }`}
-                    title="Copiar las categorías creadas en el 1° Cuatrimestre para utilizarlas en este 2° Cuatrimestre"
-                  >
-                    <Copy className="w-3 h-3" />
-                    <span>Copiar de 1° C</span>
-                  </button>
-                )}
               </div>
             </div>
 
-            {/* Abajo de Planilla de Calificaciones: Opciones Unificadas */}
+            {/* Abajo de Planilla de Calificaciones: Acciones Secundarias con Tinte Semántico */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 w-full items-center">
               <button
                 type="button"
@@ -1187,10 +1174,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   setImportSourceType('sheets');
                   setIsImportModalOpen(true);
                 }}
-                className="w-full inline-flex items-center justify-center sm:justify-start gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs transition-all cursor-pointer"
+                className={`w-full inline-flex items-center justify-center sm:justify-start gap-2 px-3 py-2 border text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-emerald-950/35 hover:bg-emerald-950/60 border-emerald-800/60 text-emerald-300'
+                    : 'bg-emerald-50/70 hover:bg-emerald-100/80 border-emerald-200/80 text-emerald-800'
+                }`}
                 title="Importar una evaluación o notas desde Google Forms, Google Sheets, Google Docs, Excel, Word, CSV o texto pegado"
               >
-                <Upload className="w-3.5 h-3.5 shrink-0" />
+                <Upload className={`w-3.5 h-3.5 shrink-0 ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
                 <span className="truncate">Importar Evaluación o Notas</span>
               </button>
 
@@ -1198,16 +1189,21 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 type="button"
                 id="btn-generar-valoracion-preliminar"
                 onClick={() => setIsPreliminaryModalOpen(true)}
-                className="w-full inline-flex items-center justify-between gap-1.5 px-3 py-2 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all cursor-pointer ring-2 ring-amber-500/20"
+                className={`w-full inline-flex items-center justify-between gap-2 px-3 py-2 border text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                  isDarkMode
+                    ? 'bg-amber-950/35 hover:bg-amber-950/60 border-amber-800/60 text-amber-300'
+                    : 'bg-amber-50/80 hover:bg-amber-100/80 border-amber-200/90 text-amber-900'
+                }`}
                 title={`Generar Valoración Preliminar para ${currentTerm === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre'} con selección de notas y escala TEA / TEP`}
               >
-                <div className="inline-flex items-center gap-1.5 truncate">
-                  <ClipboardCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">Generar Valoración Preliminar</span>
+                <div className="inline-flex items-center gap-2 truncate">
+                  <ClipboardCheck className={`w-3.5 h-3.5 shrink-0 ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                  <span className="truncate">Valoración Preliminar</span>
                 </div>
                 {activePreliminaryValuation && (
-                  <span className="px-1 py-0.2 rounded-full text-[9px] bg-white text-amber-800 font-extrabold shadow-2xs shrink-0">
-                    TEA/TEP ✓
+                  <span className={`inline-flex items-center gap-1 text-[11px] font-semibold shrink-0 ${isDarkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>
+                    <Check className="w-3 h-3" />
+                    TEA/TEP
                   </span>
                 )}
               </button>
@@ -1603,9 +1599,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     >
                       {overallCalculation === 'manual_final' ? (
                         <>
-                          <span className="text-sm leading-none" role="img" aria-label="Docente">
-                            👨‍🏫
-                          </span>
+                          <UserCheck className="w-3.5 h-3.5 shrink-0" />
                           <span>Criterio docente</span>
                         </>
                       ) : (

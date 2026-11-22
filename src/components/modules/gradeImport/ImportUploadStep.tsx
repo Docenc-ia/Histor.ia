@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Loader2,
   FileText,
+  Check,
 } from 'lucide-react';
 import { Student } from '../../../types';
 import { GradeCategory, StudentGradesMap } from '../../../types/grades';
@@ -145,8 +146,8 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
               <div className="text-xs font-bold flex items-center gap-2 flex-wrap">
                 <span>Columna de destino para la nota:</span>
                 {preferredTargetColumn && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-600 text-white">
-                    📌 Destino: {preferredTargetColumn.subcategoryName}
+                  <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-600 text-white">
+                    Destino: {preferredTargetColumn.subcategoryName}
                   </span>
                 )}
               </div>
@@ -204,7 +205,7 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
               }`}
             >
               <option value="__NEW__">
-                ✨ + Crear columna nueva (o elegir en el paso 2)
+                + Crear columna nueva (o elegir en el paso 2)
               </option>
               {activeCategories.map((cat) => (
                 <optgroup key={cat.id} label={`Categoría: ${cat.name}`}>
@@ -214,14 +215,14 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                     ).length;
                     return (
                       <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
-                        📌 Columna existente: {sub.name}
+                        Columna existente: {sub.name}
                         {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                       </option>
                     );
                   })}
                   {cat.subcategories.length === 0 && (
                     <option value={`${cat.id}:::__CATEGORY_DIRECT__`}>
-                      📌 {cat.name} (Nota General)
+                      {cat.name} (Nota General)
                     </option>
                   )}
                 </optgroup>
@@ -643,8 +644,9 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                 </span>
               </div>
               {pastePreviewStats.rowCount > 0 && (
-                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border border-emerald-500/30">
-                  ✓ Detectadas {pastePreviewStats.rowCount} fila(s) · {pastePreviewStats.colCount} columna(s)
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                  <Check className="w-3.5 h-3.5 shrink-0" />
+                  Detectadas {pastePreviewStats.rowCount} fila(s) · {pastePreviewStats.colCount} columna(s)
                 </span>
               )}
             </div>
@@ -656,18 +658,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('absences');
                   onChangeQuickPastePreset('name_and_abs');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'name_and_abs'
-                    ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">📅 2 Columnas: Alumno + Cantidad de Faltas</div>
+                <div className="font-bold">2 Columnas: Alumno + Faltas</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'name_and_abs' ? 'text-amber-100' : 'text-neutral-400'
+                    quickPastePreset === 'name_and_abs' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Ej: García, Juan [Tab] 3 (actualiza total de inasistencias)
@@ -680,18 +682,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('absences');
                   onChangeQuickPastePreset('last_first_abs');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'last_first_abs'
-                    ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">👤+👤+📅 3 Cols: Apellido + Nombre + Faltas</div>
+                <div className="font-bold">3 Cols: Apellido + Nombre + Faltas</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'last_first_abs' ? 'text-amber-100' : 'text-neutral-400'
+                    quickPastePreset === 'last_first_abs' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Une Apellido y Nombre e importa la cantidad de faltas
@@ -704,18 +706,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('disposition');
                   onChangeQuickPastePreset('name_and_disp');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'name_and_disp'
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">⭐ 2 Columnas: Alumno + Disposición</div>
+                <div className="font-bold">2 Columnas: Alumno + Disposición</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'name_and_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                    quickPastePreset === 'name_and_disp' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Ej: García, Juan [Tab] 8,5 (con o sin títulos)
@@ -728,18 +730,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('disposition');
                   onChangeQuickPastePreset('last_first_disp');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'last_first_disp'
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">👤+👤+⭐ 3 Cols: Apellido + Nombre + Disp.</div>
+                <div className="font-bold">3 Cols: Apellido + Nombre + Disp.</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'last_first_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                    quickPastePreset === 'last_first_disp' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Une automáticamente Apellido (Col A) y Nombre (Col B)
@@ -752,18 +754,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('both');
                   onChangeQuickPastePreset('name_abs_disp');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'name_abs_disp'
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">📅+⭐ 3 Cols: Alumno + Faltas + Disp.</div>
+                <div className="font-bold">3 Cols: Alumno + Faltas + Disp.</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'name_abs_disp' ? 'text-indigo-100' : 'text-neutral-400'
+                    quickPastePreset === 'name_abs_disp' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Carga el total de inasistencias y la disposición juntos
@@ -776,18 +778,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('absences');
                   onChangeQuickPastePreset('only_abs_ordered');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'only_abs_ordered'
-                    ? 'bg-amber-600 text-white border-amber-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-amber-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">🔢📅 1 Sola Columna de Faltas (Orden de lista)</div>
+                <div className="font-bold">1 Columna de Faltas (Orden de lista)</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'only_abs_ordered' ? 'text-amber-100' : 'text-neutral-400'
+                    quickPastePreset === 'only_abs_ordered' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Pegá solo la columna de cantidad de faltas en orden alfabético
@@ -800,18 +802,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                   onChangeAttendanceTargetMode('disposition');
                   onChangeQuickPastePreset('only_disp_ordered');
                 }}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'only_disp_ordered'
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">🔢⭐ 1 Sola Columna de Disp. (Orden de lista)</div>
+                <div className="font-bold">1 Columna de Disp. (Orden de lista)</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'only_disp_ordered' ? 'text-indigo-100' : 'text-neutral-400'
+                    quickPastePreset === 'only_disp_ordered' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Pegá solo la columna de notas de Disposición en orden alfabético
@@ -821,18 +823,18 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
               <button
                 type="button"
                 onClick={() => onChangeQuickPastePreset('auto')}
-                className={`p-2.5 rounded-xl border text-left text-xs transition-all cursor-pointer ${
+                className={`p-2.5 rounded-xl border text-left text-xs transition-colors cursor-pointer ${
                   quickPastePreset === 'auto'
-                    ? 'bg-indigo-600 text-white border-indigo-500 shadow-xs font-bold'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs font-bold'
                     : isDarkMode
                     ? 'bg-slate-800/80 border-slate-700 text-slate-200 hover:bg-slate-800'
-                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-indigo-50/40'
+                    : 'bg-white border-neutral-200 text-neutral-700 hover:bg-neutral-50'
                 }`}
               >
-                <div className="font-bold">✨ Tabla Libre / Varias Columnas</div>
+                <div className="font-bold">Tabla Libre / Varias Columnas</div>
                 <div
                   className={`text-[10px] mt-0.5 ${
-                    quickPastePreset === 'auto' ? 'text-indigo-100' : 'text-neutral-400'
+                    quickPastePreset === 'auto' ? 'text-blue-100' : 'text-neutral-400'
                   }`}
                 >
                   Pegá cualquier bloque de celdas y mapealo en el paso siguiente

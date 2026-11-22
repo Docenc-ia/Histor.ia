@@ -577,7 +577,7 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
                       />
                       {currentSt !== 'unmarked' && (
                         <span
-                          className={`absolute -bottom-1 left-1/2 -translate-x-1/2 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider shadow-xs whitespace-nowrap ${
+                          className={`absolute -bottom-1 left-1/2 -translate-x-1/2 inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-xs whitespace-nowrap ${
                             currentSt === 'present'
                               ? 'bg-emerald-600 text-white'
                               : currentSt === 'absent'
@@ -585,11 +585,22 @@ export const QuickRollCallModal: React.FC<QuickRollCallModalProps> = ({
                               : 'bg-amber-500 text-white'
                           }`}
                         >
-                          {currentSt === 'present'
-                            ? '✓ Presente Hoy'
-                            : currentSt === 'absent'
-                            ? '✕ Ausente Hoy'
-                            : '⏰ Tarde Hoy'}
+                          {currentSt === 'present' ? (
+                            <>
+                              <Check className="w-3 h-3 shrink-0" />
+                              <span>Presente Hoy</span>
+                            </>
+                          ) : currentSt === 'absent' ? (
+                            <>
+                              <X className="w-3 h-3 shrink-0" />
+                              <span>Ausente Hoy</span>
+                            </>
+                          ) : (
+                            <>
+                              <Clock className="w-3 h-3 shrink-0" />
+                              <span>Tarde Hoy</span>
+                            </>
+                          )}
                         </span>
                       )}
                     </div>

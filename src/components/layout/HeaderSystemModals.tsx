@@ -76,7 +76,7 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
   const handleDownloadFullBackupJson = () => {
     try {
       backupService.downloadFullBackupJson({ user, courses, students });
-      setBackupFeedback('✓ Copia de seguridad completa (.json) descargada con éxito.');
+      setBackupFeedback('OK:Copia de seguridad completa (.json) descargada con éxito.');
       setTimeout(() => setBackupFeedback(null), 5000);
     } catch {
       setBackupFeedback('Error al generar el archivo de respaldo.');
@@ -86,7 +86,7 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
   const handleDownloadFullExcelSummary = async () => {
     try {
       await backupService.downloadFullExcelSummary({ user, courses, students });
-      setBackupFeedback('✓ Planilla Excel unificada descargada con éxito.');
+      setBackupFeedback('OK:Planilla Excel unificada descargada con éxito.');
       setTimeout(() => setBackupFeedback(null), 5000);
     } catch (err: any) {
       setBackupFeedback(err?.message || 'Error al exportar planilla Excel.');
@@ -104,7 +104,7 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
       try {
         const content = event.target?.result as string;
         await backupService.restoreFullBackupFromJsonString(content);
-        setBackupFeedback('✓ ¡Respaldo completo restaurado y sincronizado en la nube con éxito!');
+        setBackupFeedback('OK:Respaldo completo restaurado y sincronizado en la nube con éxito.');
         setTimeout(() => {
           window.location.reload();
         }, 1200);
@@ -185,8 +185,8 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
 
             {backupFeedback && (
               <div
-                className={`p-3 rounded-xl border text-xs font-semibold ${
-                  backupFeedback.startsWith('✓')
+                className={`p-3 rounded-xl border text-xs font-semibold flex items-center gap-2 ${
+                  backupFeedback.startsWith('OK:')
                     ? isDarkMode
                       ? 'bg-blue-950/40 border-blue-800 text-blue-300'
                       : 'bg-blue-50 border-blue-200 text-blue-800'
@@ -195,7 +195,8 @@ export const HeaderSystemModals: React.FC<HeaderSystemModalsProps> = ({
                     : 'bg-amber-50 border-amber-200 text-amber-800'
                 }`}
               >
-                {backupFeedback}
+                {backupFeedback.startsWith('OK:') && <Check className="w-4 h-4 shrink-0" />}
+                <span>{backupFeedback.replace(/^OK:/, '')}</span>
               </div>
             )}
 

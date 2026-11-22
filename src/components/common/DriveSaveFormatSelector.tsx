@@ -242,22 +242,22 @@ export const DriveSaveFormatSelector: React.FC<DriveSaveFormatSelectorProps> = (
         onClick={handleToggle}
         disabled={isSaving}
         title={`Guardar en Google Drive (${mainFolderLabel} / ${effectiveCategory})`}
-        className={`flex items-center gap-1.5 rounded-xl font-bold transition-all border shadow-xs cursor-pointer disabled:opacity-50 ${
-          compact ? 'px-2.5 py-1.5 text-xs' : 'px-3 py-2 text-xs'
+        className={`flex items-center gap-1.5 rounded-lg font-semibold transition-colors border cursor-pointer disabled:opacity-50 ${
+          compact ? 'px-3 py-1.5 text-xs' : 'px-3 py-2 text-xs'
         } ${
           isOpen
-            ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-            : 'bg-blue-50/80 hover:bg-blue-100 text-blue-700 border-blue-200/80'
+            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+            : 'bg-sky-50/80 hover:bg-sky-100/80 text-sky-800 border-sky-200/90 dark:bg-sky-950/35 dark:hover:bg-sky-950/60 dark:text-sky-300 dark:border-sky-800/60'
         }`}
       >
         {isSaving ? (
-          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
         ) : (
-          <FolderOpen className="w-3.5 h-3.5" />
+          <FolderOpen className={`w-3.5 h-3.5 shrink-0 ${isOpen ? 'text-white' : 'text-sky-600 dark:text-sky-400'}`} />
         )}
         <span>{isSaving ? 'Guardando...' : buttonLabel}</span>
         <ChevronDown
-          className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          className={`w-3.5 h-3.5 shrink-0 transition-transform ${isOpen ? 'rotate-180' : ''}`}
         />
       </button>
 

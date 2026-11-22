@@ -151,9 +151,10 @@ export const ConductRecordModal: React.FC<ConductRecordModalProps> = React.memo(
                 saveToOptions: false,
               })
             }
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -436,9 +437,10 @@ export const ManageConductOptionsModal: React.FC<ManageConductOptionsModalProps>
           <button
             type="button"
             onClick={onClose}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -1019,9 +1021,10 @@ export const StudentIndividualHistoryModal: React.FC<StudentIndividualHistoryMod
           <button
             type="button"
             onClick={() => setSelectedStudentForHistory(null)}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 

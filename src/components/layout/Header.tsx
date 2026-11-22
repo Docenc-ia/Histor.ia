@@ -18,6 +18,9 @@ import {
   EyeOff,
   Users,
   GraduationCap,
+  Mail,
+  FileSpreadsheet,
+  Calendar,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { useGlobalData } from '../../context/GlobalDataContext';
@@ -269,10 +272,10 @@ export const Header: React.FC<HeaderProps> = ({
   };
 
   const googleApps = [
-    { name: 'Google Classroom', icon: '🎓', tab: 'classroom_sync', desc: 'Sincronizar y Alumnos' },
-    { name: 'Gmail', icon: '✉️', tab: 'classes', desc: 'Avisos y Notificaciones' },
-    { name: 'Google Sheets', icon: '📊', tab: 'classes', desc: 'Planilla de Asistencia' },
-    { name: 'Google Calendar', icon: '📅', tab: 'calendar', desc: 'Horarios de Clases' },
+    { name: 'Google Classroom', Icon: GraduationCap, accent: 'text-emerald-600 dark:text-emerald-400 bg-emerald-500/10', tab: 'classroom_sync', desc: 'Sincronizar y Alumnos' },
+    { name: 'Gmail', Icon: Mail, accent: 'text-rose-600 dark:text-rose-400 bg-rose-500/10', tab: 'classes', desc: 'Avisos y Notificaciones' },
+    { name: 'Google Sheets', Icon: FileSpreadsheet, accent: 'text-blue-600 dark:text-blue-400 bg-blue-500/10', tab: 'classes', desc: 'Planilla de Asistencia' },
+    { name: 'Google Calendar', Icon: Calendar, accent: 'text-amber-600 dark:text-amber-400 bg-amber-500/10', tab: 'calendar', desc: 'Horarios de Clases' },
   ];
 
   return (
@@ -598,12 +601,12 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={() => setIsFullBackupOpen(true)}
           className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer ${
             isDarkMode
-              ? 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-indigo-300'
-              : 'bg-indigo-50/80 hover:bg-indigo-100 border-indigo-200 text-indigo-700'
+              ? 'bg-blue-950/40 hover:bg-blue-950/70 border-blue-800/60 text-blue-300'
+              : 'bg-blue-50/70 hover:bg-blue-100/80 border-blue-200/80 text-blue-700'
           }`}
           title="Copia de seguridad completa de tu cuenta en 1 clic (JSON / Excel)"
         >
-          <Database className="w-4 h-4" />
+          <Database className={`w-4 h-4 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} />
           <span className="hidden xl:inline text-[11px]">Respaldo</span>
         </button>
 
@@ -693,36 +696,41 @@ export const Header: React.FC<HeaderProps> = ({
                 <span className="text-[11px] text-emerald-500 font-medium">Activas</span>
               </div>
               <div className="grid grid-cols-2 gap-2">
-                {googleApps.map((app) => (
-                  <button
-                    key={app.name}
-                    onClick={() => {
-                      onNavigate(app.tab);
-                      setShowAppsMenu(false);
-                    }}
-                    className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all text-center ${
-                      isDarkMode
-                        ? 'hover:bg-slate-800 border-transparent hover:border-slate-700'
-                        : 'hover:bg-neutral-50 border-transparent hover:border-neutral-200'
-                    }`}
-                  >
-                    <span className="text-2xl mb-1">{app.icon}</span>
-                    <span
-                      className={`text-xs font-medium ${
-                        isDarkMode ? 'text-slate-100' : 'text-neutral-800'
+                {googleApps.map((app) => {
+                  const IconComp = app.Icon;
+                  return (
+                    <button
+                      key={app.name}
+                      onClick={() => {
+                        onNavigate(app.tab);
+                        setShowAppsMenu(false);
+                      }}
+                      className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all text-center cursor-pointer ${
+                        isDarkMode
+                          ? 'hover:bg-slate-800 border-transparent hover:border-slate-700'
+                          : 'hover:bg-neutral-50 border-transparent hover:border-neutral-200'
                       }`}
                     >
-                      {app.name}
-                    </span>
-                    <span
-                      className={`text-[10px] truncate max-w-full ${
-                        isDarkMode ? 'text-slate-400' : 'text-neutral-400'
-                      }`}
-                    >
-                      {app.desc}
-                    </span>
-                  </button>
-                ))}
+                      <span className={`w-9 h-9 rounded-lg flex items-center justify-center mb-1.5 ${app.accent}`}>
+                        <IconComp className="w-4 h-4" />
+                      </span>
+                      <span
+                        className={`text-xs font-medium ${
+                          isDarkMode ? 'text-slate-100' : 'text-neutral-800'
+                        }`}
+                      >
+                        {app.name}
+                      </span>
+                      <span
+                        className={`text-[10px] truncate max-w-full ${
+                          isDarkMode ? 'text-slate-400' : 'text-neutral-400'
+                        }`}
+                      >
+                        {app.desc}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

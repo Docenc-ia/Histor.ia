@@ -1246,93 +1246,133 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
           {/* RENGLÓN SUPERIOR DE PESTAÑAS (A LO LARGO)                     */}
           {/* ------------------------------------------------------------- */}
           <div
-            className={`p-1.5 rounded-xl border grid grid-cols-1 sm:grid-cols-4 gap-2 transition-colors ${
+            className={`p-1.5 rounded-xl border flex flex-col sm:flex-row sm:items-stretch gap-2 transition-colors ${
               isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-100 border-neutral-200'
             }`}
           >
-            <div
-              onClick={() => setActiveTab('roster')}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') setActiveTab('roster');
-              }}
-              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                activeTab === 'roster'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : isDarkMode
-                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
-              }`}
-            >
-              <Users className="w-4 h-4 shrink-0" />
-              <span className="truncate">{combinedTabLabel}</span>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 flex-1 min-w-0">
+              <div
+                onClick={() => setActiveTab('roster')}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') setActiveTab('roster');
+                }}
+                className={`py-2.5 px-4 rounded-lg border font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 min-w-0 ${
+                  activeTab === 'roster'
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-blue-950/40 text-blue-300 border-blue-800/60 hover:bg-blue-950/65 hover:text-blue-200'
+                    : 'bg-blue-50/90 text-blue-800 border-blue-200 hover:bg-blue-100 hover:border-blue-300'
+                }`}
+              >
+                <Users
+                  className={`w-4 h-4 shrink-0 ${
+                    activeTab === 'roster'
+                      ? 'text-white'
+                      : isDarkMode
+                      ? 'text-blue-400'
+                      : 'text-blue-600'
+                  }`}
+                />
+                <span className="truncate">{combinedTabLabel}</span>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsManageConductModalOpen(true);
+                  }}
+                  className={`p-1 rounded-md transition-colors cursor-pointer shrink-0 ${
+                    activeTab === 'roster'
+                      ? 'text-white/80 hover:text-white hover:bg-white/20'
+                      : isDarkMode
+                      ? 'text-blue-400/80 hover:text-blue-200 hover:bg-blue-900/50'
+                      : 'text-blue-500/80 hover:text-blue-800 hover:bg-blue-200/60'
+                  }`}
+                  title="Cambiar el nombre de Asistencia o Disposición (ej: Concepto, Participación en clase)"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
               <button
                 type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsManageConductModalOpen(true);
-                }}
-                className={`p-1 rounded-md transition-colors cursor-pointer ${
-                  activeTab === 'roster'
-                    ? 'text-white/80 hover:text-white hover:bg-white/20'
-                    : 'text-neutral-400 hover:text-blue-600 dark:hover:text-blue-400'
+                onClick={() => setActiveTab('libro_temas')}
+                className={`py-2.5 px-4 rounded-lg border font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap ${
+                  activeTab === 'libro_temas'
+                    ? 'bg-red-600 text-white border-red-600 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-red-950/40 text-red-300 border-red-800/60 hover:bg-red-950/65 hover:text-red-200'
+                    : 'bg-red-50/90 text-red-800 border-red-200 hover:bg-red-100 hover:border-red-300'
                 }`}
-                title="Cambiar el nombre de Asistencia o Disposición (ej: Concepto, Participación en clase)"
               >
-                <Pencil className="w-3.5 h-3.5" />
+                <BookOpen
+                  className={`w-4 h-4 shrink-0 ${
+                    activeTab === 'libro_temas'
+                      ? 'text-white'
+                      : isDarkMode
+                      ? 'text-red-400'
+                      : 'text-red-600'
+                  }`}
+                />
+                <span>Libro de Temas</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('grades')}
+                className={`py-2.5 px-4 rounded-lg border font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 whitespace-nowrap ${
+                  activeTab === 'grades'
+                    ? isDarkMode
+                      ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                      : 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
+                    : isDarkMode
+                    ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/60 hover:bg-emerald-950/65 hover:text-emerald-200'
+                    : 'bg-emerald-50/90 text-emerald-800 border-emerald-200 hover:bg-emerald-100 hover:border-emerald-300'
+                }`}
+              >
+                <Award
+                  className={`w-4 h-4 shrink-0 ${
+                    activeTab === 'grades'
+                      ? 'text-white'
+                      : isDarkMode
+                      ? 'text-emerald-400'
+                      : 'text-emerald-700'
+                  }`}
+                />
+                <span>Calificaciones</span>
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setActiveTab('libro_temas')}
-              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                activeTab === 'libro_temas'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : isDarkMode
-                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+            <div
+              aria-hidden="true"
+              className={`hidden sm:block w-px my-1 shrink-0 ${
+                isDarkMode ? 'bg-slate-800' : 'bg-neutral-300/80'
               }`}
-            >
-              <BookOpen className="w-4 h-4 shrink-0" />
-              <span>Libro de Temas</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('grades')}
-              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                activeTab === 'grades'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : isDarkMode
-                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
-              }`}
-            >
-              <Award className="w-4 h-4 shrink-0" />
-              <span>Calificaciones</span>
-            </button>
+            />
 
             <button
               type="button"
               onClick={() => setActiveTab('history')}
-              className={`py-2.5 px-4 rounded-lg font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center justify-center gap-2 ${
+              className={`py-2 px-3 rounded-lg border font-semibold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap ${
                 activeTab === 'history'
-                  ? 'bg-blue-600 text-white shadow-xs'
+                  ? 'bg-slate-700 text-white border-slate-700 shadow-xs dark:bg-slate-700 dark:border-slate-600'
                   : isDarkMode
-                  ? 'text-slate-400 hover:text-white hover:bg-slate-800'
-                  : 'text-neutral-600 hover:text-neutral-900 hover:bg-white'
+                  ? 'bg-slate-900/60 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
+                  : 'bg-white/70 text-neutral-500 border-neutral-200/80 hover:text-neutral-800 hover:bg-white'
               }`}
+              title="Historial de movimientos y notificaciones del curso"
             >
-              <History className="w-4 h-4 shrink-0" />
+              <History className="w-3.5 h-3.5 shrink-0" />
               <span>Historial</span>
               {courseHistory.length > 0 && (
                 <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  className={`px-1.5 py-0.5 rounded-md text-[10px] font-bold tabular-nums ${
                     activeTab === 'history'
                       ? 'bg-white/20 text-white'
-                      : 'bg-blue-500/20 text-blue-600 dark:text-blue-300'
+                      : isDarkMode
+                      ? 'bg-slate-800 text-slate-300'
+                      : 'bg-neutral-200/80 text-neutral-700'
                   }`}
                 >
                   {courseHistory.length}

@@ -801,8 +801,8 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                     <div className="text-xs font-bold flex items-center gap-2 flex-wrap">
                       <span>Columna de destino en Calificaciones:</span>
                       {targetColumnMode === 'existing_sub' && selectedSubcategoryId && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-purple-600 text-white">
-                          📌{' '}
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-blue-600 text-white">
+                          Destino:{' '}
                           {selectedSubcategoryId === '__CATEGORY_DIRECT__'
                             ? selectedCategoryObj?.name
                             : selectedCategoryObj?.subcategories.find(
@@ -845,7 +845,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                     }`}
                   >
                     <option value="__NEW_COL__">
-                      ✨ + Crear nueva columna de evaluación
+                      + Crear nueva columna de evaluación
                     </option>
                     {activeCategories.map((cat) => (
                       <optgroup key={cat.id} label={`Categoría: ${cat.name}`}>
@@ -855,14 +855,14 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           ).length;
                           return (
                             <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
-                              📌 Columna existente: {sub.name}
+                              Columna existente: {sub.name}
                               {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                             </option>
                           );
                         })}
                         {cat.subcategories.length === 0 && (
                           <option value={`${cat.id}:::__CATEGORY_DIRECT__`}>
-                            📌 {cat.name} (Nota General)
+                            {cat.name} (Nota General)
                           </option>
                         )}
                       </optgroup>
@@ -1180,8 +1180,8 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           : 'bg-white border-neutral-300 text-neutral-900'
                       }`}
                     >
-                      <option value="1c">📘 1° Cuatrimestre</option>
-                      <option value="2c">📗 2° Cuatrimestre</option>
+                      <option value="1c">1° Cuatrimestre</option>
+                      <option value="2c">2° Cuatrimestre</option>
                     </select>
                   </div>
 
@@ -1288,7 +1288,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                   key={sub.id}
                                   value={`${selectedCategoryObj.id}:::${sub.id}`}
                                 >
-                                  📌 Columna existente: {sub.name}
+                                  Columna existente: {sub.name}
                                   {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                                 </option>
                               );
@@ -1299,7 +1299,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                         selectedCategoryObj &&
                         selectedCategoryObj.subcategories.length === 0 && (
                           <option value={`${selectedCategoryObj.id}:::__CATEGORY_DIRECT__`}>
-                            📌 Nota General de "{selectedCategoryObj.name}"
+                            Nota General de "{selectedCategoryObj.name}"
                           </option>
                         )}
                       {targetCategoryMode === 'existing' &&
@@ -1317,14 +1317,14 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                 ).length;
                                 return (
                                   <option key={sub.id} value={`${otherCat.id}:::${sub.id}`}>
-                                    📌 {otherCat.name} → {sub.name}
+                                    {otherCat.name} → {sub.name}
                                     {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                                   </option>
                                 );
                               })}
                             </optgroup>
                           ))}
-                      <option value="__NEW_COL__">✨ + Crear nueva columna de evaluación</option>
+                      <option value="__NEW_COL__">+ Crear nueva columna de evaluación</option>
                     </select>
 
                     {targetColumnMode === 'new_sub' && (
@@ -1625,8 +1625,9 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                       {row.student.lastName}, {row.student.firstName}
                                     </span>
                                     {isMatched ? (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                        ✓ Detectado
+                                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                        <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                        Detectado
                                       </span>
                                     ) : (
                                       <span className="text-[10px] text-neutral-400">
@@ -1718,8 +1719,9 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
           {step === 'review' ? (
             <>
               <div className="flex flex-wrap items-center gap-3 text-xs">
-                <span className="font-bold text-purple-600 dark:text-purple-400">
-                  ✓ {stats.toApplyCount} de {stats.totalStudents} notas finales listas para cargar
+                <span className="inline-flex items-center gap-1.5 font-semibold text-blue-600 dark:text-blue-400">
+                  <Check className="w-3.5 h-3.5 shrink-0" />
+                  <span>{stats.toApplyCount} de {stats.totalStudents} notas finales listas para cargar</span>
                 </span>
                 {stats.averageScore && (
                   <span className="text-neutral-500 dark:text-slate-400">

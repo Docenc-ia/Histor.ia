@@ -7,6 +7,7 @@ import {
   Search,
   Plus,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   AbsencePresetTemplate,
@@ -116,9 +117,10 @@ export const NotificationPresetsConfigModal: React.FC<NotificationPresetsConfigM
           <button
             type="button"
             onClick={onClose}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -209,9 +211,10 @@ export const NotificationPresetsConfigModal: React.FC<NotificationPresetsConfigM
                   <button
                     type="button"
                     onClick={() => setSearchReasonQuery('')}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-neutral-400 hover:text-neutral-600 dark:hover:text-white cursor-pointer"
+                    aria-label="Limpiar búsqueda"
                   >
-                    ✕
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>

@@ -181,15 +181,15 @@ export const ImportVisualMapperPanel: React.FC<ImportVisualMapperPanelProps> = (
                             : 'bg-white border-neutral-300 text-neutral-500'
                         }`}
                       >
-                        <option value="ignore">🚫 Ignorar columna</option>
-                        <option value="student_name">👤 Alumno (Apellido y Nombre)</option>
-                        <option value="student_second_name">👤 2° Columna Alumno (Nombre)</option>
-                        <option value="student_email">✉️ Correo / Email</option>
-                        <option value="disposition">⭐ Nota de Disposición (1-10)</option>
-                        <option value="disposition_deduction">➖ Descuento Disposición (resta de 10)</option>
-                        <option value="absences">📅 Total Ausencias / Faltas</option>
-                        <option value="lates">⏰ Total Llegadas Tarde</option>
-                        <option value="grade">📊 Nota / Calificación</option>
+                        <option value="ignore">Ignorar columna</option>
+                        <option value="student_name">Alumno (Apellido y Nombre)</option>
+                        <option value="student_second_name">2° Columna Alumno (Nombre)</option>
+                        <option value="student_email">Correo / Email</option>
+                        <option value="disposition">Nota de Disposición (1-10)</option>
+                        <option value="disposition_deduction">Descuento Disposición (resta de 10)</option>
+                        <option value="absences">Total Ausencias / Faltas</option>
+                        <option value="lates">Total Llegadas Tarde</option>
+                        <option value="grade">Nota / Calificación</option>
                       </select>
                     </div>
                   </th>

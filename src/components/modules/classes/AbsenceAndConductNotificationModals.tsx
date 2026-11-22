@@ -12,6 +12,7 @@ import {
   Info,
   Send,
   BellOff,
+  X,
 } from 'lucide-react';
 import {
   Course,
@@ -198,9 +199,10 @@ export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotif
           <button
             type="button"
             onClick={() => setAbsenceNotifModal((prev) => ({ ...prev, isOpen: false }))}
-            className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white"
+            className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-600 dark:hover:text-slate-200 hover:bg-neutral-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            aria-label="Cerrar modal"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -591,9 +593,10 @@ export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotif
                   <button
                     type="button"
                     onClick={() => setAbsenceNotifModal((prev) => ({ ...prev, showSavePresetInput: false, newPresetName: '' }))}
-                    className="text-neutral-400 hover:text-neutral-600 dark:hover:text-white text-xs cursor-pointer"
+                    className="p-1 rounded-md text-neutral-400 hover:text-neutral-600 dark:hover:text-white transition-colors cursor-pointer"
+                    aria-label="Cancelar"
                   >
-                    ✕
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
                 <div className="flex gap-2">
@@ -684,7 +687,7 @@ export const IndividualAbsenceNotificationModal: React.FC<IndividualAbsenceNotif
             <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
             <p>
               Al confirmar, se enviará el aviso al estudiante y se actualizarán inmediatamente las columnas
-              <strong> "Mensaje enviado"</strong> (✓) y <strong>"Mensaje"</strong> en el Historial y en la hoja Google Sheets.
+              <strong> "Mensaje enviado"</strong> y <strong>"Mensaje"</strong> en el Historial y en la hoja Google Sheets.
             </p>
           </div>
         </div>

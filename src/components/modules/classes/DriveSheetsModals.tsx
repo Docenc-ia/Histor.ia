@@ -182,7 +182,7 @@ export const DriveFolderModal: React.FC<DriveFolderModalProps> = ({
               <FolderClosed className="w-5 h-5 text-amber-500 shrink-0" />
               <div className="min-w-0">
                 <span className="font-bold text-neutral-900 dark:text-white text-xs block truncate">
-                  📁 {courseDriveStructure.mainFolder.name}
+                  {courseDriveStructure.mainFolder.name}
                 </span>
                 <span className="text-[11px] text-neutral-500 dark:text-slate-400">
                   Carpeta raíz del curso en tu Google Drive (acceso directo)
@@ -213,7 +213,7 @@ export const DriveFolderModal: React.FC<DriveFolderModalProps> = ({
                   <FolderClosed className={`w-4 h-4 ${sub.badgeColor} shrink-0`} />
                   <div className="min-w-0">
                     <span className="font-bold text-neutral-900 dark:text-white block truncate">
-                      {idx + 1}. 📁 {sub.name}
+                      {idx + 1}. {sub.name}
                     </span>
                     <span className="text-[11px] text-neutral-500 dark:text-slate-400 block">
                       {sub.description}

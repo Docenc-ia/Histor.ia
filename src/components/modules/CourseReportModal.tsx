@@ -694,15 +694,15 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   // Compute the target Google Doc title
   const getTargetGoogleDocTitle = () => {
     if (activeTab === 'course') {
-      return `📊 Informe Consolidado Anual - ${courseName}`;
+      return `Informe Consolidado Anual - ${courseName}`;
     }
     if (selectedStudentId !== 'all') {
       const single = consolidatedStudents.find((s) => s.student.id === selectedStudentId);
       if (single) {
-        return `📄 Ficha de Trayectoria - ${single.student.lastName}, ${single.student.firstName} (${courseName})`;
+        return `Ficha de Trayectoria - ${single.student.lastName}, ${single.student.firstName} (${courseName})`;
       }
     }
-    return `🎓 Fichas Individuales de Trayectoria - ${courseName}`;
+    return `Fichas Individuales de Trayectoria - ${courseName}`;
   };
 
   // Save directly as a native editable Google Doc (.gdoc) in the course's Google Drive folder
@@ -1052,7 +1052,7 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
             <span>
               Carpeta de Drive vinculada:{' '}
               <strong className="text-neutral-800 dark:text-slate-200">
-                📁 {formatCourseDriveFolderName(courseName)} / Informes
+                {formatCourseDriveFolderName(courseName)} / Informes
               </strong>
             </span>
             {(driveFolderId || driveFolderUrl) && (

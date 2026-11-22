@@ -122,7 +122,7 @@ export const ImportStudentVerificationPanel: React.FC<ImportStudentVerificationP
                     .filter((col) => col !== selectedNameColumn)
                     .map((col) => (
                       <option key={col} value={col}>
-                        📅 {col}
+                        {col}
                       </option>
                     ))}
                 </select>
@@ -320,8 +320,9 @@ export const ImportStudentVerificationPanel: React.FC<ImportStudentVerificationP
                           <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-bold text-xs">{row.studentName}</span>
                             {row.matchedFromRaw ? (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                ✓ Detectado
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                Detectado
                               </span>
                             ) : (
                               <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-neutral-200/70 dark:bg-slate-800 text-neutral-500 dark:text-slate-400">
@@ -380,7 +381,7 @@ export const ImportStudentVerificationPanel: React.FC<ImportStudentVerificationP
                             title="Asignar esta fila del documento a un alumno existente del curso"
                           >
                             <option value="">
-                              👉 Elegir a qué alumno del curso corresponde...
+                              Elegir a qué alumno del curso corresponde...
                             </option>
                             {students.map((s) => (
                               <option key={s.id} value={s.id}>

@@ -6,10 +6,7 @@ import {
 } from '../types/gradeImport';
 import { GradeHistoryEntry } from './excelExport';
 import { normalizeImportText, parseFlexibleCellNumber } from './gradeImportParser';
-import {
-  findGradeColumnById,
-  isStudentExemptFromIntensification,
-} from './gradeCalculations';
+import { findGradeColumnById } from './gradeCalculations';
 
 const DEFAULT_CATEGORY_NAME = 'Calificaciones';
 const DEFAULT_CATEGORY_WEIGHT = 100;
@@ -225,23 +222,6 @@ export function buildGradeImportCommitPayload(params: {
       if (columnConfig.kind === 'grade') {
         const targetSubcategoryInfo = columnKeyToSubcategoryMap[columnConfig.colKey];
         if (targetSubcategoryInfo) {
-          const matchedTarget = findGradeColumnById(
-            workingCategories,
-            targetSubcategoryInfo.subcategoryId
-          );
-          // Si la columna destino es una intensificación y el alumno ya aprobó (>= 7), queda en NI y no se sobrescribe.
-          if (
-            matchedTarget?.intensification &&
-            matchedTarget.subcategory &&
-            matchedTarget.intensificationIndex !== undefined &&
-            isStudentExemptFromIntensification(
-              matchedTarget.subcategory,
-              matchedTarget.intensificationIndex,
-              workingGradesMap[studentRow.studentId]
-            ).exempt
-          ) {
-            return;
-          }
           workingGradesMap[studentRow.studentId][targetSubcategoryInfo.subcategoryId] =
             Number.isFinite(numericValue)
               ? String(Number(numericValue.toFixed(TWO_DECIMAL_PRECISION)))

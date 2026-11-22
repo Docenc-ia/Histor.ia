@@ -1,9 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   BookOpen,
-  FileText,
-  CheckSquare,
-  Table,
   Plus,
   Search,
   Users,
@@ -13,17 +10,12 @@ import {
   FolderClosed,
   CheckCircle2,
   Clock,
-  Sparkles,
-  Calendar,
-  Layers,
   Trash2,
   RefreshCw,
   AlertCircle,
   LayoutGrid,
   List,
-  Mail,
   X,
-  User,
 } from 'lucide-react';
 import { Course, Student } from '../../types';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
@@ -36,7 +28,6 @@ import {
   isValidCourseSchedule,
   getEffectiveScheduleStringForCourse,
 } from '../../utils/courseFormatting';
-import { classroomService } from '../../services/workspace/classroomService';
 import { calendarService } from '../../services/workspace/calendarService';
 import { api, getRemovedStudentIds, getUserScopedItem, syncAllRemovedStudentsIndexFromCloud } from '../../services/api';
 import { getCachedAccessToken } from '../../services/workspace/googleAuth';
@@ -146,7 +137,7 @@ const TeacherCoursesPanelComponent: React.FC<TeacherCoursesPanelProps> = ({
   const [rosterSyncMsg, setRosterSyncMsg] = useState<string | null>(null);
   const [needsRosterPermission, setNeedsRosterPermission] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [syncingCourseId, setSyncingCourseId] = useState<string | null>(null);
+  const [syncingCourseId] = useState<string | null>(null);
   const [selectiveSyncTargetCourse, setSelectiveSyncTargetCourse] = useState<Course | null>(null);
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
   const [removedSyncTick, setRemovedSyncTick] = useState<number>(0);

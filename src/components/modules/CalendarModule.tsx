@@ -20,7 +20,6 @@ import {
   Edit2,
   Check,
   X,
-  HelpCircle,
   Eye,
   EyeOff,
   Sparkles,
@@ -131,7 +130,7 @@ const normalizeConfiguredCalendars = (
 };
 
 export const CalendarModule: React.FC<CalendarModuleProps> = () => {
-  const { isDarkMode, user, token, loginWithGoogle } = useWorkspaceAuth();
+  const { isDarkMode, user, token } = useWorkspaceAuth();
   const institutionalEmail = resolveInstitutionalCalendarEmail(user?.email);
 
   // Load configured calendars: school calendar by default, user-scoped storage
@@ -237,9 +236,6 @@ export const CalendarModule: React.FC<CalendarModuleProps> = () => {
   const [newCalendarColor, setNewCalendarColor] = useState<string>('#0d904f');
   const [newCalendarDesc, setNewCalendarDesc] = useState<string>('');
   const [formError, setFormError] = useState<string | null>(null);
-
-  // Quick guide modal
-  const [showIdGuide, setShowIdGuide] = useState<boolean>(false);
 
   // Auto-detection & specific calendar selector state
   const [isAutoDetecting, setIsAutoDetecting] = useState<boolean>(false);

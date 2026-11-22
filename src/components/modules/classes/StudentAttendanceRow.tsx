@@ -4,21 +4,15 @@ import {
   CheckSquare,
   Pencil,
   Clock,
-  RotateCcw,
   Plus,
   Minus,
-  History,
   FileText,
   ExternalLink,
   Trash2,
 } from 'lucide-react';
 import { Student, StudentDispositionData, StudentHistoryItem } from '../../../types';
-import {
-  StudentAttendanceTrafficLight,
-  getTrafficLightBadgeStyle,
-} from '../../../utils/attendanceCalculations';
+import { StudentAttendanceTrafficLight } from '../../../utils/attendanceCalculations';
 import { isSameCalendarDay } from '../../../utils/dateUtils';
-import { useWorkspaceAuth } from '../../../context/WorkspaceAuthContext';
 
 interface StudentAttendanceRowProps {
   student: Student;
@@ -71,7 +65,6 @@ export const StudentAttendanceRow: React.FC<StudentAttendanceRowProps> = React.m
   onDeleteStudent,
   isDarkMode,
 }) => {
-  const { user } = useWorkspaceAuth();
   const score = metrics.totalDisposition;
   const scoreBadgeClass =
     score >= 8

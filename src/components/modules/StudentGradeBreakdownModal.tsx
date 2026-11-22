@@ -283,6 +283,80 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
       ? visibleRows2c
       : [...visibleRows1c, ...visibleRows2c];
 
+  const renderBreakdownRow = (row: BreakdownRow, showTermBadge: boolean) => (
+    <tr
+      key={row.id}
+      className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'}
+    >
+      {showTermBadge && (
+        <td className="py-2 px-3 text-center border-r border-neutral-200 dark:border-slate-800">
+          <span
+            className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+              row.term === '1c'
+                ? isDarkMode
+                  ? 'bg-blue-950/60 text-blue-300 border-blue-800/70'
+                  : 'bg-blue-50 text-blue-700 border-blue-200'
+                : isDarkMode
+                ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/70'
+                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+            }`}
+          >
+            {row.term === '1c' ? '1° C' : '2° C'}
+          </span>
+        </td>
+      )}
+      <td
+        className={`py-2 px-3 border-r border-neutral-200 dark:border-slate-800 ${
+          isDarkMode ? 'text-slate-300' : 'text-neutral-600'
+        }`}
+      >
+        {row.categoryName}
+      </td>
+      <td className="py-2 px-3 border-r border-neutral-200 dark:border-slate-800 font-medium">
+        {row.isIntensification ? (
+          <span className="inline-flex items-center gap-1.5 pl-2">
+            <span
+              className={`text-[10px] font-bold ${
+                isDarkMode ? 'text-amber-400' : 'text-amber-700'
+              }`}
+            >
+              ↳
+            </span>
+            <span>{row.itemName}</span>
+          </span>
+        ) : (
+          row.itemName
+        )}
+      </td>
+      <td
+        className={`py-2 px-3 text-center font-bold tabular-nums ${
+          row.isNI
+            ? ''
+            : row.hasScore
+            ? getScoreColorClass(row.score, isDarkMode)
+            : isDarkMode
+            ? 'text-slate-500 font-normal'
+            : 'text-neutral-400 font-normal'
+        }`}
+      >
+        {row.isNI ? (
+          <span
+            title="No intensifica (aprobó con ≥ 7 por defecto; fuera del promedio)"
+            className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold border ${
+              isDarkMode
+                ? 'bg-slate-800 text-slate-300 border-slate-700'
+                : 'bg-neutral-100 text-neutral-600 border-neutral-300'
+            }`}
+          >
+            NI
+          </span>
+        ) : (
+          row.score
+        )}
+      </td>
+    </tr>
+  );
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/65 backdrop-blur-xs animate-in fade-in duration-150"
@@ -574,69 +648,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
                 <tbody className={`divide-y ${isDarkMode ? 'divide-slate-800' : 'divide-neutral-200'}`}>
                   {selectedPeriod === 'both' ? (
                     <>
-                      {visibleRows1c.map((row) => (
-                        <tr
-                          key={row.id}
-                          className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'}
-                        >
-                          <td className="py-2 px-3 text-center border-r border-neutral-200 dark:border-slate-800">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                                isDarkMode
-                                  ? 'bg-blue-950/60 text-blue-300 border-blue-800/70'
-                                  : 'bg-blue-50 text-blue-700 border-blue-200'
-                              }`}
-                            >
-                              1° C
-                            </span>
-                          </td>
-                          <td className={`py-2 px-3 border-r border-neutral-200 dark:border-slate-800 ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                            {row.categoryName}
-                          </td>
-                          <td className="py-2 px-3 border-r border-neutral-200 dark:border-slate-800 font-medium">
-                            {row.isIntensification ? (
-                              <span className="inline-flex items-center gap-1.5 pl-2">
-                                <span
-                                  className={`text-[10px] font-bold ${
-                                    isDarkMode ? 'text-amber-400' : 'text-amber-700'
-                                  }`}
-                                >
-                                  ↳
-                                </span>
-                                <span>{row.itemName}</span>
-                              </span>
-                            ) : (
-                              row.itemName
-                            )}
-                          </td>
-                          <td
-                            className={`py-2 px-3 text-center font-bold tabular-nums ${
-                              row.isNI
-                                ? ''
-                                : row.hasScore
-                                ? getScoreColorClass(row.score, isDarkMode)
-                                : isDarkMode
-                                ? 'text-slate-500 font-normal'
-                                : 'text-neutral-400 font-normal'
-                            }`}
-                          >
-                            {row.isNI ? (
-                              <span
-                                title="No intensifica (aprobó con ≥ 7; no se incluye en el promedio)"
-                                className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold border ${
-                                  isDarkMode
-                                    ? 'bg-slate-800 text-slate-300 border-slate-700'
-                                    : 'bg-neutral-100 text-neutral-600 border-neutral-300'
-                                }`}
-                              >
-                                NI
-                              </span>
-                            ) : (
-                              row.score
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                      {visibleRows1c.map((row) => renderBreakdownRow(row, true))}
                       {visibleRows1c.length > 0 && (
                         <tr className={isDarkMode ? 'bg-blue-950/25 font-bold' : 'bg-blue-50/60 font-bold'}>
                           <td
@@ -651,69 +663,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
                         </tr>
                       )}
 
-                      {visibleRows2c.map((row) => (
-                        <tr
-                          key={row.id}
-                          className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'}
-                        >
-                          <td className="py-2 px-3 text-center border-r border-neutral-200 dark:border-slate-800">
-                            <span
-                              className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                                isDarkMode
-                                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800/70'
-                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              }`}
-                            >
-                              2° C
-                            </span>
-                          </td>
-                          <td className={`py-2 px-3 border-r border-neutral-200 dark:border-slate-800 ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                            {row.categoryName}
-                          </td>
-                          <td className="py-2 px-3 border-r border-neutral-200 dark:border-slate-800 font-medium">
-                            {row.isIntensification ? (
-                              <span className="inline-flex items-center gap-1.5 pl-2">
-                                <span
-                                  className={`text-[10px] font-bold ${
-                                    isDarkMode ? 'text-amber-400' : 'text-amber-700'
-                                  }`}
-                                >
-                                  ↳
-                                </span>
-                                <span>{row.itemName}</span>
-                              </span>
-                            ) : (
-                              row.itemName
-                            )}
-                          </td>
-                          <td
-                            className={`py-2 px-3 text-center font-bold tabular-nums ${
-                              row.isNI
-                                ? ''
-                                : row.hasScore
-                                ? getScoreColorClass(row.score, isDarkMode)
-                                : isDarkMode
-                                ? 'text-slate-500 font-normal'
-                                : 'text-neutral-400 font-normal'
-                            }`}
-                          >
-                            {row.isNI ? (
-                              <span
-                                title="No intensifica (aprobó con ≥ 7; no se incluye en el promedio)"
-                                className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold border ${
-                                  isDarkMode
-                                    ? 'bg-slate-800 text-slate-300 border-slate-700'
-                                    : 'bg-neutral-100 text-neutral-600 border-neutral-300'
-                                }`}
-                              >
-                                NI
-                              </span>
-                            ) : (
-                              row.score
-                            )}
-                          </td>
-                        </tr>
-                      ))}
+                      {visibleRows2c.map((row) => renderBreakdownRow(row, true))}
                       {visibleRows2c.length > 0 && (
                         <tr className={isDarkMode ? 'bg-emerald-950/25 font-bold' : 'bg-emerald-50/60 font-bold'}>
                           <td
@@ -729,58 +679,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
                       )}
                     </>
                   ) : (
-                    displayedRows.map((row) => (
-                      <tr
-                        key={row.id}
-                        className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'}
-                      >
-                        <td className={`py-2 px-3 border-r border-neutral-200 dark:border-slate-800 ${isDarkMode ? 'text-slate-300' : 'text-neutral-600'}`}>
-                          {row.categoryName}
-                        </td>
-                        <td className="py-2 px-3 border-r border-neutral-200 dark:border-slate-800 font-medium">
-                          {row.isIntensification ? (
-                            <span className="inline-flex items-center gap-1.5 pl-2">
-                              <span
-                                className={`text-[10px] font-bold ${
-                                  isDarkMode ? 'text-amber-400' : 'text-amber-700'
-                                }`}
-                              >
-                                ↳
-                              </span>
-                              <span>{row.itemName}</span>
-                            </span>
-                          ) : (
-                            row.itemName
-                          )}
-                        </td>
-                        <td
-                          className={`py-2 px-3 text-center font-bold tabular-nums ${
-                            row.isNI
-                              ? ''
-                              : row.hasScore
-                              ? getScoreColorClass(row.score, isDarkMode)
-                              : isDarkMode
-                              ? 'text-slate-500 font-normal'
-                              : 'text-neutral-400 font-normal'
-                          }`}
-                        >
-                          {row.isNI ? (
-                            <span
-                              title="No intensifica (aprobó con ≥ 7; no se incluye en el promedio)"
-                              className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold border ${
-                                isDarkMode
-                                  ? 'bg-slate-800 text-slate-300 border-slate-700'
-                                  : 'bg-neutral-100 text-neutral-600 border-neutral-300'
-                              }`}
-                            >
-                              NI
-                            </span>
-                          ) : (
-                            row.score
-                          )}
-                        </td>
-                      </tr>
-                    ))
+                    displayedRows.map((row) => renderBreakdownRow(row, false))
                   )}
                 </tbody>
                 <tfoot>

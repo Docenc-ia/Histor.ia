@@ -4,8 +4,6 @@ import {
   X,
   Check,
   Calendar,
-  MessageSquare,
-  Mail,
   Loader2,
   FileText,
   ClipboardList,

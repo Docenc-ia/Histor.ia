@@ -8,7 +8,6 @@
 
 import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
-import { getIntensificationDisplayLabel } from './gradeCalculations';
 import { sanitizeSpreadsheetFormulaCell } from './htmlEscape';
 
 export type QualitativeTrajectory = 'TEA' | 'TEP' | 'TED' | '';
@@ -71,14 +70,6 @@ export function flattenEvaluativeItems(categories: GradeCategory[]): EvaluativeA
           name: subcategory.name,
           categoryName: category.name,
           maxScore: subcategory.maxScore || DEFAULT_MAX_SCORE,
-        });
-        (subcategory.intensifications || []).forEach((inst) => {
-          assessments.push({
-            id: inst.id,
-            name: getIntensificationDisplayLabel(subcategory, inst),
-            categoryName: category.name,
-            maxScore: subcategory.maxScore || DEFAULT_MAX_SCORE,
-          });
         });
       });
     }

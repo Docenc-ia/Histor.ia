@@ -5,7 +5,6 @@ import { GradeHistoryEntry } from './excelExport';
 import {
   CATEGORY_COLORS,
   findGradeColumnById,
-  isStudentExemptFromIntensification,
 } from './gradeCalculations';
 import {
   normalizeImportText,
@@ -834,24 +833,9 @@ export function buildGoogleFormsCommitPayload(params: {
     workingGradesMap[studentId] = { ...(safeGradesMap[studentId] || {}) };
   });
 
-  const matchedTargetCol = findGradeColumnById(workingCategories, finalSubcategoryId);
-
   rowsToSave.forEach((reviewRow) => {
     const studentId = reviewRow.student.id;
     if (!workingGradesMap[studentId]) workingGradesMap[studentId] = {};
-    // Si el destino es una instancia de intensificación y el estudiante ya aprobó (>= 7), queda en NI.
-    if (
-      matchedTargetCol?.intensification &&
-      matchedTargetCol.subcategory &&
-      matchedTargetCol.intensificationIndex !== undefined &&
-      isStudentExemptFromIntensification(
-        matchedTargetCol.subcategory,
-        matchedTargetCol.intensificationIndex,
-        workingGradesMap[studentId]
-      ).exempt
-    ) {
-      return;
-    }
     const editedScoreString = String(reviewRow.editedScore ?? '').trim();
     const parsedScoreNumber = parseFloat(editedScoreString.replace(',', '.'));
     workingGradesMap[studentId][finalSubcategoryId] = Number.isFinite(parsedScoreNumber)

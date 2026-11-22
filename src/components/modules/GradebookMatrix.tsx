@@ -54,8 +54,8 @@ import {
   calculateFinalScoreForStudent,
   computeTermScoresMap,
   getScoreColorClass as computeScoreColorClass,
+  getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
-  isStudentExemptFromIntensification,
   reorderCategoriesList,
   reorderSubcategoriesInCategory,
   moveSubcategoryAcrossCategories,
@@ -254,43 +254,32 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
 
                     {instList.map((inst, instIdx) => {
                       const instColIdx = runningColIdx++;
-                      const exemptCheck = isStudentExemptFromIntensification(
+                      const rawInstVal = studentGrades[inst.id] || '';
+                      const effective = getEffectiveIntensificationCell(
                         sub,
                         instIdx,
                         studentGrades
                       );
-                      if (exemptCheck.exempt) {
-                        return (
-                          <td
-                            key={inst.id}
-                            data-pii="student"
-                            className={`p-1 border-r text-center overflow-hidden ${
-                              isDarkMode
-                                ? 'bg-slate-900/50 border-slate-800'
-                                : 'bg-neutral-50/70 border-neutral-200'
-                            }`}
-                          >
-                            <span
-                              className={`inline-flex items-center justify-center w-full max-w-[58px] px-1 py-1 rounded-lg text-[11px] font-bold tracking-wide border select-none ${
-                                isDarkMode
-                                  ? 'bg-slate-800/80 border-slate-700 text-slate-400'
-                                  : 'bg-neutral-100 border-neutral-200/90 text-neutral-500'
-                              }`}
-                              title={`No intensifica (aprobado con ${exemptCheck.passingScore}) — No se tiene en cuenta para el promedio`}
-                            >
-                              {INTENSIFICATION_EXEMPT_LABEL}
-                            </span>
-                          </td>
-                        );
-                      }
+                      const isShowingNI = effective.isNI;
+                      const isDefaultNI = effective.isDefaultNI && rawInstVal.trim() === '';
+                      const tooltipText = isDefaultNI
+                        ? `No intensifica por defecto (aprobado con ${effective.passingScore}). Hacé clic y escribí una nota si considerás que debe intensificar (no promedia).`
+                        : isShowingNI
+                        ? `${getIntensificationDisplayLabel(sub, inst)} — No intensifica. Podés editar o borrar este valor.`
+                        : effective.passingScore !== null
+                        ? `${getIntensificationDisplayLabel(sub, inst)} — Nota cargada manualmente, fuera del promedio (borrá la celda para volver a NI)`
+                        : `${getIntensificationDisplayLabel(sub, inst)} — Ingresá la calificación (fuera del promedio)`;
 
-                      const instVal = studentGrades[inst.id] || '';
                       return (
                         <td
                           key={inst.id}
                           data-pii="student"
                           className={`p-1 border-r text-center overflow-hidden ${
-                            isDarkMode
+                            isShowingNI
+                              ? isDarkMode
+                                ? 'bg-slate-900/50 border-slate-800'
+                                : 'bg-neutral-50/70 border-neutral-200'
+                              : isDarkMode
                               ? 'bg-amber-950/15 border-slate-800'
                               : 'bg-amber-50/35 border-neutral-200'
                           }`}
@@ -299,17 +288,21 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                             type="text"
                             data-grade-row={idx}
                             data-grade-col={instColIdx}
-                            value={instVal}
+                            value={rawInstVal}
                             onChange={(e) => onScoreChange(student.id, inst.id, e.target.value)}
                             onBlur={onCellBlur}
                             onKeyDown={(e) => onCellKeyDown(e, idx, instColIdx)}
-                            placeholder="-"
-                            title={`${getIntensificationDisplayLabel(sub, inst)} — Ingresá la calificación`}
+                            placeholder={isDefaultNI ? INTENSIFICATION_EXEMPT_LABEL : '-'}
+                            title={tooltipText}
                             className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                              isDarkMode
+                              isShowingNI
+                                ? isDarkMode
+                                  ? 'bg-slate-800/80 border-slate-700 text-slate-400 placeholder:text-slate-400 placeholder:font-bold focus:bg-slate-800 focus:border-amber-400 focus:text-slate-100'
+                                  : 'bg-neutral-100 border-neutral-200/90 text-neutral-500 placeholder:text-neutral-500 placeholder:font-bold focus:bg-white focus:border-amber-500 focus:text-neutral-900'
+                                : isDarkMode
                                 ? 'bg-slate-800/80 border-amber-700/60 focus:border-amber-400'
                                 : 'bg-white border-amber-300/80 focus:border-amber-500'
-                            } ${getScoreColorClass(instVal)}`}
+                            } ${isShowingNI ? '' : getScoreColorClass(rawInstVal)}`}
                           />
                         </td>
                       );
@@ -2498,7 +2491,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               <span className="px-1.5 py-0.5 rounded bg-neutral-200/80 dark:bg-slate-800 text-[10px]">
                 NI
               </span>{' '}
-              No intensifica (≥ 7, no promedia)
+              No intensifica (≥ 7 por defecto, editable) · Las intensificaciones no afectan el promedio
             </span>
           )}
         </div>

@@ -105,7 +105,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
   const [gradesPeriod, setGradesPeriod] = useState<ReportGradesPeriod>(initialGradesPeriod);
   const [isSavingToDrive, setIsSavingToDrive] = useState(false);
   const [showDriveConfirmModal, setShowDriveConfirmModal] = useState(false);
-  const [isPrinting, setIsPrinting] = useState(false);
   const [driveSavedResult, setDriveSavedResult] = useState<{
     success: boolean;
     name: string;
@@ -634,45 +633,6 @@ export const CourseReportModal: React.FC<CourseReportModalProps> = ({
       includeObservations,
       includeFamilySignature,
     });
-
-  // Robust Print Handler using native browser print and auto-upload to Informes subfolder in Drive
-  const handlePrint = () => {
-    setIsPrinting(true);
-    try {
-      const html = generateHtmlDocument(activeTab);
-      const singleStudent =
-        activeTab === 'individual' && selectedStudentId !== 'all'
-          ? consolidatedStudents.find((s) => s.student.id === selectedStudentId)
-          : null;
-      const fileName =
-        activeTab === 'course'
-          ? `Informe_Consolidado_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`
-          : singleStudent
-          ? `Ficha_Trayectoria_${singleStudent.student.lastName}_${singleStudent.student.firstName}_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}.html`
-          : `Boletines_Individuales_${courseName.replace(/\s+/g, '_')}${periodFileSuffix}_${currentSchoolYear}.html`;
-      driveService
-        .uploadFileToCourseCategory({
-          courseName,
-          category: 'Informes',
-          fileName,
-          content: html,
-          mimeType: 'text/html',
-          existingMainFolderId: driveFolderId,
-        })
-        .catch(() => {});
-    } catch (_) {}
-
-    setTimeout(() => {
-      try {
-        window.print();
-      } catch (err) {
-        console.warn('Native window.print failed, falling back to download:', err);
-        handleDownloadHtml();
-      } finally {
-        setIsPrinting(false);
-      }
-    }, 100);
-  };
 
   // Download locally (.html printable file) and host in Informes subfolder in Google Drive
   const handleDownloadHtml = () => {

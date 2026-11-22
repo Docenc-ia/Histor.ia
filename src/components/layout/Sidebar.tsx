@@ -2,13 +2,9 @@ import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   GraduationCap,
-  FolderClosed,
   Calendar,
-  Sparkles,
-  Settings,
   Clock,
   ChevronDown,
-  ChevronRight,
   Plus,
   ExternalLink,
 } from 'lucide-react';
@@ -75,7 +71,7 @@ const SidebarComponent: React.FC<SidebarProps> = ({
   selectedCourseId,
   onSelectCourse,
 }) => {
-  const { user, isDarkMode } = useWorkspaceAuth();
+  const { isDarkMode } = useWorkspaceAuth();
   const [coursesExpanded, setCoursesExpanded] = useState<boolean>(true);
   const [nowTick, setNowTick] = useState<Date>(() => new Date());
   const [scheduleSyncTick, setScheduleSyncTick] = useState<number>(0);

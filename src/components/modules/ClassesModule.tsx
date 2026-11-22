@@ -116,7 +116,7 @@ const ClassesModuleComponent: React.FC<ClassesModuleProps> = ({
   onExternalSearchChange,
   onRefreshData,
 }) => {
-  const { isDarkMode, token, user, loginWithGoogle, requestAccessToken, isTokenExpired, renewGoogleSession } = useWorkspaceAuth();
+  const { isDarkMode, token, user, loginWithGoogle, requestAccessToken } = useWorkspaceAuth();
   const { attendanceLabel, dispositionLabel, combinedTabLabel } = useTerminologySettings();
   const activeCourse =
     courses.find((c) => c.id === selectedCourseId) ||

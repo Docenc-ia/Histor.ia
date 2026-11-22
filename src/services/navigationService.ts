@@ -16,7 +16,6 @@ import {
   touchCourseDataLru,
   getAllCachedCourseSnapshots,
 } from '../utils/lruCourseCache';
-import { safeSetLocalStorageItem } from '../utils/storageGuard';
 
 export type AppViewType = 'courses' | 'course_detail' | 'calendar';
 export type CourseSubTabType = 'roster' | 'libro_temas' | 'grades' | 'history';

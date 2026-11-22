@@ -87,26 +87,49 @@ export function isStudentExemptFromIntensification(
 
 /**
  * Devuelve el valor visible efectivo de una celda de intensificación para un estudiante:
- * `'NI'` si está exento por haber aprobado con >= 7, o el valor cargado en el mapa.
+ * si el docente cargó explícitamente una calificación, esa nota prevalece sobre el `NI` por defecto;
+ * si la celda está vacía y el estudiante ya aprobó con >= 7, muestra `'NI'` por defecto.
  */
 export function getEffectiveIntensificationCell(
   subcategory: GradeSubcategory,
   instIndex: number,
   studentGrades: Record<string, string> | undefined
-): { value: string; isNI: boolean; passingScore: number | null } {
+): { value: string; isNI: boolean; isDefaultNI: boolean; passingScore: number | null } {
+  const inst = subcategory.intensifications?.[instIndex];
+  const raw = inst ? studentGrades?.[inst.id] ?? '' : '';
+  const trimmed = String(raw).trim();
   const check = isStudentExemptFromIntensification(subcategory, instIndex, studentGrades);
+
+  if (trimmed !== '') {
+    if (trimmed.toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) {
+      return {
+        value: INTENSIFICATION_EXEMPT_LABEL,
+        isNI: true,
+        isDefaultNI: check.exempt,
+        passingScore: check.passingScore,
+      };
+    }
+    return {
+      value: raw,
+      isNI: false,
+      isDefaultNI: false,
+      passingScore: check.passingScore,
+    };
+  }
+
   if (check.exempt) {
     return {
       value: INTENSIFICATION_EXEMPT_LABEL,
       isNI: true,
+      isDefaultNI: true,
       passingScore: check.passingScore,
     };
   }
-  const inst = subcategory.intensifications?.[instIndex];
-  const raw = inst ? studentGrades?.[inst.id] ?? '' : '';
+
   return {
-    value: raw,
-    isNI: String(raw).trim().toUpperCase() === INTENSIFICATION_EXEMPT_LABEL,
+    value: '',
+    isNI: false,
+    isDefaultNI: false,
     passingScore: null,
   };
 }
@@ -247,22 +270,7 @@ export function calculateCategoryAverageForStudent(
         if (parsedSub !== null) {
           numericScores.push(parsedSub);
         }
-        const instList = Array.isArray(subcategory.intensifications)
-          ? subcategory.intensifications
-          : [];
-        instList.forEach((inst, instIdx) => {
-          // Los estudiantes con >= 7 muestran NI (No intensifica) y nunca se contabilizan en el promedio.
-          const exempt = isStudentExemptFromIntensification(
-            subcategory,
-            instIdx,
-            studentGradeRecord
-          );
-          if (exempt.exempt) return;
-          const parsedInst = parseGradeNumber(studentGradeRecord[inst.id]);
-          if (parsedInst !== null) {
-            numericScores.push(parsedInst);
-          }
-        });
+        // Las notas de intensificación/recuperación quedan fuera de los promedios automáticos.
       });
     }
   });

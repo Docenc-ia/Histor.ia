@@ -1,19 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import {
   Award,
-  Download,
   Users,
   TrendingUp,
   Search,
   X,
   ArrowRight,
-  CheckCircle2,
-  AlertTriangle,
   FileSpreadsheet,
   Calendar,
   FileText,
   UserCheck,
-  Cloud,
   Printer,
 } from 'lucide-react';
 import { Student } from '../../types';

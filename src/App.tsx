@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import { WorkspaceAuthProvider, useWorkspaceAuth } from './context/WorkspaceAuthContext';
 import { GlobalDataContextProvider, useGlobalData } from './context/GlobalDataContext';
 import { Header } from './components/layout/Header';

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, BookOpen, FileText, GraduationCap, FolderClosed, Check } from 'lucide-react';
+import { X, BookOpen, FileText, GraduationCap, FolderClosed } from 'lucide-react';
 import { Course } from '../../types';
 import { api } from '../../services/api';
 import { useGlobalData } from '../../context/GlobalDataContext';
@@ -33,14 +33,14 @@ export const CreateModal: React.FC<CreateModalProps> = ({
   const [courseGrade, setCourseGrade] = useState('');
   const [courseRoom, setCourseRoom] = useState('');
   const [courseSchedule, setCourseSchedule] = useState('');
-  const [courseColor, setCourseColor] = useState('#1a73e8');
+  const [courseColor] = useState('#1a73e8');
 
   // Lesson Plan Form state
   const [planCourseId, setPlanCourseId] = useState(courses[0]?.id || '');
   const [planTitle, setPlanTitle] = useState('');
   const [planUnit, setPlanUnit] = useState('');
-  const [planDate, setPlanDate] = useState(new Date().toISOString().split('T')[0]);
-  const [planDuration, setPlanDuration] = useState('80 min');
+  const [planDate] = useState(new Date().toISOString().split('T')[0]);
+  const [planDuration] = useState('80 min');
   const [planObjective, setPlanObjective] = useState('');
   const [planInicio, setPlanInicio] = useState('');
   const [planDesarrollo, setPlanDesarrollo] = useState('');

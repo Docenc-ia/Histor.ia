@@ -291,9 +291,16 @@ export const sheetsService = {
         return stGrades[col.id] || '';
       });
 
-      const validNumScores = scoreValues
-        .filter((s) => s !== '' && s !== INTENSIFICATION_EXEMPT_LABEL && !isNaN(Number(String(s).replace(',', '.'))))
-        .map((s) => Number(String(s).replace(',', '.')));
+      const validNumScores = assessmentColumns
+        .map((col, idx) => ({ col, val: scoreValues[idx] }))
+        .filter(
+          ({ col, val }) =>
+            !col.sub &&
+            val !== '' &&
+            val !== INTENSIFICATION_EXEMPT_LABEL &&
+            !isNaN(Number(String(val).replace(',', '.')))
+        )
+        .map(({ val }) => Number(String(val).replace(',', '.')));
 
       const avg =
         validNumScores.length > 0
@@ -631,14 +638,6 @@ export const sheetsService = {
           const colIdx = Number(colIdxStr);
           const rawCellVal = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
           if (rawCellVal.toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) return;
-          if (colInfo.sub && colInfo.instIndex !== undefined) {
-            const effective = getEffectiveIntensificationCell(
-              colInfo.sub,
-              colInfo.instIndex,
-              updatedGradesMap[student.id]
-            );
-            if (effective.isNI) return;
-          }
           const currentVal = String(updatedGradesMap[student.id][colInfo.id] || '').trim();
 
           const normalizedCell = rawCellVal.replace(',', '.');

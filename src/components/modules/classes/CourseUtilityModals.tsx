@@ -8,9 +8,6 @@ import {
   X,
   UserPlus,
   Check,
-  ArrowLeftRight,
-  FileSpreadsheet,
-  Download,
 } from 'lucide-react';
 import { Course, Student } from '../../../types';
 

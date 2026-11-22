@@ -848,7 +848,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       isDarkMode ? 'text-slate-300' : 'text-neutral-600'
                     }`}
                   >
-                    Divide la columna bajo el título <strong>"{editSubcatName.trim() || subcatToEdit.name}"</strong>. Quienes tengan nota <strong>≥ 7</strong> mostrarán automáticamente <strong>NI</strong> (No intensifica) y no afectará su promedio.
+                    Divide la columna bajo el título <strong>"{editSubcatName.trim() || subcatToEdit.name}"</strong>. Quienes tengan nota <strong>≥ 7</strong> muestran <strong>NI</strong> por defecto (editable si necesitás cargar nota). Las intensificaciones quedan fuera del promedio.
                   </p>
 
                   {/* Lista de intensificaciones ya creadas */}
@@ -1438,7 +1438,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       isDarkMode ? 'text-slate-300' : 'text-neutral-600'
                     }`}
                   >
-                    Las notas se cargarán solo a quienes intensifican (los estudiantes con ≥ 7 permanecen en <strong>NI</strong>):
+                    Elegí desde dónde importar las notas para esta instancia (quienes no figuren y tengan ≥ 7 permanecen en <strong>NI</strong>; no afecta el promedio):
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
                     {(

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  FileText,
   BookOpen,
   CheckSquare,
   Table,
@@ -13,15 +12,12 @@ import {
   Moon,
   User,
   Mail,
-  ArrowRight,
-  X,
   Eye,
   EyeOff,
   LogIn,
 } from 'lucide-react';
 import { useWorkspaceAuth } from '../../context/WorkspaceAuthContext';
 import { OwlLogoIcon } from '../common/OwlLogoIcon';
-import firebaseConfig from '../../../firebase-applet-config.json';
 
 interface LandingPageProps {
   onLoginSuccess: () => void;
@@ -60,7 +56,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
     return '/logo-animado.mp4';
   });
   const [isVideoPlaying, setIsVideoPlaying] = useState(true);
-  const [clickPulse, setClickPulse] = useState(false);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
   // Check if the backend already has an uploaded logo video and start playback
@@ -107,9 +102,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
     if (videoRef.current) {
       videoRef.current.currentTime = 0;
       videoRef.current.play().then(() => setIsVideoPlaying(true)).catch(() => {});
-    } else {
-      setClickPulse(true);
-      setTimeout(() => setClickPulse(false), 800);
     }
   };
 
@@ -154,13 +146,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onLoginSuccess }) => {
       setAuthError(err?.message || 'Error al conectar con la cuenta ingresada');
     } finally {
       setIsSubmittingAccount(false);
-    }
-  };
-
-  const handleScrollToLogin = () => {
-    const el = document.getElementById('main-google-login-btn') || document.getElementById('teacher-email-input');
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
 

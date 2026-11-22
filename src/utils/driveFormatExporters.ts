@@ -7,7 +7,6 @@ import {
 } from './gradeCalculations';
 import {
   CourseDriveCategory,
-  driveService,
   formatCourseDriveFolderName,
 } from '../services/workspace/driveService';
 
@@ -563,11 +562,6 @@ export function buildGradebookHtml(params: {
               return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;color:#64748b;font-weight:bold;">NI</td>`;
             }
             const val = effective.value;
-            const num = parseFloat(String(val).replace(',', '.'));
-            if (!isNaN(num)) {
-              totalScore += num;
-              scoredCount += 1;
-            }
             return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${
               val !== undefined && val !== '' ? escapeHtml(val) : '-'
             }</td>`;
@@ -674,11 +668,6 @@ export function buildGradebookCsv(params: {
         const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
         if (effective.isNI) return 'NI';
         const val = effective.value;
-        const num = parseFloat(String(val).replace(',', '.'));
-        if (!isNaN(num)) {
-          totalScore += num;
-          scoredCount += 1;
-        }
         return val !== undefined && val !== '' ? val : '-';
       }
 

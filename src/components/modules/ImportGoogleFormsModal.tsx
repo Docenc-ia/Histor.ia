@@ -10,7 +10,6 @@ import {
   Search,
   Check,
   RefreshCw,
-  Sparkles,
   ChevronRight,
   SlidersHorizontal,
   Layers,

@@ -115,7 +115,13 @@ export function buildStudentTrackingDocHtml(
       const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
       const stGrades = gMap[student.id] || {};
 
-      const items: { id: string; name: string; weight: number; score: number | null }[] = [];
+      const items: {
+        id: string;
+        name: string;
+        weight: number;
+        score: number | null;
+        isIntensification?: boolean;
+      }[] = [];
       for (const cat of cats) {
         if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
         if (!cat.subcategories || cat.subcategories.length === 0) {
@@ -161,6 +167,7 @@ export function buildStudentTrackingDocHtml(
                 name: getIntensificationDisplayLabel(sub, inst),
                 weight: (sub as any).weight ?? (cat as any).weight ?? 0,
                 score: !isNaN(instParsed) ? instParsed : null,
+                isIntensification: true,
               });
             });
           }
@@ -175,8 +182,10 @@ export function buildStudentTrackingDocHtml(
   const exams1c = loadTermExamsForDoc('1c');
   const exams2c = loadTermExamsForDoc('2c');
 
-  const computeWeightedAvg = (items: { weight: number; score: number | null }[]) => {
-    const valid = items.filter((i) => i.score !== null);
+  const computeWeightedAvg = (
+    items: { weight: number; score: number | null; isIntensification?: boolean }[]
+  ) => {
+    const valid = items.filter((i) => !i.isIntensification && i.score !== null);
     if (valid.length === 0) return null;
     const totalWeight = valid.reduce((acc, cur) => acc + (cur.weight || 1), 0);
     if (totalWeight <= 0) return null;

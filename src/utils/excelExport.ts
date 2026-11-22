@@ -289,11 +289,6 @@ export async function exportGradebookMatrixToExcel(
           const instVal = effective.value;
           rowObj[instHeader] =
             instVal !== undefined && instVal !== '' ? sanitizeExcelText(instVal) : '-';
-          const instNum = parseFloat(String(instVal).replace(',', '.'));
-          if (!isNaN(instNum)) {
-            totalScore += instNum;
-            scoredCount += 1;
-          }
         });
       });
     });

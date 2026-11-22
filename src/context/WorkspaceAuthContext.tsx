@@ -21,7 +21,6 @@ import {
   saveRememberedProfile,
   LAST_USER_PROFILE_KEY,
   LAST_TEACHER_EMAIL_KEY,
-  auth,
 } from '../services/workspace/googleAuth';
 import { TeacherProfile } from '../types';
 import { api } from '../services/api';
@@ -314,7 +313,7 @@ export const WorkspaceAuthProvider: React.FC<{ children: React.ReactNode }> = ({
             }
           }
         })
-        .catch((err) => console.log('Session check:', err));
+        .catch(() => {});
     }
 
     const unsubscribe = initAuth(

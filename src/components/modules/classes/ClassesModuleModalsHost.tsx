@@ -133,7 +133,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
   const {
     dispositionMap,
     historyList,
-    courseHistory,
     getStudentMetrics,
   } = dispositionSync;
 
@@ -277,7 +276,6 @@ export const ClassesModuleModalsHost: React.FC<ClassesModuleModalsHostProps> = (
     newObservationUrl,
     setNewObservationUrl,
     studentObservations,
-    setStudentObservations,
     showProfileDocConfirm,
     setShowProfileDocConfirm,
     profileDocTitle,

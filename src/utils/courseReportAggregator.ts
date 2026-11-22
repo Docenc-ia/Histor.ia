@@ -128,15 +128,7 @@ export function computeTermScoreForStudent(
         if (num !== null) {
           numericScores.push(num);
         }
-        const instList = sub.intensifications || [];
-        instList.forEach((_, instIdx) => {
-          const effective = getEffectiveIntensificationCell(sub, instIdx, stGrades);
-          if (effective.isNI) return;
-          const instNum = parseScoreNumber(effective.value);
-          if (instNum !== null) {
-            numericScores.push(instNum);
-          }
-        });
+        // Las notas de intensificación/recuperación quedan fuera de los promedios automáticos.
       });
     }
   });

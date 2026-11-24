@@ -14,12 +14,15 @@ import {
   computeStudentAttendanceTrafficLight,
 } from './attendanceCalculations';
 import type { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
-import { getTerminologySettings } from './terminologySettings';
+import { getGeneralGradeScale, getTerminologySettings } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeStudentTermAverageItems,
   findDispositionColumnKey,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from './gradeCalculations';
 import {
   buildStudentHistoryIndex,
@@ -76,8 +79,9 @@ export interface CourseReportStats {
 
 export function getConditionForScore(num: number | null): string {
   if (num === null) return 'Pendiente';
-  if (num >= 7) return 'Aprobado';
-  if (num >= 6) return 'Aprobado (Regular)';
+  const scale = getGeneralGradeScale();
+  if (num >= scale.passingScore) return 'Aprobado';
+  if (scale.regularScore !== null && num >= scale.regularScore) return 'Aprobado (Regular)';
   return 'Compensación Diciembre / Feb';
 }
 
@@ -116,23 +120,7 @@ export function computeTermScoreForStudent(
     return { scoreStr: val, num };
   }
 
-  const numericScores: number[] = [];
-  cats.forEach((cat) => {
-    if (cat.subcategories.length === 0) {
-      const num = parseScoreNumber(stGrades[cat.id]);
-      if (num !== null) {
-        numericScores.push(num);
-      }
-    } else {
-      cat.subcategories.forEach((sub) => {
-        const num = parseScoreNumber(stGrades[sub.id]);
-        if (num !== null) {
-          numericScores.push(num);
-        }
-        // Las notas de intensificación/recuperación quedan fuera de los promedios automáticos.
-      });
-    }
-  });
+  const numericScores = computeStudentTermAverageItems(cats, stGrades);
 
   if (numericScores.length > 0) {
     const avg = numericScores.reduce((a, b) => a + b, 0) / numericScores.length;
@@ -188,11 +176,24 @@ export function extractStudentExamDetails(
         items.push({
           id: sub.id,
           categoryName: cat.name,
-          itemName: sub.name,
+          itemName: getPrimaryInstanceDisplayLabel(sub),
           score:
             rawScore !== undefined && String(rawScore).trim() !== ''
               ? String(rawScore).trim()
               : '—',
+        });
+
+        (sub.instances || []).forEach((evInst) => {
+          const evScore = stGrades[evInst.id];
+          items.push({
+            id: evInst.id,
+            categoryName: cat.name,
+            itemName: getEvaluationInstanceDisplayLabel(sub, evInst),
+            score:
+              evScore !== undefined && String(evScore).trim() !== ''
+                ? String(evScore).trim()
+                : '—',
+          });
         });
 
         const instList = sub.intensifications || [];
@@ -402,12 +403,7 @@ export function buildConsolidatedReportStudents(params: {
     const finalVal = override !== undefined && override !== '' ? override : calcAvgStr;
     const finalNum = parseScoreNumber(finalVal);
 
-    let condition = 'Pendiente';
-    if (finalNum !== null) {
-      if (finalNum >= 7) condition = 'Aprobado';
-      else if (finalNum >= 6) condition = 'Aprobado (Regular)';
-      else condition = 'Compensación Diciembre / Feb';
-    }
+    const condition = getConditionForScore(finalNum);
 
     // Obtener métricas exclusivamente desde Asistencia y Disposición (nunca desde Calificaciones)
     const m1 = getStudentMetrics
@@ -517,14 +513,16 @@ export function computeCourseReportStats(
     if (gradesPeriod === '2c') return s.score2cNum;
     return s.finalNum;
   };
+  const generalScale = getGeneralGradeScale();
+  const approvalFloor = generalScale.regularScore ?? generalScale.passingScore;
   const withFinal = consolidatedStudents.filter((s) => getTargetNum(s) !== null);
   const approved = consolidatedStudents.filter((s) => {
     const num = getTargetNum(s);
-    return num !== null && num >= 6;
+    return num !== null && num >= approvalFloor;
   });
   const inComp = consolidatedStudents.filter((s) => {
     const num = getTargetNum(s);
-    return num !== null && num < 6;
+    return num !== null && num < approvalFloor;
   });
 
   const avgScore =

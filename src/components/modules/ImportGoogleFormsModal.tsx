@@ -25,7 +25,9 @@ import { parseUploadedImportFile } from '../../services/gradeImportDataService';
 import { normalizeImportText } from '../../utils/gradeImportParser';
 import {
   getScoreColorClass,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from '../../utils/gradeCalculations';
 import {
   FormsScaleMode,
@@ -1285,15 +1287,31 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                 (st) =>
                                   String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                               ).length;
+                              const evalInstances = sub.instances || [];
                               const instList = sub.intensifications || [];
                               return (
                                 <React.Fragment key={sub.id}>
                                   <option
                                     value={`${selectedCategoryObj.id}:::${sub.id}`}
                                   >
-                                    Columna existente: {sub.name}
+                                    Columna existente: {getPrimaryInstanceDisplayLabel(sub)}
                                     {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                                   </option>
+                                  {evalInstances.map((evInst) => {
+                                    const evCount = students.filter(
+                                      (st) =>
+                                        String(activeGradesMap[st.id]?.[evInst.id] ?? '').trim() !== ''
+                                    ).length;
+                                    return (
+                                      <option
+                                        key={evInst.id}
+                                        value={`${selectedCategoryObj.id}:::${evInst.id}`}
+                                      >
+                                        ↳ {getEvaluationInstanceDisplayLabel(sub, evInst)}
+                                        {evCount > 0 ? ` (${evCount} notas)` : ''}
+                                      </option>
+                                    );
+                                  })}
                                   {instList.map((inst) => {
                                     const instCount = students.filter(
                                       (st) =>
@@ -1334,13 +1352,26 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                                   (st) =>
                                     String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                                 ).length;
+                                const evalInstances = sub.instances || [];
                                 const instList = sub.intensifications || [];
                                 return (
                                   <React.Fragment key={sub.id}>
                                     <option value={`${otherCat.id}:::${sub.id}`}>
-                                      {otherCat.name} → {sub.name}
+                                      {otherCat.name} → {getPrimaryInstanceDisplayLabel(sub)}
                                       {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                                     </option>
+                                    {evalInstances.map((evInst) => {
+                                      const evCount = students.filter(
+                                        (st) =>
+                                          String(activeGradesMap[st.id]?.[evInst.id] ?? '').trim() !== ''
+                                      ).length;
+                                      return (
+                                        <option key={evInst.id} value={`${otherCat.id}:::${evInst.id}`}>
+                                          {otherCat.name} → {getEvaluationInstanceDisplayLabel(sub, evInst)}
+                                          {evCount > 0 ? ` (${evCount} notas)` : ''}
+                                        </option>
+                                      );
+                                    })}
                                     {instList.map((inst) => {
                                       const instCount = students.filter(
                                         (st) =>

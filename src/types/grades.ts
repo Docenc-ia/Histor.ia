@@ -1,16 +1,51 @@
+export type SubcategoryScaleMode =
+  | 'general'
+  | 'custom'
+  | 'convert_100'
+  | 'sum_group';
+
+export interface GradeScaleSettings {
+  minScore: number;
+  maxScore: number;
+  passingScore: number;
+  regularScore: number | null;
+}
+
+export type EvaluationInstancesCombineMode = 'average' | 'sum' | 'separate';
+
+export interface GradeEvaluationInstance {
+  id: string;
+  name: string; // ej. "Oral", "Escrita", "Práctica", "Parte 2"
+  customTitle?: string;
+  date?: string;
+  minScore?: number;
+  maxScore?: number;
+  passingScore?: number;
+  scaleMode?: SubcategoryScaleMode;
+  convertToGeneralOnAverage?: boolean;
+}
+
 export interface GradeIntensification {
   id: string;
   name: string;
   customTitle?: string;
   date?: string;
-  passingScore?: number; // nota mínima para quedar aprobado con línea (—) por defecto; default 7
+  passingScore?: number; // nota mínima para quedar aprobado con línea (—) por defecto
 }
 
 export interface GradeSubcategory {
   id: string;
   name: string;
   date?: string;
-  maxScore?: number; // default 10
+  minScore?: number; // default: escala general (ej. 1)
+  maxScore?: number; // default: escala general (ej. 10), o 5, 100, etc.
+  passingScore?: number; // nota mínima de aprobación propia para esta columna (ej. 3.5 sobre 5)
+  scaleMode?: SubcategoryScaleMode; // default: 'general'
+  convertToGeneralOnAverage?: boolean; // para 'custom': si true, escala proporcionalmente al promedio general
+  sumGroupId?: string; // para 'sum_group': ID compartido por las evaluaciones que se suman entre sí
+  primaryInstanceName?: string; // etiqueta de la 1° subcolumna cuando hay instancias (ej. "Escrita")
+  instances?: GradeEvaluationInstance[]; // instancias adicionales para TODOS los alumnos (ej. "Oral")
+  instancesCombineMode?: EvaluationInstancesCombineMode; // 'average' (default) | 'sum' | 'separate'
   intensifications?: GradeIntensification[];
 }
 

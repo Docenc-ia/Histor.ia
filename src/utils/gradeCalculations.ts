@@ -7,10 +7,14 @@ import { Student } from '../types';
 import {
   GradeCategory,
   GradeSubcategory,
+  GradeEvaluationInstance,
   GradeIntensification,
+  GradeScaleSettings,
+  SubcategoryScaleMode,
   StudentGradesMap,
 } from '../types/grades';
 import { sanitizeSpreadsheetFormulaCell } from './htmlEscape';
+import { getGeneralGradeScale } from './terminologySettings';
 
 const MANUAL_FINAL_GRADE_KEY = '__final__';
 const FINAL_AVERAGE_OVERRIDE_KEY = '__final_avg_override__';
@@ -22,14 +26,228 @@ const PASSING_REGULAR_SCORE_THRESHOLD = 6;
 export const INTENSIFICATION_EXEMPT_THRESHOLD = PASSING_EXCELLENT_SCORE_THRESHOLD;
 export const INTENSIFICATION_EXEMPT_LABEL = '—';
 
+export interface ResolvedSubcategoryScale {
+  mode: SubcategoryScaleMode;
+  minScore: number;
+  maxScore: number;
+  passingScore: number;
+  regularScore: number | null;
+  convertToGeneralOnAverage: boolean;
+  isCustom: boolean;
+  badgeText: string | null;
+}
+
+/**
+ * Resuelve la escala efectiva de una evaluación/TP combinando su configuración propia
+ * con la escala general configurada por el docente.
+ */
+export function resolveSubcategoryScale(
+  subcategory?: GradeSubcategory | null,
+  generalScaleOverride?: GradeScaleSettings
+): ResolvedSubcategoryScale {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const mode: SubcategoryScaleMode = subcategory?.scaleMode || 'general';
+
+  if (!subcategory || mode === 'general') {
+    // Compatibilidad con subcategorías heredadas que tenían maxScore distinto a 10 sin scaleMode explícito
+    const legacyCustomMax =
+      subcategory &&
+      typeof subcategory.maxScore === 'number' &&
+      Number.isFinite(subcategory.maxScore) &&
+      subcategory.maxScore > 0 &&
+      subcategory.maxScore !== 10 &&
+      subcategory.maxScore !== general.maxScore;
+
+    if (!legacyCustomMax) {
+      return {
+        mode: 'general',
+        minScore: general.minScore,
+        maxScore: general.maxScore,
+        passingScore: general.passingScore,
+        regularScore: general.regularScore,
+        convertToGeneralOnAverage: false,
+        isCustom: false,
+        badgeText: null,
+      };
+    }
+  }
+
+  if (mode === 'convert_100') {
+    return {
+      mode: 'convert_100',
+      minScore: 0,
+      maxScore: 100,
+      passingScore: general.passingScore,
+      regularScore: general.regularScore,
+      convertToGeneralOnAverage: true,
+      isCustom: true,
+      badgeText: `/100→${general.maxScore}`,
+    };
+  }
+
+  const rawMin =
+    typeof subcategory?.minScore === 'number' && Number.isFinite(subcategory.minScore)
+      ? subcategory.minScore
+      : general.minScore;
+  const rawMax =
+    typeof subcategory?.maxScore === 'number' &&
+    Number.isFinite(subcategory.maxScore) &&
+    subcategory.maxScore > rawMin
+      ? subcategory.maxScore
+      : mode === 'sum_group'
+      ? 5
+      : general.maxScore;
+  const proportionalDefaultPass =
+    general.maxScore > 0
+      ? Math.round(((rawMax * general.passingScore) / general.maxScore) * 10) / 10
+      : general.passingScore;
+  const rawPassing =
+    typeof subcategory?.passingScore === 'number' &&
+    Number.isFinite(subcategory.passingScore) &&
+    subcategory.passingScore > 0 &&
+    subcategory.passingScore <= rawMax
+      ? subcategory.passingScore
+      : proportionalDefaultPass;
+
+  if (mode === 'sum_group') {
+    return {
+      mode: 'sum_group',
+      minScore: rawMin,
+      maxScore: rawMax,
+      passingScore: rawPassing,
+      regularScore: null,
+      convertToGeneralOnAverage: false,
+      isCustom: true,
+      badgeText: `∑/${rawMax}`,
+    };
+  }
+
+  // mode === 'custom' (o legacy custom max)
+  const convertToGeneralOnAverage =
+    subcategory?.convertToGeneralOnAverage !== undefined
+      ? subcategory.convertToGeneralOnAverage
+      : rawMax !== general.maxScore;
+
+  const badgeText =
+    rawMax !== general.maxScore
+      ? `/${rawMax}`
+      : rawPassing !== general.passingScore
+      ? `≥${rawPassing}`
+      : null;
+
+  return {
+    mode: 'custom',
+    minScore: rawMin,
+    maxScore: rawMax,
+    passingScore: rawPassing,
+    regularScore:
+      rawMax === general.maxScore && rawPassing === general.passingScore
+        ? general.regularScore
+        : null,
+    convertToGeneralOnAverage,
+    isCustom: true,
+    badgeText,
+  };
+}
+
+/**
+ * Resuelve la escala efectiva de una instancia adicional de una evaluación.
+ * Si la instancia no define escala propia (o usa 'general'), hereda la escala de la evaluación padre.
+ */
+export function resolveInstanceScale(
+  subcategory: GradeSubcategory,
+  instance?: GradeEvaluationInstance | null,
+  generalScaleOverride?: GradeScaleSettings
+): ResolvedSubcategoryScale {
+  if (!instance || !instance.scaleMode || instance.scaleMode === 'general') {
+    return resolveSubcategoryScale(subcategory, generalScaleOverride);
+  }
+  return resolveSubcategoryScale(
+    {
+      id: instance.id,
+      name: instance.name,
+      minScore: instance.minScore,
+      maxScore: instance.maxScore,
+      passingScore: instance.passingScore,
+      scaleMode: instance.scaleMode,
+      convertToGeneralOnAverage: instance.convertToGeneralOnAverage,
+    },
+    generalScaleOverride
+  );
+}
+
+/**
+ * Convierte un valor ingresado en una columna de escala 0–100 a la escala general (por defecto sobre 10).
+ * Convierte automáticamente valores > maxGeneral (ej. 85 -> 8.5, 100 -> 10) o formatos con "%" / "/100".
+ * Si el valor ya está en la escala general (ej. 8.5) o no es numérico, devuelve `null` (sin modificar).
+ */
+export function convertScoreFrom100ToGeneral(
+  rawValue: string,
+  generalScaleOverride?: GradeScaleSettings
+): string | null {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const trimmed = String(rawValue ?? '').trim();
+  if (!trimmed) return null;
+
+  const fracMatch = trimmed.match(/^(\d+(?:[.,]\d+)?)\s*(?:\/|de|sobre)\s*100$/i);
+  if (fracMatch) {
+    const num = Number(fracMatch[1].replace(',', '.'));
+    if (Number.isFinite(num) && num >= 0 && num <= 100) {
+      const converted = (num / 100) * general.maxScore;
+      return converted.toFixed(ONE_DECIMAL_PRECISION).replace(/\.0$/, '');
+    }
+  }
+
+  const pctMatch = trimmed.match(/^(\d+(?:[.,]\d+)?)\s*%$/);
+  if (pctMatch) {
+    const num = Number(pctMatch[1].replace(',', '.'));
+    if (Number.isFinite(num) && num >= 0 && num <= 100) {
+      const converted = (num / 100) * general.maxScore;
+      return converted.toFixed(ONE_DECIMAL_PRECISION).replace(/\.0$/, '');
+    }
+  }
+
+  const parsed = parseGradeNumber(trimmed);
+  if (parsed !== null && parsed > general.maxScore && parsed <= 100) {
+    const converted = (parsed / 100) * general.maxScore;
+    return converted.toFixed(ONE_DECIMAL_PRECISION).replace(/\.0$/, '');
+  }
+
+  return null;
+}
+
+/**
+ * Devuelve todas las subcategorías (con su categoría padre) que comparten un mismo `sumGroupId`.
+ */
+export function getSumGroupPeers(
+  categories: GradeCategory[],
+  sumGroupId?: string
+): Array<{ category: GradeCategory; subcategory: GradeSubcategory }> {
+  if (!sumGroupId || !Array.isArray(categories)) return [];
+  const peers: Array<{ category: GradeCategory; subcategory: GradeSubcategory }> = [];
+  for (const category of categories) {
+    for (const subcategory of category.subcategories || []) {
+      if (subcategory.scaleMode === 'sum_group' && subcategory.sumGroupId === sumGroupId) {
+        peers.push({ category, subcategory });
+      }
+    }
+  }
+  return peers;
+}
+
 export function getIntensificationPassingThreshold(
-  intensification?: GradeIntensification
+  intensification?: GradeIntensification,
+  subcategory?: GradeSubcategory
 ): number {
   const raw = intensification?.passingScore;
-  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0 && raw <= 10) {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0 && raw <= 1000) {
     return raw;
   }
-  return INTENSIFICATION_EXEMPT_THRESHOLD;
+  if (subcategory) {
+    const resolved = resolveSubcategoryScale(subcategory);
+    return resolved.passingScore;
+  }
+  return getGeneralGradeScale().passingScore;
 }
 
 export function isExemptMarkerValue(rawValue: unknown): boolean {
@@ -58,6 +276,47 @@ export function parseGradeNumber(rawValue: unknown): number | null {
 }
 
 /**
+ * Devuelve la etiqueta corta de la primera subcolumna de una evaluación
+ * (por ejemplo "Escrita", "1° Inst." si tiene instancias, o "Nota" si solo tiene intensificaciones).
+ */
+export function getPrimaryInstanceLabel(subcategory: GradeSubcategory): string {
+  const custom = (subcategory.primaryInstanceName || '').trim();
+  if (custom) return custom;
+  if (Array.isArray(subcategory.instances) && subcategory.instances.length > 0) {
+    return '1° Inst.';
+  }
+  return 'Nota';
+}
+
+/**
+ * Genera el título legible de la instancia principal (para informes, desglose e importaciones).
+ */
+export function getPrimaryInstanceDisplayLabel(subcategory: GradeSubcategory): string {
+  if (Array.isArray(subcategory.instances) && subcategory.instances.length > 0) {
+    return `${subcategory.name} — ${getPrimaryInstanceLabel(subcategory)}`;
+  }
+  return subcategory.name;
+}
+
+/**
+ * Genera el título legible de una instancia adicional (ej. "Parcial 1 — Oral").
+ */
+export function getEvaluationInstanceDisplayLabel(
+  subcategory: GradeSubcategory,
+  instance: GradeEvaluationInstance
+): string {
+  const custom = (instance.customTitle || '').trim();
+  const instName = (instance.name || '').trim() || 'Instancia';
+  if (custom) {
+    if (custom.toLowerCase().includes(instName.toLowerCase())) {
+      return custom;
+    }
+    return `${custom} — ${instName}`;
+  }
+  return `${subcategory.name} — ${instName}`;
+}
+
+/**
  * Genera el título legible de una instancia de intensificación/recuperación combinando el título
  * de la evaluación padre (o la especificación editada por el docente) y el nombre de la instancia.
  */
@@ -77,6 +336,35 @@ export function getIntensificationDisplayLabel(
 }
 
 /**
+ * Calcula la nota efectiva de una evaluación considerando sus instancias (si las tiene)
+ * para evaluar si un estudiante ya alcanzó el umbral de exención en una intensificación.
+ */
+function getEvaluationScoreForIntensificationCheck(
+  subcategory: GradeSubcategory,
+  grades: Record<string, string>
+): number | null {
+  const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
+  if (evalInstances.length === 0) {
+    return parseGradeNumber(grades[subcategory.id]);
+  }
+
+  const values: number[] = [];
+  const primary = parseGradeNumber(grades[subcategory.id]);
+  if (primary !== null) values.push(primary);
+  for (const inst of evalInstances) {
+    const val = parseGradeNumber(grades[inst.id]);
+    if (val !== null) values.push(val);
+  }
+  if (values.length === 0) return null;
+
+  const combineMode = subcategory.instancesCombineMode || 'average';
+  if (combineMode === 'sum') {
+    return values.reduce((acc, v) => acc + v, 0);
+  }
+  return values.reduce((acc, v) => acc + v, 0) / values.length;
+}
+
+/**
  * Determina si un estudiante ya alcanzó la nota mínima configurada para la instancia de
  * intensificación `instIndex` (en la evaluación original o en una instancia previa).
  * En ese caso corresponde mostrar una línea (`—`) por defecto, editable si el docente decide evaluarlo igual.
@@ -91,11 +379,15 @@ export function isStudentExemptFromIntensification(
     ? subcategory.intensifications
     : [];
   const targetInst = instList[instIndex];
-  const threshold = getIntensificationPassingThreshold(targetInst);
+  const threshold = getIntensificationPassingThreshold(targetInst, subcategory);
 
-  const originalScore = parseGradeNumber(grades[subcategory.id]);
+  const originalScore = getEvaluationScoreForIntensificationCheck(subcategory, grades);
   if (originalScore !== null && originalScore >= threshold) {
-    return { exempt: true, passingScore: originalScore, threshold };
+    return {
+      exempt: true,
+      passingScore: Math.round(originalScore * 10) / 10,
+      threshold,
+    };
   }
 
   for (let i = 0; i < instIndex && i < instList.length; i++) {
@@ -168,8 +460,8 @@ export function getEffectiveIntensificationCell(
 }
 
 /**
- * Busca una columna calificable por ID dentro de todas las categorías, subcategorías
- * y sus instancias de intensificación/recuperación.
+ * Busca una columna calificable por ID dentro de todas las categorías, subcategorías,
+ * sus instancias evaluativas y sus instancias de intensificación/recuperación.
  */
 export function findGradeColumnById(
   categories: GradeCategory[],
@@ -177,6 +469,8 @@ export function findGradeColumnById(
 ): {
   category: GradeCategory;
   subcategory?: GradeSubcategory;
+  evaluationInstance?: GradeEvaluationInstance;
+  evaluationInstanceIndex?: number;
   intensification?: GradeIntensification;
   intensificationIndex?: number;
   displayLabel: string;
@@ -188,7 +482,23 @@ export function findGradeColumnById(
     }
     for (const subcategory of category.subcategories || []) {
       if (subcategory.id === columnId) {
-        return { category, subcategory, displayLabel: subcategory.name };
+        return {
+          category,
+          subcategory,
+          displayLabel: getPrimaryInstanceDisplayLabel(subcategory),
+        };
+      }
+      const evalInstances = subcategory.instances || [];
+      for (let i = 0; i < evalInstances.length; i++) {
+        if (evalInstances[i].id === columnId) {
+          return {
+            category,
+            subcategory,
+            evaluationInstance: evalInstances[i],
+            evaluationInstanceIndex: i,
+            displayLabel: getEvaluationInstanceDisplayLabel(subcategory, evalInstances[i]),
+          };
+        }
       }
       const instList = subcategory.intensifications || [];
       for (let i = 0; i < instList.length; i++) {
@@ -275,7 +585,191 @@ export const CATEGORY_COLORS = [
 ];
 
 /**
+ * Normaliza un valor numérico según una escala resuelta hacia la escala general.
+ */
+export function normalizeScoreWithResolvedScale(
+  rawScore: number,
+  resolved: ResolvedSubcategoryScale,
+  generalScaleOverride?: GradeScaleSettings
+): number {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  if (resolved.mode === 'convert_100') {
+    if (rawScore > general.maxScore) {
+      return (rawScore / 100) * general.maxScore;
+    }
+    return rawScore;
+  }
+
+  if (
+    resolved.mode === 'custom' &&
+    resolved.convertToGeneralOnAverage &&
+    resolved.maxScore > 0 &&
+    resolved.maxScore !== general.maxScore
+  ) {
+    return (rawScore / resolved.maxScore) * general.maxScore;
+  }
+
+  return rawScore;
+}
+
+/**
+ * Normaliza el puntaje de una subcategoría hacia la escala general del curso
+ * para incorporarlo en promedios, teniendo en cuenta escalas personalizadas y sobre 100.
+ */
+export function normalizeSubcategoryScoreForAverage(
+  rawScore: number,
+  subcategory: GradeSubcategory,
+  generalScaleOverride?: GradeScaleSettings
+): number {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const resolved = resolveSubcategoryScale(subcategory, general);
+  return normalizeScoreWithResolvedScale(rawScore, resolved, general);
+}
+
+/**
+ * Calcula los valores numéricos (en escala general) aportados por una subcategoría al promedio,
+ * combinando sus instancias evaluativas según `instancesCombineMode` ('average' | 'sum' | 'separate').
+ */
+export function computeSubcategoryAverageContributions(
+  subcategory: GradeSubcategory,
+  studentGradeRecord: Record<string, string>,
+  generalScaleOverride?: GradeScaleSettings
+): number[] {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
+
+  if (evalInstances.length === 0) {
+    const parsedSub = parseGradeNumber(studentGradeRecord[subcategory.id]);
+    if (parsedSub === null) return [];
+    return [normalizeSubcategoryScoreForAverage(parsedSub, subcategory, general)];
+  }
+
+  const combineMode = subcategory.instancesCombineMode || 'average';
+  const primaryScale = resolveSubcategoryScale(subcategory, general);
+  const entries: Array<{ raw: number; scale: ResolvedSubcategoryScale }> = [];
+
+  const parsedPrimary = parseGradeNumber(studentGradeRecord[subcategory.id]);
+  if (parsedPrimary !== null) {
+    entries.push({ raw: parsedPrimary, scale: primaryScale });
+  }
+
+  evalInstances.forEach((inst) => {
+    const parsedInst = parseGradeNumber(studentGradeRecord[inst.id]);
+    if (parsedInst !== null) {
+      entries.push({
+        raw: parsedInst,
+        scale: resolveInstanceScale(subcategory, inst, general),
+      });
+    }
+  });
+
+  if (entries.length === 0) return [];
+
+  if (combineMode === 'sum') {
+    const rawSum = entries.reduce((acc, e) => acc + e.raw, 0);
+    const totalCombinedMax =
+      primaryScale.maxScore +
+      evalInstances.reduce(
+        (acc, inst) => acc + resolveInstanceScale(subcategory, inst, general).maxScore,
+        0
+      );
+    const combinedScore =
+      totalCombinedMax > 0 && totalCombinedMax !== general.maxScore
+        ? (rawSum / totalCombinedMax) * general.maxScore
+        : rawSum;
+    return [combinedScore];
+  }
+
+  const normalizedScores = entries.map((e) =>
+    normalizeScoreWithResolvedScale(e.raw, e.scale, general)
+  );
+
+  if (combineMode === 'separate') {
+    return normalizedScores;
+  }
+
+  // 'average' (default): promedio de todas las instancias cargadas de la evaluación como 1 sola nota
+  const avg = normalizedScores.reduce((acc, v) => acc + v, 0) / normalizedScores.length;
+  return [avg];
+}
+
+/**
+ * Obtiene la lista de valores numéricos (en escala general) que componen el promedio de un estudiante,
+ * consolidando grupos de suma (`sum_group`) e instancias evaluativas en notas combinadas y respetando escalas propias.
+ */
+export function computeStudentTermAverageItems(
+  termCategories: GradeCategory[],
+  studentGradeRecord: Record<string, string>,
+  generalScaleOverride?: GradeScaleSettings
+): number[] {
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const numericScores: number[] = [];
+  const processedSumGroups = new Set<string>();
+
+  termCategories.forEach((category) => {
+    if (category.subcategories.length === 0) {
+      const parsedDirect = parseGradeNumber(studentGradeRecord[category.id]);
+      if (parsedDirect !== null) {
+        numericScores.push(parsedDirect);
+      }
+      return;
+    }
+
+    category.subcategories.forEach((subcategory) => {
+      if (subcategory.scaleMode === 'sum_group' && subcategory.sumGroupId) {
+        if (processedSumGroups.has(subcategory.sumGroupId)) return;
+        processedSumGroups.add(subcategory.sumGroupId);
+
+        const peers = getSumGroupPeers(termCategories, subcategory.sumGroupId);
+        let hasAnyScore = false;
+        let rawSum = 0;
+        let totalGroupMax = 0;
+
+        peers.forEach(({ subcategory: peerSub }) => {
+          const peerScale = resolveSubcategoryScale(peerSub, general);
+          totalGroupMax += peerScale.maxScore;
+          const parsedPeer = parseGradeNumber(studentGradeRecord[peerSub.id]);
+          if (parsedPeer !== null) {
+            hasAnyScore = true;
+            rawSum += parsedPeer;
+          }
+          (peerSub.instances || []).forEach((peerInst) => {
+            const instScale = resolveInstanceScale(peerSub, peerInst, general);
+            totalGroupMax += instScale.maxScore;
+            const parsedPeerInst = parseGradeNumber(studentGradeRecord[peerInst.id]);
+            if (parsedPeerInst !== null) {
+              hasAnyScore = true;
+              rawSum += parsedPeerInst;
+            }
+          });
+        });
+
+        if (hasAnyScore) {
+          const combinedScore =
+            totalGroupMax > 0 && totalGroupMax !== general.maxScore
+              ? (rawSum / totalGroupMax) * general.maxScore
+              : rawSum;
+          numericScores.push(combinedScore);
+        }
+        return;
+      }
+
+      const contributions = computeSubcategoryAverageContributions(
+        subcategory,
+        studentGradeRecord,
+        general
+      );
+      numericScores.push(...contributions);
+      // Las notas de intensificación/recuperación quedan fuera de los promedios automáticos.
+    });
+  });
+
+  return numericScores;
+}
+
+/**
  * Calcula el promedio aritmético de todas las calificaciones registradas para un estudiante en el cuatrimestre.
+ * Respeta escalas personalizadas, conversiones sobre 100 y evaluaciones vinculadas por suma.
  *
  * @param termCategories Categorías y subcategorías configuradas en el cuatrimestre.
  * @param termGrades Mapa de notas de los estudiantes en el cuatrimestre.
@@ -288,25 +782,7 @@ export function calculateCategoryAverageForStudent(
   studentId: string
 ): { scoreStr: string; num: number | null } {
   const studentGradeRecord = termGrades[studentId] || {};
-  const numericScores: number[] = [];
-
-  termCategories.forEach((category) => {
-    if (category.subcategories.length === 0) {
-      // Cuando una categoría no tiene subcategorías hijas, la calificación se almacena indexada directamente bajo el ID de la categoría.
-      const parsedDirect = parseGradeNumber(studentGradeRecord[category.id]);
-      if (parsedDirect !== null) {
-        numericScores.push(parsedDirect);
-      }
-    } else {
-      category.subcategories.forEach((subcategory) => {
-        const parsedSub = parseGradeNumber(studentGradeRecord[subcategory.id]);
-        if (parsedSub !== null) {
-          numericScores.push(parsedSub);
-        }
-        // Las notas de intensificación/recuperación quedan fuera de los promedios automáticos.
-      });
-    }
-  });
+  const numericScores = computeStudentTermAverageItems(termCategories, studentGradeRecord);
 
   if (numericScores.length === 0) return { scoreStr: '', num: null };
   const averageValue =
@@ -433,13 +909,13 @@ export function computeTermScoresMap(
 
 /**
  * Devuelve las clases utilitarias de color de Tailwind CSS según el tramo pedagógico de la nota
- * (`>= 7` aprobado/TEA en verde, `>= 6` regular/en proceso en ámbar, `< 6` desaprobado/TED en rojo).
- *
- * @param scoreValueString Cadena con la nota numérica a colorear.
- * @param isDarkMode Indicador de tema oscuro activo para el texto neutro cuando la celda no es numérica.
- * @returns Clases de Tailwind CSS correspondientes al color de la calificación.
+ * utilizando la escala general configurada o una escala particular por columna (`scaleOverride`).
  */
-export function getScoreColorClass(scoreValueString: string, isDarkMode: boolean): string {
+export function getScoreColorClass(
+  scoreValueString: string,
+  isDarkMode: boolean,
+  scaleOverride?: Pick<ResolvedSubcategoryScale, 'mode' | 'maxScore' | 'passingScore' | 'regularScore'>
+): string {
   if (isExemptMarkerValue(scoreValueString)) {
     return isDarkMode ? 'text-slate-400 font-bold' : 'text-slate-500 font-bold';
   }
@@ -447,10 +923,20 @@ export function getScoreColorClass(scoreValueString: string, isDarkMode: boolean
   if (numericScore === null) {
     return isDarkMode ? 'text-slate-200' : 'text-neutral-800';
   }
-  if (numericScore >= PASSING_EXCELLENT_SCORE_THRESHOLD) {
+
+  const general = getGeneralGradeScale();
+  const passing = scaleOverride ? scaleOverride.passingScore : general.passingScore;
+  const regular = scaleOverride ? scaleOverride.regularScore : general.regularScore;
+
+  let comparableScore = numericScore;
+  if (scaleOverride?.mode === 'convert_100' && numericScore > general.maxScore && numericScore <= 100) {
+    comparableScore = (numericScore / 100) * general.maxScore;
+  }
+
+  if (comparableScore >= passing) {
     return 'text-emerald-600 dark:text-emerald-400 font-bold';
   }
-  if (numericScore >= PASSING_REGULAR_SCORE_THRESHOLD) {
+  if (regular !== null && regular < passing && comparableScore >= regular) {
     return 'text-amber-600 dark:text-amber-400 font-semibold';
   }
   return 'text-red-600 dark:text-red-400 font-bold';
@@ -496,14 +982,19 @@ export function computeStudentAnnualSummaryRows(
     const finalVal = hasOverride ? manualOverride : calcAvgStr;
     const finalNum = parseGradeNumber(finalVal);
 
+    const generalScale = getGeneralGradeScale();
     let condition = 'Pendiente';
     let conditionTone: AnnualConditionTone = 'pending';
 
     if (finalNum !== null) {
-      if (finalNum >= PASSING_EXCELLENT_SCORE_THRESHOLD) {
+      if (finalNum >= generalScale.passingScore) {
         condition = 'Aprobado';
         conditionTone = 'approved';
-      } else if (finalNum >= PASSING_REGULAR_SCORE_THRESHOLD) {
+      } else if (
+        generalScale.regularScore !== null &&
+        generalScale.regularScore < generalScale.passingScore &&
+        finalNum >= generalScale.regularScore
+      ) {
         condition = 'Aprobado (Regular)';
         conditionTone = 'regular';
       } else {
@@ -574,8 +1065,13 @@ export function computeAnnualCourseKpis(
   const with1c = studentAnnualRows.filter((row) => row.score1cNum !== null);
   const with2c = studentAnnualRows.filter((row) => row.score2cNum !== null);
   const withFinal = studentAnnualRows.filter((row) => row.finalNum !== null);
+  const generalScale = getGeneralGradeScale();
+  const minApprovedForKpi =
+    generalScale.regularScore !== null && generalScale.regularScore < generalScale.passingScore
+      ? generalScale.regularScore
+      : generalScale.passingScore;
   const approved = studentAnnualRows.filter(
-    (row) => row.finalNum !== null && row.finalNum >= PASSING_REGULAR_SCORE_THRESHOLD
+    (row) => row.finalNum !== null && row.finalNum >= minApprovedForKpi
   );
 
   const avg1c =

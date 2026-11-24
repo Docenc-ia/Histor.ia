@@ -7,8 +7,16 @@
  */
 
 import { Student } from '../types';
-import { GradeCategory, StudentGradesMap } from '../types/grades';
+import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../types/grades';
 import { sanitizeSpreadsheetFormulaCell } from './htmlEscape';
+import { getGeneralGradeScale } from './terminologySettings';
+import {
+  computeStudentTermAverageItems,
+  getEvaluationInstanceDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
+  resolveInstanceScale,
+  resolveSubcategoryScale,
+} from './gradeCalculations';
 
 export type QualitativeTrajectory = 'TEA' | 'TEP' | 'TED' | '';
 
@@ -17,6 +25,8 @@ export interface EvaluativeAssessmentMeta {
   name: string;
   categoryName: string;
   maxScore: number;
+  passingScore?: number;
+  subcategory?: GradeSubcategory;
 }
 
 export interface StudentValuationEntry {
@@ -41,8 +51,6 @@ export interface PreliminaryValuationStats {
   pendingCount: number;
 }
 
-const DEFAULT_MAX_SCORE = 10;
-const TEA_MINIMUM_AVERAGE_THRESHOLD = 7;
 const ONE_DECIMAL_PRECISION = 1;
 const MISSING_GRADES_DEFAULT_OBSERVATION = 'Sin notas registradas aún';
 
@@ -54,6 +62,7 @@ const MISSING_GRADES_DEFAULT_OBSERVATION = 'Sin notas registradas aún';
  * @returns Lista plana de metadatos de evaluación.
  */
 export function flattenEvaluativeItems(categories: GradeCategory[]): EvaluativeAssessmentMeta[] {
+  const general = getGeneralGradeScale();
   const assessments: EvaluativeAssessmentMeta[] = [];
   categories.forEach((category) => {
     if (category.subcategories.length === 0) {
@@ -61,15 +70,30 @@ export function flattenEvaluativeItems(categories: GradeCategory[]): EvaluativeA
         id: category.id,
         name: category.name,
         categoryName: category.name,
-        maxScore: DEFAULT_MAX_SCORE,
+        maxScore: general.maxScore,
+        passingScore: general.passingScore,
       });
     } else {
       category.subcategories.forEach((subcategory) => {
+        const resolved = resolveSubcategoryScale(subcategory, general);
         assessments.push({
           id: subcategory.id,
-          name: subcategory.name,
+          name: getPrimaryInstanceDisplayLabel(subcategory),
           categoryName: category.name,
-          maxScore: subcategory.maxScore || DEFAULT_MAX_SCORE,
+          maxScore: resolved.maxScore,
+          passingScore: resolved.passingScore,
+          subcategory,
+        });
+        (subcategory.instances || []).forEach((evInst) => {
+          const evResolved = resolveInstanceScale(subcategory, evInst, general);
+          assessments.push({
+            id: evInst.id,
+            name: getEvaluationInstanceDisplayLabel(subcategory, evInst),
+            categoryName: category.name,
+            maxScore: evResolved.maxScore,
+            passingScore: evResolved.passingScore,
+            subcategory,
+          });
         });
       });
     }
@@ -88,6 +112,7 @@ export function resolveSelectedAssessmentsMeta(
   selectedAssessmentIds: string[],
   availableAssessments: EvaluativeAssessmentMeta[]
 ): EvaluativeAssessmentMeta[] {
+  const general = getGeneralGradeScale();
   return selectedAssessmentIds.map((assessmentId) => {
     const matchedAssessment = availableAssessments.find((item) => item.id === assessmentId);
     return (
@@ -95,7 +120,8 @@ export function resolveSelectedAssessmentsMeta(
         id: assessmentId,
         name: assessmentId,
         categoryName: '',
-        maxScore: DEFAULT_MAX_SCORE,
+        maxScore: general.maxScore,
+        passingScore: general.passingScore,
       }
     );
   });
@@ -115,21 +141,68 @@ export function computePreliminaryStudentRows(
   students: Student[],
   gradesMap: StudentGradesMap,
   selectedAssessmentIds: string[],
-  valuations: Record<string, StudentValuationEntry>
+  valuations: Record<string, StudentValuationEntry>,
+  categories?: GradeCategory[]
 ): PreliminaryStudentRow[] {
+  const selectedIdSet = new Set(selectedAssessmentIds);
+  const filteredCategories: GradeCategory[] | null = categories
+    ? categories
+        .map((cat) => {
+          if (cat.subcategories.length === 0) {
+            return selectedIdSet.has(cat.id) ? cat : null;
+          }
+          const matchingSubs: GradeSubcategory[] = [];
+          cat.subcategories.forEach((sub) => {
+            const primarySelected = selectedIdSet.has(sub.id);
+            const selectedExtras = (sub.instances || []).filter((ei) =>
+              selectedIdSet.has(ei.id)
+            );
+            if (!primarySelected && selectedExtras.length === 0) return;
+            if (primarySelected) {
+              matchingSubs.push({
+                ...sub,
+                instances: selectedExtras.length > 0 ? selectedExtras : undefined,
+              });
+            } else {
+              const [firstExtra, ...restExtras] = selectedExtras;
+              matchingSubs.push({
+                ...sub,
+                id: firstExtra.id,
+                name: firstExtra.name,
+                scaleMode: firstExtra.scaleMode ?? sub.scaleMode,
+                minScore: firstExtra.minScore ?? sub.minScore,
+                maxScore: firstExtra.maxScore ?? sub.maxScore,
+                passingScore: firstExtra.passingScore ?? sub.passingScore,
+                convertToGeneralOnAverage:
+                  firstExtra.convertToGeneralOnAverage ?? sub.convertToGeneralOnAverage,
+                instances: restExtras.length > 0 ? restExtras : undefined,
+              });
+            }
+          });
+          if (matchingSubs.length === 0) return null;
+          return { ...cat, subcategories: matchingSubs };
+        })
+        .filter((cat): cat is GradeCategory => cat !== null)
+    : null;
+
   return students.map((student) => {
     const studentGrades = gradesMap[student.id] || {};
-    const numericScores: number[] = [];
+    let numericScores: number[];
 
-    selectedAssessmentIds.forEach((assessmentId) => {
-      const rawScore = studentGrades[assessmentId];
-      if (rawScore !== undefined && rawScore !== null) {
-        const normalizedScore = String(rawScore).trim().replace(',', '.');
-        if (normalizedScore !== '' && !isNaN(Number(normalizedScore))) {
-          numericScores.push(Number(normalizedScore));
+    if (filteredCategories) {
+      numericScores = computeStudentTermAverageItems(filteredCategories, studentGrades);
+    } else {
+      numericScores = [];
+      selectedAssessmentIds.forEach((assessmentId) => {
+        const rawScore = studentGrades[assessmentId];
+        if (rawScore !== undefined && rawScore !== null) {
+          const normalizedScore = String(rawScore).trim().replace(',', '.');
+          if (normalizedScore !== '' && !isNaN(Number(normalizedScore))) {
+            numericScores.push(Number(normalizedScore));
+          }
         }
-      }
-    });
+      });
+    }
 
     let averageScore: number | null = null;
     let averageScoreStr = '';
@@ -153,8 +226,8 @@ export function computePreliminaryStudentRows(
 }
 
 /**
- * Genera de forma pura un nuevo mapa de valoraciones sugiriendo automáticamente `TEA` (promedio >= 7)
- * o `TEP` (promedio < 7 o sin calificaciones registradas), preservando observaciones previas del docente.
+ * Genera de forma pura un nuevo mapa de valoraciones sugiriendo automáticamente `TEA` (promedio >= nota de aprobación)
+ * o `TEP` (promedio menor o sin calificaciones registradas), preservando observaciones previas del docente.
  *
  * @param studentRows Filas calculadas con el promedio preliminar de cada estudiante.
  * @param currentValuations Mapa actual de valoraciones cargadas.
@@ -164,13 +237,14 @@ export function suggestAllPreliminaryValuations(
   studentRows: PreliminaryStudentRow[],
   currentValuations: Record<string, StudentValuationEntry>
 ): Record<string, StudentValuationEntry> {
+  const teaThreshold = getGeneralGradeScale().passingScore;
   const suggestedValuations: Record<string, StudentValuationEntry> = { ...currentValuations };
 
   studentRows.forEach((row) => {
     const existingObservation = suggestedValuations[row.student.id]?.observation || '';
     if (row.averageScore !== null) {
       const suggestedTrajectory: QualitativeTrajectory =
-        row.averageScore >= TEA_MINIMUM_AVERAGE_THRESHOLD ? 'TEA' : 'TEP';
+        row.averageScore >= teaThreshold ? 'TEA' : 'TEP';
       suggestedValuations[row.student.id] = {
         trajectory: suggestedTrajectory,
         observation: existingObservation,

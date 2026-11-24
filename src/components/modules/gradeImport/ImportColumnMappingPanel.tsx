@@ -6,7 +6,9 @@ import type { DetectedColumnConfig, DetectedColumnKind } from '../../../types/gr
 import type { PreferredTargetColumn } from './ImportUploadStep';
 import {
   findGradeColumnById,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from '../../../utils/gradeCalculations';
 
 export interface ImportColumnMappingPanelProps {
@@ -454,17 +456,35 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                           activeGradesMap[st.id]?.[sub.id] ?? ''
                                         ).trim() !== ''
                                     ).length;
+                                    const evalInstances = sub.instances || [];
                                     const instList = sub.intensifications || [];
                                     return (
                                       <React.Fragment key={sub.id}>
                                         <option
                                           value={`${selectedCat.id}:::${sub.id}`}
                                         >
-                                          Columna existente: {sub.name}
+                                          Columna existente: {getPrimaryInstanceDisplayLabel(sub)}
                                           {existingCount > 0
                                             ? ` (${existingCount} notas cargadas)`
                                             : ''}
                                         </option>
+                                        {evalInstances.map((evInst) => {
+                                          const evCount = students.filter(
+                                            (st) =>
+                                              String(
+                                                activeGradesMap[st.id]?.[evInst.id] ?? ''
+                                              ).trim() !== ''
+                                          ).length;
+                                          return (
+                                            <option
+                                              key={evInst.id}
+                                              value={`${selectedCat.id}:::${evInst.id}`}
+                                            >
+                                              ↳ {getEvaluationInstanceDisplayLabel(sub, evInst)}
+                                              {evCount > 0 ? ` (${evCount} notas)` : ''}
+                                            </option>
+                                          );
+                                        })}
                                         {instList.map((inst) => {
                                           const instCount = students.filter(
                                             (st) =>
@@ -507,17 +527,35 @@ export const ImportColumnMappingPanel: React.FC<ImportColumnMappingPanelProps> =
                                             activeGradesMap[st.id]?.[sub.id] ?? ''
                                           ).trim() !== ''
                                       ).length;
+                                      const evalInstances = sub.instances || [];
                                       const instList = sub.intensifications || [];
                                       return (
                                         <React.Fragment key={sub.id}>
                                           <option
                                             value={`${otherCat.id}:::${sub.id}`}
                                           >
-                                            {otherCat.name} → {sub.name}
+                                            {otherCat.name} → {getPrimaryInstanceDisplayLabel(sub)}
                                             {existingCount > 0
                                               ? ` (${existingCount} notas cargadas)`
                                               : ''}
                                           </option>
+                                          {evalInstances.map((evInst) => {
+                                            const evCount = students.filter(
+                                              (st) =>
+                                                String(
+                                                  activeGradesMap[st.id]?.[evInst.id] ?? ''
+                                                ).trim() !== ''
+                                            ).length;
+                                            return (
+                                              <option
+                                                key={evInst.id}
+                                                value={`${otherCat.id}:::${evInst.id}`}
+                                              >
+                                                {otherCat.name} → {getEvaluationInstanceDisplayLabel(sub, evInst)}
+                                                {evCount > 0 ? ` (${evCount} notas)` : ''}
+                                              </option>
+                                            );
+                                          })}
                                           {instList.map((inst) => {
                                             const instCount = students.filter(
                                               (st) =>

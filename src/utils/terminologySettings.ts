@@ -3,6 +3,8 @@ import { getUserStorageKey } from '../services/api';
 import { storageGateway } from '../services/storageGateway';
 import { firestoreSync, getActiveUserId } from '../services/firestoreSync';
 
+import { GradeScaleSettings } from '../types/grades';
+
 export interface TerminologySettings {
   attendanceLabel: string;
   dispositionLabel: string;
@@ -10,6 +12,10 @@ export interface TerminologySettings {
   initialDispositionScore: number;
   intensificationLabel: string;
   intensificationPassingScore: number;
+  gradeScaleMin: number;
+  gradeScaleMax: number;
+  gradePassingScore: number;
+  gradeRegularScore: number | null;
 }
 
 export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
@@ -19,7 +25,60 @@ export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
   initialDispositionScore: 10,
   intensificationLabel: 'Intensificación',
   intensificationPassingScore: 7,
+  gradeScaleMin: 1,
+  gradeScaleMax: 10,
+  gradePassingScore: 7,
+  gradeRegularScore: 6,
 };
+
+export interface GradeScalePreset {
+  id: string;
+  label: string;
+  description: string;
+  minScore: number;
+  maxScore: number;
+  passingScore: number;
+  regularScore: number | null;
+}
+
+export const GRADE_SCALE_PRESETS: GradeScalePreset[] = [
+  {
+    id: '1-10-7',
+    label: '1 al 10 · Aprueba con 7',
+    description: 'Estándar (7+ aprobado, 6 regular)',
+    minScore: 1,
+    maxScore: 10,
+    passingScore: 7,
+    regularScore: 6,
+  },
+  {
+    id: '1-10-6',
+    label: '1 al 10 · Aprueba con 6',
+    description: 'Aprobación directa desde 6',
+    minScore: 1,
+    maxScore: 10,
+    passingScore: 6,
+    regularScore: null,
+  },
+  {
+    id: '1-10-4',
+    label: '1 al 10 · Aprueba con 4',
+    description: 'Escala terciaria / universitaria',
+    minScore: 1,
+    maxScore: 10,
+    passingScore: 4,
+    regularScore: null,
+  },
+  {
+    id: '1-100-70',
+    label: '1 al 100 · Aprueba con 70',
+    description: 'Escala porcentual directa',
+    minScore: 1,
+    maxScore: 100,
+    passingScore: 70,
+    regularScore: 60,
+  },
+];
 
 export const INTENSIFICATION_PASSING_SCORE_PRESETS: number[] = [6, 7, 8];
 
@@ -71,10 +130,56 @@ function sanitizeInitialScore(value: unknown, fallback = 10): number {
   return rounded;
 }
 
-function sanitizePassingScore(value: unknown, fallback = 7): number {
+function sanitizePassingScore(value: unknown, fallback = 7, maxBound = 1000): number {
   const num = Number(String(value ?? '').replace(',', '.'));
-  if (!Number.isFinite(num) || num <= 0 || num > 10) return fallback;
+  if (!Number.isFinite(num) || num <= 0 || num > maxBound) return fallback;
   return Math.round(num * 10) / 10;
+}
+
+function sanitizeScaleMin(value: unknown, fallback = 1): number {
+  if (value === 0 || value === '0') return 0;
+  const num = Number(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(num) || num < 0 || num > 100) return fallback;
+  return Math.round(num * 10) / 10;
+}
+
+function sanitizeScaleMax(value: unknown, minScore: number, fallback = 10): number {
+  const num = Number(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(num) || num <= minScore || num > 1000) return fallback;
+  return Math.round(num * 10) / 10;
+}
+
+function sanitizeRegularScore(
+  value: unknown,
+  minScore: number,
+  passingScore: number,
+  fallback: number | null = 6
+): number | null {
+  if (value === null || value === '' || value === false) return null;
+  if (value === undefined) {
+    return fallback !== null && fallback < passingScore && fallback >= minScore ? fallback : null;
+  }
+  const num = Number(String(value).replace(',', '.'));
+  if (!Number.isFinite(num) || num < minScore || num >= passingScore) return null;
+  return Math.round(num * 10) / 10;
+}
+
+function resolveNormalizedGradeScale(raw: Partial<TerminologySettings>): GradeScaleSettings {
+  const minScore = sanitizeScaleMin(raw.gradeScaleMin, DEFAULT_TERMINOLOGY_SETTINGS.gradeScaleMin);
+  const maxScore = sanitizeScaleMax(
+    raw.gradeScaleMax,
+    minScore,
+    Math.max(DEFAULT_TERMINOLOGY_SETTINGS.gradeScaleMax, minScore + 1)
+  );
+  const defaultPass = Math.min(maxScore, DEFAULT_TERMINOLOGY_SETTINGS.gradePassingScore);
+  const passingScore = sanitizePassingScore(raw.gradePassingScore, defaultPass, maxScore);
+  const regularScore = sanitizeRegularScore(
+    raw.gradeRegularScore,
+    minScore,
+    passingScore,
+    DEFAULT_TERMINOLOGY_SETTINGS.gradeRegularScore
+  );
+  return { minScore, maxScore, passingScore, regularScore };
 }
 
 export function getDerivedPeriodLabels(periodNameSingular: string) {
@@ -94,6 +199,7 @@ export function getTerminologySettings(): TerminologySettings {
     const key = getUserStorageKey(STORAGE_BASE_KEY);
     const saved = storageGateway.getJson<Partial<TerminologySettings> | null>(key, null);
     if (saved && typeof saved === 'object') {
+      const scale = resolveNormalizedGradeScale(saved);
       return {
         attendanceLabel: sanitizeLabel(saved.attendanceLabel, DEFAULT_TERMINOLOGY_SETTINGS.attendanceLabel),
         dispositionLabel: sanitizeLabel(saved.dispositionLabel, DEFAULT_TERMINOLOGY_SETTINGS.dispositionLabel),
@@ -108,16 +214,41 @@ export function getTerminologySettings(): TerminologySettings {
         ),
         intensificationPassingScore: sanitizePassingScore(
           saved.intensificationPassingScore,
-          DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
+          scale.passingScore,
+          scale.maxScore
         ),
+        gradeScaleMin: scale.minScore,
+        gradeScaleMax: scale.maxScore,
+        gradePassingScore: scale.passingScore,
+        gradeRegularScore: scale.regularScore,
       };
     }
   } catch (_) {}
   return { ...DEFAULT_TERMINOLOGY_SETTINGS };
 }
 
+export function getGeneralGradeScale(): GradeScaleSettings {
+  const settings = getTerminologySettings();
+  return {
+    minScore: settings.gradeScaleMin,
+    maxScore: settings.gradeScaleMax,
+    passingScore: settings.gradePassingScore,
+    regularScore: settings.gradeRegularScore,
+  };
+}
+
 export function saveTerminologySettings(next: Partial<TerminologySettings>): TerminologySettings {
   const current = getTerminologySettings();
+  const nextScaleInput: Partial<TerminologySettings> = {
+    gradeScaleMin: next.gradeScaleMin !== undefined ? next.gradeScaleMin : current.gradeScaleMin,
+    gradeScaleMax: next.gradeScaleMax !== undefined ? next.gradeScaleMax : current.gradeScaleMax,
+    gradePassingScore:
+      next.gradePassingScore !== undefined ? next.gradePassingScore : current.gradePassingScore,
+    gradeRegularScore:
+      next.gradeRegularScore !== undefined ? next.gradeRegularScore : current.gradeRegularScore,
+  };
+  const scale = resolveNormalizedGradeScale(nextScaleInput);
+
   const merged: TerminologySettings = {
     attendanceLabel:
       next.attendanceLabel !== undefined
@@ -141,11 +272,12 @@ export function saveTerminologySettings(next: Partial<TerminologySettings>): Ter
         : current.intensificationLabel,
     intensificationPassingScore:
       next.intensificationPassingScore !== undefined
-        ? sanitizePassingScore(
-            next.intensificationPassingScore,
-            DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
-          )
+        ? sanitizePassingScore(next.intensificationPassingScore, scale.passingScore, scale.maxScore)
         : current.intensificationPassingScore,
+    gradeScaleMin: scale.minScore,
+    gradeScaleMax: scale.maxScore,
+    gradePassingScore: scale.passingScore,
+    gradeRegularScore: scale.regularScore,
   };
 
   try {
@@ -176,6 +308,7 @@ export async function hydrateTerminologySettingsFromCloud(uid: string): Promise<
     try {
       const cloudVal = await firestoreSync.loadUserSetting(uid, 'terminology_settings');
       if (cloudVal && typeof cloudVal === 'object') {
+        const scale = resolveNormalizedGradeScale(cloudVal as Partial<TerminologySettings>);
         const merged: TerminologySettings = {
           attendanceLabel: sanitizeLabel(
             (cloudVal as any).attendanceLabel,
@@ -199,8 +332,13 @@ export async function hydrateTerminologySettingsFromCloud(uid: string): Promise<
           ),
           intensificationPassingScore: sanitizePassingScore(
             (cloudVal as any).intensificationPassingScore,
-            DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
+            scale.passingScore,
+            scale.maxScore
           ),
+          gradeScaleMin: scale.minScore,
+          gradeScaleMax: scale.maxScore,
+          gradePassingScore: scale.passingScore,
+          gradeRegularScore: scale.regularScore,
         };
         const key = getUserStorageKey(STORAGE_BASE_KEY);
         storageGateway.setJson(key, merged);
@@ -276,6 +414,16 @@ export function useTerminologySettings() {
     initialDispositionScore: settings.initialDispositionScore,
     intensificationLabel: settings.intensificationLabel,
     intensificationPassingScore: settings.intensificationPassingScore,
+    gradeScaleMin: settings.gradeScaleMin,
+    gradeScaleMax: settings.gradeScaleMax,
+    gradePassingScore: settings.gradePassingScore,
+    gradeRegularScore: settings.gradeRegularScore,
+    generalGradeScale: {
+      minScore: settings.gradeScaleMin,
+      maxScore: settings.gradeScaleMax,
+      passingScore: settings.gradePassingScore,
+      regularScore: settings.gradeRegularScore,
+    } as GradeScaleSettings,
     combinedTabLabel: `${settings.attendanceLabel} y ${settings.dispositionLabel}`,
     updateTerminology,
     resetTerminology,

@@ -36,6 +36,8 @@ import {
   buildPreliminaryValuationTsv,
   buildPreliminaryValuationCsv,
 } from '../../utils/preliminaryValuationCalculations';
+import { useTerminologySettings } from '../../utils/terminologySettings';
+import { resolveSubcategoryScale } from '../../utils/gradeCalculations';
 
 export type { QualitativeTrajectory };
 
@@ -82,12 +84,13 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
 }) => {
   if (!isOpen) return null;
 
+  const { generalGradeScale } = useTerminologySettings();
   const termLabel = term === '1c' ? '1° Cuatrimestre' : '2° Cuatrimestre';
 
   // Flatten all available evaluative items (categories with no subcategories, or each subcategory)
   const availableAssessments = useMemo(
     () => flattenEvaluativeItems(categories),
-    [categories]
+    [categories, generalGradeScale]
   );
 
   // Selected assessment IDs state
@@ -157,8 +160,14 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
   // Compute calculated preliminary average and scores for each student using pure engine
   const studentRows = useMemo(
     () =>
-      computePreliminaryStudentRows(students, gradesMap, selectedAssessmentIds, valuations),
-    [students, gradesMap, selectedAssessmentIds, valuations]
+      computePreliminaryStudentRows(
+        students,
+        gradesMap,
+        selectedAssessmentIds,
+        valuations,
+        categories
+      ),
+    [students, gradesMap, selectedAssessmentIds, valuations, categories, generalGradeScale]
   );
 
   // Set trajectory for a student
@@ -596,7 +605,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
                 type="button"
                 onClick={handleAutoSuggestAll}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white shadow-2xs transition-all cursor-pointer"
-                title="Calcula automáticamente: TEA si el promedio de las notas seleccionadas es >= 7, o TEP si es menor o está pendiente"
+                title={`Calcula automáticamente: TEA si el promedio de las notas seleccionadas es >= ${generalGradeScale.passingScore}, o TEP si es menor o está pendiente`}
               >
                 <Sparkles className="w-3.5 h-3.5" />
                 <span>Auto-sugerir TEA / TEP</span>
@@ -715,7 +724,13 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
                           {/* CELDAS DE CADA NOTA INDIVIDUAL */}
                           {selectedAssessmentsMeta.map((assess) => {
                             const val = gradesMap[row.student.id]?.[assess.id] || '';
-                            const num = !isNaN(Number(val)) && val !== '' ? Number(val) : null;
+                            const parsedNum =
+                              val !== '' && !isNaN(Number(String(val).replace(',', '.')))
+                                ? Number(String(val).replace(',', '.'))
+                                : null;
+                            const assessScale = assess.subcategory
+                              ? resolveSubcategoryScale(assess.subcategory, generalGradeScale)
+                              : generalGradeScale;
 
                             return (
                               <td
@@ -725,11 +740,13 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
                                 {val ? (
                                   <span
                                     className={`px-2 py-0.5 rounded font-bold ${
-                                      num !== null && num >= 7
+                                      parsedNum !== null && parsedNum >= assessScale.passingScore
                                         ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                        : num !== null && num >= 6
+                                        : parsedNum !== null &&
+                                          assessScale.regularScore !== null &&
+                                          parsedNum >= assessScale.regularScore
                                         ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
-                                        : num !== null
+                                        : parsedNum !== null
                                         ? 'bg-red-50 text-red-700 dark:bg-red-950/60 dark:text-red-300'
                                         : 'text-neutral-700 dark:text-slate-300'
                                     }`}
@@ -748,7 +765,7 @@ export const PreliminaryValuationModal: React.FC<PreliminaryValuationModalProps>
                             {row.averageScoreStr ? (
                               <span
                                 className={`font-mono font-extrabold text-xs px-2 py-0.5 rounded ${
-                                  (row.averageScore || 0) >= 7
+                                  (row.averageScore || 0) >= generalGradeScale.passingScore
                                     ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
                                     : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
                                 }`}

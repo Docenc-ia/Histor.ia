@@ -22,7 +22,9 @@ import { GradeCategory, StudentGradesMap } from '../../../types/grades';
 import type { QuickPastePreset } from '../../../types/gradeImport';
 import {
   findGradeColumnById,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from '../../../utils/gradeCalculations';
 
 export interface PreferredTargetColumn {
@@ -217,13 +219,26 @@ export const ImportUploadStep: React.FC<ImportUploadStepProps> = ({
                     const existingCount = students.filter(
                       (st) => String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                     ).length;
+                    const evalInstances = sub.instances || [];
                     const instList = sub.intensifications || [];
                     return (
                       <React.Fragment key={sub.id}>
                         <option value={`${cat.id}:::${sub.id}`}>
-                          Columna existente: {sub.name}
+                          Columna existente: {getPrimaryInstanceDisplayLabel(sub)}
                           {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
                         </option>
+                        {evalInstances.map((evInst) => {
+                          const evCount = students.filter(
+                            (st) => String(activeGradesMap[st.id]?.[evInst.id] ?? '').trim() !== ''
+                          ).length;
+                          const label = getEvaluationInstanceDisplayLabel(sub, evInst);
+                          return (
+                            <option key={evInst.id} value={`${cat.id}:::${evInst.id}`}>
+                              ↳ {label}
+                              {evCount > 0 ? ` (${evCount} notas)` : ''}
+                            </option>
+                          );
+                        })}
                         {instList.map((inst) => {
                           const instCount = students.filter(
                             (st) => String(activeGradesMap[st.id]?.[inst.id] ?? '').trim() !== ''

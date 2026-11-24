@@ -702,14 +702,32 @@ export function useGradebookSync({
   };
 
   const handleCopyCategoriesFrom1c = () => {
+    const now = Date.now();
+    const sumGroupRemap = new Map<string, string>();
     const cloned = categories1c.map((cat, catIdx) => ({
       ...cat,
-      id: `c2-${Date.now()}-${catIdx}-${cat.id}`,
-      subcategories: cat.subcategories.map((sub, subIdx) => ({
-        ...sub,
-        id: `c2-${Date.now()}-${subIdx}-${sub.id}`,
-        intensifications: undefined,
-      })),
+      id: `c2-${now}-${catIdx}-${cat.id}`,
+      subcategories: cat.subcategories.map((sub, subIdx) => {
+        let remappedSumGroupId = sub.sumGroupId;
+        if (sub.scaleMode === 'sum_group' && sub.sumGroupId) {
+          if (!sumGroupRemap.has(sub.sumGroupId)) {
+            sumGroupRemap.set(sub.sumGroupId, `sum-c2-${now}-${sumGroupRemap.size}`);
+          }
+          remappedSumGroupId = sumGroupRemap.get(sub.sumGroupId);
+        }
+        return {
+          ...sub,
+          id: `c2-${now}-${subIdx}-${sub.id}`,
+          sumGroupId: remappedSumGroupId,
+          instances: Array.isArray(sub.instances)
+            ? sub.instances.map((evInst, evIdx) => ({
+                ...evInst,
+                id: `c2-${now}-${subIdx}-inst-${evIdx}-${evInst.id}`,
+              }))
+            : undefined,
+          intensifications: undefined,
+        };
+      }),
     }));
     saveCategories(cloned);
   };

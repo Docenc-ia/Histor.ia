@@ -3,8 +3,11 @@ import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../types/grad
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeStudentTermAverageItems,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from './gradeCalculations';
 import {
   CourseDriveCategory,
@@ -530,7 +533,16 @@ export function buildGradebookHtml(params: {
   }> = [];
   categories.forEach((cat) => {
     cat.subcategories.forEach((sub) => {
-      subColumns.push({ id: sub.id, label: `${cat.name}: ${sub.name}` });
+      subColumns.push({
+        id: sub.id,
+        label: `${cat.name}: ${getPrimaryInstanceDisplayLabel(sub)}`,
+      });
+      (sub.instances || []).forEach((evInst) => {
+        subColumns.push({
+          id: evInst.id,
+          label: `${cat.name}: ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
+        });
+      });
       (sub.intensifications || []).forEach((inst, instIndex) => {
         subColumns.push({
           id: inst.id,
@@ -552,8 +564,6 @@ export function buildGradebookHtml(params: {
   const rowsHtml = students
     .map((s, idx) => {
       const studentGrades = gradesMap[s.id] || {};
-      let totalScore = 0;
-      let scoredCount = 0;
 
       const cellsHtml = subColumns
         .map((col) => {
@@ -569,19 +579,19 @@ export function buildGradebookHtml(params: {
           }
 
           const val = studentGrades[col.id];
-          const num = parseFloat(String(val).replace(',', '.'));
-          if (!isNaN(num)) {
-            totalScore += num;
-            scoredCount += 1;
-          }
           return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${
             val !== undefined && val !== '' ? escapeHtml(val) : '-'
           }</td>`;
         })
         .join('');
 
-      const average = scoredCount > 0 ? (totalScore / scoredCount).toFixed(2) : '-';
-      const finalVal = studentGrades['__final__'] || average;
+      const avgItems = computeStudentTermAverageItems(categories, studentGrades);
+      const average =
+        avgItems.length > 0
+          ? (avgItems.reduce((acc, v) => acc + v, 0) / avgItems.length).toFixed(2)
+          : '-';
+      const finalVal =
+        studentGrades['__final_avg_override__'] || studentGrades['__final__'] || average;
 
       return `
         <tr>
@@ -638,7 +648,16 @@ export function buildGradebookCsv(params: {
   }> = [];
   categories.forEach((cat) => {
     cat.subcategories.forEach((sub) => {
-      subColumns.push({ id: sub.id, label: `${cat.name} - ${sub.name}` });
+      subColumns.push({
+        id: sub.id,
+        label: `${cat.name} - ${getPrimaryInstanceDisplayLabel(sub)}`,
+      });
+      (sub.instances || []).forEach((evInst) => {
+        subColumns.push({
+          id: evInst.id,
+          label: `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
+        });
+      });
       (sub.intensifications || []).forEach((inst, instIndex) => {
         subColumns.push({
           id: inst.id,
@@ -662,8 +681,6 @@ export function buildGradebookCsv(params: {
 
   const rows = students.map((s, idx) => {
     const studentGrades = gradesMap[s.id] || {};
-    let totalScore = 0;
-    let scoredCount = 0;
     const subVals = subColumns.map((col) => {
       if (col.sub && col.instIndex !== undefined) {
         const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
@@ -673,15 +690,15 @@ export function buildGradebookCsv(params: {
       }
 
       const val = studentGrades[col.id];
-      const num = parseFloat(String(val).replace(',', '.'));
-      if (!isNaN(num)) {
-        totalScore += num;
-        scoredCount += 1;
-      }
       return val !== undefined && val !== '' ? val : '-';
     });
-    const average = scoredCount > 0 ? (totalScore / scoredCount).toFixed(2) : '-';
-    const finalVal = studentGrades['__final__'] || average;
+    const avgItems = computeStudentTermAverageItems(categories, studentGrades);
+    const average =
+      avgItems.length > 0
+        ? (avgItems.reduce((acc, v) => acc + v, 0) / avgItems.length).toFixed(2)
+        : '-';
+    const finalVal =
+      studentGrades['__final_avg_override__'] || studentGrades['__final__'] || average;
     return [idx + 1, s.lastName, s.firstName, s.email || '-', ...subVals, average, finalVal]
       .map(escapeCsvCell)
       .join(',');

@@ -3,8 +3,11 @@ import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeStudentTermAverageItems,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
 } from './gradeCalculations';
 import { driveService } from '../services/workspace/driveService';
 
@@ -263,20 +266,27 @@ export async function exportGradebookMatrixToExcel(
       'Email': sanitizeExcelText(s.email || '-'),
     };
 
-    let totalScore = 0;
-    let scoredCount = 0;
-
     categories.forEach((cat) => {
+      if (cat.subcategories.length === 0) {
+        const val = studentGrades[cat.id];
+        const colHeader = sanitizeExcelText(cat.name);
+        rowObj[colHeader] = val !== undefined && val !== '' ? sanitizeExcelText(val) : '-';
+        return;
+      }
       cat.subcategories.forEach((sub) => {
         const val = studentGrades[sub.id];
-        const colHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(sub.name)}`;
+        const colHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
+          getPrimaryInstanceDisplayLabel(sub)
+        )}`;
         rowObj[colHeader] = val !== undefined && val !== '' ? sanitizeExcelText(val) : '-';
 
-        const num = parseFloat(String(val).replace(',', '.'));
-        if (!isNaN(num)) {
-          totalScore += num;
-          scoredCount += 1;
-        }
+        (sub.instances || []).forEach((evInst) => {
+          const evVal = studentGrades[evInst.id];
+          const evHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
+            getEvaluationInstanceDisplayLabel(sub, evInst)
+          )}`;
+          rowObj[evHeader] = evVal !== undefined && evVal !== '' ? sanitizeExcelText(evVal) : '-';
+        });
 
         (sub.intensifications || []).forEach((inst, instIdx) => {
           const effective = getEffectiveIntensificationCell(sub, instIdx, studentGrades);
@@ -294,8 +304,13 @@ export async function exportGradebookMatrixToExcel(
       });
     });
 
-    const average = scoredCount > 0 ? (totalScore / scoredCount).toFixed(2) : '-';
-    const finalVal = studentGrades['__final__'] || average;
+    const avgItems = computeStudentTermAverageItems(categories, studentGrades);
+    const average =
+      avgItems.length > 0
+        ? (avgItems.reduce((acc, v) => acc + v, 0) / avgItems.length).toFixed(2)
+        : '-';
+    const finalVal =
+      studentGrades['__final_avg_override__'] || studentGrades['__final__'] || average;
 
     rowObj['Promedio Parcial'] = average;
     rowObj['Calificación Final'] = sanitizeExcelText(finalVal);
@@ -313,8 +328,17 @@ export async function exportGradebookMatrixToExcel(
     { wch: 28 },
   ];
   categories.forEach((cat) => {
+    if (cat.subcategories.length === 0) {
+      cols.push({ wch: Math.max(16, cat.name.length + 2) });
+      return;
+    }
     cat.subcategories.forEach((sub) => {
-      cols.push({ wch: Math.max(16, `${cat.name} - ${sub.name}`.length + 2) });
+      const primaryHeader = `${cat.name} - ${getPrimaryInstanceDisplayLabel(sub)}`;
+      cols.push({ wch: Math.max(16, primaryHeader.length + 2) });
+      (sub.instances || []).forEach((evInst) => {
+        const evHeader = `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`;
+        cols.push({ wch: Math.max(16, evHeader.length + 2) });
+      });
       (sub.intensifications || []).forEach((inst) => {
         const instHeader = `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`;
         cols.push({ wch: Math.max(16, instHeader.length + 2) });

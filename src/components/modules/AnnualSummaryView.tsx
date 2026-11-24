@@ -22,6 +22,7 @@ import {
   filterAnnualSummaryRows,
   buildAnnualSummaryCsvContent,
 } from '../../utils/gradeCalculations';
+import { useTerminologySettings } from '../../utils/terminologySettings';
 
 export interface AnnualSummaryViewProps {
   courseId: string;
@@ -102,6 +103,8 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
       .catch(() => {});
   };
 
+  const { generalGradeScale } = useTerminologySettings();
+
   // Badge color for individual scores
   const getScoreBadge = (scoreStr: string) => {
     if (!scoreStr || isNaN(Number(scoreStr))) {
@@ -115,11 +118,14 @@ export const AnnualSummaryView: React.FC<AnnualSummaryViewProps> = ({
     let colorClass = isDarkMode
       ? 'bg-red-950/60 text-red-300 border-red-800'
       : 'bg-red-50 text-red-700 border-red-200';
-    if (num >= 7) {
+    if (num >= generalGradeScale.passingScore) {
       colorClass = isDarkMode
         ? 'bg-emerald-950/60 text-emerald-300 border-emerald-800'
         : 'bg-emerald-50 text-emerald-700 border-emerald-200';
-    } else if (num >= 6) {
+    } else if (
+      generalGradeScale.regularScore !== null &&
+      num >= generalGradeScale.regularScore
+    ) {
       colorClass = isDarkMode
         ? 'bg-amber-950/60 text-amber-300 border-amber-800'
         : 'bg-amber-50 text-amber-700 border-amber-200';

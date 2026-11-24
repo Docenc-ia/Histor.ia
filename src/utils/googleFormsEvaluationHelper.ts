@@ -747,6 +747,9 @@ export function buildGoogleFormsCommitPayload(params: {
       subcategories: Array.isArray(category.subcategories)
         ? category.subcategories.map((sub) => ({
             ...sub,
+            instances: Array.isArray(sub.instances)
+              ? sub.instances.map((evInst) => ({ ...evInst }))
+              : undefined,
             intensifications: Array.isArray(sub.intensifications)
               ? sub.intensifications.map((inst) => ({ ...inst }))
               : undefined,

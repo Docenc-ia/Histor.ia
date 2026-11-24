@@ -3,8 +3,13 @@ import { GradeCategory, DEFAULT_CATEGORIES } from '../types/grades';
 import { getUserScopedItem } from '../services/api';
 import {
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
+  resolveInstanceScale,
+  resolveSubcategoryScale,
 } from './gradeCalculations';
+import { getGeneralGradeScale } from './terminologySettings';
 import { escapeHtml, sanitizeSafeUrl } from './htmlEscape';
 
 export function buildStudentTrackingDocHtml(
@@ -121,6 +126,8 @@ export function buildStudentTrackingDocHtml(
         weight: number;
         score: number | null;
         isIntensification?: boolean;
+        passingScore?: number;
+        regularScore?: number | null;
       }[] = [];
       for (const cat of cats) {
         if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
@@ -144,11 +151,31 @@ export function buildStudentTrackingDocHtml(
               rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
                 ? Number(String(rawVal).replace(',', '.'))
                 : NaN;
+            const subScale = resolveSubcategoryScale(sub);
             items.push({
               id: sub.id,
-              name: sub.name,
+              name: getPrimaryInstanceDisplayLabel(sub),
               weight: (sub as any).weight ?? (cat as any).weight ?? 0,
               score: !isNaN(parsedNum) ? parsedNum : null,
+              passingScore: subScale.passingScore,
+              regularScore: subScale.regularScore,
+            });
+
+            (sub.instances || []).forEach((evInst) => {
+              const evRaw = stGrades[evInst.id];
+              const evParsed =
+                evRaw !== undefined && evRaw !== null && String(evRaw).trim() !== ''
+                  ? Number(String(evRaw).replace(',', '.'))
+                  : NaN;
+              const evScale = resolveInstanceScale(sub, evInst);
+              items.push({
+                id: evInst.id,
+                name: getEvaluationInstanceDisplayLabel(sub, evInst),
+                weight: (sub as any).weight ?? (cat as any).weight ?? 0,
+                score: !isNaN(evParsed) ? evParsed : null,
+                passingScore: evScale.passingScore,
+                regularScore: evScale.regularScore,
+              });
             });
 
             const stGradesStr: Record<string, string> = {};
@@ -168,6 +195,8 @@ export function buildStudentTrackingDocHtml(
                 weight: (sub as any).weight ?? (cat as any).weight ?? 0,
                 score: !isNaN(instParsed) ? instParsed : null,
                 isIntensification: true,
+                passingScore: effective.threshold,
+                regularScore: null,
               });
             });
           }
@@ -191,6 +220,18 @@ export function buildStudentTrackingDocHtml(
     if (totalWeight <= 0) return null;
     const sum = valid.reduce((acc, cur) => acc + (cur.score || 0) * (cur.weight || 1), 0);
     return Number((sum / totalWeight).toFixed(2));
+  };
+
+  const generalScale = getGeneralGradeScale();
+  const getDocScoreColor = (
+    score: number | null,
+    passingScore: number = generalScale.passingScore,
+    regularScore: number | null = generalScale.regularScore
+  ): string => {
+    if (score === null) return '#94a3b8';
+    if (score >= passingScore) return '#059669';
+    if (regularScore !== null && score >= regularScore) return '#d97706';
+    return '#dc2626';
   };
 
   const avg1c = computeWeightedAvg(exams1c);
@@ -337,13 +378,13 @@ export function buildStudentTrackingDocHtml(
       <th style="width: 34%; text-align: center;">Promedio General / Final</th>
     </tr>
     <tr>
-      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg1c !== null ? (avg1c >= 7 ? '#059669' : avg1c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${getDocScoreColor(avg1c)};">
         ${avg1c !== null ? escapeHtml(avg1c) : 'Sin calificar'}
       </td>
-      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${avg2c !== null ? (avg2c >= 7 ? '#059669' : avg2c >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${getDocScoreColor(avg2c)};">
         ${avg2c !== null ? escapeHtml(avg2c) : 'Sin calificar'}
       </td>
-      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${finalAvg !== null ? (finalAvg >= 7 ? '#059669' : finalAvg >= 4 ? '#d97706' : '#dc2626') : '#94a3b8'};">
+      <td style="text-align: center; font-weight: bold; font-size: 12pt; color: ${getDocScoreColor(finalAvg)};">
         ${finalAvg !== null ? escapeHtml(finalAvg) : 'En curso'}
       </td>
     </tr>
@@ -366,8 +407,12 @@ export function buildStudentTrackingDocHtml(
       for (let i = 0; i < maxRows; i++) {
         const e1 = exams1c[i];
         const e2 = exams2c[i];
-        const c1Color = e1 && e1.score !== null ? (e1.score >= 7 ? '#059669' : e1.score >= 4 ? '#d97706' : '#dc2626') : '#94a3b8';
-        const c2Color = e2 && e2.score !== null ? (e2.score >= 7 ? '#059669' : e2.score >= 4 ? '#d97706' : '#dc2626') : '#94a3b8';
+        const c1Color = e1
+          ? getDocScoreColor(e1.score, e1.passingScore, e1.regularScore)
+          : '#94a3b8';
+        const c2Color = e2
+          ? getDocScoreColor(e2.score, e2.passingScore, e2.regularScore)
+          : '#94a3b8';
         rowsHtml += `
           <tr>
             <td>${e1 ? `${escapeHtml(e1.name)} <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e1.weight)}%)</span>` : '-'}</td>

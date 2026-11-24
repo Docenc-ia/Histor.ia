@@ -11,14 +11,20 @@ import {
   Filter,
 } from 'lucide-react';
 import { Student } from '../../types';
-import { GradeCategory, StudentGradesMap } from '../../types/grades';
+import { GradeCategory, GradeScaleSettings, StudentGradesMap } from '../../types/grades';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  ResolvedSubcategoryScale,
   calculateCategoryAverageForStudent,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
   getScoreColorClass,
+  resolveInstanceScale,
+  resolveSubcategoryScale,
 } from '../../utils/gradeCalculations';
+import { useTerminologySettings } from '../../utils/terminologySettings';
 import { parseScoreNumber, getConditionForScore } from '../../utils/courseReportAggregator';
 
 export type BreakdownPeriod = '1c' | '2c' | 'both';
@@ -49,13 +55,15 @@ interface BreakdownRow {
   isIntensification?: boolean;
   isExempt?: boolean;
   exemptThreshold?: number;
+  scale?: ResolvedSubcategoryScale;
 }
 
 function buildRowsForTerm(
   studentId: string,
   term: '1c' | '2c',
   categories: GradeCategory[],
-  gradesMap: StudentGradesMap
+  gradesMap: StudentGradesMap,
+  generalGradeScale: GradeScaleSettings
 ): BreakdownRow[] {
   const studentGrades = gradesMap[studentId] || {};
   const rows: BreakdownRow[] = [];
@@ -76,13 +84,31 @@ function buildRowsForTerm(
       cat.subcategories.forEach((sub) => {
         const raw = studentGrades[sub.id];
         const score = raw !== undefined && String(raw).trim() !== '' ? String(raw).trim() : '';
+        const resolvedScale = resolveSubcategoryScale(sub, generalGradeScale);
         rows.push({
           id: `${term}-${cat.id}-${sub.id}`,
           term,
           categoryName: cat.name,
-          itemName: sub.name,
+          itemName: getPrimaryInstanceDisplayLabel(sub),
           score: score || '—',
           hasScore: score !== '',
+          scale: resolvedScale,
+        });
+
+        const evalInstances = sub.instances || [];
+        evalInstances.forEach((evInst) => {
+          const evRaw = studentGrades[evInst.id];
+          const evScore =
+            evRaw !== undefined && String(evRaw).trim() !== '' ? String(evRaw).trim() : '';
+          rows.push({
+            id: `${term}-${cat.id}-${sub.id}-${evInst.id}`,
+            term,
+            categoryName: cat.name,
+            itemName: getEvaluationInstanceDisplayLabel(sub, evInst),
+            score: evScore || '—',
+            hasScore: evScore !== '',
+            scale: resolveInstanceScale(sub, evInst, generalGradeScale),
+          });
         });
 
         const instList = sub.intensifications || [];
@@ -99,6 +125,11 @@ function buildRowsForTerm(
             isIntensification: true,
             isExempt: effective.isExempt,
             exemptThreshold: effective.threshold,
+            scale: {
+              ...resolvedScale,
+              passingScore: effective.threshold,
+              regularScore: null,
+            },
           });
         });
       });
@@ -123,6 +154,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
   score2cMap,
   annualOverrides,
 }) => {
+  const { generalGradeScale } = useTerminologySettings();
   const [selectedPeriod, setSelectedPeriod] = useState<BreakdownPeriod>(initialPeriod);
   const [hideEmpty, setHideEmpty] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -152,13 +184,19 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
   );
 
   const rows1c = useMemo(
-    () => (student ? buildRowsForTerm(student.id, '1c', categories1c, gradesMap1c) : []),
-    [student, categories1c, gradesMap1c]
+    () =>
+      student
+        ? buildRowsForTerm(student.id, '1c', categories1c, gradesMap1c, generalGradeScale)
+        : [],
+    [student, categories1c, gradesMap1c, generalGradeScale]
   );
 
   const rows2c = useMemo(
-    () => (student ? buildRowsForTerm(student.id, '2c', categories2c, gradesMap2c) : []),
-    [student, categories2c, gradesMap2c]
+    () =>
+      student
+        ? buildRowsForTerm(student.id, '2c', categories2c, gradesMap2c, generalGradeScale)
+        : [],
+    [student, categories2c, gradesMap2c, generalGradeScale]
   );
 
   if (!student) return null;
@@ -328,7 +366,29 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
             <span>{row.itemName}</span>
           </span>
         ) : (
-          row.itemName
+          <span className="inline-flex items-center gap-1.5 flex-wrap">
+            <span>{row.itemName}</span>
+            {row.scale?.badgeText && (
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${
+                  row.scale.mode === 'sum_group'
+                    ? isDarkMode
+                      ? 'bg-indigo-950/70 text-indigo-300 border-indigo-800'
+                      : 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                    : isDarkMode
+                    ? 'bg-slate-800 text-sky-300 border-slate-700'
+                    : 'bg-sky-50 text-sky-800 border-sky-200'
+                }`}
+                title={
+                  row.scale.mode === 'convert_100'
+                    ? `Escala 0–100 convertida sobre ${generalGradeScale.maxScore}`
+                    : `Escala ${row.scale.minScore}–${row.scale.maxScore} (aprueba ≥ ${row.scale.passingScore})`
+                }
+              >
+                {row.scale.badgeText}
+              </span>
+            )}
+          </span>
         )}
       </td>
       <td
@@ -338,7 +398,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
               ? 'text-slate-400'
               : 'text-neutral-500'
             : row.hasScore
-            ? getScoreColorClass(row.score, isDarkMode)
+            ? getScoreColorClass(row.score, isDarkMode, row.scale)
             : isDarkMode
             ? 'text-slate-500 font-normal'
             : 'text-neutral-400 font-normal'
@@ -346,7 +406,7 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
       >
         {row.isExempt ? (
           <span
-            title={`Aprobado por defecto (nota mínima: ${row.exemptThreshold ?? 7}; fuera del promedio)`}
+            title={`Aprobado por defecto (nota mínima: ${row.exemptThreshold ?? generalGradeScale.passingScore}; fuera del promedio)`}
           >
             {INTENSIFICATION_EXEMPT_LABEL}
           </span>

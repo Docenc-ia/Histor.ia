@@ -12,11 +12,15 @@ import {
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory } from '../../types/grades';
 import {
+  computeStudentTermAverageItems,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
+  getPrimaryInstanceDisplayLabel,
   INTENSIFICATION_EXEMPT_LABEL,
   isExemptMarkerValue,
 } from '../../utils/gradeCalculations';
+import { getGeneralGradeScale } from '../../utils/terminologySettings';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
 import { getUserStorageKey, getUserScopedItem, setUserScopedItem } from '../storageHelpers';
@@ -254,8 +258,15 @@ export const sheetsService = {
         cat.subcategories.forEach((sub) => {
           assessmentColumns.push({
             id: sub.id,
-            header: `${cat.name} - ${sub.name}`,
+            header: `${cat.name} - ${getPrimaryInstanceDisplayLabel(sub)}`,
             maxScore: sub.maxScore,
+          });
+          (sub.instances || []).forEach((evInst) => {
+            assessmentColumns.push({
+              id: evInst.id,
+              header: `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
+              maxScore: evInst.maxScore ?? sub.maxScore,
+            });
           });
           (sub.intensifications || []).forEach((inst, instIndex) => {
             assessmentColumns.push({
@@ -292,25 +303,18 @@ export const sheetsService = {
         return stGrades[col.id] || '';
       });
 
-      const validNumScores = assessmentColumns
-        .map((col, idx) => ({ col, val: scoreValues[idx] }))
-        .filter(
-          ({ col, val }) =>
-            !col.sub &&
-            val !== '' &&
-            !isExemptMarkerValue(val) &&
-            !isNaN(Number(String(val).replace(',', '.')))
-        )
-        .map(({ val }) => Number(String(val).replace(',', '.')));
+      const validNumScores = computeStudentTermAverageItems(categories, stGrades);
 
       const avg =
         validNumScores.length > 0
           ? (validNumScores.reduce((acc, curr) => acc + curr, 0) / validNumScores.length).toFixed(2)
           : '-';
 
+      const generalScale = getGeneralGradeScale();
+      const approvalFloor = generalScale.regularScore ?? generalScale.passingScore;
       const condition =
         validNumScores.length > 0
-          ? parseFloat(avg) >= 6
+          ? parseFloat(avg) >= approvalFloor
             ? 'Aprobado'
             : 'En proceso'
           : 'Sin calificaciones';
@@ -540,7 +544,13 @@ export const sheetsService = {
           cat.subcategories.forEach((sub) => {
             assessmentColumns.push({
               id: sub.id,
-              header: `${cat.name} - ${sub.name}`,
+              header: `${cat.name} - ${getPrimaryInstanceDisplayLabel(sub)}`,
+            });
+            (sub.instances || []).forEach((evInst) => {
+              assessmentColumns.push({
+                id: evInst.id,
+                header: `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
+              });
             });
             (sub.intensifications || []).forEach((inst, instIndex) => {
               assessmentColumns.push({

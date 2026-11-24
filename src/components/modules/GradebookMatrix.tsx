@@ -18,10 +18,13 @@ import {
   UserCheck,
   Columns,
   RotateCcw,
+  Layers,
 } from 'lucide-react';
 import { Student } from '../../types';
 import {
+  EvaluationInstancesCombineMode,
   GradeCategory,
+  GradeEvaluationInstance,
   GradeSubcategory,
   GradeIntensification,
   StudentGradesMap,
@@ -53,18 +56,33 @@ import {
   calculateCategoryAverageForStudent,
   calculateFinalScoreForStudent,
   computeTermScoresMap,
+  convertScoreFrom100ToGeneral,
   getScoreColorClass as computeScoreColorClass,
   getEffectiveIntensificationCell,
+  getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getIntensificationPassingThreshold,
+  getPrimaryInstanceDisplayLabel,
+  getPrimaryInstanceLabel,
+  getSumGroupPeers,
   isExemptMarkerValue,
+  normalizeScoreWithResolvedScale,
+  normalizeSubcategoryScoreForAverage,
+  parseGradeNumber,
   reorderCategoriesList,
   reorderSubcategoriesInCategory,
   moveSubcategoryAcrossCategories,
+  resolveInstanceScale,
+  resolveSubcategoryScale,
 } from '../../utils/gradeCalculations';
 import { useTerminologySettings } from '../../utils/terminologySettings';
 import { useGradebookSync, GradebookTerm } from '../../hooks/useGradebookSync';
-import { GradebookCategoryModals } from './GradebookCategoryModals';
+import {
+  GradebookCategoryModals,
+  SubcategoryScaleEditPayload,
+} from './GradebookCategoryModals';
+import { GradebookScaleSettingsModal } from './GradebookScaleSettingsModal';
+import { GradeScaleSettings } from '../../types/grades';
 import { driveService } from '../../services/workspace/driveService';
 import { DriveSaveFormatSelector } from '../common/DriveSaveFormatSelector';
 import {
@@ -116,6 +134,7 @@ interface GradebookStudentRowProps {
   idx: number;
   studentGrades: Record<string, string>;
   categories: GradeCategory[];
+  generalGradeScale: GradeScaleSettings;
   isDarkMode: boolean;
   overallCalculation: 'average_of_categories' | 'manual_final';
   finalScore: string;
@@ -135,6 +154,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
     idx,
     studentGrades,
     categories,
+    generalGradeScale,
     isDarkMode,
     overallCalculation,
     finalScore,
@@ -149,7 +169,10 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
   }) => {
     const [isFinalFocused, setIsFinalFocused] = useState(false);
     let runningColIdx = 0;
-    const getScoreColorClass = (valStr: string) => computeScoreColorClass(valStr, isDarkMode);
+    const getScoreColorClass = (
+      valStr: string,
+      scaleOverride?: Parameters<typeof computeScoreColorClass>[2]
+    ) => computeScoreColorClass(valStr, isDarkMode, scaleOverride);
 
     return (
       <tr
@@ -159,10 +182,10 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
       >
         {/* Student Name (Sticky on horizontal scroll, clickable for breakdown) */}
         <td
-          className={`sticky left-0 z-10 py-2 px-2.5 border-r font-medium transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] overflow-hidden ${
+          className={`sticky left-0 z-10 py-2 px-2.5 border-r-[3px] font-medium transition-colors shadow-[2px_0_5px_-2px_rgba(0,0,0,0.06)] overflow-hidden ${
             isDarkMode
-              ? 'bg-slate-900 group-hover:bg-slate-800 border-slate-800 text-slate-200'
-              : 'bg-white group-hover:bg-neutral-50 border-neutral-200 text-neutral-800'
+              ? 'bg-slate-900 group-hover:bg-slate-800 border-r-slate-500 text-slate-200'
+              : 'bg-white group-hover:bg-neutral-50 border-r-slate-400 text-neutral-800'
           }`}
         >
           <div className="flex items-center justify-between gap-1.5 min-w-0">
@@ -201,11 +224,19 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
 
         {/* Grade Cells per Category & Subcategory */}
         {categories.map((cat) => {
+          const catRightBorder = isDarkMode
+            ? 'border-r-[3px] border-r-slate-500'
+            : 'border-r-[3px] border-r-slate-400';
+
           if (cat.subcategories.length === 0) {
             const val = studentGrades[cat.id] || '';
             const thisColIdx = runningColIdx++;
             return (
-              <td key={cat.id} data-pii="student" className="p-1 border-r text-center border-neutral-200 dark:border-slate-800 overflow-hidden">
+              <td
+                key={cat.id}
+                data-pii="student"
+                className={`p-1 text-center overflow-hidden ${catRightBorder}`}
+              >
                 <input
                   type="text"
                   data-grade-row={idx}
@@ -227,15 +258,103 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
 
           return (
             <React.Fragment key={cat.id}>
-              {cat.subcategories.map((sub) => {
+              {cat.subcategories.map((sub, subIdx) => {
                 const val = studentGrades[sub.id] || '';
                 const thisColIdx = runningColIdx++;
+                const evalInstances = sub.instances || [];
                 const instList = sub.intensifications || [];
+                const hasEvalInstances = evalInstances.length > 0;
+                const hasInsts = instList.length > 0;
+                const isGrouped = hasEvalInstances || hasInsts;
+                const isLastSubInCat = subIdx === cat.subcategories.length - 1;
+                const resolvedScale = resolveSubcategoryScale(sub, generalGradeScale);
+                const parsedSubVal = parseGradeNumber(val);
+
+                const groupLeftBorder = isGrouped
+                  ? hasEvalInstances
+                    ? isDarkMode
+                      ? 'border-l-[3px] border-l-indigo-500'
+                      : 'border-l-[3px] border-l-indigo-400'
+                    : isDarkMode
+                    ? 'border-l-[3px] border-l-amber-500'
+                    : 'border-l-[3px] border-l-amber-400'
+                  : '';
+
+                const groupRightBorder = isLastSubInCat
+                  ? catRightBorder
+                  : isGrouped
+                  ? hasEvalInstances
+                    ? isDarkMode
+                      ? 'border-r-[3px] border-r-indigo-500'
+                      : 'border-r-[3px] border-r-indigo-400'
+                    : isDarkMode
+                    ? 'border-r-[3px] border-r-amber-500'
+                    : 'border-r-[3px] border-r-amber-400'
+                  : isDarkMode
+                  ? 'border-r border-r-slate-800'
+                  : 'border-r border-r-neutral-200';
+
+                const innerGroupBorder = hasEvalInstances
+                  ? isDarkMode
+                    ? 'border-r border-dashed border-r-indigo-700/70'
+                    : 'border-r border-dashed border-r-indigo-300'
+                  : isDarkMode
+                  ? 'border-r border-dashed border-r-amber-700/70'
+                  : 'border-r border-dashed border-r-amber-300';
+
+                let cellTooltip: string | undefined;
+                const primaryLabelPrefix = hasEvalInstances
+                  ? `${getPrimaryInstanceDisplayLabel(sub)} · `
+                  : '';
+                if (resolvedScale.mode === 'convert_100') {
+                  cellTooltip = `${primaryLabelPrefix}Escala 0–100 → pasa automáticamente a escala sobre ${generalGradeScale.maxScore} al confirmar`;
+                } else if (resolvedScale.mode === 'sum_group' && sub.sumGroupId) {
+                  const peers = getSumGroupPeers(categories, sub.sumGroupId);
+                  const peerNames = peers
+                    .filter((p) => p.subcategory.id !== sub.id)
+                    .map((p) => p.subcategory.name);
+                  const groupSum = peers.reduce((acc, p) => {
+                    const n = parseGradeNumber(studentGrades[p.subcategory.id]);
+                    return acc + (n !== null ? n : 0);
+                  }, 0);
+                  const groupMax = peers.reduce(
+                    (acc, p) => acc + resolveSubcategoryScale(p.subcategory, generalGradeScale).maxScore,
+                    0
+                  );
+                  cellTooltip =
+                    peerNames.length > 0
+                      ? `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore}) · Suma con ${peerNames.join(' + ')} (${groupSum.toFixed(1).replace(/\.0$/, '')} / ${groupMax})`
+                      : `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore})`;
+                } else if (resolvedScale.mode === 'custom') {
+                  const normalizedForAvg =
+                    parsedSubVal !== null && resolvedScale.convertToGeneralOnAverage
+                      ? normalizeSubcategoryScoreForAverage(parsedSubVal, sub, generalGradeScale)
+                      : null;
+                  cellTooltip =
+                    normalizedForAvg !== null && resolvedScale.maxScore !== generalGradeScale.maxScore
+                      ? `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore}) · Equivale a ${normalizedForAvg.toFixed(1).replace(/\.0$/, '')} / ${generalGradeScale.maxScore} en el promedio`
+                      : `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore})`;
+                } else if (hasEvalInstances) {
+                  cellTooltip = `${getPrimaryInstanceDisplayLabel(sub)} — Instancia principal (para todos los alumnos)`;
+                }
+
+                const primaryTdBg = hasEvalInstances
+                  ? isDarkMode
+                    ? 'bg-indigo-950/20'
+                    : 'bg-indigo-50/40'
+                  : hasInsts
+                  ? isDarkMode
+                    ? 'bg-amber-950/15'
+                    : 'bg-amber-50/25'
+                  : '';
+
+                const primaryTdRightBorder = isGrouped ? innerGroupBorder : groupRightBorder;
+
                 return (
                   <React.Fragment key={sub.id}>
                     <td
                       data-pii="student"
-                      className="p-1 border-r text-center border-neutral-200 dark:border-slate-800 overflow-hidden"
+                      className={`p-1 text-center overflow-hidden ${primaryTdBg} ${groupLeftBorder} ${primaryTdRightBorder}`}
                     >
                       <input
                         type="text"
@@ -243,17 +362,100 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                         data-grade-col={thisColIdx}
                         value={val}
                         onChange={(e) => onScoreChange(student.id, sub.id, e.target.value)}
-                        onBlur={onCellBlur}
+                        onBlur={() => {
+                          if (resolvedScale.mode === 'convert_100') {
+                            const converted = convertScoreFrom100ToGeneral(val, generalGradeScale);
+                            if (converted !== null && converted !== val) {
+                              onScoreChange(student.id, sub.id, converted);
+                            }
+                          }
+                          onCellBlur();
+                        }}
                         onKeyDown={(e) => onCellKeyDown(e, idx, thisColIdx)}
                         placeholder="-"
+                        title={cellTooltip}
                         className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                          isDarkMode
+                          hasEvalInstances
+                            ? isDarkMode
+                              ? 'bg-slate-800/80 border-indigo-700/60 focus:border-indigo-400'
+                              : 'bg-white border-indigo-200 focus:border-indigo-500'
+                            : isDarkMode
                             ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
                             : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
-                        } ${getScoreColorClass(val)}`}
+                        } ${getScoreColorClass(val, resolvedScale)}`}
                       />
                     </td>
 
+                    {/* Extra Evaluation Instances (for ALL students, included in averages) */}
+                    {evalInstances.map((evalInst, evalInstIdx) => {
+                      const evalColIdx = runningColIdx++;
+                      const evalVal = studentGrades[evalInst.id] || '';
+                      const instScale = resolveInstanceScale(sub, evalInst, generalGradeScale);
+                      const parsedEvalVal = parseGradeNumber(evalVal);
+                      const isLastColOfSub =
+                        evalInstIdx === evalInstances.length - 1 && instList.length === 0;
+                      const evalTdRightBorder = isLastColOfSub
+                        ? groupRightBorder
+                        : innerGroupBorder;
+
+                      let evalTooltip = `${getEvaluationInstanceDisplayLabel(sub, evalInst)} — Instancia de evaluación (para todos los alumnos)`;
+                      if (instScale.mode === 'convert_100') {
+                        evalTooltip += ` · Escala 0–100 → sobre ${generalGradeScale.maxScore}`;
+                      } else if (instScale.isCustom) {
+                        const norm =
+                          parsedEvalVal !== null && instScale.convertToGeneralOnAverage
+                            ? normalizeScoreWithResolvedScale(
+                                parsedEvalVal,
+                                instScale,
+                                generalGradeScale
+                              )
+                            : null;
+                        evalTooltip +=
+                          norm !== null && instScale.maxScore !== generalGradeScale.maxScore
+                            ? ` · Escala ${instScale.minScore}–${instScale.maxScore} (aprueba ≥ ${instScale.passingScore}, equiv. ${norm.toFixed(1).replace(/\.0$/, '')}/${generalGradeScale.maxScore})`
+                            : ` · Escala ${instScale.minScore}–${instScale.maxScore} (aprueba ≥ ${instScale.passingScore})`;
+                      }
+
+                      return (
+                        <td
+                          key={evalInst.id}
+                          data-pii="student"
+                          className={`p-1 text-center overflow-hidden ${
+                            isDarkMode ? 'bg-indigo-950/20' : 'bg-indigo-50/40'
+                          } ${evalTdRightBorder}`}
+                        >
+                          <input
+                            type="text"
+                            data-grade-row={idx}
+                            data-grade-col={evalColIdx}
+                            value={evalVal}
+                            onChange={(e) => onScoreChange(student.id, evalInst.id, e.target.value)}
+                            onBlur={() => {
+                              if (instScale.mode === 'convert_100') {
+                                const converted = convertScoreFrom100ToGeneral(
+                                  evalVal,
+                                  generalGradeScale
+                                );
+                                if (converted !== null && converted !== evalVal) {
+                                  onScoreChange(student.id, evalInst.id, converted);
+                                }
+                              }
+                              onCellBlur();
+                            }}
+                            onKeyDown={(e) => onCellKeyDown(e, idx, evalColIdx)}
+                            placeholder="-"
+                            title={evalTooltip}
+                            className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
+                              isDarkMode
+                                ? 'bg-slate-800/80 border-indigo-700/60 focus:border-indigo-400'
+                                : 'bg-white border-indigo-200 focus:border-indigo-500'
+                            } ${getScoreColorClass(evalVal, instScale)}`}
+                          />
+                        </td>
+                      );
+                    })}
+
+                    {/* Intensification / Recuperación sub-columns */}
                     {instList.map((inst, instIdx) => {
                       const instColIdx = runningColIdx++;
                       const rawInstVal = studentGrades[inst.id] || '';
@@ -279,19 +481,26 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                         ? `${getIntensificationDisplayLabel(sub, inst)} — Nota cargada manualmente, fuera del promedio (borrá la celda para volver a —)`
                         : `${getIntensificationDisplayLabel(sub, inst)} — Nota mínima: ${effective.threshold}. Ingresá la calificación (fuera del promedio)`;
 
+                      const isLastColOfSub = instIdx === instList.length - 1;
+                      const instTdRightBorder = isLastColOfSub
+                        ? groupRightBorder
+                        : isDarkMode
+                        ? 'border-r border-dashed border-r-amber-700/70'
+                        : 'border-r border-dashed border-r-amber-300';
+
                       return (
                         <td
                           key={inst.id}
                           data-pii="student"
-                          className={`p-1 border-r text-center overflow-hidden ${
+                          className={`p-1 text-center overflow-hidden ${
                             isShowingExempt
                               ? isDarkMode
-                                ? 'bg-slate-900/50 border-slate-800'
-                                : 'bg-neutral-50/70 border-neutral-200'
+                                ? 'bg-slate-900/50'
+                                : 'bg-neutral-50/70'
                               : isDarkMode
-                              ? 'bg-amber-950/15 border-slate-800'
-                              : 'bg-amber-50/35 border-neutral-200'
-                          }`}
+                              ? 'bg-amber-950/20'
+                              : 'bg-amber-50/45'
+                          } ${instTdRightBorder}`}
                         >
                           <input
                             type="text"
@@ -311,7 +520,20 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                                 : isDarkMode
                                 ? 'bg-slate-800/80 border-amber-700/60 focus:border-amber-400'
                                 : 'bg-white border-amber-300/80 focus:border-amber-500'
-                            } ${isShowingExempt ? '' : getScoreColorClass(rawInstVal)}`}
+                            } ${
+                              isShowingExempt
+                                ? ''
+                                : getScoreColorClass(
+                                    rawInstVal,
+                                    resolvedScale.mode === 'custom' ||
+                                      resolvedScale.mode === 'sum_group'
+                                      ? {
+                                          ...resolvedScale,
+                                          passingScore: effective.threshold,
+                                        }
+                                      : undefined
+                                  )
+                            }`}
                           />
                         </td>
                       );
@@ -327,8 +549,8 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
         {preliminaryValuation && preliminaryValuation.showInMatrix && (
           <td
             data-pii="student"
-            className={`p-2 border-l text-center font-bold text-xs ${
-              isDarkMode ? 'bg-amber-950/20 border-slate-800' : 'bg-amber-50/30 border-neutral-200'
+            className={`p-2 border-l-[3px] text-center font-bold text-xs ${
+              isDarkMode ? 'bg-amber-950/20 border-l-slate-500' : 'bg-amber-50/30 border-l-slate-400'
             }`}
           >
             {(() => {
@@ -399,8 +621,14 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
         {/* Final Grade Cell */}
         <td
           data-pii="student"
-          className={`p-1.5 border-l text-center font-extrabold text-sm overflow-hidden ${
-            isDarkMode ? 'bg-blue-950/20 border-slate-800' : 'bg-blue-50/40 border-neutral-200'
+          className={`p-1.5 text-center font-extrabold text-sm overflow-hidden ${
+            preliminaryValuation && preliminaryValuation.showInMatrix
+              ? isDarkMode
+                ? 'bg-blue-950/20 border-l-2 border-l-slate-700'
+                : 'bg-blue-50/40 border-l-2 border-l-neutral-300'
+              : isDarkMode
+              ? 'bg-blue-950/20 border-l-[3px] border-l-slate-500'
+              : 'bg-blue-50/40 border-l-[3px] border-l-slate-400'
           }`}
         >
           {(() => {
@@ -669,8 +897,12 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     [courseId, getColWidth]
   );
 
-  const { intensificationLabel, intensificationPassingScore, updateTerminology } =
-    useTerminologySettings();
+  const {
+    intensificationLabel,
+    intensificationPassingScore,
+    generalGradeScale,
+    updateTerminology,
+  } = useTerminologySettings();
 
   const hasAnyIntensifications = useMemo(
     () =>
@@ -680,7 +912,17 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     [categories]
   );
 
-  const headerRowSpan = hasAnyIntensifications ? 3 : 2;
+  const hasAnyEvaluationInstances = useMemo(
+    () =>
+      categories.some((cat) =>
+        cat.subcategories.some((sub) => (sub.instances?.length || 0) > 0)
+      ),
+    [categories]
+  );
+
+  const hasAnySplitColumns = hasAnyIntensifications || hasAnyEvaluationInstances;
+
+  const headerRowSpan = hasAnySplitColumns ? 3 : 2;
 
   const totalTableWidth = useMemo(() => {
     let total = getColWidth('__student__', 'student');
@@ -690,6 +932,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       } else {
         cat.subcategories.forEach((sub) => {
           total += getColWidth(sub.id, 'grade');
+          (sub.instances || []).forEach((evalInst) => {
+            total += getColWidth(evalInst.id, 'grade');
+          });
           (sub.intensifications || []).forEach((inst) => {
             total += getColWidth(inst.id, 'grade');
           });
@@ -890,11 +1135,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   const [newCatName, setNewCatName] = useState('');
   const [categoryToDelete, setCategoryToDelete] = useState<GradeCategory | null>(null);
 
-  // Category Edit state & Manage Categories Modal
+  // Category Edit state & Scale Settings Modal
   const [categoryToEdit, setCategoryToEdit] = useState<GradeCategory | null>(null);
   const [editCatName, setEditCatName] = useState('');
   const [editCatColor, setEditCatColor] = useState('');
-  const [isManageCategoriesOpen, setIsManageCategoriesOpen] = useState(false);
+  const [isScaleSettingsOpen, setIsScaleSettingsOpen] = useState(false);
 
   // Subcategory Edit state
   const [subcatToEdit, setSubcatToEdit] = useState<{ catId: string; subId: string; name: string } | null>(null);
@@ -907,8 +1152,23 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     instId: string;
   } | null>(null);
 
+  // Multi-instance Evaluation Edit state (instanceId === '__primary__' for primary col)
+  const [evaluationInstanceToEdit, setEvaluationInstanceToEdit] = useState<{
+    catId: string;
+    subId: string;
+    instanceId: string;
+  } | null>(null);
+
   const [addingSubcatForCatId, setAddingSubcatForCatId] = useState<string | null>(null);
   const [newSubcatName, setNewSubcatName] = useState('');
+  const [newSubcatQuickScale, setNewSubcatQuickScale] = useState<'general' | 'scale_5' | 'scale_100'>('general');
+  const [newSubcatUseInstances, setNewSubcatUseInstances] = useState(false);
+  const [newSubcatInstanceNames, setNewSubcatInstanceNames] = useState<string[]>([
+    'Escrita',
+    'Oral',
+  ]);
+  const [newSubcatCombineMode, setNewSubcatCombineMode] =
+    useState<EvaluationInstancesCombineMode>('average');
 
   // Add Category Handler
   const handleAddCategory = () => {
@@ -939,32 +1199,237 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     setCategoryToEdit(null);
   };
 
-  // Save Edited Subcategory Name
-  const handleSaveEditSubcategory = () => {
+  // Save Edited Subcategory Name, Scale & Sum Group Links
+  const handleSaveEditSubcategory = (scalePayload?: SubcategoryScaleEditPayload) => {
     if (!subcatToEdit || !editSubcatName.trim()) return;
-    const updated = categories.map((cat) => {
-      if (cat.id !== subcatToEdit.catId) return cat;
-      return {
-        ...cat,
-        subcategories: cat.subcategories.map((sub) =>
-          sub.id === subcatToEdit.subId ? { ...sub, name: editSubcatName.trim() } : sub
-        ),
-      };
-    });
+
+    const targetSubId = subcatToEdit.subId;
+    const currentSub = categories
+      .flatMap((c) => c.subcategories)
+      .find((s) => s.id === targetSubId);
+    const previousGroupId =
+      currentSub?.scaleMode === 'sum_group' ? currentSub.sumGroupId : undefined;
+
+    let nextGroupId: string | undefined;
+    const selectedPeerIds = new Set(scalePayload?.sumPeerSubIds || []);
+
+    if (scalePayload?.scaleMode === 'sum_group') {
+      if (previousGroupId) {
+        nextGroupId = previousGroupId;
+      } else {
+        // Reuse existing groupId of a selected peer if any
+        const existingPeerGroup = categories
+          .flatMap((c) => c.subcategories)
+          .find(
+            (s) => selectedPeerIds.has(s.id) && s.scaleMode === 'sum_group' && s.sumGroupId
+          )?.sumGroupId;
+        nextGroupId =
+          existingPeerGroup ||
+          `sum-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      }
+    }
+
+    let updated = categories.map((cat) => ({
+      ...cat,
+      subcategories: cat.subcategories.map((sub) => {
+        if (sub.id === targetSubId) {
+          if (!scalePayload) {
+            return { ...sub, name: editSubcatName.trim() };
+          }
+          if (scalePayload.scaleMode === 'general') {
+            return {
+              ...sub,
+              name: editSubcatName.trim(),
+              scaleMode: 'general' as const,
+              minScore: undefined,
+              maxScore: generalGradeScale.maxScore,
+              passingScore: undefined,
+              convertToGeneralOnAverage: undefined,
+              sumGroupId: undefined,
+            };
+          }
+          if (scalePayload.scaleMode === 'convert_100') {
+            return {
+              ...sub,
+              name: editSubcatName.trim(),
+              scaleMode: 'convert_100' as const,
+              minScore: 0,
+              maxScore: 100,
+              passingScore: undefined,
+              convertToGeneralOnAverage: true,
+              sumGroupId: undefined,
+            };
+          }
+          if (scalePayload.scaleMode === 'sum_group') {
+            return {
+              ...sub,
+              name: editSubcatName.trim(),
+              scaleMode: 'sum_group' as const,
+              minScore: scalePayload.minScore,
+              maxScore: scalePayload.maxScore,
+              passingScore: scalePayload.passingScore,
+              convertToGeneralOnAverage: false,
+              sumGroupId: nextGroupId,
+            };
+          }
+          return {
+            ...sub,
+            name: editSubcatName.trim(),
+            scaleMode: 'custom' as const,
+            minScore: scalePayload.minScore,
+            maxScore: scalePayload.maxScore,
+            passingScore: scalePayload.passingScore,
+            convertToGeneralOnAverage: scalePayload.convertToGeneralOnAverage,
+            sumGroupId: undefined,
+          };
+        }
+
+        // Symmetrically link selected peers into the same sum group
+        if (scalePayload?.scaleMode === 'sum_group' && nextGroupId && selectedPeerIds.has(sub.id)) {
+          const resolvedPeer = resolveSubcategoryScale(sub, generalGradeScale);
+          return {
+            ...sub,
+            scaleMode: 'sum_group' as const,
+            minScore: sub.minScore !== undefined ? sub.minScore : resolvedPeer.minScore,
+            maxScore: sub.maxScore !== undefined ? sub.maxScore : resolvedPeer.maxScore,
+            passingScore:
+              sub.passingScore !== undefined ? sub.passingScore : resolvedPeer.passingScore,
+            convertToGeneralOnAverage: false,
+            sumGroupId: nextGroupId,
+          };
+        }
+
+        // Unlink peers that were unchecked from this sum group
+        if (
+          scalePayload?.scaleMode === 'sum_group' &&
+          previousGroupId &&
+          sub.scaleMode === 'sum_group' &&
+          sub.sumGroupId === previousGroupId &&
+          !selectedPeerIds.has(sub.id)
+        ) {
+          const isCustomMax =
+            sub.maxScore !== undefined && sub.maxScore !== generalGradeScale.maxScore;
+          return {
+            ...sub,
+            scaleMode: isCustomMax ? ('custom' as const) : ('general' as const),
+            sumGroupId: undefined,
+          };
+        }
+
+        return sub;
+      }),
+    }));
+
+    // Clean up orphaned 1-member sum groups if the edited column left a previous group
+    if (previousGroupId && (!scalePayload || scalePayload.scaleMode !== 'sum_group')) {
+      const remaining = getSumGroupPeers(updated, previousGroupId);
+      if (remaining.length === 1) {
+        const loneId = remaining[0].subcategory.id;
+        updated = updated.map((cat) => ({
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== loneId) return sub;
+            const isCustomMax =
+              sub.maxScore !== undefined && sub.maxScore !== generalGradeScale.maxScore;
+            return {
+              ...sub,
+              scaleMode: isCustomMax ? ('custom' as const) : ('general' as const),
+              sumGroupId: undefined,
+            };
+          }),
+        }));
+      }
+    }
+
     saveCategories(updated);
     setSubcatToEdit(null);
   };
 
+  // Convert all existing scores > generalGradeScale.maxScore in a 0-100 column
+  const handleConvertSubcat100ToGeneral = useCallback(
+    (subId: string): number => {
+      let convertedCount = 0;
+      const nextMap: StudentGradesMap = { ...draftGradesMap };
+      students.forEach((st) => {
+        const stGrades = nextMap[st.id];
+        if (!stGrades) return;
+        const rawVal = stGrades[subId];
+        if (!rawVal) return;
+        const converted = convertScoreFrom100ToGeneral(rawVal, generalGradeScale);
+        if (converted !== null && converted !== rawVal) {
+          nextMap[st.id] = { ...stGrades, [subId]: converted };
+          convertedCount += 1;
+        }
+      });
+      if (convertedCount > 0) {
+        setDraftGradesMap(nextMap);
+        saveGrades(nextMap);
+      }
+      return convertedCount;
+    },
+    [draftGradesMap, students, generalGradeScale, saveGrades]
+  );
+
+  const convertible100CountInSubcat = useMemo(() => {
+    if (!subcatToEdit) return 0;
+    let count = 0;
+    students.forEach((st) => {
+      const rawVal = draftGradesMap[st.id]?.[subcatToEdit.subId];
+      if (!rawVal) return;
+      if (convertScoreFrom100ToGeneral(rawVal, generalGradeScale) !== null) {
+        count += 1;
+      }
+    });
+    return count;
+  }, [subcatToEdit, students, draftGradesMap, generalGradeScale]);
+
   // Add Subcategory Handler
   const handleAddSubcategory = (catId: string) => {
     if (!newSubcatName.trim()) return;
+    const baseTs = Date.now();
+    const cleanedInstances = newSubcatUseInstances
+      ? newSubcatInstanceNames.map((n) => n.trim()).filter(Boolean)
+      : [];
+
     const updated = categories.map((cat) => {
       if (cat.id !== catId) return cat;
-      const newSub: GradeSubcategory = {
-        id: `sub-${Date.now()}`,
+      let newSub: GradeSubcategory = {
+        id: `sub-${baseTs}`,
         name: newSubcatName.trim(),
-        maxScore: 10,
+        maxScore: generalGradeScale.maxScore,
+        scaleMode: 'general',
       };
+      if (newSubcatQuickScale === 'scale_5') {
+        const suggestedPass5 =
+          Math.round(((5 * generalGradeScale.passingScore) / generalGradeScale.maxScore) * 10) / 10;
+        newSub = {
+          ...newSub,
+          scaleMode: 'custom',
+          minScore: 1,
+          maxScore: 5,
+          passingScore: suggestedPass5,
+          convertToGeneralOnAverage: true,
+        };
+      } else if (newSubcatQuickScale === 'scale_100') {
+        newSub = {
+          ...newSub,
+          scaleMode: 'convert_100',
+          minScore: 0,
+          maxScore: 100,
+          convertToGeneralOnAverage: true,
+        };
+      }
+      if (cleanedInstances.length >= 2) {
+        newSub = {
+          ...newSub,
+          primaryInstanceName: cleanedInstances[0],
+          instancesCombineMode: newSubcatCombineMode,
+          instances: cleanedInstances.slice(1).map((instName, idx) => ({
+            id: `evinst-${baseTs}-${idx + 1}`,
+            name: instName,
+          })),
+        };
+      }
       return {
         ...cat,
         subcategories: [...cat.subcategories, newSub],
@@ -972,6 +1437,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     });
     saveCategories(updated);
     setNewSubcatName('');
+    setNewSubcatQuickScale('general');
+    setNewSubcatUseInstances(false);
+    setNewSubcatInstanceNames(['Escrita', 'Oral']);
+    setNewSubcatCombineMode('average');
     setAddingSubcatForCatId(null);
   };
 
@@ -1123,6 +1592,185 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             return {
               ...sub,
               intensifications: list,
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Add Multi-Instance Evaluation sub-column (applies to ALL students)
+  const handleAddEvaluationInstance = useCallback(
+    (
+      catId: string,
+      subId: string,
+      name: string,
+      options?: {
+        primaryInstanceName?: string;
+        customTitle?: string;
+        combineMode?: EvaluationInstancesCombineMode;
+      }
+    ) => {
+      const cleanName = name.trim() || 'Instancia';
+      const newInstance: GradeEvaluationInstance = {
+        id: `evinst-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: cleanName,
+        ...(options?.customTitle?.trim() ? { customTitle: options.customTitle.trim() } : {}),
+      };
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const prev = Array.isArray(sub.instances) ? sub.instances : [];
+            const nextPrimary =
+              options?.primaryInstanceName?.trim() ||
+              sub.primaryInstanceName?.trim() ||
+              '1° Inst.';
+            return {
+              ...sub,
+              primaryInstanceName: nextPrimary,
+              instancesCombineMode:
+                options?.combineMode || sub.instancesCombineMode || 'average',
+              instances: [...prev, newInstance],
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Update primary instance label or combine mode of a multi-instance evaluation
+  const handleUpdateEvaluationInstancesMeta = useCallback(
+    (
+      catId: string,
+      subId: string,
+      updates: {
+        primaryInstanceName?: string;
+        instancesCombineMode?: EvaluationInstancesCombineMode;
+      }
+    ) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            return {
+              ...sub,
+              ...(updates.primaryInstanceName !== undefined
+                ? { primaryInstanceName: updates.primaryInstanceName.trim() || undefined }
+                : {}),
+              ...(updates.instancesCombineMode !== undefined
+                ? { instancesCombineMode: updates.instancesCombineMode }
+                : {}),
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Update an individual extra evaluation instance (name, customTitle, custom scale)
+  const handleUpdateEvaluationInstance = useCallback(
+    (
+      catId: string,
+      subId: string,
+      instanceId: string,
+      updates: {
+        name: string;
+        customTitle?: string;
+        scaleMode?: GradeSubcategory['scaleMode'];
+        minScore?: number;
+        maxScore?: number;
+        passingScore?: number;
+        convertToGeneralOnAverage?: boolean;
+      }
+    ) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            return {
+              ...sub,
+              instances: (sub.instances || []).map((inst) => {
+                if (inst.id !== instanceId) return inst;
+                return {
+                  ...inst,
+                  name: updates.name.trim() || inst.name,
+                  customTitle: updates.customTitle?.trim() || undefined,
+                  scaleMode: updates.scaleMode === 'general' ? undefined : updates.scaleMode,
+                  minScore: updates.minScore,
+                  maxScore: updates.maxScore,
+                  passingScore: updates.passingScore,
+                  convertToGeneralOnAverage: updates.convertToGeneralOnAverage,
+                };
+              }),
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Delete an extra evaluation instance
+  const handleDeleteEvaluationInstance = useCallback(
+    (catId: string, subId: string, instanceId: string) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const next = (sub.instances || []).filter((inst) => inst.id !== instanceId);
+            return {
+              ...sub,
+              instances: next.length > 0 ? next : undefined,
+              ...(next.length === 0 ? { primaryInstanceName: undefined } : {}),
+            };
+          }),
+        };
+      });
+      saveCategories(updated);
+    },
+    [categories, saveCategories]
+  );
+
+  // Reorder extra evaluation instances within an evaluation
+  const handleMoveEvaluationInstance = useCallback(
+    (catId: string, subId: string, fromIndex: number, toIndex: number) => {
+      const updated = categories.map((cat) => {
+        if (cat.id !== catId) return cat;
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((sub) => {
+            if (sub.id !== subId) return sub;
+            const list = [...(sub.instances || [])];
+            if (
+              fromIndex < 0 ||
+              toIndex < 0 ||
+              fromIndex >= list.length ||
+              toIndex >= list.length ||
+              fromIndex === toIndex
+            ) {
+              return sub;
+            }
+            const [moved] = list.splice(fromIndex, 1);
+            list.splice(toIndex, 0, moved);
+            return {
+              ...sub,
+              instances: list,
             };
           }),
         };
@@ -1562,16 +2210,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setIsManageCategoriesOpen(true)}
+                  onClick={() => setIsScaleSettingsOpen(true)}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer ${
                     isDarkMode
                       ? 'bg-slate-800/80 hover:bg-slate-800 text-slate-200 border-slate-700'
                       : 'bg-white hover:bg-neutral-50 text-neutral-700 border-neutral-200'
                   }`}
-                  title="Ordenar o administrar todas las Categorías Mayores y sus columnas"
+                  title={`Configurar escala general de calificaciones (actual: ${generalGradeScale.minScore} al ${generalGradeScale.maxScore}, aprueba con ${generalGradeScale.passingScore})`}
                 >
                   <Settings className="w-3.5 h-3.5 shrink-0 text-neutral-500 dark:text-slate-400" />
-                  <span>Ordenar Categorías</span>
+                  <span>Configuración</span>
                 </button>
 
                 <button
@@ -1739,6 +2387,179 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               <span>Agregar Columna</span>
             </button>
           </div>
+
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+            <span className={isDarkMode ? 'text-slate-400 font-semibold' : 'text-neutral-600 font-semibold'}>
+              Escala inicial:
+            </span>
+            {(
+              [
+                {
+                  id: 'general' as const,
+                  label: `General (${generalGradeScale.minScore}–${generalGradeScale.maxScore}, ≥ ${generalGradeScale.passingScore})`,
+                },
+                { id: 'scale_5' as const, label: 'Sobre 5 (1–5)' },
+                { id: 'scale_100' as const, label: `Sobre 100 → /${generalGradeScale.maxScore}` },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setNewSubcatQuickScale(opt.id)}
+                className={`px-2 py-0.5 rounded-md font-semibold border transition-colors cursor-pointer ${
+                  newSubcatQuickScale === opt.id
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : isDarkMode
+                    ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                    : 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => setNewSubcatUseInstances((prev) => !prev)}
+              className={`ml-auto inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md font-semibold border transition-colors cursor-pointer ${
+                newSubcatUseInstances
+                  ? 'bg-indigo-600 text-white border-indigo-600'
+                  : isDarkMode
+                  ? 'bg-slate-900 border-indigo-500/50 text-indigo-300 hover:bg-indigo-950/40'
+                  : 'bg-white border-indigo-300 text-indigo-800 hover:bg-indigo-50'
+              }`}
+              title="Dividí esta evaluación en dos o más instancias para todos los alumnos (por ejemplo: Escrita y Oral)"
+            >
+              <Layers className="w-3 h-3 shrink-0" />
+              <span>
+                {newSubcatUseInstances
+                  ? 'Con múltiples instancias ✓'
+                  : '+ Agregar instancias (ej. Escrita / Oral)'}
+              </span>
+            </button>
+          </div>
+
+          {newSubcatUseInstances && (
+            <div
+              className={`p-3 rounded-xl border space-y-2.5 text-xs ${
+                isDarkMode
+                  ? 'bg-indigo-950/30 border-indigo-700/50 text-indigo-100'
+                  : 'bg-indigo-50/70 border-indigo-200 text-indigo-950'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 font-bold text-[11px]">
+                  <Layers className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                  <span>Instancias de esta evaluación (para todos los alumnos)</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1 text-[10px]">
+                  <span className="opacity-70">Plantillas:</span>
+                  {(
+                    [
+                      { label: 'Escrita + Oral', vals: ['Escrita', 'Oral'] },
+                      { label: 'Teórico + Práctico', vals: ['Teórico', 'Práctico'] },
+                      { label: 'Parte 1 + Parte 2', vals: ['Parte 1', 'Parte 2'] },
+                    ] as const
+                  ).map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setNewSubcatInstanceNames([...preset.vals])}
+                      className={`px-2 py-0.5 rounded border font-semibold cursor-pointer transition-colors ${
+                        isDarkMode
+                          ? 'bg-slate-900 border-indigo-700/60 text-indigo-200 hover:bg-indigo-900/50'
+                          : 'bg-white border-indigo-200 text-indigo-800 hover:bg-indigo-100'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {newSubcatInstanceNames.map((instName, idx) => (
+                  <div key={`new-inst-${idx}`} className="flex items-center gap-1">
+                    <span className="text-[10px] font-bold opacity-70">{idx + 1}°</span>
+                    <input
+                      type="text"
+                      value={instName}
+                      onChange={(e) =>
+                        setNewSubcatInstanceNames((prev) =>
+                          prev.map((v, i) => (i === idx ? e.target.value : v))
+                        )
+                      }
+                      placeholder={`Instancia ${idx + 1}`}
+                      className={`w-28 px-2 py-1 text-xs rounded-lg border focus:outline-none ${
+                        isDarkMode
+                          ? 'bg-slate-900 border-indigo-700/70 text-white placeholder-slate-500'
+                          : 'bg-white border-indigo-300 text-neutral-900 placeholder-neutral-400'
+                      }`}
+                    />
+                    {newSubcatInstanceNames.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setNewSubcatInstanceNames((prev) => prev.filter((_, i) => i !== idx))
+                        }
+                        className="p-1 rounded hover:bg-red-500/15 text-red-500 cursor-pointer"
+                        title="Quitar instancia"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    setNewSubcatInstanceNames((prev) => [...prev, `Instancia ${prev.length + 1}`])
+                  }
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-dashed text-[11px] font-semibold cursor-pointer transition-colors ${
+                    isDarkMode
+                      ? 'border-indigo-500/50 text-indigo-300 hover:bg-indigo-950/50'
+                      : 'border-indigo-400 text-indigo-800 hover:bg-indigo-100/70'
+                  }`}
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>Otra instancia</span>
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5 text-[11px] pt-0.5">
+                <span className="font-semibold opacity-80">Cómo promedian:</span>
+                {(
+                  [
+                    { id: 'average' as const, label: 'Promediar (1 nota)' },
+                    { id: 'sum' as const, label: 'Sumar puntajes (ej. 5 + 5 = 10)' },
+                    { id: 'separate' as const, label: 'Por separado' },
+                  ] as const
+                ).map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => setNewSubcatCombineMode(mode.id)}
+                    className={`px-2 py-0.5 rounded-md font-semibold border cursor-pointer transition-colors ${
+                      newSubcatCombineMode === mode.id
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : isDarkMode
+                        ? 'bg-slate-900 border-indigo-700/60 text-indigo-200 hover:bg-indigo-900/40'
+                        : 'bg-white border-indigo-200 text-indigo-800 hover:bg-indigo-50'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!newSubcatUseInstances && (
+            <p className={`text-[10px] ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+              Luego podés hacer clic en el título de la evaluación para personalizar su escala, agregar instancias o sumar intensificaciones.
+            </p>
+          )}
         </div>
       )}
 
@@ -1878,6 +2699,12 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   cat.subcategories.map((sub) => (
                     <React.Fragment key={`colgroup-${sub.id}`}>
                       <col style={{ width: `${getColWidth(sub.id, 'grade')}px` }} />
+                      {(sub.instances || []).map((evalInst) => (
+                        <col
+                          key={`col-${evalInst.id}`}
+                          style={{ width: `${getColWidth(evalInst.id, 'grade')}px` }}
+                        />
+                      ))}
                       {(sub.intensifications || []).map((inst) => (
                         <col
                           key={`col-${inst.id}`}
@@ -1899,8 +2726,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {/* Student info fixed col */}
                 <th
                   rowSpan={headerRowSpan}
-                  className={`sticky left-0 z-20 p-2.5 font-bold border-r uppercase tracking-wider text-[11px] shadow-[2px_0_5px_-2px_rgba(0,0,0,0.08)] relative select-none ${
-                    isDarkMode ? 'bg-slate-950 border-slate-800 text-slate-300' : 'bg-neutral-100 border-neutral-200 text-neutral-700'
+                  className={`sticky left-0 z-20 p-2.5 font-bold border-r-[3px] uppercase tracking-wider text-[11px] shadow-[2px_0_5px_-2px_rgba(0,0,0,0.08)] relative select-none ${
+                    isDarkMode
+                      ? 'bg-slate-950 border-r-slate-500 text-slate-300'
+                      : 'bg-neutral-100 border-r-slate-400 text-neutral-700'
                   }`}
                 >
                   <div className="flex items-center justify-between gap-1 pr-1.5 min-w-0">
@@ -1925,7 +2754,11 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     cat.subcategories.length === 0
                       ? 1
                       : cat.subcategories.reduce(
-                          (acc, sub) => acc + 1 + (sub.intensifications?.length || 0),
+                          (acc, sub) =>
+                            acc +
+                            1 +
+                            (sub.instances?.length || 0) +
+                            (sub.intensifications?.length || 0),
                           0
                         );
                   const colorTheme = CATEGORY_COLORS[catIdx % CATEGORY_COLORS.length];
@@ -1971,8 +2804,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         setDraggedCatIdx(null);
                         setDragOverCatIdx(null);
                       }}
-                      className={`group/cat p-1.5 text-center font-bold border-r border-b-2 transition-all overflow-hidden ${
+                      className={`group/cat p-1.5 text-center font-bold border-r-[3px] border-b-2 transition-all overflow-hidden ${
                         colorTheme.border
+                      } ${
+                        isDarkMode ? 'border-r-slate-500' : 'border-r-slate-400'
                       } ${colorTheme.headerBg} ${
                         draggedCatIdx === catIdx ? 'opacity-50' : ''
                       } ${isDragOverCat ? 'ring-2 ring-inset ring-blue-500' : ''}`}
@@ -2048,10 +2883,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 {activePreliminaryValuation && activePreliminaryValuation.showInMatrix && (
                   <th
                     rowSpan={headerRowSpan}
-                    className={`p-2 font-extrabold text-center uppercase tracking-wider text-[10px] border-l relative select-none overflow-hidden ${
+                    className={`p-2 font-extrabold text-center uppercase tracking-wider text-[10px] border-l-[3px] relative select-none overflow-hidden ${
                       isDarkMode
-                        ? 'bg-amber-950/40 text-amber-300 border-slate-800'
-                        : 'bg-amber-50/80 text-amber-900 border-neutral-200'
+                        ? 'bg-amber-950/40 text-amber-300 border-l-slate-500'
+                        : 'bg-amber-50/80 text-amber-900 border-l-slate-400'
                     }`}
                   >
                     <button
@@ -2086,9 +2921,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 <th
                   rowSpan={headerRowSpan}
                   className={`p-2 font-extrabold text-center uppercase tracking-wider text-[10px] relative select-none overflow-hidden ${
-                    isDarkMode
-                      ? 'bg-blue-950/40 text-blue-300 border-l border-slate-800'
-                      : 'bg-blue-50 text-blue-800 border-l border-neutral-200'
+                    activePreliminaryValuation && activePreliminaryValuation.showInMatrix
+                      ? isDarkMode
+                        ? 'bg-blue-950/40 text-blue-300 border-l-2 border-l-slate-700'
+                        : 'bg-blue-50 text-blue-800 border-l-2 border-l-neutral-300'
+                      : isDarkMode
+                      ? 'bg-blue-950/40 text-blue-300 border-l-[3px] border-l-slate-500'
+                      : 'bg-blue-50 text-blue-800 border-l-[3px] border-l-slate-400'
                   }`}
                 >
                   <div className="flex flex-col items-center justify-center gap-1 min-w-0">
@@ -2138,14 +2977,18 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 </th>
               </tr>
 
-              {/* ROW 2: Subcategories / Evaluations Header (spans 1 + N intensifications when split) */}
+              {/* ROW 2: Subcategories / Evaluations Header (spans 1 + N instances + M intensifications when split) */}
               <tr className={`border-b ${isDarkMode ? 'bg-slate-900 border-slate-800' : 'bg-neutral-50 border-neutral-200'}`}>
                 {categories.map((cat) => {
+                  const catRightBorder = isDarkMode
+                    ? 'border-r-[3px] border-r-slate-500'
+                    : 'border-r-[3px] border-r-slate-400';
+
                   if (cat.subcategories.length === 0) {
                     return (
                       <th
                         key={`${cat.id}-empty`}
-                        rowSpan={hasAnyIntensifications ? 2 : 1}
+                        rowSpan={hasAnySplitColumns ? 2 : 1}
                         onDragOver={(e) => {
                           if (draggedSubcat && draggedSubcat.catId !== cat.id) {
                             e.preventDefault();
@@ -2165,8 +3008,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           setDraggedSubcat(null);
                           setDragOverSubcat(null);
                         }}
-                        className={`p-1.5 text-center font-medium border-r text-[11px] relative select-none overflow-hidden ${
-                          isDarkMode ? 'border-slate-800 text-slate-400' : 'border-neutral-200 text-neutral-500'
+                        className={`p-1.5 text-center font-medium text-[11px] relative select-none overflow-hidden ${catRightBorder} ${
+                          isDarkMode ? 'text-slate-400' : 'text-neutral-500'
                         }`}
                       >
                         <div className="flex items-center justify-center gap-0.5 pr-1 min-w-0">
@@ -2209,11 +3052,20 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   return (
                     <React.Fragment key={`${cat.id}-subs`}>
                       {cat.subcategories.map((sub, subIdx) => {
+                        const evalInstances = sub.instances || [];
                         const instList = sub.intensifications || [];
+                        const hasEvalInstances = evalInstances.length > 0;
                         const hasInsts = instList.length > 0;
+                        const isSplit = hasEvalInstances || hasInsts;
+                        const isLastSubInCat = subIdx === cat.subcategories.length - 1;
                         const colW = getColWidth(sub.id, 'grade');
-                        const totalGroupW = hasInsts
-                          ? colW + instList.reduce((acc, inst) => acc + getColWidth(inst.id, 'grade'), 0)
+                        const totalGroupW = isSplit
+                          ? colW +
+                            evalInstances.reduce(
+                              (acc, ei) => acc + getColWidth(ei.id, 'grade'),
+                              0
+                            ) +
+                            instList.reduce((acc, inst) => acc + getColWidth(inst.id, 'grade'), 0)
                           : colW;
                         const showInlineArrows = cat.subcategories.length > 1 && totalGroupW >= 88;
                         const isDraggingThisSub =
@@ -2223,11 +3075,37 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           dragOverSubcat?.subIdx === subIdx &&
                           !isDraggingThisSub;
 
+                        const groupHeaderClasses = hasEvalInstances
+                          ? isDarkMode
+                            ? 'bg-indigo-950/65 text-indigo-200 border-t-2 border-t-indigo-400 border-l-[3px] border-l-indigo-500'
+                            : 'bg-indigo-100/85 text-indigo-950 border-t-2 border-t-indigo-500 border-l-[3px] border-l-indigo-400'
+                          : hasInsts
+                          ? isDarkMode
+                            ? 'bg-amber-950/55 text-amber-200 border-t-2 border-t-amber-400 border-l-[3px] border-l-amber-500'
+                            : 'bg-amber-100/80 text-amber-950 border-t-2 border-t-amber-500 border-l-[3px] border-l-amber-400'
+                          : isDarkMode
+                          ? 'text-slate-300'
+                          : 'text-neutral-700';
+
+                        const rightEdgeClass = isLastSubInCat
+                          ? catRightBorder
+                          : isSplit
+                          ? hasEvalInstances
+                            ? isDarkMode
+                              ? 'border-r-[3px] border-r-indigo-500'
+                              : 'border-r-[3px] border-r-indigo-400'
+                            : isDarkMode
+                            ? 'border-r-[3px] border-r-amber-500'
+                            : 'border-r-[3px] border-r-amber-400'
+                          : isDarkMode
+                          ? 'border-r border-r-slate-800'
+                          : 'border-r border-r-neutral-200';
+
                         return (
                           <th
                             key={sub.id}
-                            colSpan={hasInsts ? 1 + instList.length : 1}
-                            rowSpan={hasInsts ? 1 : hasAnyIntensifications ? 2 : 1}
+                            colSpan={1 + evalInstances.length + instList.length}
+                            rowSpan={isSplit ? 1 : hasAnySplitColumns ? 2 : 1}
                             draggable={!isResizingColumn}
                             onDragStart={(e) => {
                               if (isResizingColumn) {
@@ -2285,9 +3163,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               setDraggedSubcat(null);
                               setDragOverSubcat(null);
                             }}
-                            className={`group/sub p-1.5 text-center font-medium border-r text-[11px] transition-all relative select-none overflow-hidden ${
-                              isDarkMode ? 'border-slate-800 text-slate-300' : 'border-neutral-200 text-neutral-700'
-                            } ${isDraggingThisSub ? 'opacity-45' : ''} ${
+                            className={`group/sub p-1.5 text-center font-medium text-[11px] transition-all relative select-none overflow-hidden ${groupHeaderClasses} ${rightEdgeClass} ${
+                              isDraggingThisSub ? 'opacity-45' : ''
+                            } ${
                               isDragOverThisSub ? 'ring-2 ring-inset ring-blue-500 bg-blue-500/10' : ''
                             }`}
                           >
@@ -2300,28 +3178,100 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     e.stopPropagation();
                                     handleMoveSubcategory(cat.id, subIdx, subIdx - 1);
                                   }}
-                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
                                   title={`Mover "${sub.name}" hacia la izquierda (antes)`}
                                 >
                                   <ChevronLeft className="w-3 h-3" />
                                 </button>
                               )}
 
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
-                                  setEditSubcatName(sub.name);
-                                }}
-                                className="font-semibold inline-flex items-center justify-center gap-1 text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0 max-w-full"
-                                title={`${sub.name} — Hacé clic para editar, agregar ${intensificationLabel.toLowerCase()} / recuperación o importar notas`}
-                              >
-                                {(sub.name.toLowerCase().includes('disposición') ||
-                                  sub.name.toLowerCase().includes('disposicion')) && (
-                                  <Award className="w-3 h-3 text-amber-500 shrink-0" />
-                                )}
-                                <span className="truncate">{sub.name}</span>
-                              </button>
+                              {(() => {
+                                const subScale = resolveSubcategoryScale(sub, generalGradeScale);
+                                const sumPeers =
+                                  subScale.mode === 'sum_group' && sub.sumGroupId
+                                    ? getSumGroupPeers(categories, sub.sumGroupId).filter(
+                                        (p) => p.subcategory.id !== sub.id
+                                      )
+                                    : [];
+                                const scaleHint = subScale.isCustom
+                                  ? subScale.mode === 'convert_100'
+                                    ? ` · Escala 0–100 → sobre ${generalGradeScale.maxScore}`
+                                    : subScale.mode === 'sum_group'
+                                    ? ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})${
+                                        sumPeers.length > 0
+                                          ? ` · Suma con ${sumPeers.map((p) => p.subcategory.name).join(' + ')}`
+                                          : ''
+                                      }`
+                                    : ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})`
+                                  : '';
+                                const instancesHint = hasEvalInstances
+                                  ? ` · ${1 + evalInstances.length} instancias (${
+                                      sub.instancesCombineMode === 'sum'
+                                        ? 'suman'
+                                        : sub.instancesCombineMode === 'separate'
+                                        ? 'por separado'
+                                        : 'promedian'
+                                    })`
+                                  : '';
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
+                                      setEditSubcatName(sub.name);
+                                    }}
+                                    className="font-semibold inline-flex flex-col items-center justify-center text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0 max-w-full"
+                                    title={`${sub.name}${scaleHint}${instancesHint} — Hacé clic para editar, configurar escala, agregar instancias, ${intensificationLabel.toLowerCase()} / recuperación o importar notas`}
+                                  >
+                                    <span className="inline-flex items-center justify-center gap-1 min-w-0 max-w-full">
+                                      {hasEvalInstances ? (
+                                        <Layers className="w-3 h-3 text-indigo-600 dark:text-indigo-300 shrink-0" />
+                                      ) : hasInsts ? (
+                                        <RotateCcw className="w-3 h-3 text-amber-600 dark:text-amber-300 shrink-0" />
+                                      ) : (sub.name.toLowerCase().includes('disposición') ||
+                                          sub.name.toLowerCase().includes('disposicion')) ? (
+                                        <Award className="w-3 h-3 text-amber-500 shrink-0" />
+                                      ) : null}
+                                      <span className="truncate font-bold">{sub.name}</span>
+                                    </span>
+                                    {(subScale.badgeText || hasEvalInstances) && (
+                                      <span className="mt-0.5 inline-flex items-center gap-1 flex-wrap justify-center">
+                                        {subScale.badgeText && (
+                                          <span
+                                            className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
+                                              subScale.mode === 'sum_group'
+                                                ? isDarkMode
+                                                  ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-700/60'
+                                                  : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                                                : isDarkMode
+                                                ? 'bg-slate-800 text-sky-300 border border-slate-700'
+                                                : 'bg-sky-50 text-sky-800 border border-sky-200'
+                                            }`}
+                                          >
+                                            {subScale.badgeText}
+                                          </span>
+                                        )}
+                                        {hasEvalInstances && (
+                                          <span
+                                            className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
+                                              isDarkMode
+                                                ? 'bg-indigo-900/80 text-indigo-200 border border-indigo-600/60'
+                                                : 'bg-white/90 text-indigo-800 border border-indigo-300'
+                                            }`}
+                                          >
+                                            {1 + evalInstances.length} inst. ·{' '}
+                                            {sub.instancesCombineMode === 'sum'
+                                              ? 'Suma'
+                                              : sub.instancesCombineMode === 'separate'
+                                              ? 'Sep.'
+                                              : 'Prom.'}
+                                          </span>
+                                        )}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })()}
 
                               {showInlineArrows && (
                                 <button
@@ -2331,7 +3281,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     e.stopPropagation();
                                     handleMoveSubcategory(cat.id, subIdx, subIdx + 1);
                                   }}
-                                  className="p-0.5 rounded hover:bg-neutral-200 dark:hover:bg-slate-700 disabled:opacity-15 disabled:pointer-events-none text-neutral-500 dark:text-slate-400 opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
                                   title={`Mover "${sub.name}" hacia la derecha (después)`}
                                 >
                                   <ChevronRight className="w-3 h-3" />
@@ -2340,7 +3290,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             </div>
 
                             {/* Column resize handle (only when unsplit; split sub-columns have their own handles in Row 3) */}
-                            {!hasInsts && (
+                            {!isSplit && (
                               <div
                                 role="separator"
                                 aria-orientation="vertical"
@@ -2362,33 +3312,86 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 })}
               </tr>
 
-              {/* ROW 3: Split Sub-headers for evaluations that have Intensification / Recuperación instances */}
-              {hasAnyIntensifications && (
+              {/* ROW 3: Split Sub-headers for evaluations with multiple instances and/or Intensification / Recuperación */}
+              {hasAnySplitColumns && (
                 <tr className={`border-b ${isDarkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-neutral-50/80 border-neutral-200'}`}>
-                  {categories.map((cat) =>
-                    cat.subcategories.map((sub) => {
+                  {categories.map((cat) => {
+                    const catRightBorder = isDarkMode
+                      ? 'border-r-[3px] border-r-slate-500'
+                      : 'border-r-[3px] border-r-slate-400';
+
+                    return cat.subcategories.map((sub, subIdx) => {
+                      const evalInstances = sub.instances || [];
                       const instList = sub.intensifications || [];
-                      if (instList.length === 0) return null;
+                      const hasEvalInstances = evalInstances.length > 0;
+                      const hasInsts = instList.length > 0;
+                      if (!hasEvalInstances && !hasInsts) return null;
+
+                      const isLastSubInCat = subIdx === cat.subcategories.length - 1;
+                      const groupLeftBorder = hasEvalInstances
+                        ? isDarkMode
+                          ? 'border-l-[3px] border-l-indigo-500'
+                          : 'border-l-[3px] border-l-indigo-400'
+                        : isDarkMode
+                        ? 'border-l-[3px] border-l-amber-500'
+                        : 'border-l-[3px] border-l-amber-400';
+
+                      const groupRightBorder = isLastSubInCat
+                        ? catRightBorder
+                        : hasEvalInstances
+                        ? isDarkMode
+                          ? 'border-r-[3px] border-r-indigo-500'
+                          : 'border-r-[3px] border-r-indigo-400'
+                        : isDarkMode
+                        ? 'border-r-[3px] border-r-amber-500'
+                        : 'border-r-[3px] border-r-amber-400';
+
+                      const innerDashBorder = hasEvalInstances
+                        ? isDarkMode
+                          ? 'border-r border-dashed border-r-indigo-700/70'
+                          : 'border-r border-dashed border-r-indigo-300'
+                        : isDarkMode
+                        ? 'border-r border-dashed border-r-amber-700/70'
+                        : 'border-r border-dashed border-r-amber-300';
+
+                      const primarySubLabel = getPrimaryInstanceLabel(sub);
+
                       return (
                         <React.Fragment key={`${sub.id}-split-row`}>
-                          {/* Original Exam Sub-header */}
+                          {/* Primary Instance / Original Exam Sub-header */}
                           <th
-                            className={`py-1 px-1.5 text-center font-semibold border-r text-[10px] relative select-none overflow-hidden ${
-                              isDarkMode
-                                ? 'border-slate-800 text-slate-400 bg-slate-900'
-                                : 'border-neutral-200 text-neutral-600 bg-white'
+                            className={`py-1 px-1.5 text-center font-bold text-[10px] relative select-none overflow-hidden ${groupLeftBorder} ${innerDashBorder} ${
+                              hasEvalInstances
+                                ? isDarkMode
+                                  ? 'bg-indigo-950/45 text-indigo-200'
+                                  : 'bg-indigo-50/90 text-indigo-900'
+                                : isDarkMode
+                                ? 'bg-amber-950/25 text-amber-200/90'
+                                : 'bg-amber-50/60 text-amber-950'
                             }`}
                           >
                             <button
                               type="button"
                               onClick={() => {
-                                setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
-                                setEditSubcatName(sub.name);
+                                if (hasEvalInstances) {
+                                  setEvaluationInstanceToEdit({
+                                    catId: cat.id,
+                                    subId: sub.id,
+                                    instanceId: '__primary__',
+                                  });
+                                } else {
+                                  setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
+                                  setEditSubcatName(sub.name);
+                                }
                               }}
-                              className="w-full truncate hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer pr-1"
-                              title={`Nota original de "${sub.name}" — Hacé clic para editar o importar`}
+                              className="w-full truncate hover:underline cursor-pointer pr-1"
+                              title={
+                                hasEvalInstances
+                                  ? `${getPrimaryInstanceDisplayLabel(sub)} — Hacé clic para renombrar o importar notas en esta instancia`
+                                  : `Nota original de "${sub.name}" — Hacé clic para editar o importar`
+                              }
                             >
-                              Nota
+                              {primarySubLabel}
                             </button>
                             <div
                               role="separator"
@@ -2403,17 +3406,87 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             />
                           </th>
 
+                          {/* Extra Evaluation Instances Sub-headers (for ALL students) */}
+                          {evalInstances.map((evalInst, evalInstIdx) => {
+                            const fullLabel = getEvaluationInstanceDisplayLabel(sub, evalInst);
+                            const instScale = resolveInstanceScale(
+                              sub,
+                              evalInst,
+                              generalGradeScale
+                            );
+                            const isLastColOfSub =
+                              evalInstIdx === evalInstances.length - 1 && instList.length === 0;
+                            const cellRightBorder = isLastColOfSub
+                              ? groupRightBorder
+                              : innerDashBorder;
+
+                            return (
+                              <th
+                                key={evalInst.id}
+                                className={`py-1 px-1.5 text-center font-bold text-[10px] relative select-none overflow-hidden ${cellRightBorder} ${
+                                  isDarkMode
+                                    ? 'bg-indigo-950/45 text-indigo-200'
+                                    : 'bg-indigo-50/90 text-indigo-900'
+                                }`}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEvaluationInstanceToEdit({
+                                      catId: cat.id,
+                                      subId: sub.id,
+                                      instanceId: evalInst.id,
+                                    })
+                                  }
+                                  className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
+                                  title={`${fullLabel} — Hacé clic para renombrar, ajustar escala o importar notas en esta instancia`}
+                                >
+                                  <span className="truncate max-w-full leading-tight">
+                                    {evalInst.name}
+                                  </span>
+                                  {evalInst.customTitle ? (
+                                    <span className="text-[9px] font-medium opacity-75 truncate max-w-full leading-tight">
+                                      {evalInst.customTitle}
+                                    </span>
+                                  ) : evalInst.scaleMode && instScale.badgeText ? (
+                                    <span className="text-[8px] font-bold opacity-80 truncate max-w-full leading-tight">
+                                      {instScale.badgeText}
+                                    </span>
+                                  ) : null}
+                                </button>
+                                <div
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  onMouseDown={(e) => startColumnResize(e, evalInst.id, 'grade')}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    handleResetSingleColWidth(evalInst.id);
+                                  }}
+                                  className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                  title="Arrastrá para ajustar el ancho de esta subcolumna (doble clic para restablecer)"
+                                />
+                              </th>
+                            );
+                          })}
+
                           {/* Intensification / Recuperación Sub-headers */}
-                          {instList.map((inst) => {
+                          {instList.map((inst, instIdx) => {
                             const fullLabel = getIntensificationDisplayLabel(sub, inst);
-                            const threshold = getIntensificationPassingThreshold(inst);
+                            const threshold = getIntensificationPassingThreshold(inst, sub);
+                            const isLastColOfSub = instIdx === instList.length - 1;
+                            const cellRightBorder = isLastColOfSub
+                              ? groupRightBorder
+                              : isDarkMode
+                              ? 'border-r border-dashed border-r-amber-700/70'
+                              : 'border-r border-dashed border-r-amber-300';
+
                             return (
                               <th
                                 key={inst.id}
-                                className={`py-1 px-1.5 text-center font-bold border-r text-[10px] relative select-none overflow-hidden ${
+                                className={`py-1 px-1.5 text-center font-bold text-[10px] relative select-none overflow-hidden ${cellRightBorder} ${
                                   isDarkMode
-                                    ? 'border-slate-800 bg-amber-950/35 text-amber-300'
-                                    : 'border-neutral-200 bg-amber-50/90 text-amber-900'
+                                    ? 'bg-amber-950/45 text-amber-300'
+                                    : 'bg-amber-100/75 text-amber-900'
                                 }`}
                               >
                                 <button
@@ -2453,8 +3526,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           })}
                         </React.Fragment>
                       );
-                    })
-                  )}
+                    });
+                  })}
                 </tr>
               )}
             </thead>
@@ -2478,6 +3551,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                     idx={idx}
                     studentGrades={draftGradesMap[student.id] || EMPTY_STUDENT_GRADES}
                     categories={categories}
+                    generalGradeScale={generalGradeScale}
                     isDarkMode={isDarkMode}
                     overallCalculation={overallCalculation}
                     finalScore={getFinalScore(student.id)}
@@ -2504,20 +3578,35 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         }`}
       >
         <div className="flex flex-wrap items-center gap-3">
-          <span className="font-semibold text-neutral-700 dark:text-slate-300">Criterio Pedagógico:</span>
-          <span>• Puedes ingresar notas numéricas (1 al 10 con decimales) o conceptuales.</span>
-          <span>• Si una categoría o la nota final está en modo manual, eres libre de ponderar según tu criterio.</span>
+          <span className="font-semibold text-neutral-700 dark:text-slate-300">
+            Escala general ({generalGradeScale.minScore} al {generalGradeScale.maxScore}):
+          </span>
+          <span>• Hacé clic en cualquier evaluación para ajustar su escala propia, convertir sobre 100 o sumarla con otra.</span>
+          <span>• En modo Criterio docente podés cargar la nota final manualmente.</span>
         </div>
         <div className="flex flex-wrap items-center gap-3 shrink-0">
           <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" /> Aprobado (≥ 7)
+            <span className="w-2 h-2 rounded-full bg-emerald-500" /> Aprobado (≥ {generalGradeScale.passingScore})
           </span>
-          <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
-            <span className="w-2 h-2 rounded-full bg-amber-500" /> Regular (6)
-          </span>
+          {generalGradeScale.regularScore !== null && (
+            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
+              <span className="w-2 h-2 rounded-full bg-amber-500" /> Regular ({generalGradeScale.regularScore}–
+              {Number((generalGradeScale.passingScore - 0.1).toFixed(1))})
+            </span>
+          )}
           <span className="flex items-center gap-1 text-red-600 dark:text-red-400 font-bold">
-            <span className="w-2 h-2 rounded-full bg-red-500" /> Desaprobado (&lt; 6)
+            <span className="w-2 h-2 rounded-full bg-red-500" /> Desaprobado (&lt;{' '}
+            {generalGradeScale.regularScore !== null
+              ? generalGradeScale.regularScore
+              : generalGradeScale.passingScore}
+            )
           </span>
+          {hasAnyEvaluationInstances && (
+            <span className="flex items-center gap-1 font-bold text-indigo-700 dark:text-indigo-300">
+              <Layers className="w-3 h-3 shrink-0" />
+              Evaluaciones con instancias (para todos los alumnos, delimitadas con borde grueso)
+            </span>
+          )}
           {hasAnyIntensifications && (
             <span className="flex items-center gap-1 font-bold text-slate-600 dark:text-slate-300">
               <span className="px-1.5 py-0.5 rounded bg-neutral-200/80 dark:bg-slate-800 text-[10px]">
@@ -2529,9 +3618,22 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         </div>
       </div>
 
+      <GradebookScaleSettingsModal
+        isOpen={isScaleSettingsOpen}
+        onClose={() => setIsScaleSettingsOpen(false)}
+        isDarkMode={isDarkMode}
+        generalGradeScale={generalGradeScale}
+        intensificationLabel={intensificationLabel}
+        intensificationPassingScore={intensificationPassingScore}
+        onSave={(updates) => {
+          updateTerminology(updates);
+        }}
+      />
+
       <GradebookCategoryModals
         isDarkMode={isDarkMode}
         categories={categories}
+        generalGradeScale={generalGradeScale}
         categoryToDelete={categoryToDelete}
         setCategoryToDelete={setCategoryToDelete}
         confirmDeleteCategory={confirmDeleteCategory}
@@ -2542,17 +3644,14 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         editCatColor={editCatColor}
         setEditCatColor={setEditCatColor}
         handleSaveEditCategory={handleSaveEditCategory}
-        isManageCategoriesOpen={isManageCategoriesOpen}
-        setIsManageCategoriesOpen={setIsManageCategoriesOpen}
-        newCatName={newCatName}
-        setNewCatName={setNewCatName}
-        handleAddCategory={handleAddCategory}
         subcatToEdit={subcatToEdit}
         setSubcatToEdit={setSubcatToEdit}
         editSubcatName={editSubcatName}
         setEditSubcatName={setEditSubcatName}
         handleSaveEditSubcategory={handleSaveEditSubcategory}
         handleDeleteSubcategory={handleDeleteSubcategory}
+        convertible100CountInSubcat={convertible100CountInSubcat}
+        onConvertSubcat100ToGeneral={handleConvertSubcat100ToGeneral}
         onMoveCategory={handleMoveCategory}
         onMoveSubcategory={handleMoveSubcategory}
         onMoveSubcategoryToCategory={handleMoveSubcategoryToCategory}
@@ -2570,6 +3669,13 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         onUpdateIntensification={handleUpdateIntensification}
         onDeleteIntensification={handleDeleteIntensification}
         onMoveIntensification={handleMoveIntensification}
+        onAddEvaluationInstance={handleAddEvaluationInstance}
+        onUpdateEvaluationInstancesMeta={handleUpdateEvaluationInstancesMeta}
+        evaluationInstanceToEdit={evaluationInstanceToEdit}
+        setEvaluationInstanceToEdit={setEvaluationInstanceToEdit}
+        onUpdateEvaluationInstance={handleUpdateEvaluationInstance}
+        onDeleteEvaluationInstance={handleDeleteEvaluationInstance}
+        onMoveEvaluationInstance={handleMoveEvaluationInstance}
         onImportIntoColumn={(target, source) => {
           setImportTargetColumn(target);
           if (source === 'forms') {

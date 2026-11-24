@@ -20,7 +20,27 @@ const ONE_DECIMAL_PRECISION = 1;
 const PASSING_EXCELLENT_SCORE_THRESHOLD = 7;
 const PASSING_REGULAR_SCORE_THRESHOLD = 6;
 export const INTENSIFICATION_EXEMPT_THRESHOLD = PASSING_EXCELLENT_SCORE_THRESHOLD;
-export const INTENSIFICATION_EXEMPT_LABEL = 'NI';
+export const INTENSIFICATION_EXEMPT_LABEL = '—';
+
+export function getIntensificationPassingThreshold(
+  intensification?: GradeIntensification
+): number {
+  const raw = intensification?.passingScore;
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0 && raw <= 10) {
+    return raw;
+  }
+  return INTENSIFICATION_EXEMPT_THRESHOLD;
+}
+
+export function isExemptMarkerValue(rawValue: unknown): boolean {
+  const trimmed = String(rawValue ?? '').trim();
+  if (!trimmed) return false;
+  return (
+    trimmed === INTENSIFICATION_EXEMPT_LABEL ||
+    trimmed === '-' ||
+    trimmed.toUpperCase() === 'NI'
+  );
+}
 
 /**
  * Normaliza una calificación textual o numérica (aceptando tanto coma como punto decimal)
@@ -57,80 +77,93 @@ export function getIntensificationDisplayLabel(
 }
 
 /**
- * Determina si un estudiante está exento de rendir la instancia de intensificación `instIndex`
- * (es decir, ya aprobó la evaluación original o una instancia previa con nota >= 7).
- * En ese caso corresponde mostrar la sigla `NI` (No intensifica) y excluirla del promedio.
+ * Determina si un estudiante ya alcanzó la nota mínima configurada para la instancia de
+ * intensificación `instIndex` (en la evaluación original o en una instancia previa).
+ * En ese caso corresponde mostrar una línea (`—`) por defecto, editable si el docente decide evaluarlo igual.
  */
 export function isStudentExemptFromIntensification(
   subcategory: GradeSubcategory,
   instIndex: number,
   studentGrades: Record<string, string> | undefined
-): { exempt: boolean; passingScore: number | null } {
+): { exempt: boolean; passingScore: number | null; threshold: number } {
   const grades = studentGrades || {};
-  const originalScore = parseGradeNumber(grades[subcategory.id]);
-  if (originalScore !== null && originalScore >= INTENSIFICATION_EXEMPT_THRESHOLD) {
-    return { exempt: true, passingScore: originalScore };
-  }
-
   const instList = Array.isArray(subcategory.intensifications)
     ? subcategory.intensifications
     : [];
+  const targetInst = instList[instIndex];
+  const threshold = getIntensificationPassingThreshold(targetInst);
+
+  const originalScore = parseGradeNumber(grades[subcategory.id]);
+  if (originalScore !== null && originalScore >= threshold) {
+    return { exempt: true, passingScore: originalScore, threshold };
+  }
+
   for (let i = 0; i < instIndex && i < instList.length; i++) {
     const prevScore = parseGradeNumber(grades[instList[i].id]);
-    if (prevScore !== null && prevScore >= INTENSIFICATION_EXEMPT_THRESHOLD) {
-      return { exempt: true, passingScore: prevScore };
+    if (prevScore !== null && prevScore >= threshold) {
+      return { exempt: true, passingScore: prevScore, threshold };
     }
   }
 
-  return { exempt: false, passingScore: null };
+  return { exempt: false, passingScore: null, threshold };
 }
 
 /**
  * Devuelve el valor visible efectivo de una celda de intensificación para un estudiante:
- * si el docente cargó explícitamente una calificación, esa nota prevalece sobre el `NI` por defecto;
- * si la celda está vacía y el estudiante ya aprobó con >= 7, muestra `'NI'` por defecto.
+ * si el docente cargó explícitamente una calificación, esa nota prevalece sobre la línea por defecto;
+ * si la celda está vacía y el estudiante ya aprobó con >= nota mínima, muestra `'—'` por defecto.
  */
 export function getEffectiveIntensificationCell(
   subcategory: GradeSubcategory,
   instIndex: number,
   studentGrades: Record<string, string> | undefined
-): { value: string; isNI: boolean; isDefaultNI: boolean; passingScore: number | null } {
+): {
+  value: string;
+  isExempt: boolean;
+  isDefaultExempt: boolean;
+  passingScore: number | null;
+  threshold: number;
+} {
   const inst = subcategory.intensifications?.[instIndex];
   const raw = inst ? studentGrades?.[inst.id] ?? '' : '';
   const trimmed = String(raw).trim();
   const check = isStudentExemptFromIntensification(subcategory, instIndex, studentGrades);
 
   if (trimmed !== '') {
-    if (trimmed.toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) {
+    if (isExemptMarkerValue(trimmed)) {
       return {
         value: INTENSIFICATION_EXEMPT_LABEL,
-        isNI: true,
-        isDefaultNI: check.exempt,
+        isExempt: true,
+        isDefaultExempt: check.exempt,
         passingScore: check.passingScore,
+        threshold: check.threshold,
       };
     }
     return {
       value: raw,
-      isNI: false,
-      isDefaultNI: false,
+      isExempt: false,
+      isDefaultExempt: false,
       passingScore: check.passingScore,
+      threshold: check.threshold,
     };
   }
 
   if (check.exempt) {
     return {
       value: INTENSIFICATION_EXEMPT_LABEL,
-      isNI: true,
-      isDefaultNI: true,
+      isExempt: true,
+      isDefaultExempt: true,
       passingScore: check.passingScore,
+      threshold: check.threshold,
     };
   }
 
   return {
     value: '',
-    isNI: false,
-    isDefaultNI: false,
+    isExempt: false,
+    isDefaultExempt: false,
     passingScore: null,
+    threshold: check.threshold,
   };
 }
 
@@ -407,7 +440,7 @@ export function computeTermScoresMap(
  * @returns Clases de Tailwind CSS correspondientes al color de la calificación.
  */
 export function getScoreColorClass(scoreValueString: string, isDarkMode: boolean): string {
-  if (String(scoreValueString || '').trim().toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) {
+  if (isExemptMarkerValue(scoreValueString)) {
     return isDarkMode ? 'text-slate-400 font-bold' : 'text-slate-500 font-bold';
   }
   const numericScore = parseGradeNumber(scoreValueString);

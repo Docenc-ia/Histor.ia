@@ -157,7 +157,7 @@ export function buildStudentTrackingDocHtml(
             }
             (sub.intensifications || []).forEach((inst, instIdx) => {
               const effective = getEffectiveIntensificationCell(sub, instIdx, stGradesStr);
-              if (effective.isNI) return;
+              if (effective.isExempt) return;
               const instParsed =
                 effective.value.trim() !== ''
                   ? Number(effective.value.trim().replace(',', '.'))

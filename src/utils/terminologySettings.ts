@@ -9,6 +9,7 @@ export interface TerminologySettings {
   periodNameSingular: string;
   initialDispositionScore: number;
   intensificationLabel: string;
+  intensificationPassingScore: number;
 }
 
 export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
@@ -17,7 +18,10 @@ export const DEFAULT_TERMINOLOGY_SETTINGS: TerminologySettings = {
   periodNameSingular: 'Cuatrimestre',
   initialDispositionScore: 10,
   intensificationLabel: 'Intensificación',
+  intensificationPassingScore: 7,
 };
+
+export const INTENSIFICATION_PASSING_SCORE_PRESETS: number[] = [6, 7, 8];
 
 export const INTENSIFICATION_LABEL_PRESETS: string[] = [
   'Intensificación',
@@ -67,6 +71,12 @@ function sanitizeInitialScore(value: unknown, fallback = 10): number {
   return rounded;
 }
 
+function sanitizePassingScore(value: unknown, fallback = 7): number {
+  const num = Number(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(num) || num <= 0 || num > 10) return fallback;
+  return Math.round(num * 10) / 10;
+}
+
 export function getDerivedPeriodLabels(periodNameSingular: string) {
   const clean = sanitizeLabel(periodNameSingular, DEFAULT_TERMINOLOGY_SETTINGS.periodNameSingular);
   const firstChar = clean.charAt(0).toUpperCase() || 'C';
@@ -95,6 +105,10 @@ export function getTerminologySettings(): TerminologySettings {
         intensificationLabel: sanitizeLabel(
           saved.intensificationLabel,
           DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel
+        ),
+        intensificationPassingScore: sanitizePassingScore(
+          saved.intensificationPassingScore,
+          DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
         ),
       };
     }
@@ -125,6 +139,13 @@ export function saveTerminologySettings(next: Partial<TerminologySettings>): Ter
       next.intensificationLabel !== undefined
         ? sanitizeLabel(next.intensificationLabel, DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel)
         : current.intensificationLabel,
+    intensificationPassingScore:
+      next.intensificationPassingScore !== undefined
+        ? sanitizePassingScore(
+            next.intensificationPassingScore,
+            DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
+          )
+        : current.intensificationPassingScore,
   };
 
   try {
@@ -175,6 +196,10 @@ export async function hydrateTerminologySettingsFromCloud(uid: string): Promise<
           intensificationLabel: sanitizeLabel(
             (cloudVal as any).intensificationLabel,
             DEFAULT_TERMINOLOGY_SETTINGS.intensificationLabel
+          ),
+          intensificationPassingScore: sanitizePassingScore(
+            (cloudVal as any).intensificationPassingScore,
+            DEFAULT_TERMINOLOGY_SETTINGS.intensificationPassingScore
           ),
         };
         const key = getUserStorageKey(STORAGE_BASE_KEY);
@@ -250,6 +275,7 @@ export function useTerminologySettings() {
     term2ShortLabel: periodLabels.term2ShortLabel,
     initialDispositionScore: settings.initialDispositionScore,
     intensificationLabel: settings.intensificationLabel,
+    intensificationPassingScore: settings.intensificationPassingScore,
     combinedTabLabel: `${settings.attendanceLabel} y ${settings.dispositionLabel}`,
     updateTerminology,
     resetTerminology,

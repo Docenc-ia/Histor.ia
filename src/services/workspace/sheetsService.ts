@@ -15,6 +15,7 @@ import {
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
   INTENSIFICATION_EXEMPT_LABEL,
+  isExemptMarkerValue,
 } from '../../utils/gradeCalculations';
 import { driveService } from './driveService';
 import { isRealGoogleSpreadsheetId } from '../../utils/sheetsUtils';
@@ -286,7 +287,7 @@ export const sheetsService = {
       const scoreValues = assessmentColumns.map((col) => {
         if (col.sub && col.instIndex !== undefined) {
           const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, stGrades);
-          return effective.isNI ? INTENSIFICATION_EXEMPT_LABEL : effective.value || '';
+          return effective.isExempt ? INTENSIFICATION_EXEMPT_LABEL : effective.value || '';
         }
         return stGrades[col.id] || '';
       });
@@ -297,7 +298,7 @@ export const sheetsService = {
           ({ col, val }) =>
             !col.sub &&
             val !== '' &&
-            val !== INTENSIFICATION_EXEMPT_LABEL &&
+            !isExemptMarkerValue(val) &&
             !isNaN(Number(String(val).replace(',', '.')))
         )
         .map(({ val }) => Number(String(val).replace(',', '.')));
@@ -637,7 +638,7 @@ export const sheetsService = {
         Object.entries(colIndexToAssessment).forEach(([colIdxStr, colInfo]) => {
           const colIdx = Number(colIdxStr);
           const rawCellVal = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
-          if (rawCellVal.toUpperCase() === INTENSIFICATION_EXEMPT_LABEL) return;
+          if (isExemptMarkerValue(rawCellVal)) return;
           const currentVal = String(updatedGradesMap[student.id][colInfo.id] || '').trim();
 
           const normalizedCell = rawCellVal.replace(',', '.');

@@ -2,6 +2,7 @@ import { Student } from '../types';
 import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
+  INTENSIFICATION_EXEMPT_LABEL,
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
 } from './gradeCalculations';
@@ -558,8 +559,8 @@ export function buildGradebookHtml(params: {
         .map((col) => {
           if (col.sub && col.instIndex !== undefined) {
             const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
-            if (effective.isNI) {
-              return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;color:#64748b;font-weight:bold;">NI</td>`;
+            if (effective.isExempt) {
+              return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;color:#64748b;font-weight:bold;">${INTENSIFICATION_EXEMPT_LABEL}</td>`;
             }
             const val = effective.value;
             return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;">${
@@ -666,7 +667,7 @@ export function buildGradebookCsv(params: {
     const subVals = subColumns.map((col) => {
       if (col.sub && col.instIndex !== undefined) {
         const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
-        if (effective.isNI) return 'NI';
+        if (effective.isExempt) return INTENSIFICATION_EXEMPT_LABEL;
         const val = effective.value;
         return val !== undefined && val !== '' ? val : '-';
       }

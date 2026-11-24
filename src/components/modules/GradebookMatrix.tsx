@@ -56,6 +56,8 @@ import {
   getScoreColorClass as computeScoreColorClass,
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
+  getIntensificationPassingThreshold,
+  isExemptMarkerValue,
   reorderCategoriesList,
   reorderSubcategoriesInCategory,
   moveSubcategoryAcrossCategories,
@@ -260,22 +262,29 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                         instIdx,
                         studentGrades
                       );
-                      const isShowingNI = effective.isNI;
-                      const isDefaultNI = effective.isDefaultNI && rawInstVal.trim() === '';
-                      const tooltipText = isDefaultNI
-                        ? `No intensifica por defecto (aprobado con ${effective.passingScore}). Hacé clic y escribí una nota si considerás que debe intensificar (no promedia).`
-                        : isShowingNI
-                        ? `${getIntensificationDisplayLabel(sub, inst)} — No intensifica. Podés editar o borrar este valor.`
+                      const isShowingExempt = effective.isExempt;
+                      const isLegacyOrDefaultExempt =
+                        effective.isDefaultExempt &&
+                        (rawInstVal.trim() === '' || isExemptMarkerValue(rawInstVal));
+                      const displayInputVal = isLegacyOrDefaultExempt
+                        ? ''
+                        : isExemptMarkerValue(rawInstVal)
+                        ? INTENSIFICATION_EXEMPT_LABEL
+                        : rawInstVal;
+                      const tooltipText = isLegacyOrDefaultExempt
+                        ? `Aprobado con ${effective.passingScore} (nota mínima: ${effective.threshold}). Queda con línea (—) por defecto; hacé clic y escribí una nota si decidís evaluarlo igual (no promedia).`
+                        : isShowingExempt
+                        ? `${getIntensificationDisplayLabel(sub, inst)} — Sin instancia pendiente (—). Podés editar o borrar este valor.`
                         : effective.passingScore !== null
-                        ? `${getIntensificationDisplayLabel(sub, inst)} — Nota cargada manualmente, fuera del promedio (borrá la celda para volver a NI)`
-                        : `${getIntensificationDisplayLabel(sub, inst)} — Ingresá la calificación (fuera del promedio)`;
+                        ? `${getIntensificationDisplayLabel(sub, inst)} — Nota cargada manualmente, fuera del promedio (borrá la celda para volver a —)`
+                        : `${getIntensificationDisplayLabel(sub, inst)} — Nota mínima: ${effective.threshold}. Ingresá la calificación (fuera del promedio)`;
 
                       return (
                         <td
                           key={inst.id}
                           data-pii="student"
                           className={`p-1 border-r text-center overflow-hidden ${
-                            isShowingNI
+                            isShowingExempt
                               ? isDarkMode
                                 ? 'bg-slate-900/50 border-slate-800'
                                 : 'bg-neutral-50/70 border-neutral-200'
@@ -288,21 +297,21 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                             type="text"
                             data-grade-row={idx}
                             data-grade-col={instColIdx}
-                            value={rawInstVal}
+                            value={displayInputVal}
                             onChange={(e) => onScoreChange(student.id, inst.id, e.target.value)}
                             onBlur={onCellBlur}
                             onKeyDown={(e) => onCellKeyDown(e, idx, instColIdx)}
-                            placeholder={isDefaultNI ? INTENSIFICATION_EXEMPT_LABEL : '-'}
+                            placeholder={isLegacyOrDefaultExempt ? INTENSIFICATION_EXEMPT_LABEL : ''}
                             title={tooltipText}
                             className={`w-full max-w-[58px] min-w-0 text-center px-1 py-1 rounded-lg text-xs font-semibold focus:outline-none transition-all border ${
-                              isShowingNI
+                              isShowingExempt
                                 ? isDarkMode
                                   ? 'bg-slate-800/80 border-slate-700 text-slate-400 placeholder:text-slate-400 placeholder:font-bold focus:bg-slate-800 focus:border-amber-400 focus:text-slate-100'
                                   : 'bg-neutral-100 border-neutral-200/90 text-neutral-500 placeholder:text-neutral-500 placeholder:font-bold focus:bg-white focus:border-amber-500 focus:text-neutral-900'
                                 : isDarkMode
                                 ? 'bg-slate-800/80 border-amber-700/60 focus:border-amber-400'
                                 : 'bg-white border-amber-300/80 focus:border-amber-500'
-                            } ${isShowingNI ? '' : getScoreColorClass(rawInstVal)}`}
+                            } ${isShowingExempt ? '' : getScoreColorClass(rawInstVal)}`}
                           />
                         </td>
                       );
@@ -660,7 +669,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     [courseId, getColWidth]
   );
 
-  const { intensificationLabel, updateTerminology } = useTerminologySettings();
+  const { intensificationLabel, intensificationPassingScore, updateTerminology } =
+    useTerminologySettings();
 
   const hasAnyIntensifications = useMemo(
     () =>
@@ -986,11 +996,25 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
 
   // Add Intensification / Recuperación to an evaluation
   const handleAddIntensification = useCallback(
-    (catId: string, subId: string, name: string, customTitle?: string) => {
+    (
+      catId: string,
+      subId: string,
+      name: string,
+      customTitle?: string,
+      passingScore?: number
+    ) => {
       const cleanName = name.trim() || intensificationLabel;
+      const resolvedPassingScore =
+        typeof passingScore === 'number' &&
+        Number.isFinite(passingScore) &&
+        passingScore > 0 &&
+        passingScore <= 10
+          ? Math.round(passingScore * 10) / 10
+          : intensificationPassingScore;
       const newInst: GradeIntensification = {
         id: `int-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: cleanName,
+        passingScore: resolvedPassingScore,
         ...(customTitle?.trim() ? { customTitle: customTitle.trim() } : {}),
       };
       const updated = categories.map((cat) => {
@@ -1009,16 +1033,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       });
       saveCategories(updated);
     },
-    [categories, saveCategories, intensificationLabel]
+    [categories, saveCategories, intensificationLabel, intensificationPassingScore]
   );
 
-  // Update Intensification / Recuperación label or custom specification
+  // Update Intensification / Recuperación label, specification, or minimum passing score
   const handleUpdateIntensification = useCallback(
     (
       catId: string,
       subId: string,
       instId: string,
-      updates: { name: string; customTitle?: string }
+      updates: { name: string; customTitle?: string; passingScore?: number }
     ) => {
       const updated = categories.map((cat) => {
         if (cat.id !== catId) return cat;
@@ -1028,15 +1052,22 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             if (sub.id !== subId) return sub;
             return {
               ...sub,
-              intensifications: (sub.intensifications || []).map((inst) =>
-                inst.id === instId
-                  ? {
-                      ...inst,
-                      name: updates.name.trim() || inst.name,
-                      customTitle: updates.customTitle?.trim() || undefined,
-                    }
-                  : inst
-              ),
+              intensifications: (sub.intensifications || []).map((inst) => {
+                if (inst.id !== instId) return inst;
+                const nextPassingScore =
+                  typeof updates.passingScore === 'number' &&
+                  Number.isFinite(updates.passingScore) &&
+                  updates.passingScore > 0 &&
+                  updates.passingScore <= 10
+                    ? Math.round(updates.passingScore * 10) / 10
+                    : inst.passingScore;
+                return {
+                  ...inst,
+                  name: updates.name.trim() || inst.name,
+                  customTitle: updates.customTitle?.trim() || undefined,
+                  ...(nextPassingScore !== undefined ? { passingScore: nextPassingScore } : {}),
+                };
+              }),
             };
           }),
         };
@@ -2375,6 +2406,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           {/* Intensification / Recuperación Sub-headers */}
                           {instList.map((inst) => {
                             const fullLabel = getIntensificationDisplayLabel(sub, inst);
+                            const threshold = getIntensificationPassingThreshold(inst);
                             return (
                               <th
                                 key={inst.id}
@@ -2394,7 +2426,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     })
                                   }
                                   className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
-                                  title={`${fullLabel} — Hacé clic para renombrar, especificar detalle o importar notas`}
+                                  title={`${fullLabel} (nota mínima: ${threshold}) — Hacé clic para renombrar, cambiar nota mínima, especificar detalle o importar notas`}
                                 >
                                   <span className="truncate max-w-full leading-tight">
                                     {inst.name}
@@ -2489,9 +2521,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           {hasAnyIntensifications && (
             <span className="flex items-center gap-1 font-bold text-slate-600 dark:text-slate-300">
               <span className="px-1.5 py-0.5 rounded bg-neutral-200/80 dark:bg-slate-800 text-[10px]">
-                NI
+                {INTENSIFICATION_EXEMPT_LABEL}
               </span>{' '}
-              No intensifica (≥ 7 por defecto, editable) · Las intensificaciones no afectan el promedio
+              Aprobado (≥ nota mínima por defecto, editable) · Las intensificaciones no afectan el promedio
             </span>
           )}
         </div>
@@ -2527,6 +2559,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         intensificationDefaultLabel={intensificationLabel}
         onUpdateDefaultIntensificationLabel={(nextLabel) =>
           updateTerminology({ intensificationLabel: nextLabel })
+        }
+        intensificationDefaultPassingScore={intensificationPassingScore}
+        onUpdateDefaultIntensificationPassingScore={(nextScore) =>
+          updateTerminology({ intensificationPassingScore: nextScore })
         }
         onAddIntensification={handleAddIntensification}
         intensificationToEdit={intensificationToEdit}

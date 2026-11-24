@@ -13,6 +13,7 @@ import {
 import { Student } from '../../types';
 import { GradeCategory, StudentGradesMap } from '../../types/grades';
 import {
+  INTENSIFICATION_EXEMPT_LABEL,
   calculateCategoryAverageForStudent,
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
@@ -46,7 +47,8 @@ interface BreakdownRow {
   score: string;
   hasScore: boolean;
   isIntensification?: boolean;
-  isNI?: boolean;
+  isExempt?: boolean;
+  exemptThreshold?: number;
 }
 
 function buildRowsForTerm(
@@ -92,10 +94,11 @@ function buildRowsForTerm(
             term,
             categoryName: cat.name,
             itemName: getIntensificationDisplayLabel(sub, inst),
-            score: effective.isNI ? 'NI' : cleanVal || '—',
-            hasScore: !effective.isNI && cleanVal !== '',
+            score: effective.isExempt ? INTENSIFICATION_EXEMPT_LABEL : cleanVal || '—',
+            hasScore: !effective.isExempt && cleanVal !== '',
             isIntensification: true,
-            isNI: effective.isNI,
+            isExempt: effective.isExempt,
+            exemptThreshold: effective.threshold,
           });
         });
       });
@@ -212,9 +215,9 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
     : 'bg-rose-50 text-rose-800 border-rose-200';
 
   const gradedCount1c = rows1c.filter((r) => r.hasScore).length;
-  const totalEvaluable1c = rows1c.filter((r) => !r.isNI).length;
+  const totalEvaluable1c = rows1c.filter((r) => !r.isExempt).length;
   const gradedCount2c = rows2c.filter((r) => r.hasScore).length;
-  const totalEvaluable2c = rows2c.filter((r) => !r.isNI).length;
+  const totalEvaluable2c = rows2c.filter((r) => !r.isExempt).length;
 
   const handleNavigate = (dir: -1 | 1) => {
     const nextIdx = currentIdx + dir;
@@ -330,8 +333,10 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
       </td>
       <td
         className={`py-2 px-3 text-center font-bold tabular-nums ${
-          row.isNI
-            ? ''
+          row.isExempt
+            ? isDarkMode
+              ? 'text-slate-400'
+              : 'text-neutral-500'
             : row.hasScore
             ? getScoreColorClass(row.score, isDarkMode)
             : isDarkMode
@@ -339,16 +344,11 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
             : 'text-neutral-400 font-normal'
         }`}
       >
-        {row.isNI ? (
+        {row.isExempt ? (
           <span
-            title="No intensifica (aprobó con ≥ 7 por defecto; fuera del promedio)"
-            className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold border ${
-              isDarkMode
-                ? 'bg-slate-800 text-slate-300 border-slate-700'
-                : 'bg-neutral-100 text-neutral-600 border-neutral-300'
-            }`}
+            title={`Aprobado por defecto (nota mínima: ${row.exemptThreshold ?? 7}; fuera del promedio)`}
           >
-            NI
+            {INTENSIFICATION_EXEMPT_LABEL}
           </span>
         ) : (
           row.score

@@ -16,6 +16,7 @@ import {
 import type { ExamGradeDetailItem } from '../components/modules/CourseReportModal';
 import { getTerminologySettings } from './terminologySettings';
 import {
+  INTENSIFICATION_EXEMPT_LABEL,
   findDispositionColumnKey,
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
@@ -202,7 +203,11 @@ export function extractStudentExamDetails(
             id: inst.id,
             categoryName: cat.name,
             itemName: getIntensificationDisplayLabel(sub, inst),
-            score: effective.isNI ? 'NI' : trimmedVal !== '' ? trimmedVal : '—',
+            score: effective.isExempt
+              ? INTENSIFICATION_EXEMPT_LABEL
+              : trimmedVal !== ''
+              ? trimmedVal
+              : '—',
           });
         });
       });

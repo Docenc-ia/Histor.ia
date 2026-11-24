@@ -2,6 +2,7 @@ import { Student } from '../types';
 import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
+  INTENSIFICATION_EXEMPT_LABEL,
   getEffectiveIntensificationCell,
   getIntensificationDisplayLabel,
 } from './gradeCalculations';
@@ -282,8 +283,8 @@ export async function exportGradebookMatrixToExcel(
           const instHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
             getIntensificationDisplayLabel(sub, inst)
           )}`;
-          if (effective.isNI) {
-            rowObj[instHeader] = 'NI';
+          if (effective.isExempt) {
+            rowObj[instHeader] = INTENSIFICATION_EXEMPT_LABEL;
             return;
           }
           const instVal = effective.value;

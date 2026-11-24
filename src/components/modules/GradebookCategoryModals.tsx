@@ -26,8 +26,12 @@ import { GradeCategory } from '../../types/grades';
 import {
   CATEGORY_COLORS,
   getIntensificationDisplayLabel,
+  getIntensificationPassingThreshold,
 } from '../../utils/gradeCalculations';
-import { INTENSIFICATION_LABEL_PRESETS } from '../../utils/terminologySettings';
+import {
+  INTENSIFICATION_LABEL_PRESETS,
+  INTENSIFICATION_PASSING_SCORE_PRESETS,
+} from '../../utils/terminologySettings';
 
 export interface GradebookCategoryModalsProps {
   isDarkMode: boolean;
@@ -66,11 +70,14 @@ export interface GradebookCategoryModalsProps {
   ) => void;
   intensificationDefaultLabel?: string;
   onUpdateDefaultIntensificationLabel?: (nextLabel: string) => void;
+  intensificationDefaultPassingScore?: number;
+  onUpdateDefaultIntensificationPassingScore?: (nextScore: number) => void;
   onAddIntensification?: (
     catId: string,
     subId: string,
     name: string,
-    customTitle?: string
+    customTitle?: string,
+    passingScore?: number
   ) => void;
   intensificationToEdit?: { catId: string; subId: string; instId: string } | null;
   setIntensificationToEdit?: (
@@ -80,7 +87,7 @@ export interface GradebookCategoryModalsProps {
     catId: string,
     subId: string,
     instId: string,
-    updates: { name: string; customTitle?: string }
+    updates: { name: string; customTitle?: string; passingScore?: number }
   ) => void;
   onDeleteIntensification?: (catId: string, subId: string, instId: string) => void;
   onMoveIntensification?: (
@@ -121,6 +128,8 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   onImportIntoColumn,
   intensificationDefaultLabel = 'Intensificación',
   onUpdateDefaultIntensificationLabel,
+  intensificationDefaultPassingScore = 7,
+  onUpdateDefaultIntensificationPassingScore,
   onAddIntensification,
   intensificationToEdit,
   setIntensificationToEdit,
@@ -149,9 +158,23 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   // Draft state for adding a new intensification inside the Evaluation Edit modal
   const [newInstName, setNewInstName] = useState('');
   const [newInstCustomTitle, setNewInstCustomTitle] = useState('');
+  const [newInstPassingScore, setNewInstPassingScore] = useState<string>(
+    String(intensificationDefaultPassingScore)
+  );
   const [saveAsDefaultTerm, setSaveAsDefaultTerm] = useState(false);
 
   const existingInstCount = activeSubcatLive?.intensifications?.length || 0;
+
+  const parseDraftPassingScore = (raw: string, fallback: number): number => {
+    const parsed = Number(String(raw ?? '').trim().replace(',', '.'));
+    if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 10) return fallback;
+    return Math.round(parsed * 10) / 10;
+  };
+
+  const effectiveNewPassingScore = parseDraftPassingScore(
+    newInstPassingScore,
+    intensificationDefaultPassingScore
+  );
 
   useEffect(() => {
     if (subcatToEdit) {
@@ -161,9 +184,15 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
           : `${intensificationDefaultLabel} ${existingInstCount + 1}`;
       setNewInstName(nextDefault);
       setNewInstCustomTitle('');
+      setNewInstPassingScore(String(intensificationDefaultPassingScore));
       setSaveAsDefaultTerm(false);
     }
-  }, [subcatToEdit?.subId, existingInstCount, intensificationDefaultLabel]);
+  }, [
+    subcatToEdit?.subId,
+    existingInstCount,
+    intensificationDefaultLabel,
+    intensificationDefaultPassingScore,
+  ]);
 
   // Live resolution for Editing an Intensification modal
   const activeInstParentCat = intensificationToEdit
@@ -182,34 +211,61 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
 
   const [editInstName, setEditInstName] = useState('');
   const [editInstCustomTitle, setEditInstCustomTitle] = useState('');
+  const [editInstPassingScore, setEditInstPassingScore] = useState<string>(
+    String(intensificationDefaultPassingScore)
+  );
   const [savedDefaultFeedback, setSavedDefaultFeedback] = useState(false);
+  const [savedDefaultScoreFeedback, setSavedDefaultScoreFeedback] = useState(false);
+
+  const effectiveEditPassingScore = parseDraftPassingScore(
+    editInstPassingScore,
+    activeInstLive
+      ? getIntensificationPassingThreshold(activeInstLive)
+      : intensificationDefaultPassingScore
+  );
 
   useEffect(() => {
     if (activeInstLive) {
       setEditInstName(activeInstLive.name);
       setEditInstCustomTitle(activeInstLive.customTitle || '');
+      setEditInstPassingScore(String(getIntensificationPassingThreshold(activeInstLive)));
       setSavedDefaultFeedback(false);
+      setSavedDefaultScoreFeedback(false);
     }
   }, [activeInstLive?.id]);
 
   const handleConfirmAddIntensification = () => {
     if (!subcatToEdit || !onAddIntensification) return;
     const cleanName = newInstName.trim() || intensificationDefaultLabel;
-    if (saveAsDefaultTerm && onUpdateDefaultIntensificationLabel) {
-      const baseTerm = cleanName.replace(/\s+\d+$/, '').trim() || cleanName;
-      onUpdateDefaultIntensificationLabel(baseTerm);
+    const resolvedPassingScore = parseDraftPassingScore(
+      newInstPassingScore,
+      intensificationDefaultPassingScore
+    );
+    if (saveAsDefaultTerm) {
+      if (onUpdateDefaultIntensificationLabel) {
+        const baseTerm = cleanName.replace(/\s+\d+$/, '').trim() || cleanName;
+        onUpdateDefaultIntensificationLabel(baseTerm);
+      }
+      if (onUpdateDefaultIntensificationPassingScore) {
+        onUpdateDefaultIntensificationPassingScore(resolvedPassingScore);
+      }
     }
     onAddIntensification(
       subcatToEdit.catId,
       subcatToEdit.subId,
       cleanName,
-      newInstCustomTitle.trim() || undefined
+      newInstCustomTitle.trim() || undefined,
+      resolvedPassingScore
     );
     setNewInstCustomTitle('');
   };
 
   const handleSaveEditIntensification = () => {
     if (!intensificationToEdit || !onUpdateIntensification || !editInstName.trim()) return;
+    const resolvedPassingScore = parseDraftPassingScore(
+      editInstPassingScore,
+      intensificationDefaultPassingScore
+    );
     onUpdateIntensification(
       intensificationToEdit.catId,
       intensificationToEdit.subId,
@@ -217,6 +273,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
       {
         name: editInstName.trim(),
         customTitle: editInstCustomTitle.trim() || undefined,
+        passingScore: resolvedPassingScore,
       }
     );
     setIntensificationToEdit?.(null);
@@ -848,7 +905,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       isDarkMode ? 'text-slate-300' : 'text-neutral-600'
                     }`}
                   >
-                    Divide la columna bajo el título <strong>"{editSubcatName.trim() || subcatToEdit.name}"</strong>. Quienes tengan nota <strong>≥ 7</strong> muestran <strong>NI</strong> por defecto (editable si necesitás cargar nota). Las intensificaciones quedan fuera del promedio.
+                    Divide la columna bajo el título <strong>"{editSubcatName.trim() || subcatToEdit.name}"</strong>. Quienes tengan nota <strong>≥ {effectiveNewPassingScore}</strong> quedan con una línea (<strong>—</strong>) por defecto (editable si decidís evaluarlos igual). Las intensificaciones quedan fuera del promedio.
                   </p>
 
                   {/* Lista de intensificaciones ya creadas */}
@@ -880,8 +937,20 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                             className="text-left min-w-0 flex-1 hover:underline cursor-pointer"
                             title="Hacé clic para editar esta instancia o importar notas directamente"
                           >
-                            <div className="font-bold text-xs truncate">
-                              {iIdx + 1}. {inst.name}
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-bold text-xs truncate">
+                                {iIdx + 1}. {inst.name}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                                  isDarkMode
+                                    ? 'bg-slate-800 text-amber-300'
+                                    : 'bg-amber-100/80 text-amber-900'
+                                }`}
+                                title="Nota mínima para quedar aprobado con línea (—)"
+                              >
+                                mín. {getIntensificationPassingThreshold(inst)}
+                              </span>
                             </div>
                             {inst.customTitle && (
                               <div className="text-[10px] opacity-75 truncate">
@@ -992,6 +1061,49 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       </button>
                     </div>
 
+                    {/* Nota mínima de aprobación para esta instancia */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                      <span className="text-[11px] font-semibold text-neutral-700 dark:text-slate-300">
+                        Nota mínima para aprobar (línea —):
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {INTENSIFICATION_PASSING_SCORE_PRESETS.map((presetScore) => {
+                          const isSelected = effectiveNewPassingScore === presetScore;
+                          return (
+                            <button
+                              key={presetScore}
+                              type="button"
+                              onClick={() => setNewInstPassingScore(String(presetScore))}
+                              className={`px-2 py-0.5 rounded-md text-[11px] font-bold border transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-amber-600 text-white border-amber-600'
+                                  : isDarkMode
+                                  ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                  : 'bg-white border-amber-200 text-amber-900 hover:bg-amber-100/70'
+                              }`}
+                            >
+                              {presetScore}
+                            </button>
+                          );
+                        })}
+                        <input
+                          type="number"
+                          min={1}
+                          max={10}
+                          step={0.5}
+                          value={newInstPassingScore}
+                          onChange={(e) => setNewInstPassingScore(e.target.value)}
+                          aria-label="Nota mínima de aprobación personalizada"
+                          title="Ingresá cualquier nota mínima entre 1 y 10"
+                          className={`w-14 px-2 py-0.5 text-center text-xs font-bold rounded-md border focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                            isDarkMode
+                              ? 'bg-slate-900 border-slate-700 text-white'
+                              : 'bg-white border-amber-300 text-neutral-900'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
                     <input
                       type="text"
                       value={newInstCustomTitle}
@@ -1004,7 +1116,8 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       }`}
                     />
 
-                    {onUpdateDefaultIntensificationLabel && (
+                    {(onUpdateDefaultIntensificationLabel ||
+                      onUpdateDefaultIntensificationPassingScore) && (
                       <label className="inline-flex items-center gap-1.5 text-[11px] text-neutral-600 dark:text-slate-300 cursor-pointer select-none">
                         <input
                           type="checkbox"
@@ -1012,7 +1125,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                           onChange={(e) => setSaveAsDefaultTerm(e.target.checked)}
                           className="rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
                         />
-                        <span>Guardar este nombre como predeterminado (por cambios de normativa)</span>
+                        <span>Guardar nombre y nota mínima como predeterminados</span>
                       </label>
                     )}
                   </div>
@@ -1418,6 +1531,76 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                 </p>
               </div>
 
+              {/* Nota mínima de aprobación para esta instancia */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-semibold text-neutral-700 dark:text-slate-300">
+                    Nota mínima para aprobar (quienes la alcanzan quedan con línea —)
+                  </label>
+                  {onUpdateDefaultIntensificationPassingScore &&
+                    effectiveEditPassingScore !== intensificationDefaultPassingScore && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onUpdateDefaultIntensificationPassingScore(effectiveEditPassingScore);
+                          setSavedDefaultScoreFeedback(true);
+                          setTimeout(() => setSavedDefaultScoreFeedback(false), 2000);
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 dark:text-amber-400 hover:underline cursor-pointer shrink-0"
+                        title="Usar esta nota mínima por defecto en nuevas instancias"
+                      >
+                        <Bookmark className="w-3 h-3" />
+                        <span>
+                          {savedDefaultScoreFeedback
+                            ? 'Guardada por defecto'
+                            : 'Usar como predeterminada'}
+                        </span>
+                      </button>
+                    )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {INTENSIFICATION_PASSING_SCORE_PRESETS.map((presetScore) => {
+                    const isSelected = effectiveEditPassingScore === presetScore;
+                    return (
+                      <button
+                        key={presetScore}
+                        type="button"
+                        onClick={() => setEditInstPassingScore(String(presetScore))}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-600 text-white border-amber-600'
+                            : isDarkMode
+                            ? 'bg-slate-800 border-slate-700 text-slate-300 hover:bg-slate-700'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                      >
+                        ≥ {presetScore}
+                      </button>
+                    );
+                  })}
+                  <div className="flex items-center gap-1.5 ml-1">
+                    <span className={`text-[11px] ${isDarkMode ? 'text-slate-400' : 'text-neutral-500'}`}>
+                      Otra:
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      step={0.5}
+                      value={editInstPassingScore}
+                      onChange={(e) => setEditInstPassingScore(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveEditIntensification()}
+                      aria-label="Nota mínima de aprobación"
+                      className={`w-16 px-2 py-1 text-center text-xs font-bold rounded-lg border focus:outline-none focus:ring-2 focus:ring-amber-500 ${
+                        isDarkMode
+                          ? 'bg-slate-800 border-slate-700 text-white'
+                          : 'bg-white border-neutral-300 text-neutral-900'
+                      }`}
+                    />
+                  </div>
+                </div>
+              </div>
+
               {/* TODAS las opciones de importar notas (idénticas a evaluaciones y trabajos prácticos) */}
               {onImportIntoColumn && (
                 <div
@@ -1438,7 +1621,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       isDarkMode ? 'text-slate-300' : 'text-neutral-600'
                     }`}
                   >
-                    Elegí desde dónde importar las notas para esta instancia (quienes no figuren y tengan ≥ 7 permanecen en <strong>NI</strong>; no afecta el promedio):
+                    Elegí desde dónde importar las notas para esta instancia (quienes no figuren y tengan ≥ {effectiveEditPassingScore} permanecen con línea <strong>—</strong>; no afecta el promedio):
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
                     {(
@@ -1580,7 +1763,9 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                       onAddIntensification(
                         activeInstParentCat.id,
                         activeInstParentSub.id,
-                        `${intensificationDefaultLabel} ${nextIdx}`
+                        `${intensificationDefaultLabel} ${nextIdx}`,
+                        undefined,
+                        effectiveEditPassingScore
                       );
                     }}
                     className={`w-full py-2 px-3 rounded-xl border border-dashed text-xs font-semibold inline-flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${

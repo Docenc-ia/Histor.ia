@@ -3,6 +3,7 @@ export interface GradeIntensification {
   name: string;
   customTitle?: string;
   date?: string;
+  passingScore?: number; // nota mínima para quedar aprobado con línea (—) por defecto; default 7
 }
 
 export interface GradeSubcategory {

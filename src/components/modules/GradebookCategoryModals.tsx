@@ -63,6 +63,7 @@ export interface SubcategoryScaleEditPayload {
   passingScore?: number;
   convertToGeneralOnAverage?: boolean;
   sumPeerSubIds?: string[];
+  combinedResultDivideBy10?: boolean;
 }
 
 export interface GradebookCategoryModalsProps {
@@ -87,6 +88,11 @@ export interface GradebookCategoryModalsProps {
   handleDeleteSubcategory: (catId: string, subId: string) => void;
   convertible100CountInSubcat?: number;
   onConvertSubcat100ToGeneral?: (subId: string) => number;
+  getColumnNumericStats?: (
+    columnIds: string[]
+  ) => { count: number; sampleBefore?: string; sampleAfter?: string };
+  onDivideColumnsBy10?: (columnIds: string[]) => { updatedCount: number; undoToken?: string };
+  onUndoDivideColumnsBy10?: (undoToken: string) => void;
   onMoveCategory?: (fromIndex: number, toIndex: number) => void;
   onMoveSubcategory?: (categoryId: string, fromIndex: number, toIndex: number) => void;
   onMoveSubcategoryToCategory?: (
@@ -142,6 +148,7 @@ export interface GradebookCategoryModalsProps {
     updates: {
       primaryInstanceName?: string;
       instancesCombineMode?: EvaluationInstancesCombineMode;
+      combinedResultDivideBy10?: boolean;
     }
   ) => void;
   evaluationInstanceToEdit?: { catId: string; subId: string; instanceId: string } | null;
@@ -193,6 +200,9 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   handleDeleteSubcategory,
   convertible100CountInSubcat = 0,
   onConvertSubcat100ToGeneral,
+  getColumnNumericStats,
+  onDivideColumnsBy10,
+  onUndoDivideColumnsBy10,
   onMoveCategory,
   onMoveSubcategory,
   onMoveSubcategoryToCategory,
@@ -242,7 +252,17 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
   );
   const [subConvertToGeneral, setSubConvertToGeneral] = useState<boolean>(true);
   const [subSumPeerIds, setSubSumPeerIds] = useState<string[]>([]);
+  const [subSumDivideResultBy10, setSubSumDivideResultBy10] = useState<boolean>(false);
   const [convertedNowFeedback, setConvertedNowFeedback] = useState<number | null>(null);
+  const [divide10Feedback, setDivide10Feedback] = useState<{
+    scopeLabel: string;
+    count: number;
+    undoToken?: string;
+  } | null>(null);
+  const [instDivide10Feedback, setInstDivide10Feedback] = useState<{
+    count: number;
+    undoToken?: string;
+  } | null>(null);
 
   // Catalog of all other subcategories in the current term (for sum_group linking)
   const otherSubcategoriesInTerm = useMemo(() => {
@@ -298,11 +318,25 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
           .map((p) => p.subcategory.id)
           .filter((id) => id !== activeSubcatLive.id);
         setSubSumPeerIds(peers);
+        const anyPeerDivide10 = getSumGroupPeers(categories, activeSubcatLive.sumGroupId).some(
+          (p) => Boolean(p.subcategory.combinedResultDivideBy10)
+        );
+        setSubSumDivideResultBy10(anyPeerDivide10);
       } else {
         setSubSumPeerIds([]);
+        setSubSumDivideResultBy10(Boolean(activeSubcatLive.combinedResultDivideBy10));
       }
-      setConvertedNowFeedback(null);
     }
+  }, [
+    activeSubcatLive?.id,
+    activeSubcatLive?.scaleMode,
+    activeSubcatLive?.maxScore,
+    activeSubcatLive?.combinedResultDivideBy10,
+  ]);
+
+  useEffect(() => {
+    setConvertedNowFeedback(null);
+    setDivide10Feedback(null);
   }, [activeSubcatLive?.id]);
 
   // Draft state for adding a new intensification inside the Evaluation Edit modal
@@ -502,7 +536,6 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
     if (isEditingPrimaryInstance) {
       setEditEvalInstName(getPrimaryInstanceLabel(activeEvalInstParentSub));
       setEditEvalInstCustomTitle('');
-      setEditEvalInstScaleMode('inherit');
     } else if (activeEvalInstLive) {
       setEditEvalInstName(activeEvalInstLive.name);
       setEditEvalInstCustomTitle(activeEvalInstLive.customTitle || '');
@@ -526,6 +559,15 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
         setEditEvalInstPassStr(String(parentResolved.passingScore));
       }
     }
+  }, [
+    evaluationInstanceToEdit?.instanceId,
+    activeEvalInstParentSub?.id,
+    activeEvalInstLive?.scaleMode,
+    activeEvalInstLive?.maxScore,
+  ]);
+
+  useEffect(() => {
+    setInstDivide10Feedback(null);
   }, [evaluationInstanceToEdit?.instanceId, activeEvalInstParentSub?.id]);
 
   const handleSaveEditEvalInstance = () => {
@@ -628,6 +670,7 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
         passingScore: parsedSubPassing,
         convertToGeneralOnAverage: false,
         sumPeerSubIds: subSumPeerIds,
+        combinedResultDivideBy10: subSumDivideResultBy10,
       };
     }
     return {
@@ -1426,17 +1469,43 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                                   : 'bg-white border-indigo-200 text-indigo-900'
                               }`}
                             >
-                              Suma total del grupo: <strong>{combinedMax} pts</strong> (
-                              {editSubcatName.trim() || subcatToEdit.name} +{' '}
-                              {selectedPeers.map((p) => p.subName).join(' + ')}). Al promediar se
-                              computa como <strong>1 sola nota</strong>
-                              {combinedMax !== generalGradeScale.maxScore
-                                ? ` escalada a ${generalGradeScale.maxScore}`
-                                : ` sobre ${generalGradeScale.maxScore}`}
-                              .
+                              {subSumDivideResultBy10 ? (
+                                <>
+                                  Suma directa ÷ 10 del grupo (
+                                  {editSubcatName.trim() || subcatToEdit.name} +{' '}
+                                  {selectedPeers.map((p) => p.subName).join(' + ')}). Las notas se
+                                  suman sin escalar y el resultado final se divide por 10 en escala{' '}
+                                  <strong>sobre {generalGradeScale.maxScore}</strong>.
+                                </>
+                              ) : (
+                                <>
+                                  Suma total del grupo: <strong>{combinedMax} pts</strong> (
+                                  {editSubcatName.trim() || subcatToEdit.name} +{' '}
+                                  {selectedPeers.map((p) => p.subName).join(' + ')}). Al promediar se
+                                  computa como <strong>1 sola nota</strong>
+                                  {combinedMax !== generalGradeScale.maxScore
+                                    ? ` escalada a ${generalGradeScale.maxScore}`
+                                    : ` sobre ${generalGradeScale.maxScore}`}
+                                  .
+                                </>
+                              )}
                             </p>
                           );
                         })()}
+
+                        <label className="flex items-start gap-2 text-[11px] text-neutral-700 dark:text-slate-300 cursor-pointer select-none pt-1">
+                          <input
+                            type="checkbox"
+                            checked={subSumDivideResultBy10}
+                            onChange={(e) => setSubSumDivideResultBy10(e.target.checked)}
+                            className="mt-0.5 rounded border-indigo-400 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <span>
+                            <strong>Dividir por 10 el resultado final de la suma</strong> sin escalar
+                            cada evaluación (ej. 35 + 31.25 = 66.25 →{' '}
+                            <strong>6.6 / {generalGradeScale.maxScore}</strong>).
+                          </span>
+                        </label>
                       </div>
                     )}
                   </div>
@@ -1483,6 +1552,70 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                     )}
                   </div>
                 )}
+
+                {/* Acción rápida ÷ 10 para evaluaciones de una sola columna */}
+                {existingEvalInstances.length === 0 &&
+                  activeSubcatLive &&
+                  onDivideColumnsBy10 &&
+                  (() => {
+                    const stats = getColumnNumericStats?.([activeSubcatLive.id]);
+                    if ((!stats || stats.count === 0) && !divide10Feedback) return null;
+                    return (
+                      <div
+                        className={`pt-2 border-t space-y-1.5 ${
+                          isDarkMode ? 'border-indigo-800/50' : 'border-indigo-200/80'
+                        }`}
+                      >
+                        {stats && stats.count > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = onDivideColumnsBy10([activeSubcatLive.id]);
+                              if (res.updatedCount > 0) {
+                                setDivide10Feedback({
+                                  scopeLabel: activeSubcatLive.name,
+                                  count: res.updatedCount,
+                                  undoToken: res.undoToken,
+                                });
+                              }
+                            }}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                              isDarkMode
+                                ? 'bg-slate-900 hover:bg-indigo-950/70 border-indigo-500/50 text-indigo-200'
+                                : 'bg-white hover:bg-indigo-50 border-indigo-300 text-indigo-900'
+                            }`}
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                            <span>
+                              ÷ 10 · Dividir las {stats.count} nota(s) cargadas por 10
+                              {stats.sampleBefore && stats.sampleAfter
+                                ? ` (ej. ${stats.sampleBefore} → ${stats.sampleAfter})`
+                                : ''}
+                            </span>
+                          </button>
+                        )}
+                        {divide10Feedback && (
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            <span>
+                              Se dividieron {divide10Feedback.count} nota(s) por 10.
+                            </span>
+                            {divide10Feedback.undoToken && onUndoDivideColumnsBy10 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onUndoDivideColumnsBy10(divide10Feedback.undoToken!);
+                                  setDivide10Feedback(null);
+                                }}
+                                className="underline font-bold text-indigo-600 dark:text-indigo-300 hover:opacity-80 cursor-pointer"
+                              >
+                                Deshacer
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
               </div>
 
               {/* Sección: Instancias de la Evaluación (para TODOS los alumnos — ej: Escrita + Oral) */}
@@ -1531,88 +1664,84 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                         }`}
                       >
                         {/* 1° instancia (columna principal) */}
-                        <div className="px-2.5 py-2 flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                            <span className="font-bold text-xs truncate">
-                              1. {getPrimaryInstanceLabel(activeSubcatLive)}
-                            </span>
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
-                                isDarkMode
-                                  ? 'bg-slate-800 text-indigo-300'
-                                  : 'bg-indigo-100/80 text-indigo-900'
-                              }`}
-                            >
-                              1° columna
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const catId = subcatToEdit.catId;
-                              const subId = subcatToEdit.subId;
-                              setSubcatToEdit(null);
-                              setEvaluationInstanceToEdit?.({
-                                catId,
-                                subId,
-                                instanceId: '__primary__',
-                              });
-                            }}
-                            className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
-                              isDarkMode
-                                ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300'
-                                : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
-                            }`}
-                          >
-                            Editar / Importar
-                          </button>
-                        </div>
-
-                        {existingEvalInstances.map((eInst, eIdx) => (
-                          <div
-                            key={eInst.id}
-                            className="px-2.5 py-2 flex items-center justify-between gap-2"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const catId = subcatToEdit.catId;
-                                const subId = subcatToEdit.subId;
-                                setSubcatToEdit(null);
-                                setEvaluationInstanceToEdit?.({
-                                  catId,
-                                  subId,
-                                  instanceId: eInst.id,
-                                });
-                              }}
-                              className="text-left min-w-0 flex-1 hover:underline cursor-pointer"
-                            >
-                              <div className="flex items-center gap-1.5 min-w-0">
+                        {(() => {
+                          const primaryStats = getColumnNumericStats?.([activeSubcatLive.id]);
+                          return (
+                            <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                 <span className="font-bold text-xs truncate">
-                                  {eIdx + 2}. {eInst.name}
+                                  1. {getPrimaryInstanceLabel(activeSubcatLive)}
                                 </span>
-                                {eInst.scaleMode && eInst.scaleMode !== 'general' && (
-                                  <span
-                                    className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                                    isDarkMode
+                                      ? 'bg-slate-800 text-indigo-300'
+                                      : 'bg-indigo-100/80 text-indigo-900'
+                                  }`}
+                                >
+                                  1° columna
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                {onDivideColumnsBy10 && primaryStats && primaryStats.count > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = onDivideColumnsBy10([activeSubcatLive.id]);
+                                      if (res.updatedCount > 0) {
+                                        setDivide10Feedback({
+                                          scopeLabel: getPrimaryInstanceLabel(activeSubcatLive),
+                                          count: res.updatedCount,
+                                          undoToken: res.undoToken,
+                                        });
+                                      }
+                                    }}
+                                    title={`Dividir las ${primaryStats.count} notas de "${getPrimaryInstanceLabel(activeSubcatLive)}" por 10${
+                                      primaryStats.sampleBefore && primaryStats.sampleAfter
+                                        ? ` (ej. ${primaryStats.sampleBefore} → ${primaryStats.sampleAfter})`
+                                        : ''
+                                    }`}
+                                    className={`px-2 py-1 rounded-md text-[10px] font-bold border transition-colors cursor-pointer ${
                                       isDarkMode
-                                        ? 'bg-slate-800 text-sky-300'
-                                        : 'bg-sky-100 text-sky-900'
+                                        ? 'bg-slate-800 hover:bg-indigo-900/70 border-indigo-600/50 text-indigo-200'
+                                        : 'bg-white hover:bg-indigo-50 border-indigo-300 text-indigo-800'
                                     }`}
                                   >
-                                    {eInst.scaleMode === 'convert_100'
-                                      ? `/100→${generalGradeScale.maxScore}`
-                                      : `/${eInst.maxScore ?? generalGradeScale.maxScore}`}
-                                  </span>
+                                    ÷ 10
+                                  </button>
                                 )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const catId = subcatToEdit.catId;
+                                    const subId = subcatToEdit.subId;
+                                    setSubcatToEdit(null);
+                                    setEvaluationInstanceToEdit?.({
+                                      catId,
+                                      subId,
+                                      instanceId: '__primary__',
+                                    });
+                                  }}
+                                  className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
+                                    isDarkMode
+                                      ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300'
+                                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
+                                  }`}
+                                >
+                                  Editar / Importar
+                                </button>
                               </div>
-                              {eInst.customTitle && (
-                                <div className="text-[10px] opacity-75 truncate">
-                                  Detalle: {eInst.customTitle}
-                                </div>
-                              )}
-                            </button>
+                            </div>
+                          );
+                        })()}
 
-                            <div className="flex items-center gap-1 shrink-0">
+                        {existingEvalInstances.map((eInst, eIdx) => {
+                          const instStats = getColumnNumericStats?.([eInst.id]);
+                          return (
+                            <div
+                              key={eInst.id}
+                              className="px-2.5 py-2 flex items-center justify-between gap-2"
+                            >
                               <button
                                 type="button"
                                 onClick={() => {
@@ -1625,33 +1754,101 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                                     instanceId: eInst.id,
                                   });
                                 }}
-                                className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
-                                  isDarkMode
-                                    ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300'
-                                    : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
-                                }`}
+                                className="text-left min-w-0 flex-1 hover:underline cursor-pointer"
                               >
-                                Editar / Importar
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="font-bold text-xs truncate">
+                                    {eIdx + 2}. {eInst.name}
+                                  </span>
+                                  {eInst.scaleMode && eInst.scaleMode !== 'general' && (
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                                        isDarkMode
+                                          ? 'bg-slate-800 text-sky-300'
+                                          : 'bg-sky-100 text-sky-900'
+                                      }`}
+                                    >
+                                      {eInst.scaleMode === 'convert_100'
+                                        ? `/100→${generalGradeScale.maxScore}`
+                                        : `/${eInst.maxScore ?? generalGradeScale.maxScore}`}
+                                    </span>
+                                  )}
+                                </div>
+                                {eInst.customTitle && (
+                                  <div className="text-[10px] opacity-75 truncate">
+                                    Detalle: {eInst.customTitle}
+                                  </div>
+                                )}
                               </button>
-                              {onDeleteEvaluationInstance && (
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {onDivideColumnsBy10 && instStats && instStats.count > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const res = onDivideColumnsBy10([eInst.id]);
+                                      if (res.updatedCount > 0) {
+                                        setDivide10Feedback({
+                                          scopeLabel: eInst.name,
+                                          count: res.updatedCount,
+                                          undoToken: res.undoToken,
+                                        });
+                                      }
+                                    }}
+                                    title={`Dividir las ${instStats.count} notas de "${eInst.name}" por 10${
+                                      instStats.sampleBefore && instStats.sampleAfter
+                                        ? ` (ej. ${instStats.sampleBefore} → ${instStats.sampleAfter})`
+                                        : ''
+                                    }`}
+                                    className={`px-2 py-1 rounded-md text-[10px] font-bold border transition-colors cursor-pointer ${
+                                      isDarkMode
+                                        ? 'bg-slate-800 hover:bg-indigo-900/70 border-indigo-600/50 text-indigo-200'
+                                        : 'bg-white hover:bg-indigo-50 border-indigo-300 text-indigo-800'
+                                    }`}
+                                  >
+                                    ÷ 10
+                                  </button>
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    onDeleteEvaluationInstance(
-                                      subcatToEdit.catId,
-                                      subcatToEdit.subId,
-                                      eInst.id
-                                    )
-                                  }
-                                  className="p-1 text-neutral-400 hover:text-red-500 rounded cursor-pointer"
-                                  title={`Eliminar instancia "${eInst.name}"`}
+                                  onClick={() => {
+                                    const catId = subcatToEdit.catId;
+                                    const subId = subcatToEdit.subId;
+                                    setSubcatToEdit(null);
+                                    setEvaluationInstanceToEdit?.({
+                                      catId,
+                                      subId,
+                                      instanceId: eInst.id,
+                                    });
+                                  }}
+                                  className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-colors cursor-pointer ${
+                                    isDarkMode
+                                      ? 'bg-slate-800 hover:bg-slate-700 text-indigo-300'
+                                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800'
+                                  }`}
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  Editar / Importar
                                 </button>
-                              )}
+                                {onDeleteEvaluationInstance && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onDeleteEvaluationInstance(
+                                        subcatToEdit.catId,
+                                        subcatToEdit.subId,
+                                        eInst.id
+                                      )
+                                    }
+                                    className="p-1 text-neutral-400 hover:text-red-500 rounded cursor-pointer"
+                                    title={`Eliminar instancia "${eInst.name}"`}
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
 
                       {/* Modo de combinación en el promedio */}
@@ -1696,6 +1893,113 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                           })}
                         </div>
                       )}
+
+                      {/* Opciones ÷ 10: dividir resultado final directo o dividir cada instancia */}
+                      {(() => {
+                        const activeMode = activeSubcatLive.instancesCombineMode || 'average';
+                        const allInstanceColIds = [
+                          activeSubcatLive.id,
+                          ...existingEvalInstances.map((i) => i.id),
+                        ];
+                        const allInstStats = getColumnNumericStats?.(allInstanceColIds);
+                        const canToggleResultDiv10 =
+                          Boolean(onUpdateEvaluationInstancesMeta) && activeMode !== 'separate';
+                        const canDivideAllNow =
+                          Boolean(onDivideColumnsBy10) &&
+                          Boolean(allInstStats && allInstStats.count > 0);
+                        if (!canToggleResultDiv10 && !canDivideAllNow && !divide10Feedback) {
+                          return null;
+                        }
+                        return (
+                          <div
+                            className={`p-2.5 rounded-lg border space-y-2 ${
+                              isDarkMode
+                                ? 'bg-slate-900/90 border-indigo-700/60'
+                                : 'bg-white border-indigo-200'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-800 dark:text-indigo-300">
+                              <ArrowRightLeft className="w-3.5 h-3.5 shrink-0" />
+                              <span>Ajuste por 10 (puntajes sobre 100 → escala deseada)</span>
+                            </div>
+
+                            {canToggleResultDiv10 && (
+                              <label className="flex items-start gap-2 text-[11px] text-neutral-700 dark:text-slate-200 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={Boolean(activeSubcatLive.combinedResultDivideBy10)}
+                                  onChange={(e) => {
+                                    setSubSumDivideResultBy10(e.target.checked);
+                                    onUpdateEvaluationInstancesMeta?.(
+                                      subcatToEdit.catId,
+                                      subcatToEdit.subId,
+                                      { combinedResultDivideBy10: e.target.checked }
+                                    );
+                                  }}
+                                  className="mt-0.5 rounded border-indigo-400 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                                />
+                                <span className="leading-snug">
+                                  <strong>Dividir por 10 el resultado final</strong> sin escalar cada
+                                  instancia (
+                                  {activeMode === 'sum'
+                                    ? `suma directo, ej. 35 + 31.25 = 66.25 → 6.6 / ${generalGradeScale.maxScore}`
+                                    : `promedia directo y divide el resultado final por 10 sobre ${generalGradeScale.maxScore}`}
+                                  ).
+                                </span>
+                              </label>
+                            )}
+
+                            {canDivideAllNow && allInstStats && (
+                              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const res = onDivideColumnsBy10!(allInstanceColIds);
+                                    if (res.updatedCount > 0) {
+                                      setDivide10Feedback({
+                                        scopeLabel: 'todas las instancias',
+                                        count: res.updatedCount,
+                                        undoToken: res.undoToken,
+                                      });
+                                    }
+                                  }}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                                >
+                                  <ArrowRightLeft className="w-3.5 h-3.5 shrink-0" />
+                                  <span>
+                                    ÷ 10 · Dividir las {allInstStats.count} nota(s) de cada instancia
+                                    por 10
+                                    {allInstStats.sampleBefore && allInstStats.sampleAfter
+                                      ? ` (ej. ${allInstStats.sampleBefore} → ${allInstStats.sampleAfter})`
+                                      : ''}
+                                  </span>
+                                </button>
+                              </div>
+                            )}
+
+                            {divide10Feedback && (
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                                <span>
+                                  Se dividieron {divide10Feedback.count} nota(s) por 10 (
+                                  {divide10Feedback.scopeLabel}).
+                                </span>
+                                {divide10Feedback.undoToken && onUndoDivideColumnsBy10 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onUndoDivideColumnsBy10(divide10Feedback.undoToken!);
+                                      setDivide10Feedback(null);
+                                    }}
+                                    className="underline font-bold text-indigo-600 dark:text-indigo-300 hover:opacity-80 cursor-pointer"
+                                  >
+                                    Deshacer
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -3048,6 +3352,73 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                     </div>
                   </>
                 )}
+
+                {/* Ajuste rápido: dividir notas cargadas de esta instancia por 10 */}
+                {onDivideColumnsBy10 &&
+                  (() => {
+                    const targetColId = isEditingPrimaryInstance
+                      ? activeEvalInstParentSub.id
+                      : activeEvalInstLive?.id;
+                    if (!targetColId) return null;
+                    const stats = getColumnNumericStats?.([targetColId]);
+                    if ((!stats || stats.count === 0) && !instDivide10Feedback) return null;
+                    return (
+                      <div
+                        className={`p-3 rounded-xl border space-y-2 ${
+                          isDarkMode
+                            ? 'bg-indigo-950/30 border-indigo-500/40'
+                            : 'bg-indigo-50/70 border-indigo-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1.5 font-bold text-indigo-800 dark:text-indigo-300">
+                          <ArrowRightLeft className="w-3.5 h-3.5 shrink-0" />
+                          <span>Dividir por 10 las notas de esta instancia</span>
+                        </div>
+                        {stats && stats.count > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const res = onDivideColumnsBy10([targetColId]);
+                              if (res.updatedCount > 0) {
+                                setInstDivide10Feedback({
+                                  count: res.updatedCount,
+                                  undoToken: res.undoToken,
+                                });
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold transition-colors cursor-pointer"
+                          >
+                            <ArrowRightLeft className="w-3.5 h-3.5 shrink-0" />
+                            <span>
+                              ÷ 10 · Dividir {stats.count} nota(s) cargadas por 10
+                              {stats.sampleBefore && stats.sampleAfter
+                                ? ` (ej. ${stats.sampleBefore} → ${stats.sampleAfter})`
+                                : ''}
+                            </span>
+                          </button>
+                        )}
+                        {instDivide10Feedback && (
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                            <span>
+                              Se dividieron {instDivide10Feedback.count} nota(s) por 10.
+                            </span>
+                            {instDivide10Feedback.undoToken && onUndoDivideColumnsBy10 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onUndoDivideColumnsBy10(instDivide10Feedback.undoToken!);
+                                  setInstDivide10Feedback(null);
+                                }}
+                                className="underline font-bold text-indigo-600 dark:text-indigo-300 hover:opacity-80 cursor-pointer"
+                              >
+                                Deshacer
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                 {/* Importar notas directamente en esta instancia */}
                 {onImportIntoColumn && (

@@ -59,6 +59,7 @@ import {
   computeSumGroupCombinedScore,
   computeTermScoresMap,
   convertScoreFrom100ToGeneral,
+  divideScoreBy10,
   getScoreColorClass as computeScoreColorClass,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
@@ -367,6 +368,17 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                       )
                     : null;
 
+                const isRawSumAddendWithDivide10 =
+                  (Boolean(sub.combinedResultDivideBy10) &&
+                    hasEvalInstances &&
+                    sub.instancesCombineMode === 'sum') ||
+                  (sub.scaleMode === 'sum_group' &&
+                    Boolean(sub.sumGroupId) &&
+                    getSumGroupPeers(categories, sub.sumGroupId).some((p) =>
+                      Boolean(p.subcategory.combinedResultDivideBy10)
+                    ));
+                const skipAutoConvert100OnBlur = Boolean(sub.combinedResultDivideBy10);
+
                 return (
                   <React.Fragment key={sub.id}>
                     <td
@@ -380,7 +392,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                         value={val}
                         onChange={(e) => onScoreChange(student.id, sub.id, e.target.value)}
                         onBlur={() => {
-                          if (resolvedScale.mode === 'convert_100') {
+                          if (!skipAutoConvert100OnBlur && resolvedScale.mode === 'convert_100') {
                             const converted = convertScoreFrom100ToGeneral(val, generalGradeScale);
                             if (converted !== null && converted !== val) {
                               onScoreChange(student.id, sub.id, converted);
@@ -399,7 +411,13 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                             : isDarkMode
                             ? 'bg-slate-800/70 border-slate-700 focus:border-blue-500'
                             : 'bg-neutral-50 border-neutral-200 focus:border-blue-400'
-                        } ${getScoreColorClass(val, resolvedScale)}`}
+                        } ${
+                          isRawSumAddendWithDivide10
+                            ? isDarkMode
+                              ? 'text-indigo-200'
+                              : 'text-indigo-950'
+                            : getScoreColorClass(val, resolvedScale)
+                        }`}
                       />
                     </td>
 
@@ -418,7 +436,9 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                         : innerGroupBorder;
 
                       let evalTooltip = `${getEvaluationInstanceDisplayLabel(sub, evalInst)} — Instancia de evaluación (para todos los alumnos)`;
-                      if (instScale.mode === 'convert_100') {
+                      if (sub.combinedResultDivideBy10) {
+                        evalTooltip += ` · Puntaje directo (el resultado final se divide por 10)`;
+                      } else if (instScale.mode === 'convert_100') {
                         evalTooltip += ` · Escala 0–100 → sobre ${generalGradeScale.maxScore}`;
                       } else if (instScale.isCustom) {
                         const norm =
@@ -450,7 +470,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                             value={evalVal}
                             onChange={(e) => onScoreChange(student.id, evalInst.id, e.target.value)}
                             onBlur={() => {
-                              if (instScale.mode === 'convert_100') {
+                              if (!skipAutoConvert100OnBlur && instScale.mode === 'convert_100') {
                                 const converted = convertScoreFrom100ToGeneral(
                                   evalVal,
                                   generalGradeScale
@@ -468,7 +488,13 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                               isDarkMode
                                 ? 'bg-slate-800/80 border-indigo-700/60 focus:border-indigo-400'
                                 : 'bg-white border-indigo-200 focus:border-indigo-500'
-                            } ${getScoreColorClass(evalVal, instScale)}`}
+                            } ${
+                              isRawSumAddendWithDivide10
+                                ? isDarkMode
+                                  ? 'text-indigo-200'
+                                  : 'text-indigo-950'
+                                : getScoreColorClass(evalVal, instScale)
+                            }`}
                           />
                         </td>
                       );
@@ -1259,6 +1285,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
   ]);
   const [newSubcatCombineMode, setNewSubcatCombineMode] =
     useState<EvaluationInstancesCombineMode>('average');
+  const [newSubcatDivideResultBy10, setNewSubcatDivideResultBy10] = useState(false);
+  const divideBy10UndoSnapshotsRef = useRef<
+    Record<string, { grades: StudentGradesMap; categories: GradeCategory[] }>
+  >({});
 
   // Add Category Handler
   const handleAddCategory = () => {
@@ -1360,6 +1390,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               passingScore: scalePayload.passingScore,
               convertToGeneralOnAverage: false,
               sumGroupId: nextGroupId,
+              ...(scalePayload.combinedResultDivideBy10 !== undefined
+                ? { combinedResultDivideBy10: scalePayload.combinedResultDivideBy10 || undefined }
+                : {}),
             };
           }
           return {
@@ -1386,6 +1419,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
               sub.passingScore !== undefined ? sub.passingScore : resolvedPeer.passingScore,
             convertToGeneralOnAverage: false,
             sumGroupId: nextGroupId,
+            ...(scalePayload.combinedResultDivideBy10 !== undefined
+              ? { combinedResultDivideBy10: scalePayload.combinedResultDivideBy10 || undefined }
+              : {}),
           };
         }
 
@@ -1403,6 +1439,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
             ...sub,
             scaleMode: isCustomMax ? ('custom' as const) : ('general' as const),
             sumGroupId: undefined,
+            ...(Array.isArray(sub.instances) && sub.instances.length > 0
+              ? {}
+              : { combinedResultDivideBy10: undefined }),
           };
         }
 
@@ -1473,6 +1512,222 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     return count;
   }, [subcatToEdit, students, draftGradesMap, generalGradeScale]);
 
+  const getColumnNumericStats = useCallback(
+    (columnIds: string[]): { count: number; sampleBefore?: string; sampleAfter?: string } => {
+      let count = 0;
+      let sampleBefore: string | undefined;
+      let sampleAfter: string | undefined;
+      for (const colId of columnIds) {
+        for (const st of students) {
+          const rawVal = draftGradesMap[st.id]?.[colId];
+          if (!rawVal) continue;
+          const divided = divideScoreBy10(rawVal);
+          if (divided !== null) {
+            count += 1;
+            if (sampleBefore === undefined) {
+              sampleBefore = rawVal.trim();
+              sampleAfter = divided;
+            }
+          }
+        }
+      }
+      return { count, sampleBefore, sampleAfter };
+    },
+    [students, draftGradesMap]
+  );
+
+  // Divide all numeric grades in one or more columns by 10 (with automatic scale normalization and Undo)
+  const handleDivideColumnsBy10 = useCallback(
+    (columnIds: string[]): { updatedCount: number; undoToken?: string } => {
+      const targetSet = new Set(columnIds.filter(Boolean));
+      if (targetSet.size === 0) return { updatedCount: 0 };
+
+      const prevGradesSnapshot: StudentGradesMap = {};
+      Object.keys(draftGradesMap).forEach((stId) => {
+        prevGradesSnapshot[stId] = { ...draftGradesMap[stId] };
+      });
+      const prevCategoriesSnapshot: GradeCategory[] = categories.map((cat) => ({
+        ...cat,
+        subcategories: cat.subcategories.map((sub) => ({
+          ...sub,
+          instances: sub.instances ? sub.instances.map((i) => ({ ...i })) : undefined,
+          intensifications: sub.intensifications
+            ? sub.intensifications.map((i) => ({ ...i }))
+            : undefined,
+        })),
+      }));
+
+      let updatedCount = 0;
+      const nextMap: StudentGradesMap = { ...draftGradesMap };
+      students.forEach((st) => {
+        const stGrades = nextMap[st.id];
+        if (!stGrades) return;
+        let changedForStudent = false;
+        const updatedStudentGrades = { ...stGrades };
+        targetSet.forEach((colId) => {
+          const rawVal = updatedStudentGrades[colId];
+          if (!rawVal) return;
+          const divided = divideScoreBy10(rawVal);
+          if (divided !== null && divided !== rawVal) {
+            updatedStudentGrades[colId] = divided;
+            updatedCount += 1;
+            changedForStudent = true;
+          }
+        });
+        if (changedForStudent) {
+          nextMap[st.id] = updatedStudentGrades;
+        }
+      });
+
+      if (updatedCount === 0) {
+        return { updatedCount: 0 };
+      }
+
+      // Normalize 100-based or >general scales on the divided columns so the result immediately lands in the desired scale
+      let categoriesChanged = false;
+      const nextCategories = categories.map((cat) => ({
+        ...cat,
+        subcategories: cat.subcategories.map((sub) => {
+          let nextSub = sub;
+          const subTouched = targetSet.has(sub.id);
+          const evalInstances = Array.isArray(sub.instances) ? sub.instances : [];
+          const allSubColumnsTouched =
+            subTouched &&
+            evalInstances.every((inst) => targetSet.has(inst.id));
+
+          if (subTouched) {
+            const subScale = resolveSubcategoryScale(sub, generalGradeScale);
+            if (
+              subScale.mode === 'convert_100' ||
+              ((subScale.mode === 'custom' || subScale.mode === 'sum_group') &&
+                subScale.maxScore > generalGradeScale.maxScore)
+            ) {
+              categoriesChanged = true;
+              const nextMax = Math.round((subScale.maxScore / 10) * 10) / 10;
+              if (
+                subScale.mode === 'convert_100' ||
+                nextMax <= 0 ||
+                Math.abs(nextMax - generalGradeScale.maxScore) < 0.01
+              ) {
+                nextSub = {
+                  ...nextSub,
+                  scaleMode: 'general',
+                  minScore: undefined,
+                  maxScore: generalGradeScale.maxScore,
+                  passingScore: undefined,
+                  convertToGeneralOnAverage: undefined,
+                  sumGroupId: undefined,
+                };
+              } else {
+                const nextMin =
+                  sub.minScore !== undefined
+                    ? Math.round((sub.minScore / 10) * 10) / 10
+                    : 0;
+                const nextPass = Math.round((subScale.passingScore / 10) * 10) / 10;
+                nextSub = {
+                  ...nextSub,
+                  minScore: nextMin,
+                  maxScore: nextMax,
+                  passingScore: nextPass > 0 && nextPass <= nextMax ? nextPass : undefined,
+                };
+              }
+            }
+          }
+
+          if (evalInstances.length > 0) {
+            let instChanged = false;
+            const nextInstances = evalInstances.map((inst) => {
+              if (!targetSet.has(inst.id)) return inst;
+              if (
+                inst.scaleMode === 'convert_100' ||
+                (inst.scaleMode === 'custom' &&
+                  typeof inst.maxScore === 'number' &&
+                  inst.maxScore > generalGradeScale.maxScore)
+              ) {
+                instChanged = true;
+                const nextMax =
+                  typeof inst.maxScore === 'number'
+                    ? Math.round((inst.maxScore / 10) * 10) / 10
+                    : generalGradeScale.maxScore;
+                if (
+                  inst.scaleMode === 'convert_100' ||
+                  nextMax <= 0 ||
+                  Math.abs(nextMax - generalGradeScale.maxScore) < 0.01
+                ) {
+                  return {
+                    ...inst,
+                    scaleMode: 'general' as const,
+                    minScore: undefined,
+                    maxScore: undefined,
+                    passingScore: undefined,
+                    convertToGeneralOnAverage: undefined,
+                  };
+                }
+                const nextMin =
+                  inst.minScore !== undefined
+                    ? Math.round((inst.minScore / 10) * 10) / 10
+                    : 0;
+                const nextPass =
+                  inst.passingScore !== undefined
+                    ? Math.round((inst.passingScore / 10) * 10) / 10
+                    : undefined;
+                return {
+                  ...inst,
+                  minScore: nextMin,
+                  maxScore: nextMax,
+                  passingScore:
+                    nextPass !== undefined && nextPass > 0 && nextPass <= nextMax
+                      ? nextPass
+                      : undefined,
+                };
+              }
+              return inst;
+            });
+            if (instChanged) {
+              categoriesChanged = true;
+              nextSub = { ...nextSub, instances: nextInstances };
+            }
+          }
+
+          // Avoid double-dividing by 10 if every instance was just divided directly
+          if (allSubColumnsTouched && nextSub.combinedResultDivideBy10) {
+            categoriesChanged = true;
+            nextSub = { ...nextSub, combinedResultDivideBy10: undefined };
+          }
+
+          return nextSub;
+        }),
+      }));
+
+      const undoToken = `div10-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      divideBy10UndoSnapshotsRef.current[undoToken] = {
+        grades: prevGradesSnapshot,
+        categories: prevCategoriesSnapshot,
+      };
+
+      setDraftGradesMap(nextMap);
+      saveGrades(nextMap);
+      if (categoriesChanged) {
+        saveCategories(nextCategories);
+      }
+
+      return { updatedCount, undoToken };
+    },
+    [draftGradesMap, categories, students, generalGradeScale, saveGrades, saveCategories]
+  );
+
+  const handleUndoDivideColumnsBy10 = useCallback(
+    (undoToken: string) => {
+      const snapshot = divideBy10UndoSnapshotsRef.current[undoToken];
+      if (!snapshot) return;
+      setDraftGradesMap(snapshot.grades);
+      saveGrades(snapshot.grades);
+      saveCategories(snapshot.categories);
+      delete divideBy10UndoSnapshotsRef.current[undoToken];
+    },
+    [saveGrades, saveCategories]
+  );
+
   // Add Subcategory Handler
   const handleAddSubcategory = (catId: string) => {
     if (!newSubcatName.trim()) return;
@@ -1514,6 +1769,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           ...newSub,
           primaryInstanceName: cleanedInstances[0],
           instancesCombineMode: newSubcatCombineMode,
+          ...(newSubcatDivideResultBy10 &&
+          (newSubcatCombineMode === 'sum' || newSubcatCombineMode === 'average')
+            ? { combinedResultDivideBy10: true }
+            : {}),
           instances: cleanedInstances.slice(1).map((instName, idx) => ({
             id: `evinst-${baseTs}-${idx + 1}`,
             name: instName,
@@ -1531,6 +1790,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     setNewSubcatUseInstances(false);
     setNewSubcatInstanceNames(['Escrita', 'Oral']);
     setNewSubcatCombineMode('average');
+    setNewSubcatDivideResultBy10(false);
     setAddingSubcatForCatId(null);
   };
 
@@ -1735,7 +1995,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
     [categories, saveCategories]
   );
 
-  // Update primary instance label or combine mode of a multi-instance evaluation
+  // Update primary instance label, combine mode, or result divide-by-10 of a multi-instance evaluation
   const handleUpdateEvaluationInstancesMeta = useCallback(
     (
       catId: string,
@@ -1743,6 +2003,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
       updates: {
         primaryInstanceName?: string;
         instancesCombineMode?: EvaluationInstancesCombineMode;
+        combinedResultDivideBy10?: boolean;
       }
     ) => {
       const updated = categories.map((cat) => {
@@ -1758,6 +2019,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                 : {}),
               ...(updates.instancesCombineMode !== undefined
                 ? { instancesCombineMode: updates.instancesCombineMode }
+                : {}),
+              ...(updates.combinedResultDivideBy10 !== undefined
+                ? { combinedResultDivideBy10: updates.combinedResultDivideBy10 || undefined }
                 : {}),
             };
           }),
@@ -2642,6 +2906,21 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                   </button>
                 ))}
               </div>
+
+              {(newSubcatCombineMode === 'sum' || newSubcatCombineMode === 'average') && (
+                <label className="flex items-center gap-2 text-[11px] pt-1 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={newSubcatDivideResultBy10}
+                    onChange={(e) => setNewSubcatDivideResultBy10(e.target.checked)}
+                    className="rounded border-indigo-400 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                  />
+                  <span>
+                    Dividir por 10 el resultado final sin escalar cada parte (ej. 35 + 31.25 = 66.3 →{' '}
+                    <strong>6.6 / {generalGradeScale.maxScore}</strong>)
+                  </span>
+                </label>
+              )}
             </div>
           )}
 
@@ -3217,6 +3496,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           showSumGroupSummary && sub.sumGroupId
                             ? getSumGroupPeers(categories, sub.sumGroupId)
                             : [];
+                        const sumGroupDivideBy10 = sumGroupPeers.some((p) =>
+                          Boolean(p.subcategory.combinedResultDivideBy10)
+                        );
                         const sumGroupTotalMax = sumGroupPeers.reduce(
                           (acc, p) =>
                             acc +
@@ -3406,6 +3688,10 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                                 : sub.instancesCombineMode === 'separate'
                                                 ? 'Sep.'
                                                 : 'Prom.'}
+                                              {sub.combinedResultDivideBy10 &&
+                                              sub.instancesCombineMode !== 'separate'
+                                                ? ' ÷10'
+                                                : ''}
                                             </span>
                                           )}
                                         </span>
@@ -3474,9 +3760,15 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                     setEditSubcatName(sub.name);
                                   }}
                                   className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
-                                  title={`Nota sumada de: ${sumGroupPeers
-                                    .map((p) => p.subcategory.name)
-                                    .join(' + ')} (sobre ${sumGroupTotalMax})`}
+                                  title={
+                                    sumGroupDivideBy10
+                                      ? `Nota sumada directa ÷ 10 de: ${sumGroupPeers
+                                          .map((p) => p.subcategory.name)
+                                          .join(' + ')} (resultado sobre ${generalGradeScale.maxScore})`
+                                      : `Nota sumada de: ${sumGroupPeers
+                                          .map((p) => p.subcategory.name)
+                                          .join(' + ')} (sobre ${sumGroupTotalMax})`
+                                  }
                                 >
                                   <span className="truncate max-w-full font-extrabold leading-tight">
                                     Σ Suma
@@ -3488,7 +3780,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                         : 'bg-white/90 text-indigo-800 border border-indigo-300'
                                     }`}
                                   >
-                                    /{sumGroupTotalMax}
+                                    {sumGroupDivideBy10
+                                      ? `÷10 · /${generalGradeScale.maxScore}`
+                                      : `/${sumGroupTotalMax}`}
                                   </span>
                                 </button>
                                 <div
@@ -3709,6 +4003,7 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                                 </span>
                                 <span className="text-[8px] font-semibold opacity-80 truncate max-w-full leading-tight">
                                   {1 + evalInstances.length} inst.
+                                  {sub.combinedResultDivideBy10 ? ' · ÷10' : ''}
                                 </span>
                               </button>
                               <div
@@ -3910,6 +4205,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
         handleDeleteSubcategory={handleDeleteSubcategory}
         convertible100CountInSubcat={convertible100CountInSubcat}
         onConvertSubcat100ToGeneral={handleConvertSubcat100ToGeneral}
+        getColumnNumericStats={getColumnNumericStats}
+        onDivideColumnsBy10={handleDivideColumnsBy10}
+        onUndoDivideColumnsBy10={handleUndoDivideColumnsBy10}
         onMoveCategory={handleMoveCategory}
         onMoveSubcategory={handleMoveSubcategory}
         onMoveSubcategoryToCategory={handleMoveSubcategoryToCategory}

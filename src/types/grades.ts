@@ -46,6 +46,7 @@ export interface GradeSubcategory {
   primaryInstanceName?: string; // etiqueta de la 1° subcolumna cuando hay instancias (ej. "Escrita")
   instances?: GradeEvaluationInstance[]; // instancias adicionales para TODOS los alumnos (ej. "Oral")
   instancesCombineMode?: EvaluationInstancesCombineMode; // 'average' (default) | 'sum' | 'separate'
+  combinedResultDivideBy10?: boolean; // si true, divide por 10 el resultado final combinado sin escalar cada parte
   intensifications?: GradeIntensification[];
 }
 

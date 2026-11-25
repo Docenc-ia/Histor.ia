@@ -216,6 +216,19 @@ export function convertScoreFrom100ToGeneral(
 }
 
 /**
+ * Divide un valor numérico de calificación por 10 (ej. 35 -> "3.5", 31.25 -> "3.13", 17.5 -> "1.75").
+ * Si la celda está vacía o no contiene un número válido (ej. "—", "Aus"), devuelve `null`.
+ */
+export function divideScoreBy10(rawValue: string): string | null {
+  const trimmed = String(rawValue ?? '').trim();
+  if (!trimmed) return null;
+  const parsed = parseGradeNumber(trimmed);
+  if (parsed === null) return null;
+  const divided = Math.round((parsed / 10) * 100) / 100;
+  return String(divided);
+}
+
+/**
  * Devuelve todas las subcategorías (con su categoría padre) que comparten un mismo `sumGroupId`.
  */
 export function getSumGroupPeers(
@@ -368,6 +381,10 @@ function formatCompactScore(value: number): string {
   return (Math.round(value * 10) / 10).toFixed(ONE_DECIMAL_PRECISION).replace(/\.0$/, '');
 }
 
+function formatRawPartScore(value: number): string {
+  return String(Math.round(value * 100) / 100);
+}
+
 /**
  * Calcula la nota resumida (sumada o promediada) de una evaluación con múltiples instancias
  * para mostrarla en su columna resumen y utilizarla en promedios/exenciones.
@@ -384,6 +401,7 @@ export function computeEvaluationInstancesCombinedScore(
   const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
   const mode: 'average' | 'sum' =
     subcategory.instancesCombineMode === 'sum' ? 'sum' : 'average';
+  const divideResultBy10 = Boolean(subcategory.combinedResultDivideBy10);
 
   const primaryScale = resolveSubcategoryScale(subcategory, general);
   const allInstancesMeta = [
@@ -406,13 +424,83 @@ export function computeEvaluationInstancesCombinedScore(
   );
   const totalCount = allInstancesMeta.length;
 
+  // Cuando el docente elige dividir el resultado final por 10 sin escalar cada instancia,
+  // la escala destino del resultado es la escala general (o una escala propia <= general si la configuró).
+  const useParentCustomTargetScale =
+    primaryScale.mode === 'custom' &&
+    primaryScale.maxScore > 0 &&
+    primaryScale.maxScore <= general.maxScore;
+  const targetMaxForDivide10 = useParentCustomTargetScale
+    ? primaryScale.maxScore
+    : general.maxScore;
+  const targetPassingForDivide10 = useParentCustomTargetScale
+    ? primaryScale.passingScore
+    : general.passingScore;
+  const targetRegularForDivide10 = useParentCustomTargetScale
+    ? primaryScale.regularScore
+    : general.regularScore;
+
   const anyCustomScale = allInstancesMeta.some(
     (item) => item.scale.mode === 'custom' || item.scale.mode === 'sum_group'
   );
 
   if (mode === 'sum') {
+    if (divideResultBy10) {
+      if (filled.length === 0) {
+        return {
+          mode: 'sum',
+          displayValue: '',
+          numericValue: null,
+          averageContribution: null,
+          maxScore: targetMaxForDivide10,
+          passingScore: targetPassingForDivide10,
+          regularScore: targetRegularForDivide10,
+          filledCount: 0,
+          totalCount,
+          breakdownText: `Suma directa ÷ 10 de ${totalCount} instancias (${subcategory.name}) — Sin notas cargadas`,
+        };
+      }
+
+      const rawSum = filled.reduce((acc, item) => acc + item.raw, 0);
+      const dividedSum = rawSum / 10;
+      const averageContribution =
+        useParentCustomTargetScale &&
+        primaryScale.convertToGeneralOnAverage &&
+        targetMaxForDivide10 > 0 &&
+        targetMaxForDivide10 !== general.maxScore
+          ? (dividedSum / targetMaxForDivide10) * general.maxScore
+          : dividedSum;
+      const parts = filled
+        .map((item) => `${item.label}: ${formatRawPartScore(item.raw)}`)
+        .join(' + ');
+      const displayValue = formatCompactScore(dividedSum);
+      const equivNote =
+        useParentCustomTargetScale &&
+        primaryScale.convertToGeneralOnAverage &&
+        targetMaxForDivide10 !== general.maxScore
+          ? ` (equiv. ${formatCompactScore(averageContribution)} / ${general.maxScore} en promedio)`
+          : '';
+
+      return {
+        mode: 'sum',
+        displayValue,
+        numericValue: dividedSum,
+        averageContribution,
+        maxScore: targetMaxForDivide10,
+        passingScore: targetPassingForDivide10,
+        regularScore: targetRegularForDivide10,
+        filledCount: filled.length,
+        totalCount,
+        breakdownText: `${parts} = ${formatRawPartScore(rawSum)} ÷ 10 → ${displayValue} / ${targetMaxForDivide10}${equivNote}`,
+      };
+    }
+
     const totalCombinedMax = anyCustomScale
-      ? allInstancesMeta.reduce((acc, item) => acc + item.scale.maxScore, 0)
+      ? allInstancesMeta.reduce(
+          (acc, item) =>
+            acc + (item.scale.mode === 'convert_100' ? general.maxScore : item.scale.maxScore),
+          0
+        )
       : general.maxScore;
     const combinedPassing =
       totalCombinedMax !== general.maxScore && general.maxScore > 0
@@ -445,7 +533,9 @@ export function computeEvaluationInstancesCombinedScore(
       anyCustomScale && totalCombinedMax > 0 && totalCombinedMax !== general.maxScore
         ? (rawSum / totalCombinedMax) * general.maxScore
         : rawSum;
-    const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(' + ');
+    const parts = filled
+      .map((item) => `${item.label}: ${formatRawPartScore(item.raw)}`)
+      .join(' + ');
     const displayValue = formatCompactScore(rawSum);
     const equivNote =
       anyCustomScale && totalCombinedMax !== general.maxScore
@@ -467,6 +557,50 @@ export function computeEvaluationInstancesCombinedScore(
   }
 
   // mode === 'average'
+  if (divideResultBy10) {
+    if (filled.length === 0) {
+      return {
+        mode: 'average',
+        displayValue: '',
+        numericValue: null,
+        averageContribution: null,
+        maxScore: targetMaxForDivide10,
+        passingScore: targetPassingForDivide10,
+        regularScore: targetRegularForDivide10,
+        filledCount: 0,
+        totalCount,
+        breakdownText: `Promedio ÷ 10 de ${totalCount} instancias (${subcategory.name}) — Sin notas cargadas`,
+      };
+    }
+
+    const rawAvg = filled.reduce((acc, item) => acc + item.raw, 0) / filled.length;
+    const dividedAvg = rawAvg / 10;
+    const averageContribution =
+      useParentCustomTargetScale &&
+      primaryScale.convertToGeneralOnAverage &&
+      targetMaxForDivide10 > 0 &&
+      targetMaxForDivide10 !== general.maxScore
+        ? (dividedAvg / targetMaxForDivide10) * general.maxScore
+        : dividedAvg;
+    const displayValue = formatCompactScore(dividedAvg);
+    const parts = filled
+      .map((item) => `${item.label}: ${formatRawPartScore(item.raw)}`)
+      .join(', ');
+
+    return {
+      mode: 'average',
+      displayValue,
+      numericValue: dividedAvg,
+      averageContribution,
+      maxScore: targetMaxForDivide10,
+      passingScore: targetPassingForDivide10,
+      regularScore: targetRegularForDivide10,
+      filledCount: filled.length,
+      totalCount,
+      breakdownText: `${parts} → Promedio: ${formatRawPartScore(rawAvg)} ÷ 10 = ${displayValue} / ${targetMaxForDivide10}`,
+    };
+  }
+
   const firstMax = primaryScale.maxScore;
   const allShareSameCustomScale =
     primaryScale.mode === 'custom' &&
@@ -506,7 +640,9 @@ export function computeEvaluationInstancesCombinedScore(
     ? filled.reduce((acc, item) => acc + item.raw, 0) / filled.length
     : averageContribution;
   const displayValue = formatCompactScore(displayNumeric);
-  const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(', ');
+  const parts = filled
+    .map((item) => `${item.label}: ${formatRawPartScore(item.raw)}`)
+    .join(', ');
   const equivNote =
     allShareSameCustomScale &&
     primaryScale.convertToGeneralOnAverage &&
@@ -576,17 +712,23 @@ export function computeSumGroupCombinedScore(
     });
   });
 
+  const divideResultBy10 = peers.some(({ subcategory: peerSub }) =>
+    Boolean(peerSub.combinedResultDivideBy10)
+  );
+
   const totalGroupMax = items.reduce((acc, item) => acc + item.maxScore, 0);
-  const passingScore =
-    totalGroupMax !== general.maxScore && general.maxScore > 0
-      ? Math.round(((totalGroupMax * general.passingScore) / general.maxScore) * 10) / 10
-      : general.passingScore;
-  const regularScore =
-    general.regularScore !== null
-      ? totalGroupMax !== general.maxScore && general.maxScore > 0
-        ? Math.round(((totalGroupMax * general.regularScore) / general.maxScore) * 10) / 10
-        : general.regularScore
-      : null;
+  const passingScore = divideResultBy10
+    ? general.passingScore
+    : totalGroupMax !== general.maxScore && general.maxScore > 0
+    ? Math.round(((totalGroupMax * general.passingScore) / general.maxScore) * 10) / 10
+    : general.passingScore;
+  const regularScore = divideResultBy10
+    ? general.regularScore
+    : general.regularScore !== null
+    ? totalGroupMax !== general.maxScore && general.maxScore > 0
+      ? Math.round(((totalGroupMax * general.regularScore) / general.maxScore) * 10) / 10
+      : general.regularScore
+    : null;
 
   const filled = items.filter((item): item is typeof item & { raw: number } => item.raw !== null);
   const peerLabels = peers.map((p) => p.subcategory.name).join(' + ');
@@ -597,22 +739,44 @@ export function computeSumGroupCombinedScore(
       displayValue: '',
       numericValue: null,
       averageContribution: null,
-      maxScore: totalGroupMax,
+      maxScore: divideResultBy10 ? general.maxScore : totalGroupMax,
       passingScore,
       regularScore,
       filledCount: 0,
       totalCount: items.length,
-      breakdownText: `Suma de ${peerLabels} (sobre ${totalGroupMax}) — Sin notas cargadas`,
+      breakdownText: divideResultBy10
+        ? `Suma directa ÷ 10 de ${peerLabels} — Sin notas cargadas`
+        : `Suma de ${peerLabels} (sobre ${totalGroupMax}) — Sin notas cargadas`,
     };
   }
 
   const rawSum = filled.reduce((acc, item) => acc + item.raw, 0);
+  const parts = filled
+    .map((item) => `${item.label}: ${formatRawPartScore(item.raw)}`)
+    .join(' + ');
+
+  if (divideResultBy10) {
+    const dividedSum = rawSum / 10;
+    const displayValue = formatCompactScore(dividedSum);
+    return {
+      mode: 'sum',
+      displayValue,
+      numericValue: dividedSum,
+      averageContribution: dividedSum,
+      maxScore: general.maxScore,
+      passingScore,
+      regularScore,
+      filledCount: filled.length,
+      totalCount: items.length,
+      breakdownText: `${parts} = ${formatRawPartScore(rawSum)} ÷ 10 → ${displayValue} / ${general.maxScore}`,
+    };
+  }
+
   const averageContribution =
     totalGroupMax > 0 && totalGroupMax !== general.maxScore
       ? (rawSum / totalGroupMax) * general.maxScore
       : rawSum;
   const displayValue = formatCompactScore(rawSum);
-  const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(' + ');
   const equivNote =
     totalGroupMax !== general.maxScore
       ? ` (equiv. ${formatCompactScore(averageContribution)} / ${general.maxScore} en promedio)`
@@ -1006,41 +1170,22 @@ export function computeStudentTermAverageItems(
 
     category.subcategories.forEach((subcategory) => {
       if (subcategory.scaleMode === 'sum_group' && subcategory.sumGroupId) {
-        if (processedSumGroups.has(subcategory.sumGroupId)) return;
-        processedSumGroups.add(subcategory.sumGroupId);
-
         const peers = getSumGroupPeers(termCategories, subcategory.sumGroupId);
-        let hasAnyScore = false;
-        let rawSum = 0;
-        let totalGroupMax = 0;
+        if (peers.length >= 2) {
+          if (processedSumGroups.has(subcategory.sumGroupId)) return;
+          processedSumGroups.add(subcategory.sumGroupId);
 
-        peers.forEach(({ subcategory: peerSub }) => {
-          const peerScale = resolveSubcategoryScale(peerSub, general);
-          totalGroupMax += peerScale.maxScore;
-          const parsedPeer = parseGradeNumber(studentGradeRecord[peerSub.id]);
-          if (parsedPeer !== null) {
-            hasAnyScore = true;
-            rawSum += parsedPeer;
+          const groupSummary = computeSumGroupCombinedScore(
+            termCategories,
+            subcategory.sumGroupId,
+            studentGradeRecord,
+            general
+          );
+          if (groupSummary && groupSummary.averageContribution !== null) {
+            numericScores.push(groupSummary.averageContribution);
           }
-          (peerSub.instances || []).forEach((peerInst) => {
-            const instScale = resolveInstanceScale(peerSub, peerInst, general);
-            totalGroupMax += instScale.maxScore;
-            const parsedPeerInst = parseGradeNumber(studentGradeRecord[peerInst.id]);
-            if (parsedPeerInst !== null) {
-              hasAnyScore = true;
-              rawSum += parsedPeerInst;
-            }
-          });
-        });
-
-        if (hasAnyScore) {
-          const combinedScore =
-            totalGroupMax > 0 && totalGroupMax !== general.maxScore
-              ? (rawSum / totalGroupMax) * general.maxScore
-              : rawSum;
-          numericScores.push(combinedScore);
+          return;
         }
-        return;
       }
 
       const contributions = computeSubcategoryAverageContributions(

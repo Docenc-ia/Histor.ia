@@ -17,12 +17,16 @@ import type { ExamGradeDetailItem } from '../components/modules/CourseReportModa
 import { getGeneralGradeScale, getTerminologySettings } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeEvaluationInstancesCombinedScore,
   computeStudentTermAverageItems,
+  computeSumGroupCombinedScore,
   findDispositionColumnKey,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
+  hasCombinedSummaryColumn,
+  isLastPeerOfSumGroup,
 } from './gradeCalculations';
 import {
   buildStudentHistoryIndex,
@@ -196,6 +200,18 @@ export function extractStudentExamDetails(
           });
         });
 
+        if (hasCombinedSummaryColumn(sub)) {
+          const combined = computeEvaluationInstancesCombinedScore(sub, stGrades);
+          if (combined) {
+            items.push({
+              id: `${sub.id}__combined__`,
+              categoryName: cat.name,
+              itemName: `${sub.name} — ${combined.mode === 'sum' ? 'Σ Total sumado' : 'Promedio'}`,
+              score: combined.displayValue || '—',
+            });
+          }
+        }
+
         const instList = sub.intensifications || [];
         instList.forEach((inst, instIdx) => {
           const effective = getEffectiveIntensificationCell(sub, instIdx, stGrades);
@@ -211,6 +227,18 @@ export function extractStudentExamDetails(
               : '—',
           });
         });
+
+        if (isLastPeerOfSumGroup(cats, sub) && sub.sumGroupId) {
+          const sumSummary = computeSumGroupCombinedScore(cats, sub.sumGroupId, stGrades);
+          if (sumSummary) {
+            items.push({
+              id: `${sub.sumGroupId}__sumgroup__`,
+              categoryName: cat.name,
+              itemName: `Σ Suma (${sub.name})`,
+              score: sumSummary.displayValue || '—',
+            });
+          }
+        }
       });
     }
   });

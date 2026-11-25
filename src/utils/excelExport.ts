@@ -3,11 +3,15 @@ import { GradeCategory, StudentGradesMap } from '../types/grades';
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeEvaluationInstancesCombinedScore,
   computeStudentTermAverageItems,
+  computeSumGroupCombinedScore,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
+  hasCombinedSummaryColumn,
+  isLastPeerOfSumGroup,
 } from './gradeCalculations';
 import { driveService } from '../services/workspace/driveService';
 
@@ -288,6 +292,16 @@ export async function exportGradebookMatrixToExcel(
           rowObj[evHeader] = evVal !== undefined && evVal !== '' ? sanitizeExcelText(evVal) : '-';
         });
 
+        if (hasCombinedSummaryColumn(sub)) {
+          const combined = computeEvaluationInstancesCombinedScore(sub, studentGrades);
+          const summaryLabel = sub.instancesCombineMode === 'sum' ? 'Suma' : 'Promedio';
+          const summaryHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
+            sub.name
+          )} (${summaryLabel})`;
+          rowObj[summaryHeader] =
+            combined && combined.displayValue !== '' ? sanitizeExcelText(combined.displayValue) : '-';
+        }
+
         (sub.intensifications || []).forEach((inst, instIdx) => {
           const effective = getEffectiveIntensificationCell(sub, instIdx, studentGrades);
           const instHeader = `${sanitizeExcelText(cat.name)} - ${sanitizeExcelText(
@@ -301,6 +315,15 @@ export async function exportGradebookMatrixToExcel(
           rowObj[instHeader] =
             instVal !== undefined && instVal !== '' ? sanitizeExcelText(instVal) : '-';
         });
+
+        if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+          const sumSummary = computeSumGroupCombinedScore(categories, sub.sumGroupId, studentGrades);
+          const sumHeader = `${sanitizeExcelText(cat.name)} - Σ Suma (${sanitizeExcelText(sub.name)})`;
+          rowObj[sumHeader] =
+            sumSummary && sumSummary.displayValue !== ''
+              ? sanitizeExcelText(sumSummary.displayValue)
+              : '-';
+        }
       });
     });
 
@@ -339,10 +362,19 @@ export async function exportGradebookMatrixToExcel(
         const evHeader = `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`;
         cols.push({ wch: Math.max(16, evHeader.length + 2) });
       });
+      if (hasCombinedSummaryColumn(sub)) {
+        const summaryLabel = sub.instancesCombineMode === 'sum' ? 'Suma' : 'Promedio';
+        const summaryHeader = `${cat.name} - ${sub.name} (${summaryLabel})`;
+        cols.push({ wch: Math.max(16, summaryHeader.length + 2) });
+      }
       (sub.intensifications || []).forEach((inst) => {
         const instHeader = `${cat.name} - ${getIntensificationDisplayLabel(sub, inst)}`;
         cols.push({ wch: Math.max(16, instHeader.length + 2) });
       });
+      if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+        const sumHeader = `${cat.name} - Σ Suma (${sub.name})`;
+        cols.push({ wch: Math.max(16, sumHeader.length + 2) });
+      }
     });
   });
   cols.push({ wch: 18 });

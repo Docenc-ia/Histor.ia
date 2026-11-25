@@ -22,7 +22,6 @@ const DEFAULT_DISPOSITION_LABEL = 'Disposición';
 const MIN_CUSTOM_LABEL_MATCH_LENGTH = 3;
 const ONE_DECIMAL_PRECISION = 1;
 const PASSING_EXCELLENT_SCORE_THRESHOLD = 7;
-const PASSING_REGULAR_SCORE_THRESHOLD = 6;
 export const INTENSIFICATION_EXEMPT_THRESHOLD = PASSING_EXCELLENT_SCORE_THRESHOLD;
 export const INTENSIFICATION_EXEMPT_LABEL = '—';
 
@@ -244,6 +243,12 @@ export function getIntensificationPassingThreshold(
     return raw;
   }
   if (subcategory) {
+    if (hasCombinedSummaryColumn(subcategory)) {
+      const combinedMeta = computeEvaluationInstancesCombinedScore(subcategory, undefined);
+      if (combinedMeta && Number.isFinite(combinedMeta.passingScore) && combinedMeta.passingScore > 0) {
+        return combinedMeta.passingScore;
+      }
+    }
     const resolved = resolveSubcategoryScale(subcategory);
     return resolved.passingScore;
   }
@@ -336,6 +341,298 @@ export function getIntensificationDisplayLabel(
 }
 
 /**
+ * Indica si una evaluación con múltiples instancias debe mostrar una columna resumen
+ * con el total sumado o el promedio de todas sus instancias.
+ */
+export function hasCombinedSummaryColumn(subcategory: GradeSubcategory): boolean {
+  const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
+  if (evalInstances.length === 0) return false;
+  const combineMode = subcategory.instancesCombineMode || 'average';
+  return combineMode === 'average' || combineMode === 'sum';
+}
+
+export interface CombinedInstancesSummary {
+  mode: 'average' | 'sum';
+  displayValue: string;
+  numericValue: number | null;
+  averageContribution: number | null;
+  maxScore: number;
+  passingScore: number;
+  regularScore: number | null;
+  filledCount: number;
+  totalCount: number;
+  breakdownText: string;
+}
+
+function formatCompactScore(value: number): string {
+  return (Math.round(value * 10) / 10).toFixed(ONE_DECIMAL_PRECISION).replace(/\.0$/, '');
+}
+
+/**
+ * Calcula la nota resumida (sumada o promediada) de una evaluación con múltiples instancias
+ * para mostrarla en su columna resumen y utilizarla en promedios/exenciones.
+ */
+export function computeEvaluationInstancesCombinedScore(
+  subcategory: GradeSubcategory,
+  studentGradeRecord: Record<string, string> | undefined,
+  generalScaleOverride?: GradeScaleSettings
+): CombinedInstancesSummary | null {
+  if (!hasCombinedSummaryColumn(subcategory)) return null;
+
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const grades = studentGradeRecord || {};
+  const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
+  const mode: 'average' | 'sum' =
+    subcategory.instancesCombineMode === 'sum' ? 'sum' : 'average';
+
+  const primaryScale = resolveSubcategoryScale(subcategory, general);
+  const allInstancesMeta = [
+    {
+      id: subcategory.id,
+      label: getPrimaryInstanceLabel(subcategory),
+      scale: primaryScale,
+      raw: parseGradeNumber(grades[subcategory.id]),
+    },
+    ...evalInstances.map((inst) => ({
+      id: inst.id,
+      label: (inst.name || '').trim() || 'Instancia',
+      scale: resolveInstanceScale(subcategory, inst, general),
+      raw: parseGradeNumber(grades[inst.id]),
+    })),
+  ];
+
+  const filled = allInstancesMeta.filter(
+    (item): item is typeof item & { raw: number } => item.raw !== null
+  );
+  const totalCount = allInstancesMeta.length;
+
+  const anyCustomScale = allInstancesMeta.some(
+    (item) => item.scale.mode === 'custom' || item.scale.mode === 'sum_group'
+  );
+
+  if (mode === 'sum') {
+    const totalCombinedMax = anyCustomScale
+      ? allInstancesMeta.reduce((acc, item) => acc + item.scale.maxScore, 0)
+      : general.maxScore;
+    const combinedPassing =
+      totalCombinedMax !== general.maxScore && general.maxScore > 0
+        ? Math.round(((totalCombinedMax * general.passingScore) / general.maxScore) * 10) / 10
+        : general.passingScore;
+    const combinedRegular =
+      general.regularScore !== null
+        ? totalCombinedMax !== general.maxScore && general.maxScore > 0
+          ? Math.round(((totalCombinedMax * general.regularScore) / general.maxScore) * 10) / 10
+          : general.regularScore
+        : null;
+
+    if (filled.length === 0) {
+      return {
+        mode: 'sum',
+        displayValue: '',
+        numericValue: null,
+        averageContribution: null,
+        maxScore: totalCombinedMax,
+        passingScore: combinedPassing,
+        regularScore: combinedRegular,
+        filledCount: 0,
+        totalCount,
+        breakdownText: `Suma de ${totalCount} instancias (${subcategory.name}) — Sin notas cargadas`,
+      };
+    }
+
+    const rawSum = filled.reduce((acc, item) => acc + item.raw, 0);
+    const averageContribution =
+      anyCustomScale && totalCombinedMax > 0 && totalCombinedMax !== general.maxScore
+        ? (rawSum / totalCombinedMax) * general.maxScore
+        : rawSum;
+    const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(' + ');
+    const displayValue = formatCompactScore(rawSum);
+    const equivNote =
+      anyCustomScale && totalCombinedMax !== general.maxScore
+        ? ` (equiv. ${formatCompactScore(averageContribution)} / ${general.maxScore} en promedio)`
+        : '';
+
+    return {
+      mode: 'sum',
+      displayValue,
+      numericValue: rawSum,
+      averageContribution,
+      maxScore: totalCombinedMax,
+      passingScore: combinedPassing,
+      regularScore: combinedRegular,
+      filledCount: filled.length,
+      totalCount,
+      breakdownText: `${parts} = ${displayValue}${equivNote}`,
+    };
+  }
+
+  // mode === 'average'
+  const firstMax = primaryScale.maxScore;
+  const allShareSameCustomScale =
+    primaryScale.mode === 'custom' &&
+    allInstancesMeta.every(
+      (item) => item.scale.mode === 'custom' && item.scale.maxScore === firstMax
+    );
+
+  const displayMax = allShareSameCustomScale ? firstMax : general.maxScore;
+  const displayPassing = allShareSameCustomScale
+    ? primaryScale.passingScore
+    : general.passingScore;
+  const displayRegular = allShareSameCustomScale
+    ? primaryScale.regularScore
+    : general.regularScore;
+
+  if (filled.length === 0) {
+    return {
+      mode: 'average',
+      displayValue: '',
+      numericValue: null,
+      averageContribution: null,
+      maxScore: displayMax,
+      passingScore: displayPassing,
+      regularScore: displayRegular,
+      filledCount: 0,
+      totalCount,
+      breakdownText: `Promedio de ${totalCount} instancias (${subcategory.name}) — Sin notas cargadas`,
+    };
+  }
+
+  const normalizedScores = filled.map((item) =>
+    normalizeScoreWithResolvedScale(item.raw, item.scale, general)
+  );
+  const averageContribution =
+    normalizedScores.reduce((acc, v) => acc + v, 0) / normalizedScores.length;
+  const displayNumeric = allShareSameCustomScale
+    ? filled.reduce((acc, item) => acc + item.raw, 0) / filled.length
+    : averageContribution;
+  const displayValue = formatCompactScore(displayNumeric);
+  const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(', ');
+  const equivNote =
+    allShareSameCustomScale &&
+    primaryScale.convertToGeneralOnAverage &&
+    firstMax !== general.maxScore
+      ? ` (equiv. ${formatCompactScore(averageContribution)} / ${general.maxScore} en promedio)`
+      : '';
+
+  return {
+    mode: 'average',
+    displayValue,
+    numericValue: displayNumeric,
+    averageContribution,
+    maxScore: displayMax,
+    passingScore: displayPassing,
+    regularScore: displayRegular,
+    filledCount: filled.length,
+    totalCount,
+    breakdownText: `${parts} → Promedio: ${displayValue}${equivNote}`,
+  };
+}
+
+/**
+ * Indica si `subcategory` es la última evaluación de un grupo de suma (`sum_group`) con al menos 2 evaluaciones vinculadas,
+ * posición en la que se renderiza la columna resumen automática `Σ Suma`.
+ */
+export function isLastPeerOfSumGroup(
+  categories: GradeCategory[],
+  subcategory: GradeSubcategory
+): boolean {
+  if (subcategory.scaleMode !== 'sum_group' || !subcategory.sumGroupId) return false;
+  const peers = getSumGroupPeers(categories, subcategory.sumGroupId);
+  if (peers.length < 2) return false;
+  return peers[peers.length - 1].subcategory.id === subcategory.id;
+}
+
+/**
+ * Calcula la nota sumada de un grupo de evaluaciones vinculadas por `sumGroupId`
+ * para mostrarla en su columna resumen automática.
+ */
+export function computeSumGroupCombinedScore(
+  categories: GradeCategory[],
+  sumGroupId: string,
+  studentGradeRecord: Record<string, string> | undefined,
+  generalScaleOverride?: GradeScaleSettings
+): CombinedInstancesSummary | null {
+  const peers = getSumGroupPeers(categories, sumGroupId);
+  if (peers.length < 2) return null;
+
+  const general = generalScaleOverride || getGeneralGradeScale();
+  const grades = studentGradeRecord || {};
+
+  const items: Array<{ label: string; maxScore: number; raw: number | null }> = [];
+  peers.forEach(({ subcategory: peerSub }) => {
+    const peerScale = resolveSubcategoryScale(peerSub, general);
+    items.push({
+      label: getPrimaryInstanceDisplayLabel(peerSub),
+      maxScore: peerScale.maxScore,
+      raw: parseGradeNumber(grades[peerSub.id]),
+    });
+    (peerSub.instances || []).forEach((peerInst) => {
+      const instScale = resolveInstanceScale(peerSub, peerInst, general);
+      items.push({
+        label: getEvaluationInstanceDisplayLabel(peerSub, peerInst),
+        maxScore: instScale.maxScore,
+        raw: parseGradeNumber(grades[peerInst.id]),
+      });
+    });
+  });
+
+  const totalGroupMax = items.reduce((acc, item) => acc + item.maxScore, 0);
+  const passingScore =
+    totalGroupMax !== general.maxScore && general.maxScore > 0
+      ? Math.round(((totalGroupMax * general.passingScore) / general.maxScore) * 10) / 10
+      : general.passingScore;
+  const regularScore =
+    general.regularScore !== null
+      ? totalGroupMax !== general.maxScore && general.maxScore > 0
+        ? Math.round(((totalGroupMax * general.regularScore) / general.maxScore) * 10) / 10
+        : general.regularScore
+      : null;
+
+  const filled = items.filter((item): item is typeof item & { raw: number } => item.raw !== null);
+  const peerLabels = peers.map((p) => p.subcategory.name).join(' + ');
+
+  if (filled.length === 0) {
+    return {
+      mode: 'sum',
+      displayValue: '',
+      numericValue: null,
+      averageContribution: null,
+      maxScore: totalGroupMax,
+      passingScore,
+      regularScore,
+      filledCount: 0,
+      totalCount: items.length,
+      breakdownText: `Suma de ${peerLabels} (sobre ${totalGroupMax}) — Sin notas cargadas`,
+    };
+  }
+
+  const rawSum = filled.reduce((acc, item) => acc + item.raw, 0);
+  const averageContribution =
+    totalGroupMax > 0 && totalGroupMax !== general.maxScore
+      ? (rawSum / totalGroupMax) * general.maxScore
+      : rawSum;
+  const displayValue = formatCompactScore(rawSum);
+  const parts = filled.map((item) => `${item.label}: ${formatCompactScore(item.raw)}`).join(' + ');
+  const equivNote =
+    totalGroupMax !== general.maxScore
+      ? ` (equiv. ${formatCompactScore(averageContribution)} / ${general.maxScore} en promedio)`
+      : '';
+
+  return {
+    mode: 'sum',
+    displayValue,
+    numericValue: rawSum,
+    averageContribution,
+    maxScore: totalGroupMax,
+    passingScore,
+    regularScore,
+    filledCount: filled.length,
+    totalCount: items.length,
+    breakdownText: `${parts} = ${displayValue} / ${totalGroupMax}${equivNote}`,
+  };
+}
+
+/**
  * Calcula la nota efectiva de una evaluación considerando sus instancias (si las tiene)
  * para evaluar si un estudiante ya alcanzó el umbral de exención en una intensificación.
  */
@@ -345,9 +642,20 @@ function getEvaluationScoreForIntensificationCheck(
 ): number | null {
   const evalInstances = Array.isArray(subcategory.instances) ? subcategory.instances : [];
   if (evalInstances.length === 0) {
-    return parseGradeNumber(grades[subcategory.id]);
+    const rawScore = parseGradeNumber(grades[subcategory.id]);
+    if (rawScore === null) return null;
+    if (subcategory.scaleMode === 'convert_100') {
+      return normalizeSubcategoryScoreForAverage(rawScore, subcategory);
+    }
+    return rawScore;
   }
 
+  const combined = computeEvaluationInstancesCombinedScore(subcategory, grades);
+  if (combined) {
+    return combined.numericValue;
+  }
+
+  // 'separate': promedio de las instancias cargadas como referencia
   const values: number[] = [];
   const primary = parseGradeNumber(grades[subcategory.id]);
   if (primary !== null) values.push(primary);
@@ -356,11 +664,6 @@ function getEvaluationScoreForIntensificationCheck(
     if (val !== null) values.push(val);
   }
   if (values.length === 0) return null;
-
-  const combineMode = subcategory.instancesCombineMode || 'average';
-  if (combineMode === 'sum') {
-    return values.reduce((acc, v) => acc + v, 0);
-  }
   return values.reduce((acc, v) => acc + v, 0) / values.length;
 }
 
@@ -645,6 +948,16 @@ export function computeSubcategoryAverageContributions(
   }
 
   const combineMode = subcategory.instancesCombineMode || 'average';
+  if (combineMode === 'sum' || combineMode === 'average') {
+    const combined = computeEvaluationInstancesCombinedScore(
+      subcategory,
+      studentGradeRecord,
+      general
+    );
+    if (!combined || combined.averageContribution === null) return [];
+    return [combined.averageContribution];
+  }
+
   const primaryScale = resolveSubcategoryScale(subcategory, general);
   const entries: Array<{ raw: number; scale: ResolvedSubcategoryScale }> = [];
 
@@ -665,32 +978,8 @@ export function computeSubcategoryAverageContributions(
 
   if (entries.length === 0) return [];
 
-  if (combineMode === 'sum') {
-    const rawSum = entries.reduce((acc, e) => acc + e.raw, 0);
-    const totalCombinedMax =
-      primaryScale.maxScore +
-      evalInstances.reduce(
-        (acc, inst) => acc + resolveInstanceScale(subcategory, inst, general).maxScore,
-        0
-      );
-    const combinedScore =
-      totalCombinedMax > 0 && totalCombinedMax !== general.maxScore
-        ? (rawSum / totalCombinedMax) * general.maxScore
-        : rawSum;
-    return [combinedScore];
-  }
-
-  const normalizedScores = entries.map((e) =>
-    normalizeScoreWithResolvedScale(e.raw, e.scale, general)
-  );
-
-  if (combineMode === 'separate') {
-    return normalizedScores;
-  }
-
-  // 'average' (default): promedio de todas las instancias cargadas de la evaluación como 1 sola nota
-  const avg = normalizedScores.reduce((acc, v) => acc + v, 0) / normalizedScores.length;
-  return [avg];
+  // 'separate': cada instancia aporta su propia nota normalizada al promedio
+  return entries.map((e) => normalizeScoreWithResolvedScale(e.raw, e.scale, general));
 }
 
 /**

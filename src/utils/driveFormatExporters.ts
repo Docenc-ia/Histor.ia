@@ -3,11 +3,15 @@ import { GradeCategory, GradeSubcategory, StudentGradesMap } from '../types/grad
 import { getTerminologySettings, getDerivedPeriodLabels } from './terminologySettings';
 import {
   INTENSIFICATION_EXEMPT_LABEL,
+  computeEvaluationInstancesCombinedScore,
   computeStudentTermAverageItems,
+  computeSumGroupCombinedScore,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
+  hasCombinedSummaryColumn,
+  isLastPeerOfSumGroup,
 } from './gradeCalculations';
 import {
   CourseDriveCategory,
@@ -530,8 +534,17 @@ export function buildGradebookHtml(params: {
     label: string;
     sub?: GradeSubcategory;
     instIndex?: number;
+    combinedSub?: GradeSubcategory;
+    sumGroupId?: string;
   }> = [];
   categories.forEach((cat) => {
+    if (cat.subcategories.length === 0) {
+      subColumns.push({
+        id: cat.id,
+        label: cat.name,
+      });
+      return;
+    }
     cat.subcategories.forEach((sub) => {
       subColumns.push({
         id: sub.id,
@@ -543,6 +556,13 @@ export function buildGradebookHtml(params: {
           label: `${cat.name}: ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
         });
       });
+      if (hasCombinedSummaryColumn(sub)) {
+        subColumns.push({
+          id: `${sub.id}__combined__`,
+          label: `${cat.name}: ${sub.name} (${sub.instancesCombineMode === 'sum' ? 'Suma' : 'Promedio'})`,
+          combinedSub: sub,
+        });
+      }
       (sub.intensifications || []).forEach((inst, instIndex) => {
         subColumns.push({
           id: inst.id,
@@ -551,13 +571,22 @@ export function buildGradebookHtml(params: {
           instIndex,
         });
       });
+      if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+        subColumns.push({
+          id: `${sub.sumGroupId}__sumgroup__`,
+          label: `${cat.name}: Σ Suma (${sub.name})`,
+          sumGroupId: sub.sumGroupId,
+        });
+      }
     });
   });
 
   const headerColsHtml = subColumns
     .map(
       (col) =>
-        `<th style="border:1px solid #cbd5e1;padding:6px 8px;font-size:11px;">${escapeHtml(col.label)}</th>`
+        `<th style="border:1px solid #cbd5e1;padding:6px 8px;font-size:11px;${
+          col.combinedSub || col.sumGroupId ? 'background-color:#eef2ff;color:#3730a3;' : ''
+        }">${escapeHtml(col.label)}</th>`
     )
     .join('');
 
@@ -567,6 +596,18 @@ export function buildGradebookHtml(params: {
 
       const cellsHtml = subColumns
         .map((col) => {
+          if (col.combinedSub) {
+            const combined = computeEvaluationInstancesCombinedScore(col.combinedSub, studentGrades);
+            return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;background-color:#eef2ff;color:#3730a3;">${
+              combined ? escapeHtml(combined.displayValue) : '-'
+            }</td>`;
+          }
+          if (col.sumGroupId) {
+            const combined = computeSumGroupCombinedScore(categories, col.sumGroupId, studentGrades);
+            return `<td style="border:1px solid #cbd5e1;padding:6px 8px;text-align:center;font-weight:bold;background-color:#eef2ff;color:#3730a3;">${
+              combined ? escapeHtml(combined.displayValue) : '-'
+            }</td>`;
+          }
           if (col.sub && col.instIndex !== undefined) {
             const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
             if (effective.isExempt) {
@@ -645,8 +686,17 @@ export function buildGradebookCsv(params: {
     label: string;
     sub?: GradeSubcategory;
     instIndex?: number;
+    combinedSub?: GradeSubcategory;
+    sumGroupId?: string;
   }> = [];
   categories.forEach((cat) => {
+    if (cat.subcategories.length === 0) {
+      subColumns.push({
+        id: cat.id,
+        label: cat.name,
+      });
+      return;
+    }
     cat.subcategories.forEach((sub) => {
       subColumns.push({
         id: sub.id,
@@ -658,6 +708,13 @@ export function buildGradebookCsv(params: {
           label: `${cat.name} - ${getEvaluationInstanceDisplayLabel(sub, evInst)}`,
         });
       });
+      if (hasCombinedSummaryColumn(sub)) {
+        subColumns.push({
+          id: `${sub.id}__combined__`,
+          label: `${cat.name} - ${sub.name} (${sub.instancesCombineMode === 'sum' ? 'Suma' : 'Promedio'})`,
+          combinedSub: sub,
+        });
+      }
       (sub.intensifications || []).forEach((inst, instIndex) => {
         subColumns.push({
           id: inst.id,
@@ -666,6 +723,13 @@ export function buildGradebookCsv(params: {
           instIndex,
         });
       });
+      if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+        subColumns.push({
+          id: `${sub.sumGroupId}__sumgroup__`,
+          label: `${cat.name} - Σ Suma (${sub.name})`,
+          sumGroupId: sub.sumGroupId,
+        });
+      }
     });
   });
 
@@ -682,6 +746,14 @@ export function buildGradebookCsv(params: {
   const rows = students.map((s, idx) => {
     const studentGrades = gradesMap[s.id] || {};
     const subVals = subColumns.map((col) => {
+      if (col.combinedSub) {
+        const combined = computeEvaluationInstancesCombinedScore(col.combinedSub, studentGrades);
+        return combined ? combined.displayValue : '-';
+      }
+      if (col.sumGroupId) {
+        const combined = computeSumGroupCombinedScore(categories, col.sumGroupId, studentGrades);
+        return combined ? combined.displayValue : '-';
+      }
       if (col.sub && col.instIndex !== undefined) {
         const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, studentGrades);
         if (effective.isExempt) return INTENSIFICATION_EXEMPT_LABEL;

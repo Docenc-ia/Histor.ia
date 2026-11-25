@@ -801,6 +801,8 @@ export function buildGoogleFormsCommitPayload(params: {
         targetCategory = matchedColumn.category;
         finalSubcategoryId = matchedColumn.intensification
           ? matchedColumn.intensification.id
+          : matchedColumn.evaluationInstance
+          ? matchedColumn.evaluationInstance.id
           : matchedColumn.subcategory
           ? matchedColumn.subcategory.id
           : matchedColumn.category.id;

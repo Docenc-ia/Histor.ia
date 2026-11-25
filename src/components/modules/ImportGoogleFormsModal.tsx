@@ -24,6 +24,7 @@ import { formsService, GoogleFormListItem } from '../../services/workspace/forms
 import { parseUploadedImportFile } from '../../services/gradeImportDataService';
 import { normalizeImportText } from '../../utils/gradeImportParser';
 import {
+  findGradeColumnById,
   getScoreColorClass,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
@@ -170,11 +171,26 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
 
   useEffect(() => {
     const cats = selectedTerm === '1c' ? categories1c : categories2c;
-    if (initialTargetColumn && cats.some((c) => c.id === initialTargetColumn.categoryId)) {
-      setTargetCategoryMode('existing');
-      setSelectedCategoryId(initialTargetColumn.categoryId);
-      setTargetColumnMode('existing_sub');
-      setSelectedSubcategoryId(initialTargetColumn.subcategoryId);
+    if (
+      initialTargetColumn &&
+      cats.some((c) => c.id === initialTargetColumn.categoryId) &&
+      (initialTargetColumn.subcategoryId === '__CATEGORY_DIRECT__' ||
+        Boolean(findGradeColumnById(cats, initialTargetColumn.subcategoryId)))
+    ) {
+      if (!userLockedTargetColumn) {
+        setTargetCategoryMode('existing');
+        setSelectedCategoryId(initialTargetColumn.categoryId);
+        setTargetColumnMode('existing_sub');
+        setSelectedSubcategoryId(initialTargetColumn.subcategoryId);
+      }
+      return;
+    }
+    if (
+      userLockedTargetColumn &&
+      selectedSubcategoryId &&
+      (selectedSubcategoryId === '__CATEGORY_DIRECT__' ||
+        Boolean(findGradeColumnById(cats, selectedSubcategoryId)))
+    ) {
       return;
     }
     if (cats.length > 0) {
@@ -203,6 +219,7 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
   );
 
   const handleCategorySelectionChange = (catId: string) => {
+    setUserLockedTargetColumn(true);
     if (catId === '__NEW__') {
       setTargetCategoryMode('new');
       setTargetColumnMode('new_sub');
@@ -809,14 +826,13 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           Destino:{' '}
                           {selectedSubcategoryId === '__CATEGORY_DIRECT__'
                             ? selectedCategoryObj?.name
-                            : selectedCategoryObj?.subcategories.find(
-                                (s) => s.id === selectedSubcategoryId
-                              )?.name || 'Columna existente'}
+                            : findGradeColumnById(activeCategories, selectedSubcategoryId)
+                                ?.displayLabel || 'Columna existente'}
                         </span>
                       )}
                     </div>
                     <p className="text-[11px] text-neutral-500 dark:text-slate-400 mt-0.5">
-                      Podés volcar las notas en una <strong>columna que ya tenga notas</strong> (como Dictadura) o crear una columna nueva.
+                      Podés volcar las notas en una <strong>columna o instancia existente</strong> o crear una columna nueva.
                     </p>
                   </div>
                 </div>
@@ -857,11 +873,39 @@ export const ImportGoogleFormsModal: React.FC<ImportGoogleFormsModalProps> = ({
                           const existingCount = students.filter(
                             (st) => String(activeGradesMap[st.id]?.[sub.id] ?? '').trim() !== ''
                           ).length;
+                          const evalInstances = sub.instances || [];
+                          const instList = sub.intensifications || [];
                           return (
-                            <option key={sub.id} value={`${cat.id}:::${sub.id}`}>
-                              Columna existente: {sub.name}
-                              {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
-                            </option>
+                            <React.Fragment key={sub.id}>
+                              <option value={`${cat.id}:::${sub.id}`}>
+                                Columna existente: {getPrimaryInstanceDisplayLabel(sub)}
+                                {existingCount > 0 ? ` (${existingCount} notas cargadas)` : ''}
+                              </option>
+                              {evalInstances.map((evInst) => {
+                                const evCount = students.filter(
+                                  (st) =>
+                                    String(activeGradesMap[st.id]?.[evInst.id] ?? '').trim() !== ''
+                                ).length;
+                                return (
+                                  <option key={evInst.id} value={`${cat.id}:::${evInst.id}`}>
+                                    ↳ {getEvaluationInstanceDisplayLabel(sub, evInst)}
+                                    {evCount > 0 ? ` (${evCount} notas)` : ''}
+                                  </option>
+                                );
+                              })}
+                              {instList.map((inst) => {
+                                const instCount = students.filter(
+                                  (st) =>
+                                    String(activeGradesMap[st.id]?.[inst.id] ?? '').trim() !== ''
+                                ).length;
+                                return (
+                                  <option key={inst.id} value={`${cat.id}:::${inst.id}`}>
+                                    ↳ {getIntensificationDisplayLabel(sub, inst)}
+                                    {instCount > 0 ? ` (${instCount} notas)` : ''}
+                                  </option>
+                                );
+                              })}
+                            </React.Fragment>
                           );
                         })}
                         {cat.subcategories.length === 0 && (

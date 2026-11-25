@@ -12,13 +12,17 @@ import {
 import { Student } from '../../types';
 import { GradeCategory, GradeSubcategory } from '../../types/grades';
 import {
+  computeEvaluationInstancesCombinedScore,
   computeStudentTermAverageItems,
+  computeSumGroupCombinedScore,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
+  hasCombinedSummaryColumn,
   INTENSIFICATION_EXEMPT_LABEL,
   isExemptMarkerValue,
+  isLastPeerOfSumGroup,
 } from '../../utils/gradeCalculations';
 import { getGeneralGradeScale } from '../../utils/terminologySettings';
 import { driveService } from './driveService';
@@ -243,13 +247,15 @@ export const sheetsService = {
       return (a.firstName || '').trim().localeCompare((b.firstName || '').trim(), 'es', { sensitivity: 'base' });
     });
 
-    // Flatten all subcategories and intensifications from categories
+    // Flatten all subcategories, combined summaries, and intensifications from categories
     const assessmentColumns: {
       id: string;
       header: string;
       maxScore?: number;
       sub?: GradeSubcategory;
       instIndex?: number;
+      combinedSub?: GradeSubcategory;
+      sumGroupId?: string;
     }[] = [];
     categories.forEach((cat) => {
       if (!cat.subcategories || cat.subcategories.length === 0) {
@@ -268,6 +274,13 @@ export const sheetsService = {
               maxScore: evInst.maxScore ?? sub.maxScore,
             });
           });
+          if (hasCombinedSummaryColumn(sub)) {
+            assessmentColumns.push({
+              id: `${sub.id}__combined__`,
+              header: `${cat.name} - ${sub.name} (${sub.instancesCombineMode === 'sum' ? 'Suma' : 'Promedio'})`,
+              combinedSub: sub,
+            });
+          }
           (sub.intensifications || []).forEach((inst, instIndex) => {
             assessmentColumns.push({
               id: inst.id,
@@ -277,6 +290,13 @@ export const sheetsService = {
               instIndex,
             });
           });
+          if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+            assessmentColumns.push({
+              id: `${sub.sumGroupId}__sumgroup__`,
+              header: `${cat.name} - Σ Suma (${sub.name})`,
+              sumGroupId: sub.sumGroupId,
+            });
+          }
         });
       }
     });
@@ -296,6 +316,14 @@ export const sheetsService = {
     const rows = sortedStudents.map((st) => {
       const stGrades = gradesMap[st.id] || {};
       const scoreValues = assessmentColumns.map((col) => {
+        if (col.combinedSub) {
+          const combined = computeEvaluationInstancesCombinedScore(col.combinedSub, stGrades);
+          return combined?.displayValue || '';
+        }
+        if (col.sumGroupId) {
+          const combined = computeSumGroupCombinedScore(categories, col.sumGroupId, stGrades);
+          return combined?.displayValue || '';
+        }
         if (col.sub && col.instIndex !== undefined) {
           const effective = getEffectiveIntensificationCell(col.sub, col.instIndex, stGrades);
           return effective.isExempt ? INTENSIFICATION_EXEMPT_LABEL : effective.value || '';
@@ -399,10 +427,10 @@ export const sheetsService = {
             this.ensureSheetsExist(targetSheetId, token, [tabName]),
           ]);
 
-          // Clear previous data in tab
+          // Clear previous data in tab (wide range to avoid leaving stale columns beyond Z)
           try {
             await fetchGoogleApiWithRetry(
-              `https://sheets.googleapis.com/v4/spreadsheets/${sheetIdToUse}/values/${encodeURIComponent(`'${tabName}'!A1:Z500`)}:clear`,
+              `https://sheets.googleapis.com/v4/spreadsheets/${sheetIdToUse}/values/${encodeURIComponent(`'${tabName}'!A1:ZZ500`)}:clear`,
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -457,7 +485,7 @@ export const sheetsService = {
    * y detecta cualquier nota modificada directamente en Google Sheets por el docente para incorporarla a la app.
    */
   async pullGradebookMatrixFromGoogle(
-    course: { id: string; name: string },
+    _course: { id: string; name: string },
     term: '1c' | '2c',
     students: Student[],
     categories: GradeCategory[],
@@ -575,24 +603,31 @@ export const sheetsService = {
         if (idx < 2) return; // 0: Name, 1: Email
         const hClean = String(hVal || '').trim().toLowerCase();
         if (
+          !hClean ||
           hClean.includes('promedio') ||
           hClean.includes('condición') ||
           hClean.includes('condicion') ||
           hClean.includes('actualización') ||
-          hClean.includes('actualizacion')
+          hClean.includes('actualizacion') ||
+          hClean.includes('σ suma') ||
+          /\(suma\)\s*$/i.test(hClean)
         ) {
           return;
         }
 
-        const match = assessmentColumns.find((ac) => {
-          const acClean = ac.header.trim().toLowerCase();
-          return (
-            acClean === hClean ||
-            hClean.endsWith(acClean) ||
-            hClean.includes(acClean) ||
-            acClean.includes(hClean)
-          );
-        });
+        const exactMatch = assessmentColumns.find(
+          (ac) => ac.header.trim().toLowerCase() === hClean
+        );
+        const match =
+          exactMatch ||
+          assessmentColumns.find((ac) => {
+            const acClean = ac.header.trim().toLowerCase();
+            return (
+              hClean.endsWith(acClean) ||
+              hClean.includes(acClean) ||
+              acClean.includes(hClean)
+            );
+          });
 
         if (match) {
           colIndexToAssessment[idx] = match;

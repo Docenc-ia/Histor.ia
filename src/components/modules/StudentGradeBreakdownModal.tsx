@@ -16,11 +16,15 @@ import {
   INTENSIFICATION_EXEMPT_LABEL,
   ResolvedSubcategoryScale,
   calculateCategoryAverageForStudent,
+  computeEvaluationInstancesCombinedScore,
+  computeSumGroupCombinedScore,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
   getScoreColorClass,
+  hasCombinedSummaryColumn,
+  isLastPeerOfSumGroup,
   resolveInstanceScale,
   resolveSubcategoryScale,
 } from '../../utils/gradeCalculations';
@@ -53,6 +57,7 @@ interface BreakdownRow {
   score: string;
   hasScore: boolean;
   isIntensification?: boolean;
+  isSummary?: boolean;
   isExempt?: boolean;
   exemptThreshold?: number;
   scale?: ResolvedSubcategoryScale;
@@ -111,6 +116,35 @@ function buildRowsForTerm(
           });
         });
 
+        if (hasCombinedSummaryColumn(sub)) {
+          const combined = computeEvaluationInstancesCombinedScore(
+            sub,
+            studentGrades,
+            generalGradeScale
+          );
+          if (combined) {
+            rows.push({
+              id: `${term}-${cat.id}-${sub.id}__combined__`,
+              term,
+              categoryName: cat.name,
+              itemName: `${sub.name} — ${combined.mode === 'sum' ? 'Σ Total sumado' : 'Promedio de instancias'}`,
+              score: combined.displayValue || '—',
+              hasScore: combined.displayValue !== '',
+              isSummary: true,
+              scale: {
+                mode: 'custom',
+                minScore: 0,
+                maxScore: combined.maxScore,
+                passingScore: combined.passingScore,
+                regularScore: combined.regularScore,
+                convertToGeneralOnAverage: false,
+                isCustom: true,
+                badgeText: null,
+              },
+            });
+          }
+        }
+
         const instList = sub.intensifications || [];
         instList.forEach((inst, instIdx) => {
           const effective = getEffectiveIntensificationCell(sub, instIdx, studentGrades);
@@ -132,6 +166,36 @@ function buildRowsForTerm(
             },
           });
         });
+
+        if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+          const sumSummary = computeSumGroupCombinedScore(
+            categories,
+            sub.sumGroupId,
+            studentGrades,
+            generalGradeScale
+          );
+          if (sumSummary) {
+            rows.push({
+              id: `${term}-${cat.id}-${sub.sumGroupId}__sumgroup__`,
+              term,
+              categoryName: cat.name,
+              itemName: `Σ Suma de evaluaciones (sobre ${sumSummary.maxScore})`,
+              score: sumSummary.displayValue || '—',
+              hasScore: sumSummary.displayValue !== '',
+              isSummary: true,
+              scale: {
+                mode: 'custom',
+                minScore: 0,
+                maxScore: sumSummary.maxScore,
+                passingScore: sumSummary.passingScore,
+                regularScore: sumSummary.regularScore,
+                convertToGeneralOnAverage: false,
+                isCustom: true,
+                badgeText: null,
+              },
+            });
+          }
+        }
       });
     }
   });
@@ -252,10 +316,10 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
     ? 'bg-rose-950/60 text-rose-300 border-rose-800'
     : 'bg-rose-50 text-rose-800 border-rose-200';
 
-  const gradedCount1c = rows1c.filter((r) => r.hasScore).length;
-  const totalEvaluable1c = rows1c.filter((r) => !r.isExempt).length;
-  const gradedCount2c = rows2c.filter((r) => r.hasScore).length;
-  const totalEvaluable2c = rows2c.filter((r) => !r.isExempt).length;
+  const gradedCount1c = rows1c.filter((r) => !r.isSummary && r.hasScore).length;
+  const totalEvaluable1c = rows1c.filter((r) => !r.isSummary && !r.isExempt).length;
+  const gradedCount2c = rows2c.filter((r) => !r.isSummary && r.hasScore).length;
+  const totalEvaluable2c = rows2c.filter((r) => !r.isSummary && !r.isExempt).length;
 
   const handleNavigate = (dir: -1 | 1) => {
     const nextIdx = currentIdx + dir;
@@ -327,7 +391,15 @@ export const StudentGradeBreakdownModal: React.FC<StudentGradeBreakdownModalProp
   const renderBreakdownRow = (row: BreakdownRow, showTermBadge: boolean) => (
     <tr
       key={row.id}
-      className={isDarkMode ? 'hover:bg-slate-800/40' : 'hover:bg-neutral-50/80'}
+      className={
+        row.isSummary
+          ? isDarkMode
+            ? 'bg-indigo-950/35 hover:bg-indigo-950/50 font-semibold'
+            : 'bg-indigo-50/70 hover:bg-indigo-50 font-semibold'
+          : isDarkMode
+          ? 'hover:bg-slate-800/40'
+          : 'hover:bg-neutral-50/80'
+      }
     >
       {showTermBadge && (
         <td className="py-2 px-3 text-center border-r border-neutral-200 dark:border-slate-800">

@@ -418,11 +418,13 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
 
   // Draft state for adding new Evaluation Instances (para todos los alumnos: Escrita, Oral, etc.)
   const existingEvalInstances = activeSubcatLive?.instances || [];
+  const existingIntensifications = activeSubcatLive?.intensifications || [];
   const [newEvalPrimaryName, setNewEvalPrimaryName] = useState('Escrita');
   const [newEvalInstanceName, setNewEvalInstanceName] = useState('Oral');
   const [newEvalInstanceCustomTitle, setNewEvalInstanceCustomTitle] = useState('');
   const [newEvalCombineMode, setNewEvalCombineMode] =
     useState<EvaluationInstancesCombineMode>('average');
+  const [selectedParentImportTargetId, setSelectedParentImportTargetId] = useState<string>('');
 
   useEffect(() => {
     if (activeSubcatLive) {
@@ -434,8 +436,21 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
       setNewEvalInstanceName(existingCount === 0 ? 'Oral' : `Instancia ${existingCount + 2}`);
       setNewEvalInstanceCustomTitle('');
       setNewEvalCombineMode(activeSubcatLive.instancesCombineMode || 'average');
+      setSelectedParentImportTargetId((prev) => {
+        if (!prev) return activeSubcatLive.id;
+        const validIds = new Set<string>([
+          activeSubcatLive.id,
+          ...(activeSubcatLive.instances || []).map((i) => i.id),
+          ...(activeSubcatLive.intensifications || []).map((i) => i.id),
+        ]);
+        return validIds.has(prev) ? prev : activeSubcatLive.id;
+      });
     }
-  }, [activeSubcatLive?.id, activeSubcatLive?.instances?.length]);
+  }, [
+    activeSubcatLive?.id,
+    activeSubcatLive?.instances?.length,
+    activeSubcatLive?.intensifications?.length,
+  ]);
 
   const handleConfirmAddEvalInstance = () => {
     if (!subcatToEdit || !onAddEvaluationInstance) return;
@@ -2056,122 +2071,212 @@ export const GradebookCategoryModals: React.FC<GradebookCategoryModalsProps> = (
                     <div className="flex items-center gap-1.5 font-bold text-emerald-700 dark:text-emerald-300">
                       <Upload className="w-3.5 h-3.5 shrink-0" />
                       <span>
-                        Importar notas directamente en "{editSubcatName.trim() || subcatToEdit.name}":
+                        Importar notas directamente en &ldquo;{editSubcatName.trim() || subcatToEdit.name}&rdquo;:
                       </span>
                     </div>
                   </div>
+                  {(existingEvalInstances.length > 0 || existingIntensifications.length > 0) &&
+                    activeSubcatLive && (
+                      <div className="space-y-1.5 pt-0.5">
+                        <label className="block text-[11px] font-bold text-emerald-800 dark:text-emerald-300">
+                          ¿En qué instancia de esta evaluación querés importar las notas?
+                        </label>
+                        <div className="flex flex-wrap gap-1.5">
+                          {[
+                            {
+                              id: activeSubcatLive.id,
+                              shortLabel: `1° ${getPrimaryInstanceLabel(activeSubcatLive)}`,
+                              fullLabel: getPrimaryInstanceDisplayLabel({
+                                ...activeSubcatLive,
+                                name: editSubcatName.trim() || activeSubcatLive.name,
+                              }),
+                            },
+                            ...existingEvalInstances.map((evInst, idx) => ({
+                              id: evInst.id,
+                              shortLabel: `${idx + 2}° ${evInst.name}`,
+                              fullLabel: getEvaluationInstanceDisplayLabel(
+                                {
+                                  ...activeSubcatLive,
+                                  name: editSubcatName.trim() || activeSubcatLive.name,
+                                },
+                                evInst
+                              ),
+                            })),
+                            ...existingIntensifications.map((inst) => ({
+                              id: inst.id,
+                              shortLabel: inst.name,
+                              fullLabel: getIntensificationDisplayLabel(
+                                {
+                                  ...activeSubcatLive,
+                                  name: editSubcatName.trim() || activeSubcatLive.name,
+                                },
+                                inst
+                              ),
+                            })),
+                          ].map((opt) => {
+                            const effectiveId =
+                              selectedParentImportTargetId || activeSubcatLive.id;
+                            const isSelected = effectiveId === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => setSelectedParentImportTargetId(opt.id)}
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                                    : isDarkMode
+                                    ? 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+                                    : 'bg-white border-emerald-200 text-emerald-900 hover:bg-emerald-100/70'
+                                }`}
+                              >
+                                {opt.shortLabel}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                   <p
                     className={`text-[11px] leading-snug ${
                       isDarkMode ? 'text-slate-300' : 'text-neutral-600'
                     }`}
                   >
-                    Elegí desde dónde importar las calificaciones con esta columna ya seleccionada como destino:
+                    Elegí desde dónde importar las calificaciones con la instancia seleccionada como destino:
                   </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const target = {
+                  {(() => {
+                    const resolveParentImportTarget = () => {
+                      const baseSubName = editSubcatName.trim() || subcatToEdit.name;
+                      if (!activeSubcatLive) {
+                        return {
                           categoryId: subcatToEdit.catId,
                           subcategoryId: subcatToEdit.subId,
-                          subcategoryName: editSubcatName.trim() || subcatToEdit.name,
+                          subcategoryName: baseSubName,
                         };
-                        setSubcatToEdit(null);
-                        onImportIntoColumn(target, 'forms');
-                      }}
-                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-900/90 hover:bg-purple-950/60 border-purple-500/40 text-purple-200'
-                          : 'bg-white hover:bg-purple-50 border-purple-200 text-purple-900 shadow-2xs'
-                      }`}
-                    >
-                      <FileCheck className="w-4 h-4 text-purple-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="font-bold text-xs truncate">Google Forms</div>
-                        <div className="text-[10px] opacity-75 truncate">
-                          Formulario o planilla de respuestas
-                        </div>
-                      </div>
-                    </button>
+                      }
+                      const chosenId = selectedParentImportTargetId || activeSubcatLive.id;
+                      const subWithEditedName = { ...activeSubcatLive, name: baseSubName };
+                      const matchedEvalInst = existingEvalInstances.find((i) => i.id === chosenId);
+                      if (matchedEvalInst) {
+                        return {
+                          categoryId: subcatToEdit.catId,
+                          subcategoryId: matchedEvalInst.id,
+                          subcategoryName: getEvaluationInstanceDisplayLabel(
+                            subWithEditedName,
+                            matchedEvalInst
+                          ),
+                        };
+                      }
+                      const matchedIntens = existingIntensifications.find((i) => i.id === chosenId);
+                      if (matchedIntens) {
+                        return {
+                          categoryId: subcatToEdit.catId,
+                          subcategoryId: matchedIntens.id,
+                          subcategoryName: getIntensificationDisplayLabel(
+                            subWithEditedName,
+                            matchedIntens
+                          ),
+                        };
+                      }
+                      return {
+                        categoryId: subcatToEdit.catId,
+                        subcategoryId: activeSubcatLive.id,
+                        subcategoryName: getPrimaryInstanceDisplayLabel(subWithEditedName),
+                      };
+                    };
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const target = {
-                          categoryId: subcatToEdit.catId,
-                          subcategoryId: subcatToEdit.subId,
-                          subcategoryName: editSubcatName.trim() || subcatToEdit.name,
-                        };
-                        setSubcatToEdit(null);
-                        onImportIntoColumn(target, 'sheets');
-                      }}
-                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-900/90 hover:bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
-                          : 'bg-white hover:bg-emerald-50 border-emerald-200 text-emerald-900 shadow-2xs'
-                      }`}
-                    >
-                      <Link2 className="w-4 h-4 text-emerald-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="font-bold text-xs truncate">Google Sheets / Docs</div>
-                        <div className="text-[10px] opacity-75 truncate">
-                          Link o archivo de Google Drive
-                        </div>
-                      </div>
-                    </button>
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = resolveParentImportTarget();
+                            setSubcatToEdit(null);
+                            onImportIntoColumn(target, 'forms');
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-900/90 hover:bg-purple-950/60 border-purple-500/40 text-purple-200'
+                              : 'bg-white hover:bg-purple-50 border-purple-200 text-purple-900 shadow-2xs'
+                          }`}
+                        >
+                          <FileCheck className="w-4 h-4 text-purple-500 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs truncate">Google Forms</div>
+                            <div className="text-[10px] opacity-75 truncate">
+                              Formulario o planilla de respuestas
+                            </div>
+                          </div>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const target = {
-                          categoryId: subcatToEdit.catId,
-                          subcategoryId: subcatToEdit.subId,
-                          subcategoryName: editSubcatName.trim() || subcatToEdit.name,
-                        };
-                        setSubcatToEdit(null);
-                        onImportIntoColumn(target, 'file');
-                      }}
-                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-900/90 hover:bg-blue-950/60 border-blue-500/40 text-blue-200'
-                          : 'bg-white hover:bg-blue-50 border-blue-200 text-blue-900 shadow-2xs'
-                      }`}
-                    >
-                      <Upload className="w-4 h-4 text-blue-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="font-bold text-xs truncate">Subir Archivo</div>
-                        <div className="text-[10px] opacity-75 truncate">
-                          Excel (.xlsx), Word (.docx) o CSV
-                        </div>
-                      </div>
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = resolveParentImportTarget();
+                            setSubcatToEdit(null);
+                            onImportIntoColumn(target, 'sheets');
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-900/90 hover:bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
+                              : 'bg-white hover:bg-emerald-50 border-emerald-200 text-emerald-900 shadow-2xs'
+                          }`}
+                        >
+                          <Link2 className="w-4 h-4 text-emerald-500 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs truncate">Google Sheets / Docs</div>
+                            <div className="text-[10px] opacity-75 truncate">
+                              Link o archivo de Google Drive
+                            </div>
+                          </div>
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const target = {
-                          categoryId: subcatToEdit.catId,
-                          subcategoryId: subcatToEdit.subId,
-                          subcategoryName: editSubcatName.trim() || subcatToEdit.name,
-                        };
-                        setSubcatToEdit(null);
-                        onImportIntoColumn(target, 'paste');
-                      }}
-                      className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
-                        isDarkMode
-                          ? 'bg-slate-900/90 hover:bg-indigo-950/60 border-indigo-500/40 text-indigo-200'
-                          : 'bg-white hover:bg-indigo-50 border-indigo-200 text-indigo-900 shadow-2xs'
-                      }`}
-                    >
-                      <ClipboardPaste className="w-4 h-4 text-indigo-500 shrink-0" />
-                      <div className="min-w-0">
-                        <div className="font-bold text-xs truncate">Pegar Notas (Ctrl+V)</div>
-                        <div className="text-[10px] opacity-75 truncate">
-                          Copiar y pegar alumnos y notas
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = resolveParentImportTarget();
+                            setSubcatToEdit(null);
+                            onImportIntoColumn(target, 'file');
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-900/90 hover:bg-blue-950/60 border-blue-500/40 text-blue-200'
+                              : 'bg-white hover:bg-blue-50 border-blue-200 text-blue-900 shadow-2xs'
+                          }`}
+                        >
+                          <Upload className="w-4 h-4 text-blue-500 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs truncate">Subir Archivo</div>
+                            <div className="text-[10px] opacity-75 truncate">
+                              Excel (.xlsx), Word (.docx) o CSV
+                            </div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const target = resolveParentImportTarget();
+                            setSubcatToEdit(null);
+                            onImportIntoColumn(target, 'paste');
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer ${
+                            isDarkMode
+                              ? 'bg-slate-900/90 hover:bg-indigo-950/60 border-indigo-500/40 text-indigo-200'
+                              : 'bg-white hover:bg-indigo-50 border-indigo-200 text-indigo-900 shadow-2xs'
+                          }`}
+                        >
+                          <ClipboardPaste className="w-4 h-4 text-indigo-500 shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-xs truncate">Pegar Notas (Ctrl+V)</div>
+                            <div className="text-[10px] opacity-75 truncate">
+                              Copiar y pegar alumnos y notas
+                            </div>
+                          </div>
+                        </button>
                       </div>
-                    </button>
-                  </div>
+                    );
+                  })()}
                 </div>
               )}
 

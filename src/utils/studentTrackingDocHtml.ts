@@ -2,10 +2,15 @@ import { Course, Student, StudentDispositionData, StudentHistoryItem, StudentObs
 import { GradeCategory, DEFAULT_CATEGORIES } from '../types/grades';
 import { getUserScopedItem } from '../services/api';
 import {
+  computeEvaluationInstancesCombinedScore,
+  computeStudentTermAverageItems,
+  computeSumGroupCombinedScore,
   getEffectiveIntensificationCell,
   getEvaluationInstanceDisplayLabel,
   getIntensificationDisplayLabel,
   getPrimaryInstanceDisplayLabel,
+  hasCombinedSummaryColumn,
+  isLastPeerOfSumGroup,
   resolveInstanceScale,
   resolveSubcategoryScale,
 } from './gradeCalculations';
@@ -103,7 +108,7 @@ export function buildStudentTrackingDocHtml(
 
   // Cargar notas de exámenes y TPs de la pestaña Calificaciones (1°C y 2°C)
   const loadTermExamsForDoc = (term: '1c' | '2c') => {
-    if (!activeCourse) return [];
+    if (!activeCourse) return { items: [], avg: null as number | null };
     try {
       const catRaw =
         getUserScopedItem(`fds_grades_categories_${activeCourse.id}_${term}`) ||
@@ -119,19 +124,28 @@ export function buildStudentTrackingDocHtml(
         (term === '1c' ? getUserScopedItem(`fds_gradebook_grades_v1_${activeCourse.id}`) : null);
       const gMap: Record<string, Record<string, string | number>> = gradesRaw ? JSON.parse(gradesRaw) : {};
       const stGrades = gMap[student.id] || {};
+      const stGradesStr: Record<string, string> = {};
+      for (const [k, v] of Object.entries(stGrades)) {
+        stGradesStr[k] = v !== undefined && v !== null ? String(v) : '';
+      }
 
+      const academicCats: GradeCategory[] = [];
       const items: {
         id: string;
         name: string;
         weight: number;
         score: number | null;
+        displayScore?: string;
         isIntensification?: boolean;
+        isSummary?: boolean;
         passingScore?: number;
         regularScore?: number | null;
       }[] = [];
+
       for (const cat of cats) {
         if (cat.id === 'cat-conceptual' || /disposici[oó]n|conducta/i.test(cat.name)) continue;
         if (!cat.subcategories || cat.subcategories.length === 0) {
+          academicCats.push(cat);
           const rawVal = stGrades[cat.id];
           const parsedNum =
             rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
@@ -144,8 +158,13 @@ export function buildStudentTrackingDocHtml(
             score: !isNaN(parsedNum) ? parsedNum : null,
           });
         } else {
-          for (const sub of cat.subcategories) {
-            if (/disposici[oó]n|conducta/i.test(sub.name)) continue;
+          const academicSubs = cat.subcategories.filter(
+            (sub) => !/disposici[oó]n|conducta/i.test(sub.name)
+          );
+          if (academicSubs.length > 0) {
+            academicCats.push({ ...cat, subcategories: academicSubs });
+          }
+          for (const sub of academicSubs) {
             const rawVal = stGrades[sub.id];
             const parsedNum =
               rawVal !== undefined && rawVal !== null && String(rawVal).trim() !== ''
@@ -178,10 +197,22 @@ export function buildStudentTrackingDocHtml(
               });
             });
 
-            const stGradesStr: Record<string, string> = {};
-            for (const [k, v] of Object.entries(stGrades)) {
-              stGradesStr[k] = v !== undefined && v !== null ? String(v) : '';
+            if (hasCombinedSummaryColumn(sub)) {
+              const combined = computeEvaluationInstancesCombinedScore(sub, stGradesStr);
+              if (combined) {
+                items.push({
+                  id: `${sub.id}__combined__`,
+                  name: `${sub.name} — ${combined.mode === 'sum' ? 'Σ Total sumado' : 'Promedio de instancias'}`,
+                  weight: (sub as any).weight ?? (cat as any).weight ?? 0,
+                  score: combined.numericValue,
+                  displayScore: combined.displayValue || undefined,
+                  isSummary: true,
+                  passingScore: combined.passingScore,
+                  regularScore: combined.regularScore,
+                });
+              }
             }
+
             (sub.intensifications || []).forEach((inst, instIdx) => {
               const effective = getEffectiveIntensificationCell(sub, instIdx, stGradesStr);
               if (effective.isExempt) return;
@@ -199,28 +230,44 @@ export function buildStudentTrackingDocHtml(
                 regularScore: null,
               });
             });
+
+            if (isLastPeerOfSumGroup(cats, sub) && sub.sumGroupId) {
+              const sumSummary = computeSumGroupCombinedScore(cats, sub.sumGroupId, stGradesStr);
+              if (sumSummary) {
+                items.push({
+                  id: `${sub.sumGroupId}__sumgroup__`,
+                  name: `Σ Suma de evaluaciones (sobre ${sumSummary.maxScore})`,
+                  weight: (sub as any).weight ?? (cat as any).weight ?? 0,
+                  score: sumSummary.numericValue,
+                  displayScore: sumSummary.displayValue || undefined,
+                  isSummary: true,
+                  passingScore: sumSummary.passingScore,
+                  regularScore: sumSummary.regularScore,
+                });
+              }
+            }
           }
         }
       }
-      return items;
+
+      const termAvgItems = computeStudentTermAverageItems(academicCats, stGradesStr);
+      const avg =
+        termAvgItems.length > 0
+          ? Number(
+              (termAvgItems.reduce((acc, v) => acc + v, 0) / termAvgItems.length).toFixed(2)
+            )
+          : null;
+
+      return { items, avg };
     } catch {
-      return [];
+      return { items: [], avg: null as number | null };
     }
   };
 
-  const exams1c = loadTermExamsForDoc('1c');
-  const exams2c = loadTermExamsForDoc('2c');
-
-  const computeWeightedAvg = (
-    items: { weight: number; score: number | null; isIntensification?: boolean }[]
-  ) => {
-    const valid = items.filter((i) => !i.isIntensification && i.score !== null);
-    if (valid.length === 0) return null;
-    const totalWeight = valid.reduce((acc, cur) => acc + (cur.weight || 1), 0);
-    if (totalWeight <= 0) return null;
-    const sum = valid.reduce((acc, cur) => acc + (cur.score || 0) * (cur.weight || 1), 0);
-    return Number((sum / totalWeight).toFixed(2));
-  };
+  const term1Data = loadTermExamsForDoc('1c');
+  const term2Data = loadTermExamsForDoc('2c');
+  const exams1c = term1Data.items;
+  const exams2c = term2Data.items;
 
   const generalScale = getGeneralGradeScale();
   const getDocScoreColor = (
@@ -234,8 +281,8 @@ export function buildStudentTrackingDocHtml(
     return '#dc2626';
   };
 
-  const avg1c = computeWeightedAvg(exams1c);
-  const avg2c = computeWeightedAvg(exams2c);
+  const avg1c = term1Data.avg;
+  const avg2c = term2Data.avg;
   const finalAvg =
     avg1c !== null && avg2c !== null
       ? Number(((avg1c + avg2c) / 2).toFixed(2))
@@ -413,12 +460,14 @@ export function buildStudentTrackingDocHtml(
         const c2Color = e2
           ? getDocScoreColor(e2.score, e2.passingScore, e2.regularScore)
           : '#94a3b8';
+        const c1Bg = e1?.isSummary ? 'background-color: #eef2ff; font-weight: bold;' : '';
+        const c2Bg = e2?.isSummary ? 'background-color: #eef2ff; font-weight: bold;' : '';
         rowsHtml += `
           <tr>
-            <td>${e1 ? `${escapeHtml(e1.name)} <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e1.weight)}%)</span>` : '-'}</td>
-            <td style="text-align: center; font-weight: bold; color: ${c1Color};">${e1 ? (e1.score !== null ? escapeHtml(e1.score) : 'S/C') : '-'}</td>
-            <td>${e2 ? `${escapeHtml(e2.name)} <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e2.weight)}%)</span>` : '-'}</td>
-            <td style="text-align: center; font-weight: bold; color: ${c2Color};">${e2 ? (e2.score !== null ? escapeHtml(e2.score) : 'S/C') : '-'}</td>
+            <td style="${c1Bg}">${e1 ? `${escapeHtml(e1.name)}${!e1.isSummary && e1.weight ? ` <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e1.weight)}%)</span>` : ''}` : '-'}</td>
+            <td style="${c1Bg} text-align: center; font-weight: bold; color: ${c1Color};">${e1 ? (e1.displayScore ?? (e1.score !== null ? escapeHtml(e1.score) : 'S/C')) : '-'}</td>
+            <td style="${c2Bg}">${e2 ? `${escapeHtml(e2.name)}${!e2.isSummary && e2.weight ? ` <span style="color:#64748b;font-size:9pt;">(${escapeHtml(e2.weight)}%)</span>` : ''}` : '-'}</td>
+            <td style="${c2Bg} text-align: center; font-weight: bold; color: ${c2Color};">${e2 ? (e2.displayScore ?? (e2.score !== null ? escapeHtml(e2.score) : 'S/C')) : '-'}</td>
           </tr>
         `;
       }

@@ -66,9 +66,7 @@ export function registerAuthRoutes(app: express.Express): void {
     const requestedEmail = String(req.query.email || req.headers["x-user-email"] || "")
       .trim()
       .toLowerCase();
-    const providedSecret = String(
-      req.headers["x-session-secret"] || req.query.sessionSecret || ""
-    ).trim();
+    const providedSecret = String(req.headers["x-session-secret"] || "").trim();
 
     if (!requestedEmail) {
       return res.json({
@@ -95,7 +93,7 @@ export function registerAuthRoutes(app: express.Express): void {
     });
   });
 
-  app.post("/api/auth/login-email", (req, res) => {
+  app.post("/api/auth/login-email", async (req, res) => {
     try {
       const { email, password, name, token } = req.body || {};
       const cleanEmail = String(email || "").trim().toLowerCase();
@@ -106,6 +104,16 @@ export function registerAuthRoutes(app: express.Express): void {
           success: false,
           error: "Por favor ingresá un correo electrónico docente válido.",
         });
+      }
+
+      // Verify any supplied Google OAuth token cryptographically before trusting it
+      let verifiedIncomingToken: string | undefined;
+      if (typeof token === "string" && token.trim().length > 20 && !token.trim().startsWith("token_")) {
+        const candidateToken = token.trim();
+        const verifiedEmail = await verifyGoogleBearerToken(candidateToken);
+        if (verifiedEmail && verifiedEmail === cleanEmail) {
+          verifiedIncomingToken = candidateToken;
+        }
       }
 
       const existingAccount = teacherAccountsByEmail.get(cleanEmail);
@@ -151,6 +159,11 @@ export function registerAuthRoutes(app: express.Express): void {
           updatedAt: new Date().toISOString(),
         });
         saveTeacherAccountsToDisk();
+      } else if (!verifiedIncomingToken) {
+        return res.status(401).json({
+          success: false,
+          error: "Por favor ingresá una contraseña o iniciá sesión con Google para continuar.",
+        });
       }
 
       const existingUser = activeUsersByEmail.get(cleanEmail);
@@ -162,12 +175,10 @@ export function registerAuthRoutes(app: express.Express): void {
         (cleanEmail ? cleanEmail.split("@")[0].replace(/[._-]/g, " ") : "Docente Titular");
       const displayName = cleanName.startsWith("Prof.") ? cleanName : `Prof. ${cleanName}`;
       const validToken =
-        typeof token === "string" && token.trim().length > 20 && !token.trim().startsWith("token_")
-          ? token.trim()
-          : existingUser?.token || savedOAuthTokensByEmail.get(cleanEmail);
+        verifiedIncomingToken || existingUser?.token || savedOAuthTokensByEmail.get(cleanEmail);
 
-      if (validToken) {
-        savedOAuthTokensByEmail.set(cleanEmail, validToken);
+      if (verifiedIncomingToken) {
+        savedOAuthTokensByEmail.set(cleanEmail, verifiedIncomingToken);
       }
 
       const sessionSecret = crypto.randomBytes(24).toString("hex");
@@ -307,8 +318,15 @@ export function registerAuthRoutes(app: express.Express): void {
   });
 
   app.get("/api/auth/permissions", (req, res) => {
-    const requestedEmail = String(req.query.email || "").trim().toLowerCase();
-    const matchedUser = requestedEmail ? activeUsersByEmail.get(requestedEmail) : undefined;
+    const requestedEmail = String(req.headers["x-user-email"] || req.query.email || "")
+      .trim()
+      .toLowerCase();
+    const providedSecret = String(req.headers["x-session-secret"] || "").trim();
+    const isVerified =
+      Boolean(requestedEmail) &&
+      Boolean(providedSecret) &&
+      hasValidSessionSecret(requestedEmail, providedSecret);
+    const matchedUser = isVerified ? activeUsersByEmail.get(requestedEmail) : undefined;
     res.json({
       role: matchedUser?.role || "Docente Titular",
       permissions: matchedUser?.permissions || [...DEFAULT_TEACHER_PERMISSIONS],

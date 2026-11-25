@@ -138,7 +138,7 @@ export function useStudentProfileAndObservationsActions({
     }
 
     const newObs: StudentObservation = {
-      id: `obs-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      id: `obs-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       studentId: student.id,
       courseId: activeCourse?.id || '',
       text: newObservationText.trim(),

@@ -176,7 +176,7 @@ export const dispositionApi = {
     if (data.courseId) current.courseId = data.courseId;
 
     const userId = getActiveUserId();
-    const recordId = data.id || `disp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    const recordId = data.id || `disp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const existingIndex = history.findIndex((h) => h.id === recordId);
 
     if (data.expectedSummary) {

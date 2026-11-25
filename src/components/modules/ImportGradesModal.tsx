@@ -178,6 +178,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setSelectedTerm(initialTerm);
       setSourceType(initialSourceType);
       setActiveStep('upload');
       setPreferredTargetColumn(initialTargetColumn || null);
@@ -206,7 +207,7 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
         setQuickPastePreset('auto');
       }
     }
-  }, [isOpen, initialSourceType, importContext, initialTargetColumn]);
+  }, [isOpen, initialTerm, initialSourceType, importContext, initialTargetColumn]);
 
   // Multi-column auto-detection states
   const [detectedColumns, setDetectedColumns] = useState<DetectedColumnConfig[]>([]);
@@ -473,17 +474,32 @@ export const ImportGradesModal: React.FC<ImportGradesModalProps> = ({
     const createColumnConfig = (
       targetKey: string,
       kind: DetectedColumnConfig['kind']
-    ): DetectedColumnConfig => ({
-      colKey: targetKey,
-      isIncluded: kind !== 'ignore',
-      kind,
-      targetCategoryMode: 'existing',
-      targetCategoryId: defaultCat.id,
-      newCategoryName: '',
-      targetSubcategoryMode: 'new',
-      targetSubcategoryId: '',
-      subcategoryName: targetKey,
-    });
+    ): DetectedColumnConfig => {
+      if (kind === 'grade' && preferredTargetColumn) {
+        return {
+          colKey: targetKey,
+          isIncluded: true,
+          kind,
+          targetCategoryMode: 'existing',
+          targetCategoryId: preferredTargetColumn.categoryId,
+          newCategoryName: '',
+          targetSubcategoryMode: 'existing',
+          targetSubcategoryId: preferredTargetColumn.subcategoryId,
+          subcategoryName: preferredTargetColumn.subcategoryName,
+        };
+      }
+      return {
+        colKey: targetKey,
+        isIncluded: kind !== 'ignore',
+        kind,
+        targetCategoryMode: 'existing',
+        targetCategoryId: defaultCat.id,
+        newCategoryName: '',
+        targetSubcategoryMode: 'new',
+        targetSubcategoryId: '',
+        subcategoryName: targetKey,
+      };
+    };
 
     const isIdentityRole =
       role === 'student_name' || role === 'student_second_name' || role === 'student_email';

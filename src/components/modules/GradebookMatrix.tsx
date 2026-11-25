@@ -55,6 +55,8 @@ import {
   INTENSIFICATION_EXEMPT_LABEL,
   calculateCategoryAverageForStudent,
   calculateFinalScoreForStudent,
+  computeEvaluationInstancesCombinedScore,
+  computeSumGroupCombinedScore,
   computeTermScoresMap,
   convertScoreFrom100ToGeneral,
   getScoreColorClass as computeScoreColorClass,
@@ -65,7 +67,9 @@ import {
   getPrimaryInstanceDisplayLabel,
   getPrimaryInstanceLabel,
   getSumGroupPeers,
+  hasCombinedSummaryColumn,
   isExemptMarkerValue,
+  isLastPeerOfSumGroup,
   normalizeScoreWithResolvedScale,
   normalizeSubcategoryScoreForAverage,
   parseGradeNumber,
@@ -265,6 +269,8 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                 const instList = sub.intensifications || [];
                 const hasEvalInstances = evalInstances.length > 0;
                 const hasInsts = instList.length > 0;
+                const showInstancesSummary = hasCombinedSummaryColumn(sub);
+                const showSumGroupSummary = isLastPeerOfSumGroup(categories, sub);
                 const isGrouped = hasEvalInstances || hasInsts;
                 const isLastSubInCat = subIdx === cat.subcategories.length - 1;
                 const resolvedScale = resolveSubcategoryScale(sub, generalGradeScale);
@@ -280,19 +286,20 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                     : 'border-l-[3px] border-l-amber-400'
                   : '';
 
-                const groupRightBorder = isLastSubInCat
-                  ? catRightBorder
-                  : isGrouped
-                  ? hasEvalInstances
-                    ? isDarkMode
-                      ? 'border-r-[3px] border-r-indigo-500'
-                      : 'border-r-[3px] border-r-indigo-400'
+                const subBlockRightBorder =
+                  isLastSubInCat && !showSumGroupSummary
+                    ? catRightBorder
+                    : isGrouped
+                    ? hasEvalInstances
+                      ? isDarkMode
+                        ? 'border-r-[3px] border-r-indigo-500'
+                        : 'border-r-[3px] border-r-indigo-400'
+                      : isDarkMode
+                      ? 'border-r-[3px] border-r-amber-500'
+                      : 'border-r-[3px] border-r-amber-400'
                     : isDarkMode
-                    ? 'border-r-[3px] border-r-amber-500'
-                    : 'border-r-[3px] border-r-amber-400'
-                  : isDarkMode
-                  ? 'border-r border-r-slate-800'
-                  : 'border-r border-r-neutral-200';
+                    ? 'border-r border-r-slate-800'
+                    : 'border-r border-r-neutral-200';
 
                 const innerGroupBorder = hasEvalInstances
                   ? isDarkMode
@@ -313,17 +320,15 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                   const peerNames = peers
                     .filter((p) => p.subcategory.id !== sub.id)
                     .map((p) => p.subcategory.name);
-                  const groupSum = peers.reduce((acc, p) => {
-                    const n = parseGradeNumber(studentGrades[p.subcategory.id]);
-                    return acc + (n !== null ? n : 0);
-                  }, 0);
-                  const groupMax = peers.reduce(
-                    (acc, p) => acc + resolveSubcategoryScale(p.subcategory, generalGradeScale).maxScore,
-                    0
+                  const groupSummary = computeSumGroupCombinedScore(
+                    categories,
+                    sub.sumGroupId,
+                    studentGrades,
+                    generalGradeScale
                   );
                   cellTooltip =
-                    peerNames.length > 0
-                      ? `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore}) · Suma con ${peerNames.join(' + ')} (${groupSum.toFixed(1).replace(/\.0$/, '')} / ${groupMax})`
+                    peerNames.length > 0 && groupSummary
+                      ? `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore}) · Suma con ${peerNames.join(' + ')} (${groupSummary.displayValue || '0'} / ${groupSummary.maxScore})`
                       : `${primaryLabelPrefix}Escala ${resolvedScale.minScore}–${resolvedScale.maxScore} (aprueba ≥ ${resolvedScale.passingScore})`;
                 } else if (resolvedScale.mode === 'custom') {
                   const normalizedForAvg =
@@ -348,7 +353,19 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                     : 'bg-amber-50/25'
                   : '';
 
-                const primaryTdRightBorder = isGrouped ? innerGroupBorder : groupRightBorder;
+                const primaryTdRightBorder = isGrouped ? innerGroupBorder : subBlockRightBorder;
+                const instancesSummary = showInstancesSummary
+                  ? computeEvaluationInstancesCombinedScore(sub, studentGrades, generalGradeScale)
+                  : null;
+                const sumGroupSummary =
+                  showSumGroupSummary && sub.sumGroupId
+                    ? computeSumGroupCombinedScore(
+                        categories,
+                        sub.sumGroupId,
+                        studentGrades,
+                        generalGradeScale
+                      )
+                    : null;
 
                 return (
                   <React.Fragment key={sub.id}>
@@ -393,9 +410,11 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                       const instScale = resolveInstanceScale(sub, evalInst, generalGradeScale);
                       const parsedEvalVal = parseGradeNumber(evalVal);
                       const isLastColOfSub =
-                        evalInstIdx === evalInstances.length - 1 && instList.length === 0;
+                        evalInstIdx === evalInstances.length - 1 &&
+                        !showInstancesSummary &&
+                        instList.length === 0;
                       const evalTdRightBorder = isLastColOfSub
-                        ? groupRightBorder
+                        ? subBlockRightBorder
                         : innerGroupBorder;
 
                       let evalTooltip = `${getEvaluationInstanceDisplayLabel(sub, evalInst)} — Instancia de evaluación (para todos los alumnos)`;
@@ -455,6 +474,38 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                       );
                     })}
 
+                    {/* Summary column for multi-instance evaluation (Promedio or Suma of all instances) */}
+                    {showInstancesSummary && instancesSummary && (
+                      <td
+                        data-pii="student"
+                        title={instancesSummary.breakdownText}
+                        className={`p-1 text-center overflow-hidden select-none ${
+                          isDarkMode ? 'bg-indigo-950/45' : 'bg-indigo-100/75'
+                        } ${instList.length === 0 ? subBlockRightBorder : innerGroupBorder}`}
+                      >
+                        <div
+                          className={`w-full max-w-[58px] mx-auto px-1 py-1 rounded-lg text-xs font-extrabold border ${
+                            isDarkMode
+                              ? 'bg-indigo-950/90 border-indigo-500/60'
+                              : 'bg-white/95 border-indigo-300 shadow-2xs'
+                          } ${
+                            instancesSummary.displayValue
+                              ? getScoreColorClass(instancesSummary.displayValue, {
+                                  mode: 'custom',
+                                  maxScore: instancesSummary.maxScore,
+                                  passingScore: instancesSummary.passingScore,
+                                  regularScore: instancesSummary.regularScore,
+                                })
+                              : isDarkMode
+                              ? 'text-slate-500'
+                              : 'text-neutral-400'
+                          }`}
+                        >
+                          {instancesSummary.displayValue || '—'}
+                        </div>
+                      </td>
+                    )}
+
                     {/* Intensification / Recuperación sub-columns */}
                     {instList.map((inst, instIdx) => {
                       const instColIdx = runningColIdx++;
@@ -483,7 +534,7 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
 
                       const isLastColOfSub = instIdx === instList.length - 1;
                       const instTdRightBorder = isLastColOfSub
-                        ? groupRightBorder
+                        ? subBlockRightBorder
                         : isDarkMode
                         ? 'border-r border-dashed border-r-amber-700/70'
                         : 'border-r border-dashed border-r-amber-300';
@@ -523,21 +574,54 @@ const GradebookStudentRow = React.memo<GradebookStudentRowProps>(
                             } ${
                               isShowingExempt
                                 ? ''
-                                : getScoreColorClass(
-                                    rawInstVal,
-                                    resolvedScale.mode === 'custom' ||
-                                      resolvedScale.mode === 'sum_group'
-                                      ? {
-                                          ...resolvedScale,
-                                          passingScore: effective.threshold,
-                                        }
-                                      : undefined
-                                  )
+                                : getScoreColorClass(rawInstVal, {
+                                    ...resolvedScale,
+                                    passingScore: effective.threshold,
+                                    regularScore: null,
+                                  })
                             }`}
                           />
                         </td>
                       );
                     })}
+
+                    {/* Summary column for sum_group evaluations (linked evaluations that sum together) */}
+                    {showSumGroupSummary && sumGroupSummary && (
+                      <td
+                        data-pii="student"
+                        title={sumGroupSummary.breakdownText}
+                        className={`p-1 text-center overflow-hidden select-none ${
+                          isDarkMode ? 'bg-indigo-950/40' : 'bg-indigo-100/70'
+                        } ${
+                          isLastSubInCat
+                            ? catRightBorder
+                            : isDarkMode
+                            ? 'border-r-[3px] border-r-indigo-500'
+                            : 'border-r-[3px] border-r-indigo-400'
+                        }`}
+                      >
+                        <div
+                          className={`w-full max-w-[58px] mx-auto px-1 py-1 rounded-lg text-xs font-extrabold border ${
+                            isDarkMode
+                              ? 'bg-indigo-950/90 border-indigo-500/60'
+                              : 'bg-white/95 border-indigo-300 shadow-2xs'
+                          } ${
+                            sumGroupSummary.displayValue
+                              ? getScoreColorClass(sumGroupSummary.displayValue, {
+                                  mode: 'custom',
+                                  maxScore: sumGroupSummary.maxScore,
+                                  passingScore: sumGroupSummary.passingScore,
+                                  regularScore: sumGroupSummary.regularScore,
+                                })
+                              : isDarkMode
+                              ? 'text-slate-500'
+                              : 'text-neutral-400'
+                          }`}
+                        >
+                          {sumGroupSummary.displayValue || '—'}
+                        </div>
+                      </td>
+                    )}
                   </React.Fragment>
                 );
               })}
@@ -935,9 +1019,15 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
           (sub.instances || []).forEach((evalInst) => {
             total += getColWidth(evalInst.id, 'grade');
           });
+          if (hasCombinedSummaryColumn(sub)) {
+            total += getColWidth(`${sub.id}__combined__`, 'grade');
+          }
           (sub.intensifications || []).forEach((inst) => {
             total += getColWidth(inst.id, 'grade');
           });
+          if (isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId) {
+            total += getColWidth(`${sub.sumGroupId}__sumgroup__`, 'grade');
+          }
         });
       }
     });
@@ -2705,12 +2795,26 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           style={{ width: `${getColWidth(evalInst.id, 'grade')}px` }}
                         />
                       ))}
+                      {hasCombinedSummaryColumn(sub) && (
+                        <col
+                          key={`col-${sub.id}__combined__`}
+                          style={{ width: `${getColWidth(`${sub.id}__combined__`, 'grade')}px` }}
+                        />
+                      )}
                       {(sub.intensifications || []).map((inst) => (
                         <col
                           key={`col-${inst.id}`}
                           style={{ width: `${getColWidth(inst.id, 'grade')}px` }}
                         />
                       ))}
+                      {isLastPeerOfSumGroup(categories, sub) && sub.sumGroupId && (
+                        <col
+                          key={`col-${sub.sumGroupId}__sumgroup__`}
+                          style={{
+                            width: `${getColWidth(`${sub.sumGroupId}__sumgroup__`, 'grade')}px`,
+                          }}
+                        />
+                      )}
                     </React.Fragment>
                   ))
                 )
@@ -2758,7 +2862,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                             acc +
                             1 +
                             (sub.instances?.length || 0) +
-                            (sub.intensifications?.length || 0),
+                            (hasCombinedSummaryColumn(sub) ? 1 : 0) +
+                            (sub.intensifications?.length || 0) +
+                            (isLastPeerOfSumGroup(categories, sub) ? 1 : 0),
                           0
                         );
                   const colorTheme = CATEGORY_COLORS[catIdx % CATEGORY_COLORS.length];
@@ -3056,6 +3162,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         const instList = sub.intensifications || [];
                         const hasEvalInstances = evalInstances.length > 0;
                         const hasInsts = instList.length > 0;
+                        const showInstancesSummary = hasCombinedSummaryColumn(sub);
+                        const showSumGroupSummary = isLastPeerOfSumGroup(categories, sub);
                         const isSplit = hasEvalInstances || hasInsts;
                         const isLastSubInCat = subIdx === cat.subcategories.length - 1;
                         const colW = getColWidth(sub.id, 'grade');
@@ -3065,6 +3173,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               (acc, ei) => acc + getColWidth(ei.id, 'grade'),
                               0
                             ) +
+                            (showInstancesSummary
+                              ? getColWidth(`${sub.id}__combined__`, 'grade')
+                              : 0) +
                             instList.reduce((acc, inst) => acc + getColWidth(inst.id, 'grade'), 0)
                           : colW;
                         const showInlineArrows = cat.subcategories.length > 1 && totalGroupW >= 88;
@@ -3087,224 +3198,315 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                           ? 'text-slate-300'
                           : 'text-neutral-700';
 
-                        const rightEdgeClass = isLastSubInCat
-                          ? catRightBorder
-                          : isSplit
-                          ? hasEvalInstances
-                            ? isDarkMode
-                              ? 'border-r-[3px] border-r-indigo-500'
-                              : 'border-r-[3px] border-r-indigo-400'
+                        const rightEdgeClass =
+                          isLastSubInCat && !showSumGroupSummary
+                            ? catRightBorder
+                            : isSplit
+                            ? hasEvalInstances
+                              ? isDarkMode
+                                ? 'border-r-[3px] border-r-indigo-500'
+                                : 'border-r-[3px] border-r-indigo-400'
+                              : isDarkMode
+                              ? 'border-r-[3px] border-r-amber-500'
+                              : 'border-r-[3px] border-r-amber-400'
                             : isDarkMode
-                            ? 'border-r-[3px] border-r-amber-500'
-                            : 'border-r-[3px] border-r-amber-400'
-                          : isDarkMode
-                          ? 'border-r border-r-slate-800'
-                          : 'border-r border-r-neutral-200';
+                            ? 'border-r border-r-slate-800'
+                            : 'border-r border-r-neutral-200';
+
+                        const sumGroupPeers =
+                          showSumGroupSummary && sub.sumGroupId
+                            ? getSumGroupPeers(categories, sub.sumGroupId)
+                            : [];
+                        const sumGroupTotalMax = sumGroupPeers.reduce(
+                          (acc, p) =>
+                            acc +
+                            resolveSubcategoryScale(p.subcategory, generalGradeScale).maxScore +
+                            (p.subcategory.instances || []).reduce(
+                              (iAcc, inst) =>
+                                iAcc +
+                                resolveInstanceScale(p.subcategory, inst, generalGradeScale)
+                                  .maxScore,
+                              0
+                            ),
+                          0
+                        );
 
                         return (
-                          <th
-                            key={sub.id}
-                            colSpan={1 + evalInstances.length + instList.length}
-                            rowSpan={isSplit ? 1 : hasAnySplitColumns ? 2 : 1}
-                            draggable={!isResizingColumn}
-                            onDragStart={(e) => {
-                              if (isResizingColumn) {
-                                e.preventDefault();
-                                return;
+                          <React.Fragment key={sub.id}>
+                            <th
+                              colSpan={
+                                1 +
+                                evalInstances.length +
+                                (showInstancesSummary ? 1 : 0) +
+                                instList.length
                               }
-                              e.stopPropagation();
-                              setDraggedSubcat({ catId: cat.id, subId: sub.id, subIdx });
-                              setDraggedCatIdx(null);
-                              e.dataTransfer.effectAllowed = 'move';
-                              e.dataTransfer.setData('text/plain', `sub:${cat.id}:${sub.id}`);
-                            }}
-                            onDragOver={(e) => {
-                              if (draggedSubcat) {
+                              rowSpan={isSplit ? 1 : hasAnySplitColumns ? 2 : 1}
+                              draggable={!isResizingColumn}
+                              onDragStart={(e) => {
+                                if (isResizingColumn) {
+                                  e.preventDefault();
+                                  return;
+                                }
+                                e.stopPropagation();
+                                setDraggedSubcat({ catId: cat.id, subId: sub.id, subIdx });
+                                setDraggedCatIdx(null);
+                                e.dataTransfer.effectAllowed = 'move';
+                                e.dataTransfer.setData('text/plain', `sub:${cat.id}:${sub.id}`);
+                              }}
+                              onDragOver={(e) => {
+                                if (draggedSubcat) {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  e.dataTransfer.dropEffect = 'move';
+                                  if (
+                                    dragOverSubcat?.catId !== cat.id ||
+                                    dragOverSubcat?.subIdx !== subIdx
+                                  ) {
+                                    setDragOverSubcat({ catId: cat.id, subIdx });
+                                  }
+                                }
+                              }}
+                              onDragLeave={() => {
+                                if (
+                                  dragOverSubcat?.catId === cat.id &&
+                                  dragOverSubcat?.subIdx === subIdx
+                                ) {
+                                  setDragOverSubcat(null);
+                                }
+                              }}
+                              onDrop={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                e.dataTransfer.dropEffect = 'move';
-                                if (
-                                  dragOverSubcat?.catId !== cat.id ||
-                                  dragOverSubcat?.subIdx !== subIdx
-                                ) {
-                                  setDragOverSubcat({ catId: cat.id, subIdx });
-                                }
-                              }
-                            }}
-                            onDragLeave={() => {
-                              if (
-                                dragOverSubcat?.catId === cat.id &&
-                                dragOverSubcat?.subIdx === subIdx
-                              ) {
-                                setDragOverSubcat(null);
-                              }
-                            }}
-                            onDrop={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              if (draggedSubcat) {
-                                if (draggedSubcat.catId === cat.id) {
-                                  if (draggedSubcat.subIdx !== subIdx) {
-                                    handleMoveSubcategory(cat.id, draggedSubcat.subIdx, subIdx);
+                                if (draggedSubcat) {
+                                  if (draggedSubcat.catId === cat.id) {
+                                    if (draggedSubcat.subIdx !== subIdx) {
+                                      handleMoveSubcategory(cat.id, draggedSubcat.subIdx, subIdx);
+                                    }
+                                  } else {
+                                    handleMoveSubcategoryToCategory(
+                                      draggedSubcat.catId,
+                                      draggedSubcat.subId,
+                                      cat.id,
+                                      subIdx
+                                    );
                                   }
-                                } else {
-                                  handleMoveSubcategoryToCategory(
-                                    draggedSubcat.catId,
-                                    draggedSubcat.subId,
-                                    cat.id,
-                                    subIdx
-                                  );
                                 }
-                              }
-                              setDraggedSubcat(null);
-                              setDragOverSubcat(null);
-                            }}
-                            onDragEnd={() => {
-                              setDraggedSubcat(null);
-                              setDragOverSubcat(null);
-                            }}
-                            className={`group/sub p-1.5 text-center font-medium text-[11px] transition-all relative select-none overflow-hidden ${groupHeaderClasses} ${rightEdgeClass} ${
-                              isDraggingThisSub ? 'opacity-45' : ''
-                            } ${
-                              isDragOverThisSub ? 'ring-2 ring-inset ring-blue-500 bg-blue-500/10' : ''
-                            }`}
-                          >
-                            <div className="flex items-center justify-center gap-0.5 pr-1 text-center min-w-0">
-                              {showInlineArrows && (
-                                <button
-                                  type="button"
-                                  disabled={subIdx === 0}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleMoveSubcategory(cat.id, subIdx, subIdx - 1);
-                                  }}
-                                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
-                                  title={`Mover "${sub.name}" hacia la izquierda (antes)`}
-                                >
-                                  <ChevronLeft className="w-3 h-3" />
-                                </button>
-                              )}
-
-                              {(() => {
-                                const subScale = resolveSubcategoryScale(sub, generalGradeScale);
-                                const sumPeers =
-                                  subScale.mode === 'sum_group' && sub.sumGroupId
-                                    ? getSumGroupPeers(categories, sub.sumGroupId).filter(
-                                        (p) => p.subcategory.id !== sub.id
-                                      )
-                                    : [];
-                                const scaleHint = subScale.isCustom
-                                  ? subScale.mode === 'convert_100'
-                                    ? ` · Escala 0–100 → sobre ${generalGradeScale.maxScore}`
-                                    : subScale.mode === 'sum_group'
-                                    ? ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})${
-                                        sumPeers.length > 0
-                                          ? ` · Suma con ${sumPeers.map((p) => p.subcategory.name).join(' + ')}`
-                                          : ''
-                                      }`
-                                    : ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})`
-                                  : '';
-                                const instancesHint = hasEvalInstances
-                                  ? ` · ${1 + evalInstances.length} instancias (${
-                                      sub.instancesCombineMode === 'sum'
-                                        ? 'suman'
-                                        : sub.instancesCombineMode === 'separate'
-                                        ? 'por separado'
-                                        : 'promedian'
-                                    })`
-                                  : '';
-                                return (
+                                setDraggedSubcat(null);
+                                setDragOverSubcat(null);
+                              }}
+                              onDragEnd={() => {
+                                setDraggedSubcat(null);
+                                setDragOverSubcat(null);
+                              }}
+                              className={`group/sub p-1.5 text-center font-medium text-[11px] transition-all relative select-none overflow-hidden ${groupHeaderClasses} ${rightEdgeClass} ${
+                                isDraggingThisSub ? 'opacity-45' : ''
+                              } ${
+                                isDragOverThisSub
+                                  ? 'ring-2 ring-inset ring-blue-500 bg-blue-500/10'
+                                  : ''
+                              }`}
+                            >
+                              <div className="flex items-center justify-center gap-0.5 pr-1 text-center min-w-0">
+                                {showInlineArrows && (
                                   <button
                                     type="button"
-                                    onClick={() => {
-                                      setSubcatToEdit({ catId: cat.id, subId: sub.id, name: sub.name });
-                                      setEditSubcatName(sub.name);
+                                    disabled={subIdx === 0}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMoveSubcategory(cat.id, subIdx, subIdx - 1);
                                     }}
-                                    className="font-semibold inline-flex flex-col items-center justify-center text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0 max-w-full"
-                                    title={`${sub.name}${scaleHint}${instancesHint} — Hacé clic para editar, configurar escala, agregar instancias, ${intensificationLabel.toLowerCase()} / recuperación o importar notas`}
+                                    className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                    title={`Mover "${sub.name}" hacia la izquierda (antes)`}
                                   >
-                                    <span className="inline-flex items-center justify-center gap-1 min-w-0 max-w-full">
-                                      {hasEvalInstances ? (
-                                        <Layers className="w-3 h-3 text-indigo-600 dark:text-indigo-300 shrink-0" />
-                                      ) : hasInsts ? (
-                                        <RotateCcw className="w-3 h-3 text-amber-600 dark:text-amber-300 shrink-0" />
-                                      ) : (sub.name.toLowerCase().includes('disposición') ||
-                                          sub.name.toLowerCase().includes('disposicion')) ? (
-                                        <Award className="w-3 h-3 text-amber-500 shrink-0" />
-                                      ) : null}
-                                      <span className="truncate font-bold">{sub.name}</span>
-                                    </span>
-                                    {(subScale.badgeText || hasEvalInstances) && (
-                                      <span className="mt-0.5 inline-flex items-center gap-1 flex-wrap justify-center">
-                                        {subScale.badgeText && (
-                                          <span
-                                            className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
-                                              subScale.mode === 'sum_group'
-                                                ? isDarkMode
-                                                  ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-700/60'
-                                                  : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
-                                                : isDarkMode
-                                                ? 'bg-slate-800 text-sky-300 border border-slate-700'
-                                                : 'bg-sky-50 text-sky-800 border border-sky-200'
-                                            }`}
-                                          >
-                                            {subScale.badgeText}
-                                          </span>
-                                        )}
-                                        {hasEvalInstances && (
-                                          <span
-                                            className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
-                                              isDarkMode
-                                                ? 'bg-indigo-900/80 text-indigo-200 border border-indigo-600/60'
-                                                : 'bg-white/90 text-indigo-800 border border-indigo-300'
-                                            }`}
-                                          >
-                                            {1 + evalInstances.length} inst. ·{' '}
-                                            {sub.instancesCombineMode === 'sum'
-                                              ? 'Suma'
-                                              : sub.instancesCombineMode === 'separate'
-                                              ? 'Sep.'
-                                              : 'Prom.'}
-                                          </span>
-                                        )}
-                                      </span>
-                                    )}
+                                    <ChevronLeft className="w-3 h-3" />
                                   </button>
-                                );
-                              })()}
+                                )}
 
-                              {showInlineArrows && (
+                                {(() => {
+                                  const subScale = resolveSubcategoryScale(sub, generalGradeScale);
+                                  const sumPeers =
+                                    subScale.mode === 'sum_group' && sub.sumGroupId
+                                      ? getSumGroupPeers(categories, sub.sumGroupId).filter(
+                                          (p) => p.subcategory.id !== sub.id
+                                        )
+                                      : [];
+                                  const scaleHint = subScale.isCustom
+                                    ? subScale.mode === 'convert_100'
+                                      ? ` · Escala 0–100 → sobre ${generalGradeScale.maxScore}`
+                                      : subScale.mode === 'sum_group'
+                                      ? ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})${
+                                          sumPeers.length > 0
+                                            ? ` · Suma con ${sumPeers.map((p) => p.subcategory.name).join(' + ')}`
+                                            : ''
+                                        }`
+                                      : ` · Escala ${subScale.minScore}–${subScale.maxScore} (aprueba ≥ ${subScale.passingScore})`
+                                    : '';
+                                  const instancesHint = hasEvalInstances
+                                    ? ` · ${1 + evalInstances.length} instancias (${
+                                        sub.instancesCombineMode === 'sum'
+                                          ? 'suman'
+                                          : sub.instancesCombineMode === 'separate'
+                                          ? 'por separado'
+                                          : 'promedian'
+                                      })`
+                                    : '';
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSubcatToEdit({
+                                          catId: cat.id,
+                                          subId: sub.id,
+                                          name: sub.name,
+                                        });
+                                        setEditSubcatName(sub.name);
+                                      }}
+                                      className="font-semibold inline-flex flex-col items-center justify-center text-center hover:underline hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors min-w-0 max-w-full"
+                                      title={`${sub.name}${scaleHint}${instancesHint} — Hacé clic para editar, configurar escala, agregar instancias, ${intensificationLabel.toLowerCase()} / recuperación o importar notas`}
+                                    >
+                                      <span className="inline-flex items-center justify-center gap-1 min-w-0 max-w-full">
+                                        {hasEvalInstances ? (
+                                          <Layers className="w-3 h-3 text-indigo-600 dark:text-indigo-300 shrink-0" />
+                                        ) : hasInsts ? (
+                                          <RotateCcw className="w-3 h-3 text-amber-600 dark:text-amber-300 shrink-0" />
+                                        ) : sub.name.toLowerCase().includes('disposición') ||
+                                          sub.name.toLowerCase().includes('disposicion') ? (
+                                          <Award className="w-3 h-3 text-amber-500 shrink-0" />
+                                        ) : null}
+                                        <span className="truncate font-bold">{sub.name}</span>
+                                      </span>
+                                      {(subScale.badgeText || hasEvalInstances) && (
+                                        <span className="mt-0.5 inline-flex items-center gap-1 flex-wrap justify-center">
+                                          {subScale.badgeText && (
+                                            <span
+                                              className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
+                                                subScale.mode === 'sum_group'
+                                                  ? isDarkMode
+                                                    ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-700/60'
+                                                    : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                                                  : isDarkMode
+                                                  ? 'bg-slate-800 text-sky-300 border border-slate-700'
+                                                  : 'bg-sky-50 text-sky-800 border border-sky-200'
+                                              }`}
+                                            >
+                                              {subScale.badgeText}
+                                            </span>
+                                          )}
+                                          {hasEvalInstances && (
+                                            <span
+                                              className={`px-1 py-0 rounded text-[9px] font-bold leading-tight ${
+                                                isDarkMode
+                                                  ? 'bg-indigo-900/80 text-indigo-200 border border-indigo-600/60'
+                                                  : 'bg-white/90 text-indigo-800 border border-indigo-300'
+                                              }`}
+                                            >
+                                              {1 + evalInstances.length} inst. ·{' '}
+                                              {sub.instancesCombineMode === 'sum'
+                                                ? 'Suma'
+                                                : sub.instancesCombineMode === 'separate'
+                                                ? 'Sep.'
+                                                : 'Prom.'}
+                                            </span>
+                                          )}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })()}
+
+                                {showInlineArrows && (
+                                  <button
+                                    type="button"
+                                    disabled={subIdx === cat.subcategories.length - 1}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleMoveSubcategory(cat.id, subIdx, subIdx + 1);
+                                    }}
+                                    className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
+                                    title={`Mover "${sub.name}" hacia la derecha (después)`}
+                                  >
+                                    <ChevronRight className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </div>
+
+                              {/* Column resize handle (only when unsplit; split sub-columns have their own handles in Row 3) */}
+                              {!isSplit && (
+                                <div
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  draggable={false}
+                                  onMouseDown={(e) => startColumnResize(e, sub.id, 'grade')}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    handleResetSingleColWidth(sub.id);
+                                  }}
+                                  className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                  title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
+                                />
+                              )}
+                            </th>
+
+                            {/* Extra Summary Column Header for sum_group (linked evaluations that sum together) */}
+                            {showSumGroupSummary && sub.sumGroupId && (
+                              <th
+                                rowSpan={hasAnySplitColumns ? 2 : 1}
+                                className={`p-1.5 text-center font-bold text-[10px] relative select-none overflow-hidden ${
+                                  isDarkMode
+                                    ? 'bg-indigo-950/60 text-indigo-200 border-t-2 border-t-indigo-400'
+                                    : 'bg-indigo-100/80 text-indigo-950 border-t-2 border-t-indigo-500'
+                                } ${
+                                  isLastSubInCat
+                                    ? catRightBorder
+                                    : isDarkMode
+                                    ? 'border-r-[3px] border-r-indigo-500'
+                                    : 'border-r-[3px] border-r-indigo-400'
+                                }`}
+                              >
                                 <button
                                   type="button"
-                                  disabled={subIdx === cat.subcategories.length - 1}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleMoveSubcategory(cat.id, subIdx, subIdx + 1);
+                                  onClick={() => {
+                                    setSubcatToEdit({
+                                      catId: cat.id,
+                                      subId: sub.id,
+                                      name: sub.name,
+                                    });
+                                    setEditSubcatName(sub.name);
                                   }}
-                                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-15 disabled:pointer-events-none text-current opacity-50 group-hover/sub:opacity-100 transition-opacity cursor-pointer shrink-0"
-                                  title={`Mover "${sub.name}" hacia la derecha (después)`}
+                                  className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
+                                  title={`Nota sumada de: ${sumGroupPeers
+                                    .map((p) => p.subcategory.name)
+                                    .join(' + ')} (sobre ${sumGroupTotalMax})`}
                                 >
-                                  <ChevronRight className="w-3 h-3" />
+                                  <span className="truncate max-w-full font-extrabold leading-tight">
+                                    Σ Suma
+                                  </span>
+                                  <span
+                                    className={`mt-0.5 px-1 py-0 rounded text-[9px] font-bold leading-tight truncate max-w-full ${
+                                      isDarkMode
+                                        ? 'bg-indigo-900/90 text-indigo-200 border border-indigo-600/60'
+                                        : 'bg-white/90 text-indigo-800 border border-indigo-300'
+                                    }`}
+                                  >
+                                    /{sumGroupTotalMax}
+                                  </span>
                                 </button>
-                              )}
-                            </div>
-
-                            {/* Column resize handle (only when unsplit; split sub-columns have their own handles in Row 3) */}
-                            {!isSplit && (
-                              <div
-                                role="separator"
-                                aria-orientation="vertical"
-                                draggable={false}
-                                onMouseDown={(e) => startColumnResize(e, sub.id, 'grade')}
-                                onDoubleClick={(e) => {
-                                  e.stopPropagation();
-                                  handleResetSingleColWidth(sub.id);
-                                }}
-                                className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
-                                title="Arrastrá para ajustar el ancho de esta columna (doble clic para restablecer)"
-                              />
+                                <div
+                                  role="separator"
+                                  aria-orientation="vertical"
+                                  onMouseDown={(e) =>
+                                    startColumnResize(e, `${sub.sumGroupId}__sumgroup__`, 'grade')
+                                  }
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    handleResetSingleColWidth(`${sub.sumGroupId}__sumgroup__`);
+                                  }}
+                                  className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                  title="Arrastrá para ajustar el ancho de esta columna resumen (doble clic para restablecer)"
+                                />
+                              </th>
                             )}
-                          </th>
+                          </React.Fragment>
                         );
                       })}
                     </React.Fragment>
@@ -3327,6 +3529,8 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                       const hasInsts = instList.length > 0;
                       if (!hasEvalInstances && !hasInsts) return null;
 
+                      const showInstancesSummary = hasCombinedSummaryColumn(sub);
+                      const showSumGroupSummary = isLastPeerOfSumGroup(categories, sub);
                       const isLastSubInCat = subIdx === cat.subcategories.length - 1;
                       const groupLeftBorder = hasEvalInstances
                         ? isDarkMode
@@ -3336,15 +3540,16 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                         ? 'border-l-[3px] border-l-amber-500'
                         : 'border-l-[3px] border-l-amber-400';
 
-                      const groupRightBorder = isLastSubInCat
-                        ? catRightBorder
-                        : hasEvalInstances
-                        ? isDarkMode
-                          ? 'border-r-[3px] border-r-indigo-500'
-                          : 'border-r-[3px] border-r-indigo-400'
-                        : isDarkMode
-                        ? 'border-r-[3px] border-r-amber-500'
-                        : 'border-r-[3px] border-r-amber-400';
+                      const groupRightBorder =
+                        isLastSubInCat && !showSumGroupSummary
+                          ? catRightBorder
+                          : hasEvalInstances
+                          ? isDarkMode
+                            ? 'border-r-[3px] border-r-indigo-500'
+                            : 'border-r-[3px] border-r-indigo-400'
+                          : isDarkMode
+                          ? 'border-r-[3px] border-r-amber-500'
+                          : 'border-r-[3px] border-r-amber-400';
 
                       const innerDashBorder = hasEvalInstances
                         ? isDarkMode
@@ -3415,7 +3620,9 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               generalGradeScale
                             );
                             const isLastColOfSub =
-                              evalInstIdx === evalInstances.length - 1 && instList.length === 0;
+                              evalInstIdx === evalInstances.length - 1 &&
+                              !showInstancesSummary &&
+                              instList.length === 0;
                             const cellRightBorder = isLastColOfSub
                               ? groupRightBorder
                               : innerDashBorder;
@@ -3468,6 +3675,57 @@ export const GradebookMatrix: React.FC<GradebookMatrixProps> = ({
                               </th>
                             );
                           })}
+
+                          {/* Combined Summary Sub-header (Promedio or Suma of all instances) */}
+                          {showInstancesSummary && (
+                            <th
+                              className={`py-1 px-1.5 text-center font-extrabold text-[10px] relative select-none overflow-hidden ${
+                                instList.length === 0 ? groupRightBorder : innerDashBorder
+                              } ${
+                                isDarkMode
+                                  ? 'bg-indigo-900/75 text-indigo-100'
+                                  : 'bg-indigo-200/80 text-indigo-950'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSubcatToEdit({
+                                    catId: cat.id,
+                                    subId: sub.id,
+                                    name: sub.name,
+                                  });
+                                  setEditSubcatName(sub.name);
+                                }}
+                                className="w-full flex flex-col items-center justify-center hover:underline cursor-pointer pr-1 min-w-0"
+                                title={
+                                  sub.instancesCombineMode === 'sum'
+                                    ? `Nota sumada de las ${1 + evalInstances.length} instancias de "${sub.name}" — Hacé clic para cambiar entre Promedio y Suma`
+                                    : `Promedio de las ${1 + evalInstances.length} instancias de "${sub.name}" — Hacé clic para cambiar entre Promedio y Suma`
+                                }
+                              >
+                                <span className="truncate max-w-full leading-tight">
+                                  {sub.instancesCombineMode === 'sum' ? 'Σ Suma' : 'Promedio'}
+                                </span>
+                                <span className="text-[8px] font-semibold opacity-80 truncate max-w-full leading-tight">
+                                  {1 + evalInstances.length} inst.
+                                </span>
+                              </button>
+                              <div
+                                role="separator"
+                                aria-orientation="vertical"
+                                onMouseDown={(e) =>
+                                  startColumnResize(e, `${sub.id}__combined__`, 'grade')
+                                }
+                                onDoubleClick={(e) => {
+                                  e.stopPropagation();
+                                  handleResetSingleColWidth(`${sub.id}__combined__`);
+                                }}
+                                className="absolute top-0 right-0 bottom-0 w-2 cursor-col-resize hover:bg-blue-500/40 active:bg-blue-500 transition-colors z-20"
+                                title="Arrastrá para ajustar el ancho de esta columna resumen (doble clic para restablecer)"
+                              />
+                            </th>
+                          )}
 
                           {/* Intensification / Recuperación Sub-headers */}
                           {instList.map((inst, instIdx) => {

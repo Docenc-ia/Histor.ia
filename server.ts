@@ -232,8 +232,8 @@ async function startServer() {
         return res.status(400).json({ error: "No data provided" });
       }
 
-      const safeName = path.basename(String(filename || "logo-animado.mp4"));
-      if (!/\.(mp4|webm)$/i.test(safeName)) {
+      const safeName = path.basename(String(filename || "logo-animado.mp4")).replace(/[^a-zA-Z0-9._-]/g, "");
+      if (!safeName || !/^[a-zA-Z0-9._-]+\.(mp4|webm)$/i.test(safeName)) {
         return res.status(400).json({ error: "Formato inválido. Solo se permiten archivos .mp4 o .webm" });
       }
 
@@ -243,12 +243,15 @@ async function startServer() {
         return res.status(413).json({ error: "El archivo excede el tamaño máximo permitido (12 MB)." });
       }
 
-      const publicDir = path.join(process.cwd(), "public");
+      const publicDir = path.resolve(process.cwd(), "public");
       if (!fs.existsSync(publicDir)) {
         fs.mkdirSync(publicDir, { recursive: true });
       }
 
-      const targetPath = path.join(publicDir, safeName);
+      const targetPath = path.resolve(publicDir, safeName);
+      if (!targetPath.startsWith(publicDir + path.sep)) {
+        return res.status(400).json({ error: "Nombre de archivo no permitido." });
+      }
       fs.writeFileSync(targetPath, buffer);
 
       // Keep all video aliases synchronized
